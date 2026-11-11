@@ -12,18 +12,18 @@
 <meta name="theme-color" content="#11110f">
 <style>
 :root{
-  --bg:#f4f2ec;--card:#fffefb;--ink:#1b1a17;--dim:#6d6960;--line:#dfdbd0;--field:#f7f5ef;
+  --bg:#f4f2ec;--card:#fffefb;--ink:#1b1a17;--dim:#6d6960;--line:#dfdbd0;--field:#f7f5ef;--field-line:#9d978a;
   --accent:#b4451b;--accent-ink:#fff;--ok:#1d7448;--warn:#9a5b00;--bad:#b3261e;
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 }
 @media (prefers-color-scheme:dark){:root{
-  --bg:#11110f;--card:#1a1a17;--ink:#edeae2;--dim:#9c978b;--line:#2c2b27;--field:#141412;
+  --bg:#11110f;--card:#1a1a17;--ink:#edeae2;--dim:#9c978b;--line:#2c2b27;--field:#0e0e0c;--field-line:#77736a;
   --accent:#f0794a;--accent-ink:#1a0d06;--ok:#62d19b;--warn:#e6ad55;--bad:#ff8a80;
 }}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%}
 main{max-width:520px;margin:0 auto;padding:20px 16px 48px}
-header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:4px 2px 16px}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:4px 2px 16px}
 h1{font-size:19px;margin:0;letter-spacing:-.01em}
 h1 small{display:block;font-size:13px;font-weight:400;color:var(--dim);letter-spacing:0}
 h2{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin:0 0 12px}
@@ -36,8 +36,11 @@ h2{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;
 .grid div span{display:block;font-size:12px;color:var(--dim)}
 .grid div b{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 label{display:block;font-size:13px;color:var(--dim);margin:12px 0 5px}
-input,select{width:100%;font:inherit;color:var(--ink);background:var(--field);border:1px solid var(--line);border-radius:10px;padding:12px;min-height:46px}
-input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+input,select{width:100%;font:inherit;color:var(--ink);background:var(--field);border:1.5px solid var(--field-line);border-radius:10px;padding:12px;min-height:46px}
+input[type=checkbox]{border:0}
+input:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.hint{font-size:12.5px;color:var(--dim);margin:5px 0 0}
 input.pin{-webkit-text-security:disc;text-security:disc;letter-spacing:.2em}
 input.mono{font-family:var(--mono);font-size:14px}
 button{font:inherit;font-weight:600;border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--ink);padding:11px 14px;min-height:46px;cursor:pointer}
@@ -68,6 +71,11 @@ hr{border:0;border-top:1px solid var(--line);margin:18px 0 6px}
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}.cols h3{font-size:13px;color:var(--dim);margin:0 0 6px;font-weight:600}
 .cols div p{margin:0 0 6px;font-size:13px;overflow-wrap:anywhere}.cols .same{color:var(--dim)}.cols .diff{color:var(--warn);font-weight:600}
 .banner{border-color:var(--accent)}
+.hdr{display:flex;align-items:center;gap:10px}
+.gear{min-height:40px;width:40px;padding:0;display:inline-flex;align-items:center;justify-content:center;color:var(--ink)}
+button.notice{display:block;width:100%;text-align:left;margin-top:10px;min-height:40px;padding:8px 12px;font-size:14px;font-weight:500;color:var(--warn);border-color:var(--warn)}
+button.notice::after{content:" \203A";font-weight:700}
+.settings-top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 2px 14px}.settings-top h2{margin:0}
 .pop{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;padding:16px;z-index:10}
 .pop-card{background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:14px;padding:20px 16px;width:100%;max-width:420px}
 .pop-card h2{color:var(--ink);font-size:20px;text-transform:none;letter-spacing:-.01em;margin:0 0 6px}
@@ -80,24 +88,19 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
 <main>
   <header>
     <h1>Logos node<small>running on this device</small></h1>
-    <span id="pill" class="pill warn">connecting</span>
+    <div class="hdr">
+      <span id="pill" class="pill warn">connecting</span>
+      <button type="button" id="b-gear" class="gear" aria-label="Settings" title="Settings"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false"><path fill="currentColor" d="M19.4 13a7.5 7.5 0 0 0 0-2l2-1.6a.5.5 0 0 0 .1-.6l-1.9-3.3a.5.5 0 0 0-.6-.2l-2.4 1a7.3 7.3 0 0 0-1.7-1l-.4-2.6a.5.5 0 0 0-.5-.4h-3.8a.5.5 0 0 0-.5.4l-.4 2.6a7.3 7.3 0 0 0-1.7 1l-2.4-1a.5.5 0 0 0-.6.2L2.5 8.8a.5.5 0 0 0 .1.6l2 1.6a7.5 7.5 0 0 0 0 2l-2 1.6a.5.5 0 0 0-.1.6l1.9 3.3c.1.2.4.3.6.2l2.4-1c.5.4 1.1.7 1.7 1l.4 2.6c0 .2.3.4.5.4h3.8c.2 0 .5-.2.5-.4l.4-2.6c.6-.3 1.2-.6 1.7-1l2.4 1c.2.1.5 0 .6-.2l1.9-3.3a.5.5 0 0 0-.1-.6zM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"/></svg></button>
+    </div>
   </header>
 
-  <div class="card banner" id="upd" role="status" hidden>
-    <p style="margin:0" id="upd-text"></p>
-    <p class="note" style="margin-top:6px">Updates come from the project's GitHub repository, github.com/jefdiesel/logos-node-android. The app checks each file against the release list before using it. The node keeps running.</p>
-    <div id="upd-go">
-      <label for="upd-pin">Your PIN</label>
-      <input id="upd-pin" class="pin" type="text" inputmode="numeric" maxlength="12" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-      <button type="button" class="primary" id="b-upd">Update</button>
-    </div>
-    <p class="msg" id="m-upd" role="alert"></p>
-  </div>
   <div class="card banner" id="reload" role="status" hidden>
     <p style="margin:0" id="reload-text"></p>
     <button type="button" class="primary" id="b-reload">Reload</button>
   </div>
 
+
+  <div id="page-main">
   <section class="card" aria-labelledby="h-node">
     <h2 id="h-node">Node</h2>
     <div class="big" id="height">-</div>
@@ -108,6 +111,7 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
       <div><span>Blocks / min</span><b id="rate">-</b></div>
     </div>
   </section>
+
 
   <section class="card" aria-labelledby="h-wallet">
     <h2 id="h-wallet">Wallet</h2>
@@ -127,7 +131,7 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
 
     <form id="v-locked" hidden autocomplete="off">
       <button class="primary" type="button" id="b-fp" style="margin-top:0" hidden>Unlock with fingerprint</button>
-      <p class="note" id="n-fp-first" style="margin-top:0" hidden>Fingerprint unlock isn't turned on yet. Unlock with your PIN once, then tap <b>Turn on fingerprint unlock</b> under your balances.</p>
+      <p class="note" id="n-fp-first" style="margin-top:0" hidden>Fingerprint unlock isn't turned on yet. Unlock with your PIN once, then open Settings (the gear at the top) and tap <b>Turn on fingerprint unlock</b>.</p>
       <p class="note" id="n-fp-host" hidden>To use your fingerprint, open this page as <b>localhost</b>, not 127.0.0.1.</p>
       <label for="pin" id="l-pin" style="margin-top:0">PIN</label>
       <input id="pin" class="pin" type="text" inputmode="numeric" maxlength="12" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" required>
@@ -138,58 +142,9 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
     <div id="v-open" hidden>
       <div id="accts"></div>
       <details id="more" hidden><summary>Other keys in this wallet</summary><div id="accts-more"></div></details>
-      <div class="row" style="margin-top:12px">
-        <button type="button" id="b-lock" class="small">Lock wallet</button>
-        <button type="button" id="b-fp-set" class="small" hidden>Turn on fingerprint unlock</button>
-      </div>
-      <div class="fpline" id="fp-on" hidden>
-        <span>Fingerprint unlock: on</span>
-        <button type="button" id="b-fp-off">Turn off</button>
-        <span id="fp-confirm" hidden>Turn off? <button type="button" id="b-fp-yes">Yes</button><button type="button" id="b-fp-no">Cancel</button></span>
-      </div>
-      <p class="msg" id="m-fp" role="status"></p>
-      <button type="button" id="b-bk-open" style="width:100%;margin-top:12px" aria-expanded="false" aria-controls="bk">Back up wallet</button>
-      <p class="msg warn" id="bk-state" style="margin-top:8px"></p>
-      <button type="button" id="b-upd-check" style="width:100%;margin-top:10px">Check for updates</button>
-      <p class="msg" id="m-upd-check" role="status"></p>
-      <div id="bk" hidden>
-        <form id="f-bk" autocomplete="off">
-          <p class="note">Saves this node's keys as an encrypted file. The file is locked with a backup password you choose here, not your PIN. Use a long one you won't forget.</p>
-          <label for="bk-pw1">Backup password (at least 12 characters)</label>
-          <input id="bk-pw1" type="password" minlength="12" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" required>
-          <label for="bk-pw2">Repeat the backup password</label>
-          <input id="bk-pw2" type="password" minlength="12" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" required>
-          <label for="bk-pin">Your PIN</label>
-          <input id="bk-pin" class="pin" type="text" inputmode="numeric" maxlength="12" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" required>
-          <button class="primary" type="submit" id="b-bk">Save backup file</button>
-          <p class="msg bad" id="m-bk" role="alert"></p>
-        </form>
-        <div id="bk-done" class="msg ok" role="status" hidden>
-          <p style="margin:0">Saved <b id="bk-name"></b> to Downloads.</p>
-          <ul class="note" style="padding-left:20px">
-            <li>Move it somewhere safe off this phone.</li>
-            <li>Anyone with the file and its password controls this wallet.</li>
-            <li>If you lose the password, the backup can't be opened. It can't be recovered.</li>
-          </ul>
-        </div>
-      </div>
-      <button type="button" id="b-rs-open" style="width:100%;margin-top:10px" aria-expanded="false" aria-controls="rs">Restore from a backup file</button>
-      <div id="rs" hidden>
-        <p class="msg warn">Restoring replaces this wallet's keys with the keys in a backup file. Coins on the keys it replaces can then only be reached through a backup of those keys.</p>
-        <label for="rs-file">Backup file (logos-node-wallet-backup-….json)</label>
-        <input id="rs-file" type="file" accept=".json,application/json">
-        <div id="rs-step2" hidden>
-          <div class="cols" id="rs-compare"></div>
-          <p class="msg warn" id="rs-warn"></p>
-          <label for="rs-pw">Backup password</label>
-          <input id="rs-pw" type="password" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-          <label for="rs-pin">Your PIN</label>
-          <input id="rs-pin" class="pin" type="text" inputmode="numeric" maxlength="12" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-          <label style="display:flex;gap:10px;align-items:flex-start;color:var(--ink);font-size:14px;margin-top:14px"><input type="checkbox" id="rs-ok" style="width:auto;min-height:0;margin-top:3px"> I understand this replaces this wallet's keys with the ones in the file.</label>
-          <button type="button" class="primary" id="b-rs" disabled>Replace the keys</button>
-        </div>
-        <p class="msg bad" id="m-rs" role="alert"></p>
-      </div>
+      <button type="button" class="notice" id="n-bk" hidden>No backup yet. If this device is wiped, the coins are lost.</button>
+      <button type="button" class="notice" id="n-upd" hidden></button>
+      <button type="button" id="b-lock" style="width:100%;margin-top:12px">Lock wallet</button>
       <hr>
       <form id="f-send" autocomplete="off">
         <h2 style="margin-top:14px">Send</h2>
@@ -235,6 +190,103 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
     </div>
   </section>
 
+  <footer>This page is served by your own device and talks only to the node running on it. Testnet.</footer>
+  </div>
+
+  <div id="page-settings" hidden>
+    <div class="settings-top">
+      <button type="button" id="b-settings-back">&larr; Back to the wallet</button>
+      <h2 id="h-settings">Settings</h2>
+    </div>
+    <p class="card note" id="s-locked" hidden style="margin:0 0 14px">Unlock the wallet to change settings.</p>
+
+    <section class="card" id="s-upd" aria-labelledby="h-s-upd">
+      <h2 id="h-s-upd">Updates</h2>
+      <p style="margin:0">Installed version: <b id="s-version">-</b></p>
+      <div id="upd" hidden>
+        <p class="msg ok" style="margin-top:12px" id="upd-text"></p>
+        <div id="upd-go">
+          <button type="button" class="primary" id="b-upd-fp" hidden>Update, confirm with fingerprint</button>
+          <label for="upd-pin" id="l-upd-pin">Your PIN</label>
+          <input id="upd-pin" class="pin" type="text" inputmode="numeric" maxlength="12" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+          <p class="hint">Your PIN: 6 to 12 digits.</p>
+          <button type="button" class="primary" id="b-upd" disabled>Update</button>
+        </div>
+        <p class="msg" id="m-upd" role="alert"></p>
+      </div>
+      <button type="button" id="b-upd-check" style="width:100%;margin-top:12px">Check for updates</button>
+      <p class="msg" id="m-upd-check" role="status"></p>
+      <p class="note">Updates come from the project's GitHub repository, github.com/jefdiesel/logos-node-android: its release branch, which only gets versions that passed every test. The app checks each file against the release list before using it. The node keeps running.</p>
+    </section>
+
+    <section class="card" id="s-bk" aria-labelledby="h-s-bk">
+      <h2 id="h-s-bk">Back up wallet</h2>
+      <p class="msg warn" id="bk-state" style="margin-top:0"></p>
+      <div id="bk">
+        <form id="f-bk" autocomplete="off">
+          <p class="note">Saves this node's keys as an encrypted file. The file is locked with a backup password you choose here, not your PIN. Use a long one you won't forget.</p>
+          <label for="bk-pw1">Backup password (at least 12 characters)</label>
+          <input id="bk-pw1" type="password" minlength="12" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" required>
+          <label for="bk-pw2">Repeat the backup password</label>
+          <input id="bk-pw2" type="password" minlength="12" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" required>
+          <label for="bk-pin">Your PIN</label>
+          <input id="bk-pin" class="pin" type="text" inputmode="numeric" maxlength="12" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" required>
+          <p class="hint">Your PIN: 6 to 12 digits.</p>
+          <button class="primary" type="submit" id="b-bk" disabled>Save backup file</button>
+          <p class="msg bad" id="m-bk" role="alert"></p>
+        </form>
+        <div id="bk-done" class="msg ok" role="status" hidden>
+          <p style="margin:0">Saved <b id="bk-name"></b> to Downloads.</p>
+          <ul class="note" style="padding-left:20px">
+            <li>Move it somewhere safe off this phone.</li>
+            <li>Anyone with the file and its password controls this wallet.</li>
+            <li>If you lose the password, the backup can't be opened. It can't be recovered.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="s-rs" aria-labelledby="h-s-rs">
+      <h2 id="h-s-rs">Restore from a backup file</h2>
+      <div id="rs">
+        <p class="msg warn">Restoring replaces this wallet's keys with the keys in a backup file. Coins on the keys it replaces can then only be reached through a backup of those keys.</p>
+        <label for="rs-file">Backup file (logos-node-wallet-backup-….json)</label>
+        <input id="rs-file" type="file" accept=".json,application/json">
+        <div id="rs-step2" hidden>
+          <div class="cols" id="rs-compare"></div>
+          <p class="msg warn" id="rs-warn"></p>
+          <label for="rs-pw">Backup password</label>
+          <input id="rs-pw" type="password" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+          <label for="rs-pin">Your PIN</label>
+          <input id="rs-pin" class="pin" type="text" inputmode="numeric" maxlength="12" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+          <p class="hint">Your PIN: 6 to 12 digits.</p>
+          <label style="display:flex;gap:10px;align-items:flex-start;color:var(--ink);font-size:14px;margin-top:14px"><input type="checkbox" id="rs-ok" style="width:auto;min-height:0;margin-top:3px"> I understand this replaces this wallet's keys with the ones in the file.</label>
+          <button type="button" class="primary" id="b-rs" disabled>Replace the keys</button>
+        </div>
+        <p class="msg bad" id="m-rs" role="alert"></p>
+      </div>
+    </section>
+
+    <section class="card" id="s-fp" aria-labelledby="h-s-fp">
+      <h2 id="h-s-fp">Fingerprint unlock</h2>
+      <p style="margin:0" id="fp-off">Fingerprint unlock: off</p>
+      <button type="button" id="b-fp-set" style="width:100%;margin-top:12px" hidden>Turn on fingerprint unlock</button>
+      <div class="fpline" id="fp-on" hidden>
+        <span>Fingerprint unlock: on</span>
+        <button type="button" id="b-fp-off">Turn off</button>
+        <span id="fp-confirm" hidden>Turn off? <button type="button" id="b-fp-yes">Yes</button><button type="button" id="b-fp-no">Cancel</button></span>
+      </div>
+      <p class="note" id="fp-host" hidden>To turn it on, open this page as <b>http://localhost:8090</b>, not 127.0.0.1.</p>
+      <p class="msg" id="m-fp" role="status"></p>
+    </section>
+
+    <section class="card" id="s-about" aria-labelledby="h-s-about">
+      <h2 id="h-s-about">About</h2>
+      <p style="margin:0">Logos node web app, version <b id="about-version">-</b>.</p>
+      <p class="note">This page is served by this device and talks only to the node running on it. Testnet.</p>
+    </section>
+  </div>
+
   <div id="pop" class="pop" role="dialog" aria-modal="true" aria-labelledby="pop-h" hidden>
     <div class="pop-card">
       <h2 id="pop-h"></h2>
@@ -243,7 +295,6 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
     </div>
   </div>
 
-  <footer>This page is served by your own device and talks only to the node running on it. Testnet.</footer>
 </main>
 
 <script>
@@ -271,7 +322,33 @@ function setToken(t) { token = t; try { t ? sessionStorage.setItem("session", t)
 function show(view) {
   for (const v of ["v-loading", "v-setup", "v-locked", "v-open"]) $(v).hidden = v !== view;
   if (view !== "v-open") { afterUnlock = true; popItems = []; $("pop").hidden = true; $("hist").replaceChildren(); }   // nothing about amounts stays on a locked page
+  settingsUi();
 }
+// ---- settings: a separate view behind the gear; only About while the wallet is locked ----
+function settingsUi() {
+  const open = !$("v-open").hidden;
+  for (const id of ["s-upd", "s-bk", "s-rs", "s-fp"]) $(id).hidden = !open;
+  $("s-locked").hidden = open;
+  if (!open) { resetBackup(); resetRestore(); $("upd-pin").value = ""; pinButtons(); }
+}
+function openSettings(section) {
+  $("page-main").hidden = true; $("page-settings").hidden = false; settingsUi();
+  const el = section && !$(section).hidden ? $(section) : null;
+  if (el) el.scrollIntoView({ block: "start" }); else window.scrollTo(0, 0);
+}
+function closeSettings() { $("page-settings").hidden = true; $("page-main").hidden = false; window.scrollTo(0, 0); }
+$("b-gear").addEventListener("click", () => $("page-settings").hidden ? openSettings() : closeSettings());
+$("b-settings-back").addEventListener("click", closeSettings);
+$("n-bk").addEventListener("click", () => openSettings("s-bk"));
+$("n-upd").addEventListener("click", () => openSettings("s-upd"));
+// PIN-confirmed buttons stay off until the field holds something that can be a PIN
+const pinOk = v => /^\d{6,12}$/.test(v);
+function pinButtons() {
+  $("b-upd").disabled = !pinOk($("upd-pin").value);
+  $("b-bk").disabled = !pinOk($("bk-pin").value);
+  $("b-rs").disabled = !pinOk($("rs-pin").value) || !$("rs-ok").checked || !rsDoc;
+}
+for (const id of ["upd-pin", "bk-pin", "rs-pin"]) $(id).addEventListener("input", pinButtons);
 
 // ---- node status ----
 async function tickStatus() {
@@ -305,37 +382,45 @@ async function tickStatus() {
 
 // ---- updates: from the project's GitHub repository, applied by the app on this device ----
 const PAGE_VERSION = (document.querySelector('meta[name="app-version"]') || {}).content || "";
+$("about-version").textContent = PAGE_VERSION || "-"; $("s-version").textContent = PAGE_VERSION || "-";
 function updateUi(serverVersion, available) {
   if (serverVersion && PAGE_VERSION && serverVersion !== PAGE_VERSION) {
     // the app on this device was updated: this page is the old one
     if ($("v-open").hidden) return location.reload();           // nothing typed to lose while locked
     $("reload-text").textContent = "This app was updated to version " + serverVersion + ". Reload the page to use it.";
-    $("reload").hidden = false; $("upd").hidden = true; return;
+    $("reload").hidden = false; $("upd").hidden = true; $("n-upd").hidden = true; return;
   }
-  $("upd").hidden = !available;
+  $("upd").hidden = !available; $("n-upd").hidden = !available;
   if (available) {
-    $("upd-text").textContent = "Version " + available + " of this app is available (you have " + (serverVersion || PAGE_VERSION) + ").";
-    $("upd-go").hidden = $("v-open").hidden;
-    if ($("v-open").hidden && !$("m-upd").textContent) { $("m-upd").className = "msg"; $("m-upd").textContent = "Unlock the wallet to update."; }
-    if (!$("v-open").hidden && $("m-upd").textContent === "Unlock the wallet to update.") $("m-upd").textContent = "";
+    $("upd-text").textContent = "Version " + available + " is available.";
+    $("n-upd").textContent = "Version " + available + " is available";
   }
 }
-$("b-reload").addEventListener("click", () => location.reload());
-$("b-upd").addEventListener("click", async () => {
-  const m = $("m-upd"), b = $("b-upd"); m.className = "msg bad"; m.textContent = "";
-  b.disabled = true; m.className = "msg"; m.textContent = "Downloading and checking the new files…";
-  const r = await api("/api/update/apply", { pin: $("upd-pin").value }); $("upd-pin").value = ""; b.disabled = false;
+async function applyUpdate(body) {
+  const m = $("m-upd"); m.className = "msg"; m.textContent = "Downloading and checking the new files…";
+  $("b-upd").disabled = true; $("b-upd-fp").disabled = true;
+  const r = await api("/api/update/apply", body);
+  $("upd-pin").value = ""; $("b-upd-fp").disabled = false; pinButtons();
   if (r.status === 401) { setToken(null); return show("v-locked"); }
   if (!r.ok) return void (m.className = "msg bad", m.textContent = r.data.error || "The update didn't work.");
   m.className = "msg ok"; m.textContent = "Updated to " + r.data.to + ". The app is restarting; this page reloads when it is back.";
   $("upd-go").hidden = true;
+}
+$("b-upd-fp").addEventListener("click", async () => {
+  const m = $("m-upd"); m.className = "msg"; m.textContent = "";
+  const f = await fpConfirm("/api/update/passkey/challenge");
+  if (f.status === 401) { setToken(null); return show("v-locked"); }
+  if (f.error) return void (m.className = "msg bad", m.textContent = f.error + " Try again, or use your PIN.");
+  applyUpdate({ assertion: f.assertion });
 });
+$("b-reload").addEventListener("click", () => location.reload());
+$("b-upd").addEventListener("click", () => { if (pinOk($("upd-pin").value)) applyUpdate({ pin: $("upd-pin").value }); });
 $("b-upd-check").addEventListener("click", async () => {
   const m = $("m-upd-check"); m.className = "msg"; m.textContent = "Checking GitHub…";
   const r = await api("/api/update/check", {});
   if (r.status === 401) { setToken(null); return show("v-locked"); }
   if (!r.ok || r.data.error) return void (m.className = "msg bad", m.textContent = (r.data && r.data.error) || "Couldn't check for updates.");
-  m.textContent = r.data.available ? "Version " + r.data.available + " is available. See the notice at the top." : "This app is up to date (version " + r.data.current + ").";
+  m.textContent = r.data.available ? "" : "This app is up to date (version " + r.data.current + ").";
   updateUi(r.data.current, r.data.available);
 });
 function syncNote() {
@@ -362,8 +447,11 @@ function fpUi() {
   $("l-pin").style.marginTop = on && canPasskey() ? "16px" : "0";
   $("b-pin").className = on && canPasskey() ? "" : "primary"; $("b-pin").style.width = "100%"; $("b-pin").style.marginTop = "14px";
   // turning on is one tap; turning off is a separate small control that asks first
-  $("b-fp-set").hidden = on || !canPasskey();
+  $("b-fp-set").hidden = on || !canPasskey(); $("fp-off").hidden = on;
+  $("fp-host").hidden = on || canPasskey();
   $("fp-on").hidden = !on; $("b-fp-off").hidden = false; $("fp-confirm").hidden = true;
+  const fpUpd = on && canPasskey();          // updates: the fingerprint first, the PIN as the alternative
+  $("b-upd-fp").hidden = !fpUpd; $("l-upd-pin").textContent = fpUpd ? "Or your PIN" : "Your PIN";
 }
 function fpAskOff(ask) { $("b-fp-off").hidden = ask; $("fp-confirm").hidden = !ask; if (ask) $("b-fp-no").focus(); }
 async function fpOff() {
@@ -373,16 +461,22 @@ async function fpOff() {
   else { m.className = "msg bad"; m.textContent = r.data.error || "Couldn't turn fingerprint unlock off."; }
   fpUi();
 }
-async function fpUnlock() {
-  const m = $("m-locked"); m.textContent = "";
-  const c = await api("/api/wallet/passkey/challenge", {});
-  if (!c.ok) return void (m.textContent = c.data.error || "Fingerprint unlock isn't available.");
+async function fpConfirm(challengePath) {
+  // a fresh fingerprint confirmation for the challenge that `challengePath` hands out, or { error }
+  const c = await api(challengePath, {});
+  if (!c.ok) return { error: c.data.error || "Fingerprint confirmation isn't available.", status: c.status };
   let a;
   try {
     a = await navigator.credentials.get({ publicKey: { challenge: unb64u(c.data.challenge), rpId: c.data.rpId, userVerification: "required", timeout: 60000,
       allowCredentials: c.data.ids.map(id => ({ type: "public-key", id: unb64u(id) })) } });
-  } catch (e) { return void (m.textContent = "Fingerprint wasn't confirmed. Use your PIN, or try again."); }
-  const r = await api("/api/wallet/passkey/unlock", { id: b64u(a.rawId), clientDataJSON: b64u(a.response.clientDataJSON), authenticatorData: b64u(a.response.authenticatorData), signature: b64u(a.response.signature) });
+  } catch (e) { return { error: "Fingerprint wasn't confirmed." }; }
+  return { assertion: { id: b64u(a.rawId), clientDataJSON: b64u(a.response.clientDataJSON), authenticatorData: b64u(a.response.authenticatorData), signature: b64u(a.response.signature) } };
+}
+async function fpUnlock() {
+  const m = $("m-locked"); m.textContent = "";
+  const f = await fpConfirm("/api/wallet/passkey/challenge");
+  if (f.error) return void (m.textContent = f.error + " Use your PIN, or try again.");
+  const r = await api("/api/wallet/passkey/unlock", f.assertion);
   if (!r.ok) return void (m.textContent = r.data.error || "Fingerprint unlock failed. Use your PIN.");
   setToken(r.data.session); loadWallet();
 }
@@ -438,6 +532,7 @@ async function loadAccounts() {
   const lb = r.data.last_backup, st = $("bk-state"); lastBackup = lb;
   st.className = lb ? "msg" : "msg warn";
   st.textContent = lb ? "Last backup: " + when(lb) : "No backup yet. If this device is wiped, the coins are lost.";
+  $("n-bk").hidden = !!lb;
   const main = accts.filter((a, i) => i === 0 || (a.balance && a.balance !== "0"));
   const rest = accts.filter(a => !main.includes(a));
   $("accts").replaceChildren(...(main.length ? main.map(acctNode) : [Object.assign(document.createElement("p"), { className: "note", textContent: "The node hasn't reported its wallet keys yet. This can take a minute after it starts." })]));
@@ -471,20 +566,12 @@ $("b-fp-yes").addEventListener("click", fpOff);
 $("b-lock").addEventListener("click", async () => { await api("/api/wallet/lock", {}); setToken(null); resetSend(); resetBackup(); resetRestore(); show("v-locked"); });
 
 // ---- backup: the server encrypts the node's key file; this page only ever sees the encrypted file ----
-$("b-bk-open").addEventListener("click", () => {
-  const open = $("bk").hidden; $("bk").hidden = !open; $("b-bk-open").setAttribute("aria-expanded", String(open));
-  $("b-bk-open").textContent = open ? "Close backup" : "Back up wallet"; if (open) $("bk-pw1").focus();
-});
 // ---- restore: the server decrypts the file and has the node check it before replacing the keys ----
 let rsDoc = null, lastBackup = null;
 function resetRestore() {
   rsDoc = null; $("rs-file").value = ""; $("rs-pw").value = ""; $("rs-pin").value = ""; $("rs-ok").checked = false;
   $("rs-step2").hidden = true; $("b-rs").disabled = true; $("m-rs").textContent = "";
 }
-$("b-rs-open").addEventListener("click", () => {
-  const open = $("rs").hidden; $("rs").hidden = !open; $("b-rs-open").setAttribute("aria-expanded", String(open));
-  $("b-rs-open").textContent = open ? "Close restore" : "Restore from a backup file"; if (!open) resetRestore();
-});
 function addrList(title, list, other) {
   const d = document.createElement("div"); d.append(Object.assign(document.createElement("h3"), { textContent: title }));
   for (const a of list) { const p = document.createElement("p"); p.className = other.has(a.key) ? "same" : "diff"; p.textContent = (a.label || "Key") + ": " + short(a.key); p.title = a.key; d.append(p); }
@@ -508,27 +595,28 @@ $("rs-file").addEventListener("change", async () => {
     : "This wallet's current keys were last backed up " + when(lastBackup) + ". Keep that file: it is the only way back to them.";
   $("rs-step2").hidden = false;
 });
-$("rs-ok").addEventListener("change", () => { $("b-rs").disabled = !$("rs-ok").checked || !rsDoc; });
+$("rs-ok").addEventListener("change", pinButtons);
 $("b-rs").addEventListener("click", async () => {
-  const m = $("m-rs"), b = $("b-rs"); if (!rsDoc || !$("rs-ok").checked) return;
+  const m = $("m-rs"), b = $("b-rs"); if (!rsDoc || !$("rs-ok").checked || !pinOk($("rs-pin").value)) return;
   b.disabled = true; m.className = "msg"; m.textContent = "Opening the backup and having the node check it…";
   const r = await api("/api/wallet/restore", { backup: rsDoc, password: $("rs-pw").value, pin: $("rs-pin").value });
-  $("rs-pin").value = ""; b.disabled = false;
+  $("rs-pin").value = ""; pinButtons();
   if (r.status === 401) { setToken(null); resetRestore(); return show("v-locked"); }
   if (!r.ok) return void (m.className = "msg bad", m.textContent = r.data.error || "The restore didn't work. Nothing was changed.");
   const msg = r.data.unchanged ? r.data.message
     : "Restored: the wallet now has the " + r.data.addresses + " keys from the backup. " + (r.data.restarted ? "The node is restarting with them." : r.data.manual);
   resetRestore(); m.className = "msg ok"; m.textContent = msg; loadAccounts(); loadHistory();
 });
-function resetBackup() { for (const id of ["bk-pw1", "bk-pw2", "bk-pin"]) $(id).value = ""; $("m-bk").textContent = ""; }
+function resetBackup() { for (const id of ["bk-pw1", "bk-pw2", "bk-pin"]) $(id).value = ""; $("m-bk").textContent = ""; $("b-bk").disabled = true; }
 $("f-bk").addEventListener("submit", async e => {
   e.preventDefault(); const m = $("m-bk"); m.className = "msg bad"; m.textContent = ""; $("bk-done").hidden = true;
   const p1 = $("bk-pw1").value, p2 = $("bk-pw2").value;
+  if (!pinOk($("bk-pin").value)) return void (m.textContent = "Enter your PIN: 6 to 12 digits.");
   if (p1.length < 12) return void (m.textContent = "The backup password must be at least 12 characters.");
   if (p1 !== p2) return void (m.textContent = "The two backup passwords don't match.");
   $("b-bk").disabled = true; m.className = "msg"; m.textContent = "Encrypting. This takes a few seconds.";
   const r = await api("/api/wallet/backup", { password: p1, pin: $("bk-pin").value });
-  $("b-bk").disabled = false; $("bk-pin").value = "";
+  $("bk-pin").value = ""; pinButtons();
   if (r.status === 401) { setToken(null); resetBackup(); return show("v-locked"); }
   if (!r.ok) return void (m.className = "msg bad", m.textContent = r.data.error || "The backup couldn't be made.");
   const d = new Date(), name = "logos-node-wallet-backup-" + d.getFullYear() + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0") + ".json";

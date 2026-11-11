@@ -184,9 +184,12 @@ def backup_checks(s, pin):
     sealed = bytearray(base64.b64decode(b["ciphertext"])); sealed[len(sealed) // 2] ^= 1
     r = decrypt(dict(b, ciphertext=base64.b64encode(bytes(sealed)).decode()), BACKUP_PASSWORD, out2)
     check("a changed backup file doesn't open", r.returncode != 0 and not os.path.exists(out2), r.stdout)
+    for bad in ("", "12", "12345a"):
+        code, d = call("/api/wallet/backup", {"password": BACKUP_PASSWORD, "pin": bad}, session=s)
+        check("a backup with %r, which isn't a PIN, is refused without counting" % bad, code == 400 and d.get("malformed"), (code, d))
     # last: a wrong PIN. It counts toward the pause after 5 wrong PINs, which the caller checks.
     code, d = call("/api/wallet/backup", {"password": BACKUP_PASSWORD, "pin": "000000"}, session=s)
-    check("a backup with a wrong PIN is refused", code == 403, (code, d))
+    check("a backup with a wrong PIN is refused, saying how many tries are left", code == 403 and d.get("tries_left") == 4, (code, d))
     return secrets_
 
 
@@ -234,9 +237,12 @@ def guard():
     code, d = call("/api/wallet/lock", {}, session=s)
     code, d = call("/api/wallet/accounts", session=s)
     check("locking ends the session", code == 401, (code, d))
+    for bad in ("", "123", "abcdef", "1234567890123"):
+        code, d = call("/api/wallet/unlock", {"pin": bad})
+        check("unlocking with %r, which isn't a PIN, is refused without counting" % bad, code == 400 and d.get("malformed"), (code, d))
     for i in range(4):
         code, d = call("/api/wallet/unlock", {"pin": "000000"})
-        check("wrong PIN %d is refused" % (i + 2), code == 401, (code, d))
+        check("wrong PIN %d is refused, %d tries left" % (i + 2, 3 - i), code == 401 and d.get("tries_left") == 3 - i, (code, d))
     code, d = call("/api/wallet/unlock", {"pin": "246810"})
     check("after 5 wrong PINs (the first in a backup request) even the right one has to wait", code == 429 and d.get("wait", 0) > 0, (code, d))
     events_log_checks([s0, s], ["246810", "000000", BACKUP_PASSWORD] + key_secrets)
@@ -256,6 +262,9 @@ def events_log_checks(sessions, pins):
     check("the event log records where requests came from", 'origin="http://127.0.0.1:8090"' in text and "user-agent=" in text)
     secrets_found = [x for x in sessions + pins if x and x in text]
     check("the event log holds no PIN, session token, backup password or key", not secrets_found, len(secrets_found))
+    check("only the well-formed wrong PINs were logged (one backup, four unlocks)",
+          text.count(" backup refused, wrong PIN ") == 1 and text.count(" unlock by PIN failed ") == 4,
+          (text.count(" backup refused, wrong PIN "), text.count(" unlock by PIN failed ")))
     m = re.search(r'backup exported keystore_from="(\w+)"', text)
     print("     the backup found the key file from: %s" % (m.group(1) if m else "?"))
     code, d = call("/wallet-events.log")
@@ -368,8 +377,10 @@ def restore_before():
         os.remove(state)
     code, d = call("/api/wallet/restore", {"backup": b0, "password": BACKUP_PASSWORD, "pin": pin})
     check("a restore without an unlocked wallet is refused", code == 401, (code, d))
+    code, d = call("/api/wallet/restore", {"backup": b0, "password": BACKUP_PASSWORD, "pin": ""}, session=s)
+    check("a restore without a PIN is refused without counting", code == 400 and d.get("malformed"), (code, d))
     code, d = call("/api/wallet/restore", {"backup": b0, "password": BACKUP_PASSWORD, "pin": "000000"}, session=s)
-    check("a restore with a wrong PIN is refused", code == 403, (code, d))
+    check("a restore with a wrong PIN is refused", code == 403 and isinstance(d.get("tries_left"), int), (code, d))
     code, d = call("/api/wallet/restore", {"backup": b0, "password": BACKUP_PASSWORD, "pin": pin}, session=s)
     check("restoring the keys already in use changes nothing, and says so", code == 200 and d.get("unchanged") is True, (code, d))
     with open(keystore, "rb") as f:

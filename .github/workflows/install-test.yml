@@ -156,3 +156,24 @@ jobs:
               sleep 10
             done
             tail -40 ~/node.log; exit 1'
+  promote:
+    # Phones update from the `release` branch. It moves to a commit only after every job above passed
+    # on main, so a release reaches devices only once it is tested. This job alone may write.
+    needs: [fresh-install, wallet-send, termux, app-update]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fast-forward release to the tested commit
+        run: |
+          python3 tools/release.py check
+          if git fetch -q origin release; then
+            if git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then echo "release already has this commit"; exit 0; fi
+            git merge-base --is-ancestor FETCH_HEAD "$GITHUB_SHA" || { echo "release has commits main doesn't; not moving it"; exit 1; }
+          fi
+          git push origin "$GITHUB_SHA:refs/heads/release"
+          echo "release -> $GITHUB_SHA (version $(python3 -c 'import json;print(json.load(open("app/release.json"))["version"])'))"

@@ -93,8 +93,27 @@ check("and the status shows it to the page", call("/api/status")[1].get("update"
 before = installed()
 code, d = call("/api/update/apply", {"pin": PIN})
 check("an update without an unlocked wallet is refused", code == 401, (code, d))
+code, d = call("/api/update/apply", {}, session=s)
+check("an update confirmed by neither PIN nor fingerprint is refused, without counting", code == 400 and d.get("malformed"), (code, d))
+code, d = apply(s, "12")
+check("an update with something that isn't a PIN is refused, without counting", code == 400 and d.get("malformed"), (code, d))
 code, d = apply(s, "000000")
-check("an update with a wrong PIN is refused", code == 403, (code, d))
+check("an update with a wrong PIN is refused, saying how many tries are left", code == 403 and isinstance(d.get("tries_left"), int) and "left" in d.get("error", ""), (code, d))
+
+
+def fresh(path):
+    """A fingerprint confirmation for the challenge `path` hands out."""
+    code, c = call(path, {}, session=s)
+    check("a fingerprint challenge is issued by " + path, code == 200 and c.get("challenge"), (code, c))
+    return pk.assertion(c["challenge"])
+
+
+code, d = call("/api/update/apply", {"assertion": fresh("/api/wallet/passkey/challenge")}, session=s)
+check("a fingerprint confirmation made for unlocking can't confirm an update", code == 403, (code, d))
+code, d = call("/api/wallet/passkey/unlock", fresh("/api/update/passkey/challenge"))
+check("a fingerprint confirmation made for an update can't unlock", code == 401, (code, d))
+code, d = call("/api/update/apply", {"assertion": dict(fresh("/api/update/passkey/challenge"), signature=W.b64u(b"0" * 70))}, session=s)
+check("an update with a bad fingerprint signature is refused", code == 403, (code, d))
 with open(EVENTS) as f:
     check("and the wrong PIN is logged", " update refused, wrong PIN " in f.read())
 
@@ -118,8 +137,8 @@ with open(os.path.join(app, "index.html")) as f:
 with open(os.path.join(app, "index.html"), "w") as f:
     f.write(page)
 release(app)
-code, d = apply(s)
-check("a good release is applied", code == 200 and d.get("to") == v1, (code, d))
+code, d = call("/api/update/apply", {"assertion": fresh("/api/update/passkey/challenge")}, session=s)
+check("a good release is applied, confirmed by a fresh fingerprint confirmation", code == 200 and d.get("to") == v1, (code, d))
 for _ in range(40):
     time.sleep(1)
     try:
@@ -146,4 +165,21 @@ check("the event log survived and records the update",
       and re.search(r" app start .*version=\"%s\"" % re.escape(v1), text))
 code, d = call("/api/update/check", {}, session=s2)
 check("after the update nothing newer is offered", d.get("available") is None and d.get("current") == v1, d)
+
+# and once more, confirmed by the PIN
+v2 = ".".join(v1.split(".")[:-1] + [str(int(v1.split(".")[-1]) + 1)])
+with open(os.path.join(app, "server.py"), "w") as f:
+    f.write(re.sub(r'^APP_VERSION = "[0-9.]+"', 'APP_VERSION = "%s"' % v2, good_server, count=1, flags=re.M))
+release(app)
+code, d = call("/api/update/check", {}, session=s2)
+code, d = apply(s2)
+check("a release confirmed by the PIN is applied", code == 200 and d.get("to") == v2, (code, d))
+for _ in range(40):
+    time.sleep(1)
+    try:
+        if version() == v2:
+            break
+    except Exception:
+        pass
+check("the app comes back at that version too", version() == v2, version())
 print("all checks passed")
