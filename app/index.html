@@ -42,6 +42,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .acct{padding:14px 0;border-top:1px solid var(--line)}.acct:first-child{border-top:0;padding-top:0}
 .acct .top{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
 .acct .name{font-weight:600}.acct .bal{font-size:24px;font-weight:650;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.acct .bal.pending{font-size:14px;font-weight:500;color:var(--warn);letter-spacing:0}
 .acct .addr{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:6px}
 .acct code,.hash{font-family:var(--mono);font-size:13px;color:var(--dim);overflow-wrap:anywhere}
 .note{font-size:14px;color:var(--dim);margin:10px 0 0}
@@ -75,6 +76,7 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
   <section class="card" aria-labelledby="h-wallet">
     <h2 id="h-wallet">Wallet</h2>
 
+    <p class="msg warn" id="m-sync" style="margin:0 0 12px"></p>
     <div id="v-loading" class="note">Loading…</div>
 
     <form id="v-setup" hidden autocomplete="off">
@@ -97,8 +99,6 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
     <div id="v-open" hidden>
       <div id="accts"></div>
       <details id="more" hidden><summary>Other keys in this wallet</summary><div id="accts-more"></div></details>
-      <p class="msg warn" id="m-sync"></p>
-
       <hr>
       <form id="f-send" autocomplete="off">
         <h2 style="margin-top:14px">Send</h2>
@@ -148,7 +148,7 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
 const $ = id => document.getElementById(id);
 const fmt = v => { try { return BigInt(v).toLocaleString("en-US"); } catch (e) { return String(v); } };
 const short = k => k.slice(0, 10) + "…" + k.slice(-8);
-let token = null, nodeState = null, prev = null, accts = [], pending = null, txTimer = null;
+let token = null, nodeState = null, nodeInfo = null, nodeWaiting = null, prev = null, accts = [], pending = null, txTimer = null;
 try { token = sessionStorage.getItem("session"); } catch (e) {}
 
 async function api(path, body) {
@@ -168,7 +168,7 @@ function show(view) { for (const v of ["v-loading", "v-setup", "v-locked", "v-op
 async function tickStatus() {
   const r = await api("/api/status");
   const n = r.ok ? r.data.node : null;
-  nodeState = n ? n.state : null;
+  nodeState = n ? n.state : null; nodeInfo = n; nodeWaiting = r.ok ? r.data.waiting : null;
   const pill = $("pill");
   if (!n) {
     pill.className = "pill warn";
@@ -194,7 +194,11 @@ async function tickStatus() {
 }
 function syncNote() {
   const online = nodeState === "Online";
-  $("m-sync").textContent = online ? "" : "The node isn't online yet. Balances may be behind, and sending opens once it has finished syncing.";
+  const w = nodeWaiting;
+  $("m-sync").textContent = online ? ""
+    : nodeInfo ? "Syncing: the node is at block " + Number(nodeInfo.height).toLocaleString("en-US") + " and still catching up. Balances can be behind until it's online, and sending opens then."
+    : w && w.replay ? "Syncing: the node is re-checking " + Number(w.replay).toLocaleString("en-US") + " saved blocks. Balances appear when it starts answering, and sending opens once it's online."
+    : "Waiting for the node to start answering. Balances appear then, and sending opens once it's online.";
   $("b-review").disabled = !online;
 }
 
@@ -210,7 +214,7 @@ function acctNode(a) {
   const d = document.createElement("div"); d.className = "acct";
   const top = document.createElement("div"); top.className = "top";
   const name = document.createElement("span"); name.className = "name"; name.textContent = a.label;
-  const bal = document.createElement("span"); bal.className = "bal"; bal.textContent = a.balance == null ? "…" : fmt(a.balance);
+  const bal = document.createElement("span"); bal.className = "bal"; if (a.balance == null) { bal.textContent = "waiting for the node"; bal.classList.add("pending"); } else bal.textContent = fmt(a.balance);
   top.append(name, bal);
   const addr = document.createElement("div"); addr.className = "addr";
   const code = document.createElement("code"); code.textContent = short(a.key); code.title = a.key;
@@ -232,7 +236,7 @@ async function loadAccounts() {
   $("accts").replaceChildren(...(main.length ? main.map(acctNode) : [Object.assign(document.createElement("p"), { className: "note", textContent: "The node hasn't reported its wallet keys yet. This can take a minute after it starts." })]));
   $("accts-more").replaceChildren(...rest.map(acctNode)); $("more").hidden = rest.length === 0;
   const sel = $("from"), keep = sel.value; sel.replaceChildren();
-  for (const a of main) { const o = document.createElement("option"); o.value = a.key; o.textContent = a.label + " (" + (a.balance == null ? "…" : fmt(a.balance)) + ")"; sel.append(o); }
+  for (const a of main) { const o = document.createElement("option"); o.value = a.key; o.textContent = a.label + (a.balance == null ? "" : " (" + fmt(a.balance) + ")"); sel.append(o); }
   if (keep) sel.value = keep;
   const one = main.length <= 1; sel.hidden = one; $("l-from").hidden = one;
 }
