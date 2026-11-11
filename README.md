@@ -4,6 +4,8 @@ Run the official [Logos blockchain node](https://github.com/logos-blockchain/log
 
 Unofficial community work. Testnet only.
 
+[![install-test](https://github.com/jefdiesel/logos-node-android/actions/workflows/install-test.yml/badge.svg)](https://github.com/jefdiesel/logos-node-android/actions/workflows/install-test.yml)
+
 ## Status
 
 Tested on one phone: Pixel 8 (8 GB RAM), Android 17, node 0.3.4.
@@ -15,7 +17,7 @@ Tested on one phone: Pixel 8 (8 GB RAM), Android 17, node 0.3.4.
 | Survives the screen sleeping (on the charger) | works |
 | Web page on the phone reads the local node | works (status page on `127.0.0.1:8090`) |
 | Full sync from the first block | **not finished yet**, see Memory below |
-| `install.sh` on a fresh phone | **not tested yet**; it's assembled from the steps that worked by hand |
+| `install.sh` on a clean machine | passes in CI on a clean arm64 Linux machine (installs, starts, syncs blocks). Not yet run on a freshly reset phone |
 
 ## What you need
 
