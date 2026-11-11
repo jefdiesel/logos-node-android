@@ -1,6 +1,6 @@
 # Logos node on an Android phone
 
-The official [Logos blockchain node](https://github.com/logos-blockchain/logos-blockchain), unmodified, running and fully synced on an Android phone (after starting from a copy of a synced node's database, [see below](#what-works-today)). It comes with a local web app that shows the node's status and is a wallet (PIN and fingerprint unlock, receive and send), and that you can add to the home screen.
+The official [Logos blockchain node](https://github.com/logos-blockchain/logos-blockchain), unmodified, running and fully synced on an Android phone (after starting from a copy of a synced node's database, [see below](#what-works-today)). It comes with a local web app that shows the node's status and is a wallet: unlock with a PIN or your fingerprint, receive, send to an address or a name, see your history, back up and restore your keys, and update the app itself. You can add it to the home screen.
 
 Nothing is cross-compiled: what runs on the phone is the unmodified `linux-aarch64` release binary of `logos-blockchain-node` 0.3.4, inside Android's built-in Linux Terminal. A *node* is the program that keeps a copy of the blockchain, checks every new *block* (a batch of transactions) and passes them on to other nodes.
 
@@ -18,9 +18,11 @@ Unofficial community work. Testnet only (the *testnet* is the public test networ
 On the test phone (Pixel 8, 8 GB RAM, Android 17, Linux Terminal):
 
 - The node is fully synced and **Online**, following the tip of the chain: block 82,869 in the screenshot above, the same height as a desktop reference node, with 130+ peers (other nodes it is connected to).
-- It received a real transfer: 100,000 Logos sent from another node's wallet arrived in the phone node's wallet, and the phone's node reported the new balance. The sender paid a fee of 2,298.
+- The wallet received real transfers, and the phone's node reported them. The first was 100,000 Logos sent from another node's wallet; the sender paid a fee of 2,298.
+- The web app updated itself from version 0.7.0 to 0.7.1 and then to 0.7.2 through its update prompt, keeping the PIN, the fingerprint key, the history and the event log.
+- A name lookup ran on the phone and correctly reported a registered name that has no Logos Blockchain address set.
 
-**The catch: it got there by starting from a copy of an already-synced node's database, not by syncing from the first block.** Syncing from the first block ran out of memory on the phone (see [Why not sync from the first block](#why-not-sync-from-the-first-block)). This repo does not publish such a copy; [Starting from a synced node's database](docs/start-from-a-synced-database.md) describes the method, and what you have to trust to use it.
+**The catch: the node got there by starting from a copy of an already-synced node's database, not by syncing from the first block.** Syncing from the first block ran out of memory on the phone (see [Why not sync from the first block](#why-not-sync-from-the-first-block)). This repo does not publish such a copy; [Starting from a synced node's database](docs/start-from-a-synced-database.md) describes the method, and what you have to trust to use it.
 
 ## Status
 
@@ -28,13 +30,17 @@ On the test phone (Pixel 8, 8 GB RAM, Android 17, Linux Terminal):
 |---|---|
 | Node runs, makes its own keys, joins the testnet | works on the test phone |
 | Synced and Online, following the chain tip | works on the test phone, after a start from a synced node's database |
-| Receives a real transfer | works on the test phone |
-| Web app: status, PIN wallet, fingerprint unlock, home-screen icon | works on the test phone |
+| Receives real transfers | works on the test phone |
+| Web app: status, PIN, fingerprint unlock, history, home-screen icon | works on the test phone |
+| Web app updates itself | works on the test phone (0.7.0 → 0.7.1 → 0.7.2) |
+| Name lookup | ran on the test phone (a name without an address) |
+| Send to a name | passes in CI against a stand-in name service. **Not yet verified on the phone** |
+| Wallet backup and restore | pass in CI. **Not yet verified on the phone** |
 | Full sync from the first block on a phone | **not done**: Android stopped the Linux box each time, see [below](#why-not-sync-from-the-first-block) |
 | `install.sh` | passes in CI on a clean arm64 Linux machine. **Not yet run on a freshly reset phone** |
 | `install-termux.sh` | passes in CI inside the Termux Docker image. **Never run on a real phone** |
 | One-tap Android app | no. Setup is by hand, in a terminal |
-| Native Android build of the node | in progress on the `native` branch, no working build yet (see [Native build](#native-build-work-in-progress)) |
+| Native Android build of the node | builds in CI; ran for a few minutes on the test phone from a developer shell, not inside an app. Not published. See [Native build](#native-build-experimental) |
 
 ## Which phones have the Linux Terminal
 
@@ -70,31 +76,43 @@ The Linux Terminal app runs a small Debian Linux system in a virtual machine (VM
    curl -fsSLO https://raw.githubusercontent.com/jefdiesel/logos-node-android/main/install.sh && sh install.sh
    ```
 
-4. Ports: the Terminal app asks whether to open each TCP port of 1024 or above that something in the Linux box listens on. **Allow 8090** (the web app). **Deny 8080** (the node's own API, which should stay inside the Linux box) and anything else. You can change these later under Terminal → gear → Port control.
-5. Open **`http://localhost:8090`** in the phone's browser. Use `localhost`, not `127.0.0.1`: fingerprint unlock only works on `localhost` (the installer's closing message still says `127.0.0.1`; both open the page).
+4. When the Terminal app offers to open port **8090** (the web app), allow it. The Terminal app asks about every TCP port from 1024 up that something in the Linux box listens on; the node's own API is on port 880, below that range, so it isn't offered. If it offers any other port, deny it. You can change this later under Terminal → gear → Port control.
+5. Open **`http://localhost:8090`** in the phone's browser. Use `localhost`, not `127.0.0.1`: fingerprint unlock only works on `localhost`.
 
-What `install.sh` does: downloads node 0.3.4 from the official releases, creates fresh keys, writes a testnet config with the node's API on `127.0.0.1:8080`, adds a 5 GB swap file inside the Linux box, downloads the web app, and installs two services (`logos-node` and `logos-node-app`) so both start whenever the Linux box starts. Mining is off.
+What `install.sh` does: downloads node 0.3.4 from the official releases, creates fresh keys, writes a testnet config with the node's API on `127.0.0.1:880` (the node gets the permission to use a port below 1024), adds a 2 GB swap file inside the Linux box, downloads the web app from this repository's `release` branch, and installs two services (`logos-node` and `logos-node-app`) so both start whenever the Linux box starts. Mining is off.
 
 Then the node starts syncing from the first block, which is where the [memory limit](#why-not-sync-from-the-first-block) comes in. The test phone reached the chain tip by [starting from a synced node's database](docs/start-from-a-synced-database.md) instead.
-
-The test phone's setup differed from what `install.sh` produces in one way: its node API was moved to a port below 1024 (with the permission to bind it), so the Terminal app only asked about 8090. The installers don't do that yet.
 
 Notes:
 
 - The Linux box only runs while the Terminal app is alive. If Android closes the app, open it again and the node starts by itself.
 - After changing a Terminal setting, the Terminal's own "Restart" left the port pass-through broken on the test phone (the page refused connections although Port control showed 8090 on). Fully closing the Terminal app and opening it again fixed it.
-- Every time the node starts, it re-checks the blocks it stored since the last final block before it answers. After the snapshot start that was about 1,000 blocks, about a minute. While the web app waits, it shows the node is running and how many blocks it is re-checking.
+- Every time the node starts, it re-checks the blocks it stored since the last final block before it answers. After the snapshot start that was about 1,000 blocks, about a minute. While it waits, the web app shows how many blocks the node is re-checking.
 
 ## The web app
 
-A small Python program (`app/server.py`, standard library only) plus one page (`app/index.html`), served on port 8090 of the device itself.
+A small Python program (`app/server.py`, standard library only) and one page (`app/index.html`), served on port 8090 of the device itself. Version 0.7.2 at the time of writing.
 
 - **Node status:** block height, state (for example Online), peers and blocks per minute.
-- **Wallet behind a PIN.** You choose a PIN (6 to 12 digits) on first use; it can't be recovered. Five wrong PINs pause unlocking for 5 minutes. The wallet locks again after 10 minutes without use, or when you tap **Lock wallet**.
-- **Fingerprint unlock**, using a passkey (a login key the phone keeps and only releases after your fingerprint or screen lock). It only works when the page is opened as `http://localhost:8090`, not `127.0.0.1`, and you need the PIN to turn it on. The PIN keeps working as a fallback.
-- **Receiving, balances and sending.** It lists the wallet's keys (each one is an address you can copy and give to whoever pays you) with their balances, and sends to a 64-character address with a review step. It won't send until the node is Online, and shows the fee once the transfer is in a block. Amounts are shown with "Logos" after them; they are the node's own whole numbers, not converted.
-- **Add to Home screen**: in Chrome's menu, from `http://localhost:8090`. It gets its own lambda icon and opens without the browser bars.
-- **Security event log:** every PIN setup, unlock (and failed unlock), fingerprint change, lock and sent transfer is written to `wallet-events.log` next to the app (on the Linux Terminal route, `~/node/app/`), readable only by its owner and not over the web. It records which page asked, and never the PIN or keys.
+- **PIN.** You choose a PIN (6 to 12 digits) on first use; it can't be recovered. Five wrong PINs pause unlocking for 5 minutes. The wallet locks again after 10 minutes without use, or when you tap **Lock wallet**.
+- **Fingerprint unlock**, using a passkey (a login key the phone keeps and only releases after your fingerprint or screen lock). It only works when the page is opened as `http://localhost:8090`, and you need the PIN to turn it on. The PIN keeps working as a fallback.
+- **Receive:** each of the wallet's keys is an address with a **Copy address** button, to give to whoever pays you. A popup tells you when coins arrive.
+- **Send** to a 64-character address or to an LNS name, with a review step. It won't send until the node is Online, and shows the fee once the transfer is in a block.
+- **History** of what came in and went out. The node keeps no history, so the app records it itself from the moment it first sees the node online; earlier activity isn't listed.
+- **Settings** (the gear at the top): Updates, Back up wallet, Restore from a backup file, Fingerprint unlock, About.
+- **Add to Home screen** in Chrome's menu, from `http://localhost:8090`. It gets its own lambda icon and opens without the browser bars.
+- **Security event log:** unlocks and failed unlocks, PIN and fingerprint changes, locks, sent transfers, backups, restores and updates are written to `wallet-events.log` next to the app, readable only by its owner and not over the web. It records which page asked, and never the PIN or keys.
+
+Amounts are shown with "Logos" after them; they are the node's own whole numbers, not converted.
+
+### LNS names
+
+An LNS name is a short name like `alice`, registered with Logos Names on the Logos testnet. Its holder can attach a Logos Blockchain address to it, so you can pay the name instead of typing a 64-character address. The app looks the name up on the phone with the names project's reference resolver. The name itself never leaves the phone: only an identifier derived from it is sent to the name service. The wallet trusts the answer, so the review screen shows the address it found; for a large amount, check it with the person you're paying.
+
+### Backup, restore and updates
+
+- **Backup.** There is no seed phrase: the wallet holds several independent keys, so an encrypted backup file takes its place. **Back up wallet** saves the node's key file, locked with a backup password you choose (not your PIN), to Downloads. Until you make one, the wallet shows "No backup yet". The file can be opened without the app, with [`tools/decrypt-backup.py`](tools/decrypt-backup.py). **Restore from a backup file** replaces the node's keys with the ones in a file. Details, risks and the file format: [docs/backup.md](docs/backup.md).
+- **Updates.** The app checks this repository's `release` branch when it starts, every 6 hours, and when you tap **Check for updates**. That branch only moves to a version after every CI job has passed. Updating needs the wallet unlocked and your PIN, or a fresh fingerprint confirmation. The app checks every downloaded file against the release list before using it, keeps the previous version for going back by hand, and never restarts the node. Details: [docs/updating.md](docs/updating.md).
 
 The wallet's keys live in the node, not in the web app: the app reads the public keys from the node's config and asks the node to make transfers. The wallet only answers requests addressed to the device itself (`localhost` or `127.0.0.1`), and it only accepts changes from its own page.
 
@@ -125,7 +143,7 @@ Termux is a terminal app that works on almost any Android phone. It can't run th
    ```
 
 3. Start the node with `~/logos-node`. It starts the web app too and takes a wake lock if `termux-wake-lock` is available. Keep Termux open. Ctrl-C stops the node.
-4. Open `http://localhost:8090` in the phone's browser. There's no Port control step here. Fingerprint unlock has not been tried on this route.
+4. Open `http://localhost:8090` in the phone's browser. There's no Port control step here, and the node's API stays on port 8080. Fingerprint unlock has not been tried on this route. After a restore, the app can't restart the node here: it tells you to press Ctrl-C and run `~/logos-node` again.
 
 What to expect on a real phone. These are known Termux behaviours, not things measured here:
 
@@ -136,45 +154,54 @@ What to expect on a real phone. These are known Termux behaviours, not things me
 
 ## Security
 
-- By default the node's own API (port 8080) answers any website (`access-control-allow-origin: *`), including its wallet endpoints. Both installers start the node with `--http-cors-origin http://127.0.0.1:8090`, so browsers only let the local web app's origin read it. CI checks this.
-- On the Linux Terminal route, **don't allow 8080 in Port control**. On the Termux route there is no Port control: the node's API sits on the phone's own `127.0.0.1`.
-- The web app listens on `127.0.0.1` only. Besides its own page and the wallet calls above, it passes on just two read-only node calls (`/cryptarchia/info`, `/network/info`).
-- The scripts make new keys on the phone. Don't copy keys from another node onto it.
+- By default the node's own API answers any website (`access-control-allow-origin: *`), including its wallet endpoints. Both installers start the node with `--http-cors-origin http://127.0.0.1:8090`, so browsers let no other website read it. CI checks this.
+- On the Linux Terminal route the node's API is on port 880, which the Terminal app never offers to open; don't open it under Port control. On the Termux route there is no Port control: the API sits on the phone's own `127.0.0.1:8080`.
+- The web app listens on `127.0.0.1` only. Besides its own page and the wallet calls, it passes on just two read-only node calls (`/cryptarchia/info`, `/network/info`).
+- The web app itself reaches out to exactly two places, over HTTPS: this repository's `release` branch on GitHub, for updates, and the name service, for one read per name lookup.
+- The scripts make new keys on the phone. Don't copy keys from another node onto it, except your own through **Restore from a backup file**.
 - If you start from someone else's database, you rely on them for the chain history up to that point. See [the trust note](docs/start-from-a-synced-database.md#what-you-are-trusting).
 
 ## Tests
 
-The [`install-test`](.github/workflows/install-test.yml) workflow runs three jobs, all on arm64 Linux machines, none of them a phone:
+None of these run on a phone. The [`install-test`](.github/workflows/install-test.yml) workflow runs on arm64 Linux machines:
 
-- `fresh-install`: runs `install.sh` on a clean machine, checks both services, the page, that the node syncs blocks from the testnet, that the node's API refuses other websites, and the wallet's locks (PIN, session, own page only, pause after wrong PINs, event log).
-- `wallet-send`: a real transfer through the web app on a private one-node chain, checking both balances.
+- `fresh-install`: runs `install.sh` on a clean machine and checks both services, the page, that the node syncs blocks from the testnet, that the node's API is on port 880 and refuses other websites, the wallet's locks, the backup and its independent opener, a restore on the real node, and an in-app update under systemd.
+- `app-update`: the release list matches the app files and both installers, the page's script parses, and an update applies in place.
+- `wallet-send`: a real transfer through the web app on a private one-node chain, checking both balances; then the name resolver against the names project's test vectors, and lookups and a send to a name through the app, against a stand-in name service.
 - `termux`: runs `install-termux.sh` inside the Termux Docker image and checks that the node syncs blocks and the page answers.
+- `promote`: once all four pass on `main`, moves the `release` branch (where phones get updates) to that commit.
 
-The latest run on `main` passed all three. Several runs earlier on 11 November 2026, while the web app was being changed, failed.
+The latest `install-test` run on `main`, for app version 0.7.2, passed all five jobs, and `release` now points at that commit. Several earlier runs on 11 November 2026 failed while these changes were being made, the last of them for the installer change. The latest `native-build` run on `main` passed.
 
-## Native build (work in progress)
+## Native build (experimental)
 
-The `native` branch is working on compiling the node for Android itself (with the Android NDK), so it would not need the Linux box. No run has produced a working build yet: the latest finished run built the circuit libraries for Android, then failed at building the node, and the next attempt was still running at the time of writing (11 November 2026). Check the branch's `native-build` runs for the current state.
+[`native/README.md`](native/README.md) describes a build of the official node source for Android itself (arm64, with the Android NDK), with no changes to the source. It runs in CI ([`native-build`](.github/workflows/native-build.yml)) and passes. The result exists only as a workflow artifact: it is **not published as a download**.
+
+Tried once on the test phone, run from the Android shell over adb (not as an installed app): the binary reported its target as `aarch64-linux-android`, connected to 129 peers and synced from block 0 to 1,568 in about two and a half minutes at 211 MB of memory, then was stopped.
+
+Not verified: running inside an app, proof generation on the phone, a long run, other phones.
 
 ## Not done or not verified
 
 - The installers have not been run on a freshly reset phone.
 - The Termux route has never run on a real phone.
-- A full sync from the first block has not completed on a phone.
+- A full sync from the first block has not completed on a phone. The test phone's node started from a copy of a synced node's database.
+- Backup export, restore and sending to a name have not been done on the phone yet (they pass in CI).
 - Nothing here is a one-tap app; setup is by hand in a terminal.
-- The native Android build is not finished.
+- The native build has only run for a few minutes, from a developer shell, on one phone. It is not an app and not a download.
 - Why memory grows during the first catch-up is our inference, not confirmed in the node's source.
 
 ## Files
 
 - `install.sh`: installer for the Linux Terminal.
 - `install-termux.sh`: installer for Termux.
-- `app/server.py`, `app/index.html`: the web app. Both installers download them.
-- `tests/wallet_test.py`: the wallet checks used in CI.
-- `.github/workflows/install-test.yml`: the tests above.
-- `docs/`: the [snapshot start method](docs/start-from-a-synced-database.md) and the [sync measurements](docs/sync-on-a-phone.md).
+- `app/`: the web app (`server.py`, `index.html`, `release.json`, and `names/`, the vendored names resolver). Both installers download it from the `release` branch.
+- `tools/decrypt-backup.py`: opens a wallet backup without the app. `tools/release.py`: makes and checks app releases.
+- `tests/`: the checks used in CI.
+- `native/`: the native Android build.
+- `docs/`: [backup](docs/backup.md), [updating](docs/updating.md), the [snapshot start method](docs/start-from-a-synced-database.md) and the [sync measurements](docs/sync-on-a-phone.md).
 
 ## Uninstall
 
-- Linux Terminal: `sudo systemctl disable --now logos-node logos-node-app`, then delete `~/node`. Or wipe the whole Linux box with Terminal → gear → Recovery.
+- Linux Terminal: `sudo systemctl disable --now logos-node logos-node-app`, then delete `~/node`. Or wipe the whole Linux box with Terminal → gear → Recovery. Back up the wallet first if it holds anything.
 - Termux: `proot-distro remove ubuntu` and delete `~/logos-node`.
