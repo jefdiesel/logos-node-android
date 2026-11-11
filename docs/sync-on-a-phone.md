@@ -26,7 +26,7 @@ Every restart replays all blocks stored since the last final block before the no
 
 ## Our explanation, not confirmed
 
-During the first catch-up nothing becomes final, so the node releases nothing: memory keeps growing and the replay after each restart keeps getting longer. Once the node is synced, blocks become final and both stay small. **This is an inference from the measurements above. It has not been confirmed in the node's source.**
+During the first catch-up nothing becomes final, so the node releases nothing: memory keeps growing and the replay after each restart keeps getting longer. **This is an inference from the measurements above. It has not been confirmed in the node's source.**
 
 ## Phone settings
 
