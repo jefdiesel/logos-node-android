@@ -31,16 +31,11 @@ jobs:
           done
           journalctl -u logos-node --no-pager -n 60
           exit 1
-      - name: Probe (info only) - CORS on the node API by default and with --http-cors-origin
-        continue-on-error: true
+      - name: Node API accepts the local status page only, not other websites
         run: |
-          echo "default, other site:"; curl -s -i -H "Origin: https://evil.example" http://127.0.0.1:8080/cryptarchia/info | grep -i access-control || echo "(no CORS header)"
-          sudo systemctl stop logos-node
-          cd ~/node/run && (~/node/logos-blockchain-node --http-cors-origin http://127.0.0.1:8090 user_config.yaml > /tmp/n.log 2>&1 &)
-          for i in $(seq 1 30); do curl -fsS -m 3 http://127.0.0.1:8080/cryptarchia/info >/dev/null 2>&1 && break; sleep 2; done
-          echo "with flag, other site:"; curl -s -i -H "Origin: https://evil.example" http://127.0.0.1:8080/cryptarchia/info | grep -i access-control || echo "(no CORS header)"
-          echo "with flag, allowed site:"; curl -s -i -H "Origin: http://127.0.0.1:8090" http://127.0.0.1:8080/cryptarchia/info | grep -i access-control || echo "(no CORS header)"
-          tail -3 /tmp/n.log
+          A=$(curl -s -i -H "Origin: https://evil.example" http://127.0.0.1:8080/cryptarchia/info | grep -i "^access-control-allow-origin" | tr -d "\r")
+          echo "$A"
+          echo "$A" | grep -q "http://127.0.0.1:8090"
   termux:
     # Runs install-termux.sh inside the official Termux Docker image (Termux userland on arm64).
     # Not a real phone: it tests the script and that the node runs under proot.

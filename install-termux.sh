@@ -134,7 +134,8 @@ cat > /root/node/start.sh <<'S'
 # status page on 127.0.0.1:8090, then the node in the foreground
 cd /root/node/run
 python3 /root/node/apiproxy.py >/dev/null 2>&1 &
-exec /root/node/logos-blockchain-node user_config.yaml
+# --http-cors-origin: the node API then only accepts the status page, not other websites
+exec /root/node/logos-blockchain-node --http-cors-origin http://127.0.0.1:8090 user_config.yaml
 S
 chmod +x /root/node/start.sh
 IN

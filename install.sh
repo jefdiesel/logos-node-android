@@ -147,7 +147,8 @@ Nice=10
 WantedBy=multi-user.target
 U
 }
-unit logos-node "Logos blockchain node" "$HOME/node/logos-blockchain-node user_config.yaml"
+# --http-cors-origin: the node API then only accepts the status page below, not other websites
+unit logos-node "Logos blockchain node" "$HOME/node/logos-blockchain-node --http-cors-origin http://127.0.0.1:8090 user_config.yaml"
 unit logos-node-status "Logos node status page on port 8090" "/usr/bin/python3 $HOME/node/apiproxy.py"
 sudo systemctl daemon-reload
 sudo systemctl enable --now logos-node.service logos-node-status.service
