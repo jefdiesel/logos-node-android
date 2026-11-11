@@ -12,7 +12,7 @@
   "names/noble-hashes/argon2.js": "f39753324bdf2f484150731d24b1d71236f26bf10bedd594f7d190fcdfdefdc9",
   "names/noble-hashes/blake2.js": "03f00237bcc0b4d822a80f7c0ac22e42632c48e246c3b6da584e6452186e32f0",
   "names/noble-hashes/utils.js": "037ad49adb78168b6b699598fd33f85f7877456b1d28b4d032e2a1a16807947c",
-  "server.py": "1ffc142b702cf5c86cb7678b30b40335bf1f798ee221e181b4f0d7089b4b186a"
+  "server.py": "f5527d7e41c937aae489ee99825cc16d68c87b52b96604188385e24951ea501e"
  },
- "version": "0.7.1"
+ "version": "0.7.2"
 }

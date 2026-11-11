@@ -11,6 +11,7 @@ A phone updates only when the version goes up, so bump the version for every cha
 import argparse, hashlib, json, os, re, sys
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+RELEASE_URL = "https://raw.githubusercontent.com/jefdiesel/logos-node-android/release/app/"
 VERSION_LINE = re.compile(r'^APP_VERSION = "([0-9.]+)"', re.M)
 
 
@@ -72,7 +73,15 @@ def check(app_dir):
         if have.get("files", {}).get(f) != want["files"].get(f):
             problems.append("%s: %s" % (f, "not in release.json" if f not in have.get("files", {}) else
                                         "listed but missing" if f not in want["files"] else "hash differs"))
+    # devices only ever get app files from the `release` branch, which CI moves after a green run
+    with open(os.path.join(app_dir, "server.py")) as f:
+        if 'os.environ.get("UPDATE_URL", "%s")' % RELEASE_URL not in f.read():
+            problems.append("server.py's default update source isn't %s" % RELEASE_URL)
     for inst in ("install.sh", "install-termux.sh"):
+        with open(os.path.join(ROOT, inst)) as f:
+            text = f.read()
+        if RELEASE_URL + "$f" not in text or "/main/app/" in text:
+            problems.append("%s doesn't download the app from %s" % (inst, RELEASE_URL))
         listed = installer_files(os.path.join(ROOT, inst))
         if listed != sorted(list(want["files"]) + ["release.json"]):
             problems.append("%s installs %s, the release has %s" % (inst, listed, sorted(list(want["files"]) + ["release.json"])))

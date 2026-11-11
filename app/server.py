@@ -8,7 +8,7 @@ Python standard library only. Wallet calls need a PIN that is set on first use.
 import base64, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.7.1"       # set by tools/release.py, which also writes release.json
+APP_VERSION = "0.7.2"       # set by tools/release.py, which also writes release.json
 HOME = os.path.expanduser("~")
 NODE_API = os.environ.get("NODE_API", "http://127.0.0.1:8080")
 NODE_BIN = os.environ.get("NODE_BIN", HOME + "/node/logos-blockchain-node")
@@ -162,12 +162,13 @@ def names_rpc(body):
 
 
 # ---- updates: new app files from the project's GitHub repository ------------------------------
-# release.json lists the version and the SHA-256 of every app file. The app looks at it at most
+# release.json lists the version and the SHA-256 of every app file. It is read from the repository's
+# `release` branch, which CI moves forward only after every test passed on main. The app looks at it at most
 # every UPDATE_EVERY seconds, or when an unlocked wallet asks. Applying needs an unlocked wallet
 # and the PIN, downloads every file, checks each hash, compiles the Python, keeps the old files
 # as <name>.prev, swaps the new ones in and re-executes this process. The node is not touched.
 
-UPDATE_URL = os.environ.get("UPDATE_URL", "https://raw.githubusercontent.com/jefdiesel/logos-node-android/main/app/")
+UPDATE_URL = os.environ.get("UPDATE_URL", "https://raw.githubusercontent.com/jefdiesel/logos-node-android/release/app/")
 UPDATE_EVERY = 6 * 3600
 UPDATE_FILE_CAP, UPDATE_TOTAL_CAP = 4 * 1024 * 1024, 16 * 1024 * 1024
 UPDATE_NAME_RE = re.compile(r"^(?:[a-z0-9][a-z0-9_-]*/){0,2}[A-Za-z0-9_][A-Za-z0-9_.-]*$")
@@ -221,7 +222,7 @@ def update_check():
 
 def update_public():
     return {"current": APP_VERSION, "available": update_state["latest"], "error": update_state["error"],
-            "source": "github.com/jefdiesel/logos-node-android" if UPDATE_URL.startswith("https://raw.githubusercontent.com/jefdiesel/logos-node-android/") else UPDATE_URL}
+            "source": "github.com/jefdiesel/logos-node-android" if UPDATE_URL.startswith("https://raw.githubusercontent.com/jefdiesel/logos-node-android/release/") else UPDATE_URL}
 
 
 def update_loop():
@@ -408,7 +409,11 @@ def event(name, req=None, **detail):
 
 def pin_attempt(req, pin, failed_event):
     """Checks a typed PIN, with the shared pause after MAX_FAILS wrong ones (unlock, backup and update all
-    count). Returns None when the PIN is right, else (http status, reply). `failed_event` names the log line."""
+    count). Returns None when the PIN is right, else (http status, reply). `failed_event` names the log line.
+    Something that isn't a PIN at all (empty, or not 6 to 12 digits) is refused without counting or logging it:
+    it is a typing slip, not a guess."""
+    if not PIN_RE.match(pin):
+        return 400, {"error": "Enter your PIN: 6 to 12 digits.", "malformed": True}
     with lock:
         wait = int(fails["until"] - time.time())
     if wait > 0:
@@ -425,7 +430,11 @@ def pin_attempt(req, pin, failed_event):
     event(failed_event, req, attempt=n)
     if paused:
         event("lockout started", req, seconds=FAIL_PAUSE)
-    return 401, {"error": "Wrong PIN."}
+        return 401, {"error": "Wrong PIN. That was %d wrong in a row, so PINs are paused for %d minutes." % (MAX_FAILS, FAIL_PAUSE // 60),
+                     "tries_left": 0, "wait": FAIL_PAUSE}
+    left = MAX_FAILS - n
+    return 401, {"error": "Wrong PIN. %d %s left before a %d-minute pause." % (left, "try" if left == 1 else "tries", FAIL_PAUSE // 60),
+                 "tries_left": left}
 
 
 def pin_hash(pin, salt):
@@ -1107,16 +1116,25 @@ def passkey_register(body):
     return 200, {"ok": True, "passkeys": len(d["keys"])}
 
 
-def passkey_unlock(body):
+def passkey_assertion_ok(body, purpose):
+    """True if `body` is a fresh fingerprint confirmation made for `purpose` ("get" = unlock, "update"):
+    each purpose has its own one-time challenge, so a confirmation made for one can't be used for another."""
+    if not isinstance(body, dict):
+        return False
     try:
         cid, client, auth, sig = (b64u_dec(body.get(k, "")) for k in ("id", "clientDataJSON", "authenticatorData", "signature"))
     except Exception:
-        return 400, {"error": "bad request"}
+        return False
     key = next((k for k in passkeys_load()["keys"] if k["id"] == b64u(cid)), None)
-    if not key or not webauthn_ok(client, auth, "webauthn.get", challenge_take("get")):
-        return 401, {"error": "Fingerprint unlock failed. Use your PIN."}
+    challenge = challenge_take(purpose)
+    if not key or not webauthn_ok(client, auth, "webauthn.get", challenge):
+        return False
     digest = hashlib.sha256(auth + hashlib.sha256(client).digest()).digest()
-    if not p256_verify(int(key["x"], 16), int(key["y"], 16), digest, sig):
+    return p256_verify(int(key["x"], 16), int(key["y"], 16), digest, sig)
+
+
+def passkey_unlock(body):
+    if not passkey_assertion_ok(body, "get"):
         return 401, {"error": "Fingerprint unlock failed. Use your PIN."}
     return 200, {"session": session_new()}
 
@@ -1298,13 +1316,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not self.authed():
                 return self.reply(401, {"error": "locked"})
             return self.reply(200, update_check())
-        if path == "/api/update/apply":
+        if path == "/api/update/passkey/challenge":
             if not self.authed():
                 return self.reply(401, {"error": "locked"})
-            refused = pin_attempt(self, str(body.get("pin", "")), "update refused, wrong PIN")
-            if refused:
-                code, obj = refused
-                return self.reply(403 if code == 401 else code, obj)
+            d = passkeys_load()
+            if not d["keys"]:
+                return self.reply(404, {"error": "Fingerprint unlock isn't turned on."})
+            return self.reply(200, {"challenge": b64u(challenge_new("update")), "rpId": RP_ID, "ids": [k["id"] for k in d["keys"]]})
+        if path == "/api/update/apply":
+            # confirmed by a fresh fingerprint confirmation made for this update, or by the PIN
+            if not self.authed():
+                return self.reply(401, {"error": "locked"})
+            if body.get("assertion") is not None:
+                if not passkey_assertion_ok(body.get("assertion"), "update"):
+                    event("update refused, fingerprint not confirmed", self)
+                    return self.reply(403, {"error": "The fingerprint confirmation didn't check out. Try again, or use your PIN."})
+            else:
+                refused = pin_attempt(self, str(body.get("pin", "")), "update refused, wrong PIN")
+                if refused:
+                    code, obj = refused
+                    return self.reply(403 if code == 401 else code, obj)
             code, obj = update_apply()
             if code != 200:
                 event("update refused", self, reason=obj.get("error", ""))
