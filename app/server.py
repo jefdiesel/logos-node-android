@@ -4,7 +4,7 @@
 It listens on 127.0.0.1 only and talks to the node's own API on 127.0.0.1:8080.
 Python standard library only. Wallet calls need a PIN that is set on first use.
 """
-import base64, hashlib, hmac, http.server, json, os, re, secrets, struct, subprocess, threading, time
+import base64, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
 HOME = os.path.expanduser("~")
@@ -12,6 +12,9 @@ NODE_API = os.environ.get("NODE_API", "http://127.0.0.1:8080")
 NODE_BIN = os.environ.get("NODE_BIN", HOME + "/node/logos-blockchain-node")
 NODE_CFG = os.environ.get("NODE_CFG", HOME + "/node/run/user_config.yaml")
 NODE_DEPLOYMENT = os.environ.get("NODE_DEPLOYMENT", "")
+# How to restart the node after a restore, e.g. "sudo -n systemctl restart logos-node" (set by install.sh).
+# Empty where the app can't restart it (Termux): the page then says how to do it by hand.
+NODE_RESTART_CMD = os.environ.get("NODE_RESTART_CMD", "")
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("APP_DATA", APP_DIR)
 PORT = int(os.environ.get("APP_PORT", "8090"))
@@ -224,7 +227,8 @@ def parse_keystore(text):
 
 def wallet_keys():
     with lock:
-        if keys_cache["keys"] or time.time() - keys_cache["at"] < 20:
+        # re-read the node's settings every minute, so keys changed outside the app show up
+        if time.time() - keys_cache["at"] < (60 if keys_cache["keys"] else 20):
             return keys_cache["keys"]
         keys_cache["at"] = time.time()
     try:
@@ -660,6 +664,98 @@ def last_backup():
         return None
 
 
+def node_cmd(cfg, flag):
+    cmd = [NODE_BIN] + (["--deployment", NODE_DEPLOYMENT] if NODE_DEPLOYMENT else []) + [flag, cfg]
+    return subprocess.run(cmd, cwd=os.path.dirname(cfg), capture_output=True, text=True, timeout=60)
+
+
+def restore_backup(doc, password):
+    """(http status, reply, event detail). Puts the key file from a backup in place of the node's own,
+    only after the node itself has checked it, and keeps the old one beside it."""
+    if not isinstance(doc, dict) or doc.get("format") != BACKUP_FORMAT or doc.get("version") != BACKUP_VERSION:
+        return 400, {"error": "This isn't a Logos node wallet backup, or it's a version this app can't read."}, "format"
+    try:
+        kdf, cipher = doc["kdf"], doc["cipher"]
+        if kdf.get("name") != "scrypt" or cipher.get("name") != "chacha20-poly1305":
+            raise ValueError
+        params = {"n": int(kdf["n"]), "r": int(kdf["r"]), "p": int(kdf["p"]), "dklen": int(kdf["dklen"])}
+        if not 2 <= params["n"] <= 2 ** 16 or not 1 <= params["r"] <= 8 or not 1 <= params["p"] <= 4 or params["dklen"] != 32:
+            raise ValueError
+        salt, nonce, sealed = (base64.b64decode(v, validate=True) for v in (kdf["salt"], cipher["nonce"], doc["ciphertext"]))
+        header = sorted(str(a["key"]).lower() for a in doc.get("addresses", []))
+    except Exception:
+        return 400, {"error": "This backup file is damaged or isn't in the expected format."}, "format"
+    try:
+        plain = aead_decrypt(backup_key(password, salt, params), nonce, sealed, BACKUP_AAD) if len(nonce) == 12 else None
+    except Exception:
+        plain = None
+    if plain is None:
+        return 400, {"error": "Wrong backup password, or the file has been changed or damaged. Nothing was changed."}, "password"
+    try:
+        new_text = json.loads(plain)["keystore.yaml"]
+        new_bytes = new_text.encode("utf-8")
+    except Exception:
+        return 400, {"error": "This backup file is damaged. Nothing was changed."}, "format"
+    live, _ = keystore_location()
+    if not os.path.isfile(live):
+        return 409, {"error": "This node keeps its keys in its config file, so a backup can't be restored into it here."}, "no keystore"
+    try:
+        rel = parse_keystore(show_config()) or "keystore.yaml"
+    except Exception:
+        rel = "keystore.yaml"
+    if os.path.isabs(rel):
+        return 409, {"error": "This node's settings name its key file by a full path, so restore it by hand (see docs/backup.md)."}, "path"
+    # let the node itself read the recovered key file, with a copy of its settings, before touching anything
+    tmp = tempfile.mkdtemp(prefix=".restore-", dir=os.path.dirname(live))
+    try:
+        cfg = os.path.join(tmp, os.path.basename(NODE_CFG))
+        shutil.copy2(NODE_CFG, cfg)
+        ks = os.path.join(tmp, rel)
+        os.makedirs(os.path.dirname(ks), exist_ok=True)
+        fd = os.open(ks, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(new_bytes)
+        ok = node_cmd(cfg, "--check-config").returncode == 0
+        reported = sorted(k["key"] for k in parse_keys(node_cmd(cfg, "--show-config").stdout)) if ok else []
+    except Exception:
+        ok, reported = False, []
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if not ok or not reported:
+        return 409, {"error": "The node doesn't accept the key file in this backup. Nothing was changed."}, "node check"
+    if header and reported != header:
+        return 409, {"error": "The keys in this backup don't match the addresses written on it. Nothing was changed."}, "addresses"
+    try:
+        current = sorted(k["key"] for k in parse_keys(show_config()))
+    except Exception:
+        current = []
+    if reported == current:
+        return 200, {"unchanged": True, "message": "These are the keys this wallet already uses. Nothing was changed."}, "same keys"
+    # keep the old key file beside the new one, then swap the new one in atomically
+    if os.path.exists(live):
+        old = live + ".replaced-" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        fd = os.open(old, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as f, open(live, "rb") as src:
+            f.write(src.read())
+    fd = os.open(live + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(new_bytes)
+    os.replace(live + ".tmp", live)
+    with lock:
+        keys_cache["keys"], keys_cache["at"] = [], 0.0       # the wallet's key list comes from the new file now
+    restarted = False
+    if NODE_RESTART_CMD:
+        try:
+            restarted = subprocess.run(shlex.split(NODE_RESTART_CMD), capture_output=True, timeout=90).returncode == 0
+        except Exception:
+            restarted = False
+    reply = {"ok": True, "restarted": restarted, "addresses": len(reported), "replaced": len(current)}
+    if not restarted:
+        reply["manual"] = ("The keys are in place. Restart the node to use them: in Termux, press Ctrl-C where the node runs, "
+                           "then start it again with ~/logos-node. In the Linux Terminal app: sudo systemctl restart logos-node.")
+    return 200, reply, "restored"
+
+
 def backup_export(password):
     """(http status, reply, keystore source). The reply holds only the encrypted backup or an error without key material."""
     path, source = keystore_location()
@@ -981,7 +1077,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.reply(415, {"error": "send JSON"})
         try:
             n = int(self.headers.get("Content-Length", "0"))
-            body = json.loads(self.rfile.read(n) or b"{}") if 0 <= n <= 16384 else None
+            body = json.loads(self.rfile.read(n) or b"{}") if 0 <= n <= 65536 else None
         except Exception:
             body = None
         if not isinstance(body, dict):
@@ -1003,6 +1099,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply(*refused)
             event("unlock by PIN ok", self)
             return self.reply(200, {"session": session_new()})
+        if path == "/api/wallet/restore":
+            # replaces the node's keys: needs an unlocked page AND the PIN typed again
+            if not self.authed():
+                return self.reply(401, {"error": "locked"})
+            refused = pin_attempt(self, str(body.get("pin", "")), "restore refused, wrong PIN")
+            if refused:
+                code, obj = refused
+                return self.reply(403 if code == 401 else code, obj)
+            code, obj, why = restore_backup(body.get("backup"), str(body.get("password", "")))
+            if obj.get("ok"):
+                event("wallet restored", self, old_keys=obj["replaced"], new_keys=obj["addresses"],
+                      node_restarted="yes" if obj["restarted"] else "no")
+            else:
+                event("restore refused", self, reason=why)
+            return self.reply(code, obj)
         if path == "/api/wallet/backup":
             # needs an unlocked page AND the PIN typed again: a fingerprint session alone can't export the keys
             if not self.authed():

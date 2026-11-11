@@ -64,6 +64,8 @@ hr{border:0;border-top:1px solid var(--line);margin:18px 0 6px}
 .hrow .amt{font-weight:600;font-variant-numeric:tabular-nums;text-align:right}.hrow .amt.in{color:var(--ok)}
 .hrow .sub{font-size:13px;color:var(--dim);margin-top:3px;display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px}
 .hrow .sub button{min-height:28px;padding:2px 8px;font-size:12px;font-weight:500}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}.cols h3{font-size:13px;color:var(--dim);margin:0 0 6px;font-weight:600}
+.cols div p{margin:0 0 6px;font-size:13px;overflow-wrap:anywhere}.cols .same{color:var(--dim)}.cols .diff{color:var(--warn);font-weight:600}
 .pop{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;padding:16px;z-index:10}
 .pop-card{background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:14px;padding:20px 16px;width:100%;max-width:420px}
 .pop-card h2{color:var(--ink);font-size:20px;text-transform:none;letter-spacing:-.01em;margin:0 0 6px}
@@ -151,6 +153,23 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
             <li>If you lose the password, the backup can't be opened. It can't be recovered.</li>
           </ul>
         </div>
+      </div>
+      <button type="button" id="b-rs-open" style="width:100%;margin-top:10px" aria-expanded="false" aria-controls="rs">Restore from a backup file</button>
+      <div id="rs" hidden>
+        <p class="msg warn">Restoring replaces this wallet's keys with the keys in a backup file. Coins on the keys it replaces can then only be reached through a backup of those keys.</p>
+        <label for="rs-file">Backup file (logos-node-wallet-backup-….json)</label>
+        <input id="rs-file" type="file" accept=".json,application/json">
+        <div id="rs-step2" hidden>
+          <div class="cols" id="rs-compare"></div>
+          <p class="msg warn" id="rs-warn"></p>
+          <label for="rs-pw">Backup password</label>
+          <input id="rs-pw" type="password" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+          <label for="rs-pin">Your PIN</label>
+          <input id="rs-pin" class="pin" type="text" inputmode="numeric" maxlength="12" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+          <label style="display:flex;gap:10px;align-items:flex-start;color:var(--ink);font-size:14px;margin-top:14px"><input type="checkbox" id="rs-ok" style="width:auto;min-height:0;margin-top:3px"> I understand this replaces this wallet's keys with the ones in the file.</label>
+          <button type="button" class="primary" id="b-rs" disabled>Replace the keys</button>
+        </div>
+        <p class="msg bad" id="m-rs" role="alert"></p>
       </div>
       <hr>
       <form id="f-send" autocomplete="off">
@@ -360,7 +379,7 @@ async function loadAccounts() {
   if (r.status === 401) { setToken(null); return show("v-locked"); }
   if (!r.ok) return;
   accts = r.data.accounts || [];
-  const lb = r.data.last_backup, st = $("bk-state");
+  const lb = r.data.last_backup, st = $("bk-state"); lastBackup = lb;
   st.className = lb ? "msg" : "msg warn";
   st.textContent = lb ? "Last backup: " + when(lb) : "No backup yet. If this device is wiped, the coins are lost.";
   const main = accts.filter((a, i) => i === 0 || (a.balance && a.balance !== "0"));
@@ -393,12 +412,57 @@ $("b-fp-set").addEventListener("click", fpOn);
 $("b-fp-off").addEventListener("click", () => fpAskOff(true));
 $("b-fp-no").addEventListener("click", () => fpAskOff(false));
 $("b-fp-yes").addEventListener("click", fpOff);
-$("b-lock").addEventListener("click", async () => { await api("/api/wallet/lock", {}); setToken(null); resetSend(); resetBackup(); show("v-locked"); });
+$("b-lock").addEventListener("click", async () => { await api("/api/wallet/lock", {}); setToken(null); resetSend(); resetBackup(); resetRestore(); show("v-locked"); });
 
 // ---- backup: the server encrypts the node's key file; this page only ever sees the encrypted file ----
 $("b-bk-open").addEventListener("click", () => {
   const open = $("bk").hidden; $("bk").hidden = !open; $("b-bk-open").setAttribute("aria-expanded", String(open));
   $("b-bk-open").textContent = open ? "Close backup" : "Back up wallet"; if (open) $("bk-pw1").focus();
+});
+// ---- restore: the server decrypts the file and has the node check it before replacing the keys ----
+let rsDoc = null, lastBackup = null;
+function resetRestore() {
+  rsDoc = null; $("rs-file").value = ""; $("rs-pw").value = ""; $("rs-pin").value = ""; $("rs-ok").checked = false;
+  $("rs-step2").hidden = true; $("b-rs").disabled = true; $("m-rs").textContent = "";
+}
+$("b-rs-open").addEventListener("click", () => {
+  const open = $("rs").hidden; $("rs").hidden = !open; $("b-rs-open").setAttribute("aria-expanded", String(open));
+  $("b-rs-open").textContent = open ? "Close restore" : "Restore from a backup file"; if (!open) resetRestore();
+});
+function addrList(title, list, other) {
+  const d = document.createElement("div"); d.append(Object.assign(document.createElement("h3"), { textContent: title }));
+  for (const a of list) { const p = document.createElement("p"); p.className = other.has(a.key) ? "same" : "diff"; p.textContent = (a.label || "Key") + ": " + short(a.key); p.title = a.key; d.append(p); }
+  if (!list.length) d.append(Object.assign(document.createElement("p"), { textContent: "none listed" }));
+  return d;
+}
+$("rs-file").addEventListener("change", async () => {
+  const m = $("m-rs"); m.className = "msg bad"; m.textContent = ""; $("rs-step2").hidden = true; rsDoc = null;
+  const f = $("rs-file").files[0]; if (!f) return;
+  if (f.size > 60000) return void (m.textContent = "That file is too big to be a wallet backup.");
+  let doc; try { doc = JSON.parse(await f.text()); } catch (e) { return void (m.textContent = "That file isn't a wallet backup (it isn't JSON)."); }
+  if (!doc || doc.format !== "logos-node-wallet-backup" || doc.version !== 1) return void (m.textContent = "That file isn't a Logos node wallet backup, or it's a version this app can't read.");
+  rsDoc = doc;
+  const file = (doc.addresses || []).map(a => ({ label: a.label, key: String(a.key).toLowerCase() }));
+  const now = accts.map(a => ({ label: a.label, key: a.key }));
+  const fileSet = new Set(file.map(a => a.key)), nowSet = new Set(now.map(a => a.key));
+  $("rs-compare").replaceChildren(addrList("In the backup file", file, nowSet), addrList("In this wallet now", now, fileSet));
+  const same = file.length && file.length === now.length && file.every(a => nowSet.has(a.key));
+  $("rs-warn").textContent = same ? "This backup holds the keys this wallet already uses. Restoring it changes nothing."
+    : !lastBackup ? "This wallet's current keys have never been backed up. If you restore now, they can't be recovered, and any coins on them are lost. Back them up first with Back up wallet."
+    : "This wallet's current keys were last backed up " + when(lastBackup) + ". Keep that file: it is the only way back to them.";
+  $("rs-step2").hidden = false;
+});
+$("rs-ok").addEventListener("change", () => { $("b-rs").disabled = !$("rs-ok").checked || !rsDoc; });
+$("b-rs").addEventListener("click", async () => {
+  const m = $("m-rs"), b = $("b-rs"); if (!rsDoc || !$("rs-ok").checked) return;
+  b.disabled = true; m.className = "msg"; m.textContent = "Opening the backup and having the node check it…";
+  const r = await api("/api/wallet/restore", { backup: rsDoc, password: $("rs-pw").value, pin: $("rs-pin").value });
+  $("rs-pin").value = ""; b.disabled = false;
+  if (r.status === 401) { setToken(null); resetRestore(); return show("v-locked"); }
+  if (!r.ok) return void (m.className = "msg bad", m.textContent = r.data.error || "The restore didn't work. Nothing was changed.");
+  const msg = r.data.unchanged ? r.data.message
+    : "Restored: the wallet now has the " + r.data.addresses + " keys from the backup. " + (r.data.restarted ? "The node is restarting with them." : r.data.manual);
+  resetRestore(); m.className = "msg ok"; m.textContent = msg; loadAccounts(); loadHistory();
 });
 function resetBackup() { for (const id of ["bk-pw1", "bk-pw2", "bk-pin"]) $(id).value = ""; $("m-bk").textContent = ""; }
 $("f-bk").addEventListener("submit", async e => {

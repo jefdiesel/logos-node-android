@@ -58,7 +58,7 @@ for f in $APP_FILES; do
   if [ -n "$APP_SRC" ]; then cp "$APP_SRC/$f" ~/node/app/$f; else curl -fsSL -o ~/node/app/$f "https://raw.githubusercontent.com/jefdiesel/logos-node-android/main/app/$f"; fi
 done
 
-unit() { # name, description, command
+unit() { # name, description, command, environment (optional)
   sudo tee /etc/systemd/system/$1.service >/dev/null <<U
 [Unit]
 Description=$2
@@ -66,6 +66,7 @@ After=network-online.target
 [Service]
 User=$USER
 WorkingDirectory=$HOME/node/run
+${4:+Environment=$4}
 ExecStart=$3
 Restart=always
 RestartSec=10
@@ -76,7 +77,9 @@ U
 }
 # --http-cors-origin: the node API then only accepts the status page below, not other websites
 unit logos-node "Logos blockchain node" "$HOME/node/logos-blockchain-node --http-cors-origin http://127.0.0.1:8090 user_config.yaml"
-unit logos-node-app "Logos node web app (status and wallet) on 127.0.0.1:8090" "/usr/bin/python3 $HOME/node/app/server.py"
+# NODE_RESTART_CMD: after restoring a wallet backup the app restarts the node with this (passwordless sudo, as in this install)
+unit logos-node-app "Logos node web app (status and wallet) on 127.0.0.1:8090" "/usr/bin/python3 $HOME/node/app/server.py" \
+  '"NODE_RESTART_CMD=sudo -n systemctl restart logos-node"'
 sudo systemctl daemon-reload
 # an older version of this script called the web app logos-node-status
 sudo systemctl disable --now logos-node-status.service 2>/dev/null || true

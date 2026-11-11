@@ -337,6 +337,93 @@ def history_checks(s, h, frm, to, amount, fee, started_id):
     check("and not reported again", code == 200 and got["id"] not in [e["id"] for e in r2.get("receipts", [])], (code, r2))
 
 
+def keys_now(s, other_than=None, tries=40):
+    """The wallet's key list, waiting (the app re-reads the node's settings each minute) until it differs from `other_than`."""
+    for _ in range(tries):
+        code, d = call("/api/wallet/accounts", session=s)
+        keys = sorted(a["key"] for a in d.get("accounts", []))
+        if code == 200 and keys and keys != other_than:
+            return keys
+        time.sleep(3)
+    check("the wallet lists its keys", False, d)
+
+
+def unlock(pin):
+    code, d = call("/api/wallet/unlock", {"pin": pin})
+    check("the PIN unlocks the wallet", code == 200 and len(d.get("session", "")) == 64, (code, d))
+    return d["session"]
+
+
+def restore_before():
+    """Restore, part 1 (fresh-install, real node): back up the original keys and check the refusals."""
+    pin, keystore, state = os.environ["APP_PIN"], os.environ["KEYSTORE"], os.environ["RESTORE_STATE"]
+    s = unlock(pin)
+    k0 = keys_now(s)
+    code, d = call("/api/wallet/backup", {"password": BACKUP_PASSWORD, "pin": pin}, session=s)
+    check("a backup of the original keys is exported", code == 200 and "backup" in d, (code, d))
+    b0 = d["backup"]
+    with open(keystore, "rb") as f:
+        original = f.read()
+    with open(state, "w") as f:
+        json.dump({"keys": k0, "backup": b0, "keystore": base64.b64encode(original).decode()}, f)
+    code, d = call("/api/wallet/restore", {"backup": b0, "password": BACKUP_PASSWORD, "pin": pin})
+    check("a restore without an unlocked wallet is refused", code == 401, (code, d))
+    code, d = call("/api/wallet/restore", {"backup": b0, "password": BACKUP_PASSWORD, "pin": "000000"}, session=s)
+    check("a restore with a wrong PIN is refused", code == 403, (code, d))
+    code, d = call("/api/wallet/restore", {"backup": b0, "password": BACKUP_PASSWORD, "pin": pin}, session=s)
+    check("restoring the keys already in use changes nothing, and says so", code == 200 and d.get("unchanged") is True, (code, d))
+    with open(keystore, "rb") as f:
+        check("the key file is untouched", f.read() == original)
+    check("no copy of a replaced key file was made", not [f for f in os.listdir(os.path.dirname(keystore)) if ".replaced-" in f])
+
+
+def restore_after():
+    """Restore, part 2: the node now has fresh keys (as on a new device); restore the original ones."""
+    pin, keystore = os.environ["APP_PIN"], os.environ["KEYSTORE"]
+    with open(os.environ["RESTORE_STATE"]) as f:
+        st = json.load(f)
+    k0, b0, original = st["keys"], st["backup"], base64.b64decode(st["keystore"])
+    with open(keystore, "rb") as f:
+        fresh = f.read()
+    check("the node has a different key file now", fresh != original)
+    s = unlock(pin)
+    k1 = keys_now(s, other_than=k0)
+    check("the wallet shows the new keys", k1 != k0 and not set(k1) & set(k0), (k0, k1))
+    code, d = call("/api/wallet/restore", {"backup": b0, "password": BACKUP_PASSWORD + "x", "pin": pin}, session=s)
+    check("a wrong backup password is refused", code == 400 and "password" in d.get("error", ""), (code, d))
+    sealed = bytearray(base64.b64decode(b0["ciphertext"])); sealed[5] ^= 1
+    code, d = call("/api/wallet/restore", {"backup": dict(b0, ciphertext=base64.b64encode(bytes(sealed)).decode()), "password": BACKUP_PASSWORD, "pin": pin}, session=s)
+    check("a changed backup file is refused", code == 400, (code, d))
+    code, d = call("/api/wallet/restore", {"backup": dict(b0, version=9), "password": BACKUP_PASSWORD, "pin": pin}, session=s)
+    check("an unknown backup version is refused", code == 400, (code, d))
+    with open(keystore, "rb") as f:
+        check("after the refusals the key file is untouched", f.read() == fresh)
+    code, d = call("/api/wallet/restore", {"backup": b0, "password": BACKUP_PASSWORD, "pin": pin}, session=s)
+    check("the backup is restored and the node restarted", code == 200 and d.get("ok") and d.get("restarted") is True, (code, d))
+    with open(keystore, "rb") as f:
+        check("the live key file is byte for byte the original", f.read() == original)
+    copies = [os.path.join(os.path.dirname(keystore), f) for f in os.listdir(os.path.dirname(keystore)) if f.startswith(os.path.basename(keystore) + ".replaced-")]
+    check("the replaced key file was kept beside it", len(copies) == 1, copies)
+    with open(copies[0], "rb") as f:
+        check("the kept copy is the key file it replaced, readable by its owner only",
+              f.read() == fresh and os.stat(copies[0]).st_mode & 0o077 == 0, oct(os.stat(copies[0]).st_mode))
+    check("the wallet shows the original keys again", keys_now(s, other_than=k1) == k0)
+    for _ in range(60):
+        code, st = call("/api/status")
+        if st.get("node"):
+            break
+        time.sleep(3)
+    check("the node answers again after its restart", bool(st.get("node")), st)
+    unlock(pin)
+    path = os.environ.get("EVENTS_LOG")
+    if path:
+        with open(path) as f:
+            text = f.read()
+        check("the event log records the restore and still has the earlier events",
+              " wallet restored " in text and " pin set " in text and " restore refused, wrong PIN " in text)
+        check("the event log holds no key material", not any(x in text for x in secret_values(keystore)))
+
+
 if __name__ == "__main__":
-    {"guard": guard, "send": send}[sys.argv[1]]()
+    {"guard": guard, "send": send, "restore-before": restore_before, "restore-after": restore_after}[sys.argv[1]]()
     print("all checks passed")

@@ -6,6 +6,9 @@ Your node's wallet keys are kept in one file on the phone, `keystore.yaml`, next
 settings (`~/node/run/keystore.yaml`, or `/root/node/run/keystore.yaml` inside the Termux Ubuntu).
 Whoever has that file controls the coins on those keys.
 
+There is no seed phrase in this wallet: the key file holds several independent keys, not keys derived
+from one seed, so the backup file is what takes a seed phrase's place.
+
 **Back up wallet** in the web app saves an encrypted copy of that file, named
 `logos-node-wallet-backup-YYYYMMDD.json`. It goes to the phone's Downloads folder.
 
@@ -16,13 +19,30 @@ Whoever has that file controls the coins on those keys.
   on the phone is lost with the phone.
 - The file also lists the wallet's public addresses, unencrypted, so you can see which wallet a file belongs to.
 
-The app only makes backups. Restoring is done by hand, as described below, so you never depend on this
-app to get your keys back.
-
-## Restoring
+## Restoring in the app
 
 Restoring **replaces the node's keys** with the ones in the backup. Any coins on the keys the node has now
 are only reachable through those keys. If they hold anything, back them up first.
+
+In the unlocked wallet, tap **Restore from a backup file** and choose the file. The app shows the
+addresses written on the file next to the wallet's current ones, and says plainly if the current keys
+have never been backed up. Enter the backup password and your PIN, tick the box, and tap **Replace the keys**.
+
+Before it changes anything, the app opens the file and has the node itself check the key file in it.
+It only goes ahead if the node accepts it and reports the same addresses as the file. It then keeps the
+old key file next to the new one as `keystore.yaml.replaced-<date and time>` (only you can read it),
+puts the new one in place and restarts the node:
+
+- Android Linux Terminal: the app restarts the node itself.
+- Termux: the app can't restart the node there. It tells you to press Ctrl-C where the node runs and
+  start it again with `~/logos-node`.
+
+Your PIN, fingerprint unlock and the app's event log stay as they are. The history starts tracking the
+restored keys from that moment. If the file holds the keys already in use, nothing changes.
+
+## Restoring by hand
+
+You don't need the app for this, so you never depend on it to get your keys back.
 
 You need Python 3 and the `cryptography` package (`pip install cryptography`) on the machine where you
 open the file. On the phone's Linux Terminal that is `sudo apt install python3-cryptography`.
