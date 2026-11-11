@@ -18,14 +18,8 @@ jobs:
       - name: Both services are running
         run: systemctl is-active logos-node logos-node-app
       - name: The web app page answers
-        run: curl -fsS http://127.0.0.1:8090/ | grep -q "<title>Logos node</title>"
-      - name: DIAG (temporary) raw answers and wallet keys
-        continue-on-error: true
-        run: |
-          sleep 30
-          echo "--- app 8090"; curl -sS -i -m 5 http://127.0.0.1:8090/cryptarchia/info | head -c 600; echo
-          echo "--- node 8080"; curl -sS -i -m 5 http://127.0.0.1:8080/cryptarchia/info | head -c 600; echo
-          cd ~/node/run && ~/node/logos-blockchain-node --show-config user_config.yaml | grep -nE '^[a-z_]+:|funding_pk|known_keys' -A3 | head -80
+        # the app was (re)started a moment ago: give it a few seconds to open its port
+        run: curl -fsS --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:8090/ | grep -q "<title>Logos node</title>"
       - name: Node joins the testnet and syncs blocks
         run: |
           for i in $(seq 1 36); do
@@ -64,14 +58,6 @@ jobs:
           sleep 5
       - name: Send coins through the web app and check both balances
         run: python3 tests/wallet_test.py send
-      - name: DIAG (temporary) node answers for balances and a transfer
-        if: always()
-        run: |
-          for k in 39e16b432574571a6bcd8ee36e370589641bd9f35367f6f97a972453c46c3225 cce9796339efd968df9cd463bc2248e4b29c86409496e8b2599da8c4c1074d22 e3635f207984ae779cf76b5f20714b514373f61ff96260879fe0a6d71f2dce07; do
-            echo "--- balance $k"; curl -sS -i -m 10 http://127.0.0.1:8080/wallet/$k/balance | head -c 500; echo
-          done
-          echo "--- transfer"
-          curl -sS -i -m 60 -H "Content-Type: application/json" -d '{"tip":null,"change_public_key":"e3635f207984ae779cf76b5f20714b514373f61ff96260879fe0a6d71f2dce07","funding_public_keys":["e3635f207984ae779cf76b5f20714b514373f61ff96260879fe0a6d71f2dce07"],"recipient_public_key":"cce9796339efd968df9cd463bc2248e4b29c86409496e8b2599da8c4c1074d22","amount":5}' http://127.0.0.1:8080/wallet/transactions/transfer-funds | head -c 500; echo
       - name: Logs, if something failed
         if: failure()
         run: tail -40 chain/node.log; cat chain/app.log
@@ -88,10 +74,6 @@ jobs:
             set -e
             sh /repo/install-termux.sh
             (~/logos-node > ~/node.log 2>&1 &)
-            sleep 60
-            echo "--- DIAG app 8090"; curl -sS -i -m 5 http://127.0.0.1:8090/cryptarchia/info | head -c 600 || true; echo
-            echo "--- DIAG node 8080"; curl -sS -i -m 5 http://127.0.0.1:8080/cryptarchia/info | head -c 600 || true; echo
-            echo "--- DIAG app page"; curl -sS -m 5 http://127.0.0.1:8090/ | grep -o "<title>.*</title>" || true
             for i in $(seq 1 36); do
               H=$(curl -fsS -m 5 http://127.0.0.1:8090/cryptarchia/info | grep -oE "\"height\":[0-9]+" | grep -oE "[0-9]+" || true)
               echo "height: ${H:-no answer yet}"

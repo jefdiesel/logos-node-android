@@ -195,14 +195,24 @@ def session_ok(token):
 
 # ---- wallet actions -------------------------------------------------------------------------
 
+def balance_of(key):
+    """(balance, number of notes) for one of this node's wallet keys, or None when the node gives no usable answer.
+    The node answers 404 ("could not be found in the wallet") for a key of its own wallet that has never
+    received a note, so that is a balance of 0. No answer, or any other error, stays None."""
+    code, reply = node("/wallet/%s/balance" % key)
+    if code == 200 and isinstance(reply, dict):
+        return as_int(reply.get("balance")), len(reply.get("notes") or {})
+    if code == 404 and isinstance(reply, dict) and reply.get("code") == 404:
+        return 0, 0
+    return None
+
+
 def accounts():
     out = []
     for k in wallet_keys():
-        code, reply = node("/wallet/%s/balance" % k["key"])
-        ok = code == 200 and isinstance(reply, dict)
+        b = balance_of(k["key"])
         out.append({"key": k["key"], "label": k["label"],
-                    "balance": str(as_int(reply.get("balance"))) if ok else None,
-                    "notes": len(reply.get("notes") or {}) if ok else None})
+                    "balance": str(b[0]) if b else None, "notes": b[1] if b else None})
     return out
 
 
@@ -223,16 +233,17 @@ def send(body):
     st = node_status()
     if not st or st.get("state") != "Online":
         return 409, {"error": "The node is not online yet, so it can't send. Wait until it has finished syncing."}
-    code, bal = node("/wallet/%s/balance" % frm)
-    if code != 200 or not isinstance(bal, dict):
+    bal = balance_of(frm)
+    if bal is None:
         return 502, {"error": "The node didn't return a balance for that key."}
-    before = as_int(bal.get("balance"))
+    before = bal[0]
     if before < amount:
         return 400, {"error": "That key holds %d, less than %d." % (before, amount)}
     code, reply = node("/wallet/transactions/transfer-funds", {
         "tip": None, "change_public_key": frm, "funding_public_keys": [frm],
         "recipient_public_key": to, "amount": amount}, timeout=60)
-    if code != 200 or not isinstance(reply, dict) or not reply.get("hash"):
+    # the node answers an accepted transfer with 201 Created
+    if not 200 <= code < 300 or not isinstance(reply, dict) or not reply.get("hash"):
         detail = reply if isinstance(reply, str) else json.dumps(reply)
         return 502, {"error": "The node refused the transfer: %s" % (detail or "no answer")[:300]}
     with lock:
@@ -245,10 +256,10 @@ def tx_status(h):
         tx = sent.get(h)
     if not tx:
         return 404, {"error": "This app didn't send that transaction."}
-    code, bal = node("/wallet/%s/balance" % tx["from"])
-    if code != 200 or not isinstance(bal, dict):
+    bal = balance_of(tx["from"])
+    if bal is None:
         return 200, {"state": "unknown"}
-    now = as_int(bal.get("balance"))
+    now = bal[0]
     if now < tx["before"]:
         # the sender's balance only drops once the transfer is in a block
         return 200, {"state": "in_block", "fee": str(tx["before"] - now - tx["amount"])}
@@ -467,7 +478,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "LogosNodeApp"
 
     def reply(self, code, obj=None, ctype="application/json", raw=None):
-        data = raw if raw is not None else json.dumps(obj).encode()
+        data = raw if raw is not None else json.dumps(obj, separators=(",", ":")).encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
