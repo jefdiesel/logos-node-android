@@ -4,9 +4,10 @@
 It listens on 127.0.0.1 only and talks to the node's own API on 127.0.0.1:8080.
 Python standard library only. Wallet calls need a PIN that is set on first use.
 """
-import base64, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, tempfile, threading, time
+import base64, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
+APP_VERSION = "0.7.0"       # set by tools/release.py, which also writes release.json
 HOME = os.path.expanduser("~")
 NODE_API = os.environ.get("NODE_API", "http://127.0.0.1:8080")
 NODE_BIN = os.environ.get("NODE_BIN", HOME + "/node/logos-blockchain-node")
@@ -157,6 +158,133 @@ def names_rpc(body):
     if code != 200 or not isinstance(reply, dict):
         return 502, {"error": "The name service isn't answering."}
     return 200, data
+
+
+# ---- updates: new app files from the project's GitHub repository ------------------------------
+# release.json lists the version and the SHA-256 of every app file. The app looks at it at most
+# every UPDATE_EVERY seconds, or when an unlocked wallet asks. Applying needs an unlocked wallet
+# and the PIN, downloads every file, checks each hash, compiles the Python, keeps the old files
+# as <name>.prev, swaps the new ones in and re-executes this process. The node is not touched.
+
+UPDATE_URL = os.environ.get("UPDATE_URL", "https://raw.githubusercontent.com/jefdiesel/logos-node-android/main/app/")
+UPDATE_EVERY = 6 * 3600
+UPDATE_FILE_CAP, UPDATE_TOTAL_CAP = 4 * 1024 * 1024, 16 * 1024 * 1024
+UPDATE_NAME_RE = re.compile(r"^(?:[a-z0-9][a-z0-9_-]*/){0,2}[A-Za-z0-9_][A-Za-z0-9_.-]*$")
+VERSION_RE = re.compile(r"^\d{1,6}(?:\.\d{1,6}){0,3}$")
+APP_FILE = os.path.abspath(__file__)
+update_state = {"latest": None, "checked": 0.0, "error": None}
+update_lock = threading.Lock()
+
+
+def version_tuple(v):
+    return tuple(int(x) for x in v.split(".")) if VERSION_RE.match(str(v)) else None
+
+
+def update_name_ok(name):
+    """A file an update may write: inside the app folder, never this app's wallet data or old copies."""
+    base = name.rsplit("/", 1)[-1]
+    return bool(UPDATE_NAME_RE.match(name)) and ".." not in name and not base.startswith("wallet-") \
+        and not base.endswith((".prev", ".tmp")) and base != "release.json"
+
+
+def update_release():
+    """release.json from the update source, checked for shape. Raises with a plain message."""
+    if not UPDATE_URL.endswith("/"):
+        raise ValueError("The update address must end with /.")
+    try:
+        code, data = fetch_outside(UPDATE_URL + "release.json", cap=65536, timeout=15)
+        rel = json.loads(data) if code == 200 else None
+    except Exception:
+        rel = None
+    if not isinstance(rel, dict):
+        raise ValueError("Couldn't read the release list from GitHub.")
+    files = rel.get("files")
+    if version_tuple(rel.get("version")) is None or not isinstance(files, dict) or "server.py" not in files or not all(
+            update_name_ok(n) and isinstance(h, str) and re.match(r"^[0-9a-f]{64}$", h) for n, h in files.items()):
+        raise ValueError("The release list isn't valid.")
+    return rel, data
+
+
+def update_check():
+    """Looks for a newer release. Returns the state the page sees."""
+    with update_lock:
+        try:
+            rel, _ = update_release()
+            newer = version_tuple(rel["version"]) > version_tuple(APP_VERSION)
+            update_state.update(latest=rel["version"] if newer else None, error=None)
+        except Exception as e:
+            update_state["error"] = str(e)
+        update_state["checked"] = time.time()
+        return update_public()
+
+
+def update_public():
+    return {"current": APP_VERSION, "available": update_state["latest"], "error": update_state["error"],
+            "source": "github.com/jefdiesel/logos-node-android" if UPDATE_URL.startswith("https://raw.githubusercontent.com/jefdiesel/logos-node-android/") else UPDATE_URL}
+
+
+def update_loop():
+    while True:
+        update_check()
+        time.sleep(UPDATE_EVERY)
+
+
+def update_apply():
+    """(http status, reply). On success the caller restarts this process."""
+    with update_lock:
+        try:
+            rel, raw = update_release()
+        except Exception as e:
+            return 502, {"error": str(e)}
+        if version_tuple(rel["version"]) <= version_tuple(APP_VERSION):
+            return 409, {"error": "This app is already at version %s." % APP_VERSION}
+        tmp = tempfile.mkdtemp(prefix=".update-", dir=APP_DIR)
+        try:
+            total = 0
+            for name, digest in rel["files"].items():
+                try:
+                    code, data = fetch_outside(UPDATE_URL + name, cap=UPDATE_FILE_CAP, timeout=30)
+                except Exception:
+                    code, data = 0, b""
+                total += len(data)
+                if code != 200 or total > UPDATE_TOTAL_CAP:
+                    return 502, {"error": "Couldn't download %s from GitHub. Nothing was changed." % name}
+                if hashlib.sha256(data).hexdigest() != digest:
+                    return 409, {"error": "%s doesn't match the release list, so the update was refused. Nothing was changed." % name}
+                if name.endswith(".py"):
+                    try:
+                        compile(data, name, "exec")
+                    except Exception:
+                        return 409, {"error": "%s in the new release doesn't compile, so the update was refused. Nothing was changed." % name}
+                os.makedirs(os.path.dirname(os.path.join(tmp, name)), exist_ok=True)
+                with open(os.path.join(tmp, name), "wb") as f:
+                    f.write(data)
+            with open(os.path.join(tmp, "release.json"), "wb") as f:
+                f.write(raw)
+            # everything checked out: keep each old file as .prev, then swap the new one in (server.py last)
+            for name in sorted(rel["files"], key=lambda n: n == "server.py") + ["release.json"]:
+                dst = os.path.join(APP_DIR, name)
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                if os.path.exists(dst):
+                    shutil.copy2(dst, dst + ".prev")
+                os.replace(os.path.join(tmp, name), dst)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        update_state.update(latest=None, error=None)
+        return 200, {"ok": True, "from": APP_VERSION, "to": rel["version"]}
+
+
+def restart_soon():
+    """Re-executes this app in place (same process id), after the reply has gone out. Works the same
+    under systemd and under Termux's start script; the node keeps running."""
+    def go():
+        time.sleep(0.7)
+        try:
+            sys.stdout.flush(); sys.stderr.flush()
+        except Exception:
+            pass
+        os.execv(sys.executable, [sys.executable, APP_FILE] + sys.argv[1:])
+    threading.Thread(target=go, daemon=True).start()
 
 
 # ---- wallet keys ----------------------------------------------------------------------------
@@ -1028,7 +1156,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/":
             try:
                 with open(os.path.join(APP_DIR, "index.html"), "rb") as f:
-                    return self.reply(200, raw=f.read(), ctype="text/html; charset=utf-8")
+                    page = f.read().replace(b"__APP_VERSION__", APP_VERSION.encode())
+                return self.reply(200, raw=page, ctype="text/html; charset=utf-8")
             except Exception:
                 return self.reply(500, {"error": "index.html is missing"})
         m = NAMES_FILE_RE.match(path)
@@ -1044,7 +1173,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.reply(200, raw=icon_png(192 if "192" in path else 512, "maskable" in path), ctype="image/png")
         if path == "/api/status":
             st = node_status()
-            return self.reply(200, {"node": st} if st else {"node": None, "waiting": node_waiting()})
+            out = {"node": st} if st else {"node": None, "waiting": node_waiting()}
+            out.update(version=APP_VERSION, update={"available": update_state["latest"]})
+            return self.reply(200, out)
         if path in ("/cryptarchia/info", "/network/info"):       # read-only pass-through
             code, reply = node(path, timeout=5)
             return self.reply(200 if code == 200 else 502, reply if code == 200 else {"error": "node not answering"})
@@ -1161,6 +1292,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 session["token"] = None
             event("wallet locked", self, by_unlocked_page="yes" if had else "no")
             return self.reply(200, {"ok": True})
+        if path == "/api/update/check":
+            if not self.authed():
+                return self.reply(401, {"error": "locked"})
+            return self.reply(200, update_check())
+        if path == "/api/update/apply":
+            if not self.authed():
+                return self.reply(401, {"error": "locked"})
+            refused = pin_attempt(self, str(body.get("pin", "")), "update refused, wrong PIN")
+            if refused:
+                code, obj = refused
+                return self.reply(403 if code == 401 else code, obj)
+            code, obj = update_apply()
+            if code != 200:
+                event("update refused", self, reason=obj.get("error", ""))
+                return self.reply(code, obj)
+            event("update applied", self, version_from=obj["from"], version_to=obj["to"])
+            self.reply(200, obj)
+            return restart_soon()
         if path == "/api/names/rpc":
             if not self.authed():
                 return self.reply(401, {"error": "locked"})
@@ -1184,7 +1333,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    event("app start", port=PORT)
+    event("app start", port=PORT, version=APP_VERSION)
     threading.Thread(target=wallet_keys, daemon=True).start()
     threading.Thread(target=history_loop, daemon=True).start()
+    threading.Thread(target=update_loop, daemon=True).start()
     http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

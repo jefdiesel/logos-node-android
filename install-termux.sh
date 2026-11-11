@@ -51,7 +51,7 @@ mkdir -p logs
 
 # the web app: node status plus a PIN-protected wallet, on 127.0.0.1:8090 only
 # (names/ is the Logos Names resolver the page uses to look up names, vendored from the names project)
-APP_FILES="server.py index.html names/names.js names/lookup.js names/LICENSE-MIT names/LICENSE-APACHE names/noble-hashes/LICENSE names/noble-hashes/argon2.js names/noble-hashes/blake2.js names/noble-hashes/_blake.js names/noble-hashes/_md.js names/noble-hashes/_u64.js names/noble-hashes/utils.js"
+APP_FILES="server.py index.html release.json names/names.js names/lookup.js names/LICENSE-MIT names/LICENSE-APACHE names/noble-hashes/LICENSE names/noble-hashes/argon2.js names/noble-hashes/blake2.js names/noble-hashes/_blake.js names/noble-hashes/_md.js names/noble-hashes/_u64.js names/noble-hashes/utils.js"
 for f in $APP_FILES; do
   mkdir -p "$(dirname /root/node/app/$f)"
   if [ -n "$APP_SRC" ]; then cp "$APP_SRC/$f" /root/node/app/$f; else curl -fsSL -o /root/node/app/$f "https://raw.githubusercontent.com/jefdiesel/logos-node-android/main/app/$f"; fi

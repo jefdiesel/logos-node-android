@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="app-version" content="__APP_VERSION__">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>Logos node</title>
@@ -66,6 +67,7 @@ hr{border:0;border-top:1px solid var(--line);margin:18px 0 6px}
 .hrow .sub button{min-height:28px;padding:2px 8px;font-size:12px;font-weight:500}
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}.cols h3{font-size:13px;color:var(--dim);margin:0 0 6px;font-weight:600}
 .cols div p{margin:0 0 6px;font-size:13px;overflow-wrap:anywhere}.cols .same{color:var(--dim)}.cols .diff{color:var(--warn);font-weight:600}
+.banner{border-color:var(--accent)}
 .pop{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;padding:16px;z-index:10}
 .pop-card{background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:14px;padding:20px 16px;width:100%;max-width:420px}
 .pop-card h2{color:var(--ink);font-size:20px;text-transform:none;letter-spacing:-.01em;margin:0 0 6px}
@@ -80,6 +82,21 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
     <h1>Logos node<small>running on this device</small></h1>
     <span id="pill" class="pill warn">connecting</span>
   </header>
+
+  <div class="card banner" id="upd" role="status" hidden>
+    <p style="margin:0" id="upd-text"></p>
+    <p class="note" style="margin-top:6px">Updates come from the project's GitHub repository, github.com/jefdiesel/logos-node-android. The app checks each file against the release list before using it. The node keeps running.</p>
+    <div id="upd-go">
+      <label for="upd-pin">Your PIN</label>
+      <input id="upd-pin" class="pin" type="text" inputmode="numeric" maxlength="12" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+      <button type="button" class="primary" id="b-upd">Update</button>
+    </div>
+    <p class="msg" id="m-upd" role="alert"></p>
+  </div>
+  <div class="card banner" id="reload" role="status" hidden>
+    <p style="margin:0" id="reload-text"></p>
+    <button type="button" class="primary" id="b-reload">Reload</button>
+  </div>
 
   <section class="card" aria-labelledby="h-node">
     <h2 id="h-node">Node</h2>
@@ -133,6 +150,8 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
       <p class="msg" id="m-fp" role="status"></p>
       <button type="button" id="b-bk-open" style="width:100%;margin-top:12px" aria-expanded="false" aria-controls="bk">Back up wallet</button>
       <p class="msg warn" id="bk-state" style="margin-top:8px"></p>
+      <button type="button" id="b-upd-check" style="width:100%;margin-top:10px">Check for updates</button>
+      <p class="msg" id="m-upd-check" role="status"></p>
       <div id="bk" hidden>
         <form id="f-bk" autocomplete="off">
           <p class="note">Saves this node's keys as an encrypted file. The file is locked with a backup password you choose here, not your PIN. Use a long one you won't forget.</p>
@@ -281,7 +300,44 @@ async function tickStatus() {
     if (!prev) prev = { h: n.height, t: now };
   }
   syncNote();
+  if (r.ok) updateUi(r.data.version, (r.data.update || {}).available);
 }
+
+// ---- updates: from the project's GitHub repository, applied by the app on this device ----
+const PAGE_VERSION = (document.querySelector('meta[name="app-version"]') || {}).content || "";
+function updateUi(serverVersion, available) {
+  if (serverVersion && PAGE_VERSION && serverVersion !== PAGE_VERSION) {
+    // the app on this device was updated: this page is the old one
+    if ($("v-open").hidden) return location.reload();           // nothing typed to lose while locked
+    $("reload-text").textContent = "This app was updated to version " + serverVersion + ". Reload the page to use it.";
+    $("reload").hidden = false; $("upd").hidden = true; return;
+  }
+  $("upd").hidden = !available;
+  if (available) {
+    $("upd-text").textContent = "Version " + available + " of this app is available (you have " + (serverVersion || PAGE_VERSION) + ").";
+    $("upd-go").hidden = $("v-open").hidden;
+    if ($("v-open").hidden && !$("m-upd").textContent) { $("m-upd").className = "msg"; $("m-upd").textContent = "Unlock the wallet to update."; }
+    if (!$("v-open").hidden && $("m-upd").textContent === "Unlock the wallet to update.") $("m-upd").textContent = "";
+  }
+}
+$("b-reload").addEventListener("click", () => location.reload());
+$("b-upd").addEventListener("click", async () => {
+  const m = $("m-upd"), b = $("b-upd"); m.className = "msg bad"; m.textContent = "";
+  b.disabled = true; m.className = "msg"; m.textContent = "Downloading and checking the new files…";
+  const r = await api("/api/update/apply", { pin: $("upd-pin").value }); $("upd-pin").value = ""; b.disabled = false;
+  if (r.status === 401) { setToken(null); return show("v-locked"); }
+  if (!r.ok) return void (m.className = "msg bad", m.textContent = r.data.error || "The update didn't work.");
+  m.className = "msg ok"; m.textContent = "Updated to " + r.data.to + ". The app is restarting; this page reloads when it is back.";
+  $("upd-go").hidden = true;
+});
+$("b-upd-check").addEventListener("click", async () => {
+  const m = $("m-upd-check"); m.className = "msg"; m.textContent = "Checking GitHub…";
+  const r = await api("/api/update/check", {});
+  if (r.status === 401) { setToken(null); return show("v-locked"); }
+  if (!r.ok || r.data.error) return void (m.className = "msg bad", m.textContent = (r.data && r.data.error) || "Couldn't check for updates.");
+  m.textContent = r.data.available ? "Version " + r.data.available + " is available. See the notice at the top." : "This app is up to date (version " + r.data.current + ").";
+  updateUi(r.data.current, r.data.available);
+});
 function syncNote() {
   const online = nodeState === "Online";
   const w = nodeWaiting;

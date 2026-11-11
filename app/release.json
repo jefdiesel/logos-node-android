@@ -1,0 +1,18 @@
+{
+ "files": {
+  "index.html": "dad9b0bb51b8c3c96abe5113faaa6094461a9daa03b47bcea182dcb1e3c040ef",
+  "names/LICENSE-APACHE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+  "names/LICENSE-MIT": "f6fb0855df1560d57cacae6ed5b6dfe65c0cfbe03beba374c0a2d490ce726bcd",
+  "names/lookup.js": "e40e15b3dcf3b16da456c11f56368902031eab0a8a163bc4e542f6ea837f60bd",
+  "names/names.js": "29c5db49f2a5225297311a7a1d79c278743b3857e13d9b88a2caaf5aa0823e12",
+  "names/noble-hashes/LICENSE": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec",
+  "names/noble-hashes/_blake.js": "cabbff61d1f373bac45594ad758df7c42e176464ddbb94b44f5533fa977a4f56",
+  "names/noble-hashes/_md.js": "60cf3010fda89e3e4d3f0e7ff1ce249e9c467f34b4fd41b6fd6101d9f69be763",
+  "names/noble-hashes/_u64.js": "b09da8c07fe8187c07649494cdb7cd0bcf13df90b506a9473d19e4d5f8c2e102",
+  "names/noble-hashes/argon2.js": "f39753324bdf2f484150731d24b1d71236f26bf10bedd594f7d190fcdfdefdc9",
+  "names/noble-hashes/blake2.js": "03f00237bcc0b4d822a80f7c0ac22e42632c48e246c3b6da584e6452186e32f0",
+  "names/noble-hashes/utils.js": "037ad49adb78168b6b699598fd33f85f7877456b1d28b4d032e2a1a16807947c",
+  "server.py": "dee2f5f5122f8ccbfe5b884c59487346b238689865d276d554191da7aa82bff6"
+ },
+ "version": "0.7.0"
+}

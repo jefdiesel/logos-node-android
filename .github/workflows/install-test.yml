@@ -61,6 +61,43 @@ jobs:
           if [ "$BEFORE" = "$AFTER" ]; then echo "the node was not restarted"; exit 1; fi
           systemctl is-active logos-node logos-node-app
           ls -l ~/node/run/keystore.yaml*
+      - name: In-app update under systemd (re-executes in place; the node keeps running)
+        run: |
+          sudo mkdir -p /etc/systemd/system/logos-node-app.service.d
+          printf '[Service]\nEnvironment=UPDATE_URL=http://127.0.0.1:8765/app/\n' | sudo tee /etc/systemd/system/logos-node-app.service.d/test.conf
+          sudo systemctl daemon-reload && sudo systemctl restart logos-node-app
+          curl -fsS --retry 10 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:8090/
+          APP_BEFORE=$(systemctl show -p MainPID --value logos-node-app); NODE_BEFORE=$(systemctl show -p MainPID --value logos-node)
+          APP_DIR="$HOME/node/app" APP_PIN=246810 python3 tests/update_test.py
+          APP_AFTER=$(systemctl show -p MainPID --value logos-node-app); NODE_AFTER=$(systemctl show -p MainPID --value logos-node)
+          echo "app process $APP_BEFORE -> $APP_AFTER, node process $NODE_BEFORE -> $NODE_AFTER"
+          if [ "$APP_BEFORE" != "$APP_AFTER" ]; then echo "the app did not re-execute in place"; exit 1; fi
+          if [ "$NODE_BEFORE" != "$NODE_AFTER" ]; then echo "the node was restarted"; exit 1; fi
+          systemctl is-active logos-node logos-node-app
+  app-update:
+    # The in-app update with the app started the way Termux's start script starts it: in the background
+    # of a shell that then execs another program. A local HTTP server stands in for the GitHub repository.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: release.json matches the app files, the version and both installers
+        run: python3 tools/release.py check
+      - name: The page's script parses
+        run: |
+          python3 -c "import re,sys; sys.stdout.write(re.search(r'<script>(.*)</script>', open('app/index.html').read(), re.S).group(1))" > "$RUNNER_TEMP/page.js"
+          node --check "$RUNNER_TEMP/page.js"
+      - name: Update the app in place
+        run: |
+          cp -r app "$RUNNER_TEMP/app"
+          printf '#!/bin/sh\nUPDATE_URL=http://127.0.0.1:8765/app/ NODE_BIN=/nonexistent python3 %s/app/server.py >/dev/null 2>&1 &\nexec sleep 900\n' "$RUNNER_TEMP" > "$RUNNER_TEMP/start.sh"
+          nohup sh "$RUNNER_TEMP/start.sh" >/dev/null 2>&1 &
+          curl -fsS --retry 10 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:8090/
+          BEFORE=$(pgrep -f "$RUNNER_TEMP/app/server.py")
+          APP_DIR="$RUNNER_TEMP/app" APP_PIN=135790 python3 tests/update_test.py
+          AFTER=$(pgrep -f "$RUNNER_TEMP/app/server.py")
+          echo "app process $BEFORE -> $AFTER"
+          if [ "$BEFORE" != "$AFTER" ]; then echo "the app did not re-execute in place"; exit 1; fi
   wallet-send:
     # A real transfer through the web app, on a private one-node chain with the node's public test keys.
     runs-on: ubuntu-24.04-arm
