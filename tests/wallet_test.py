@@ -4,9 +4,11 @@
   wallet_test.py guard   the wallet's locks: PIN, session, own-page-only, pause after wrong PINs
   wallet_test.py send    a real transfer on a private one-node chain with funded test keys
 """
-import base64, hashlib, json, os, subprocess, sys, tempfile, time, urllib.error, urllib.request
+import base64, hashlib, json, os, re, subprocess, sys, tempfile, time, urllib.error, urllib.request
 
 BASE = "http://127.0.0.1:8090"
+ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+BACKUP_PASSWORD = "correct horse battery staple"
 
 
 def call(path, body=None, session=None, origin=BASE, host=None):
@@ -137,6 +139,55 @@ def passkey_checks(s):
     return s2
 
 
+def secret_values(path):
+    """The secret key values in a node key file (64 hex characters after !Zk or !Ed25519)."""
+    with open(path) as f:
+        return re.findall(r"!(?:Zk|Ed25519)\s+([0-9a-fA-F]{64})", f.read())
+
+
+def decrypt(backup_doc, password, out):
+    """Opens a backup with the independent tool (cryptography package + hashlib.scrypt, not the app's code)."""
+    src = os.path.join(tempfile.mkdtemp(), "backup.json")
+    with open(src, "w") as f:
+        json.dump(backup_doc, f)
+    py = os.environ.get("DECRYPT_PYTHON", sys.executable)
+    return subprocess.run([py, os.path.join(ROOT, "tools", "decrypt-backup.py"), src, "-o", out, "--password-stdin"],
+                          input=password + "\n", capture_output=True, text=True)
+
+
+def backup_checks(s, pin):
+    """The wallet backup: who may export it, and that the file opens with the independent tool to the exact key file."""
+    keystore = os.environ.get("KEYSTORE")
+    check("KEYSTORE names the node's key file", bool(keystore) and os.path.isfile(keystore), keystore)
+    code, d = call("/api/wallet/backup", {"password": BACKUP_PASSWORD, "pin": pin})
+    check("a backup without an unlocked wallet is refused", code == 401, (code, d))
+    code, d = call("/api/wallet/backup", {"password": "short pass", "pin": pin}, session=s)
+    check("a backup password under 12 characters is refused", code == 400, (code, d))
+    code, d = call("/api/wallet/backup", {"password": BACKUP_PASSWORD, "pin": pin}, session=s)
+    b = d.get("backup") or {}
+    check("the backup is exported", code == 200 and b.get("format") == "logos-node-wallet-backup" and b.get("version") == 1, (code, d))
+    secrets_ = secret_values(keystore)
+    check("the node's key file has secret keys to protect", len(secrets_) > 0, len(secrets_))
+    reply = json.dumps(d)
+    check("the export reply holds no secret key and no password", not any(x in reply for x in secrets_) and BACKUP_PASSWORD not in reply)
+    check("the backup lists the wallet's public addresses", any(a.get("label") == "Main" for a in b.get("addresses", [])), b.get("addresses"))
+    out = os.path.join(tempfile.mkdtemp(), "keystore.yaml")
+    r = decrypt(b, BACKUP_PASSWORD, out)
+    check("the independent tool opens the backup", r.returncode == 0, r.stderr.strip())
+    with open(out, "rb") as f1, open(keystore, "rb") as f2:
+        check("the recovered key file is byte for byte the node's", f1.read() == f2.read())
+    out2 = os.path.join(tempfile.mkdtemp(), "keystore.yaml")
+    r = decrypt(b, BACKUP_PASSWORD + "x", out2)
+    check("a wrong backup password doesn't open it", r.returncode != 0 and not os.path.exists(out2), r.stdout)
+    sealed = bytearray(base64.b64decode(b["ciphertext"])); sealed[len(sealed) // 2] ^= 1
+    r = decrypt(dict(b, ciphertext=base64.b64encode(bytes(sealed)).decode()), BACKUP_PASSWORD, out2)
+    check("a changed backup file doesn't open", r.returncode != 0 and not os.path.exists(out2), r.stdout)
+    # last: a wrong PIN. It counts toward the pause after 5 wrong PINs, which the caller checks.
+    code, d = call("/api/wallet/backup", {"password": BACKUP_PASSWORD, "pin": "000000"}, session=s)
+    check("a backup with a wrong PIN is refused", code == 403, (code, d))
+    return secrets_
+
+
 def guard():
     code, d = call("/api/status", host="evil.example")
     check("status is readable under any host name", code == 200 and "node" in d, (code, d))
@@ -171,16 +222,17 @@ def guard():
         code, d = call("/api/wallet/send", {"from": main["key"], "to": "cd" * 32, "amount": 5}, session=s)
         check("sending is refused while the node is not online", code == 409, (code, d))
     s0 = s
+    key_secrets = backup_checks(s, "246810")     # ends with one wrong PIN
     s = passkey_checks(s)
     code, d = call("/api/wallet/lock", {}, session=s)
     code, d = call("/api/wallet/accounts", session=s)
     check("locking ends the session", code == 401, (code, d))
-    for i in range(5):
+    for i in range(4):
         code, d = call("/api/wallet/unlock", {"pin": "000000"})
-        check("wrong PIN %d is refused" % (i + 1), code == 401, (code, d))
+        check("wrong PIN %d is refused" % (i + 2), code == 401, (code, d))
     code, d = call("/api/wallet/unlock", {"pin": "246810"})
-    check("after 5 wrong PINs even the right one has to wait", code == 429 and d.get("wait", 0) > 0, (code, d))
-    events_log_checks([s0, s], ["246810", "000000"])
+    check("after 5 wrong PINs (the first in a backup request) even the right one has to wait", code == 429 and d.get("wait", 0) > 0, (code, d))
+    events_log_checks([s0, s], ["246810", "000000", BACKUP_PASSWORD] + key_secrets)
 
 
 def events_log_checks(sessions, pins):
@@ -192,11 +244,13 @@ def events_log_checks(sessions, pins):
     with open(path) as f:
         text = f.read()
     for name in ["pin set", "unlock by PIN failed", "lockout started", "fingerprint key added", "unlock by fingerprint failed",
-                 "unlock by fingerprint ok", "fingerprint keys removed", "wallet locked"]:
+                 "unlock by fingerprint ok", "fingerprint keys removed", "wallet locked", "backup exported", "backup refused, wrong PIN"]:
         check("the event log records '%s'" % name, " %s " % name in text, name)
     check("the event log records where requests came from", 'origin="http://127.0.0.1:8090"' in text and "user-agent=" in text)
     secrets_found = [x for x in sessions + pins if x and x in text]
-    check("the event log holds no PIN or session token", not secrets_found, len(secrets_found))
+    check("the event log holds no PIN, session token, backup password or key", not secrets_found, len(secrets_found))
+    m = re.search(r'backup exported keystore_from="(\w+)"', text)
+    print("     the backup found the key file from: %s" % (m.group(1) if m else "?"))
     code, d = call("/wallet-events.log")
     check("the event log can't be fetched from the app", code == 404 and "pin set" not in json.dumps(d), code)
 
@@ -237,6 +291,9 @@ def send():
     after = {a["key"]: int(a["balance"]) for a in wait_accounts(s, want=3)["accounts"]}
     check("the receiver got exactly the amount", after[to["key"]] == to0 + amount, (to0, after[to["key"]]))
     check("the sender paid the amount plus the fee", after[rich["key"]] == rich0 - amount - fee, (rich0, after[rich["key"]]))
+    code, d = call("/api/wallet/backup", {"password": BACKUP_PASSWORD, "pin": "135790"}, session=s)
+    check("a node with its keys in its config file has no backup to export, and says so",
+          code == 409 and "nothing to export" in d.get("error", ""), (code, d))
 
 
 if __name__ == "__main__":

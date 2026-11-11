@@ -120,6 +120,27 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
         <span id="fp-confirm" hidden>Turn off? <button type="button" id="b-fp-yes">Yes</button><button type="button" id="b-fp-no">Cancel</button></span>
       </div>
       <p class="msg" id="m-fp" role="status"></p>
+      <details id="bk"><summary>Back up wallet</summary>
+        <form id="f-bk" autocomplete="off">
+          <p class="note">Saves this node's keys as an encrypted file. The file is locked with a backup password you choose here, not your PIN. Use a long one you won't forget.</p>
+          <label for="bk-pw1">Backup password (at least 12 characters)</label>
+          <input id="bk-pw1" type="password" minlength="12" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" required>
+          <label for="bk-pw2">Repeat the backup password</label>
+          <input id="bk-pw2" type="password" minlength="12" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" required>
+          <label for="bk-pin">Your PIN</label>
+          <input id="bk-pin" class="pin" type="text" inputmode="numeric" maxlength="12" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" required>
+          <button class="primary" type="submit" id="b-bk">Save backup file</button>
+          <p class="msg bad" id="m-bk" role="alert"></p>
+        </form>
+        <div id="bk-done" class="msg ok" role="status" hidden>
+          <p style="margin:0">Saved <b id="bk-name"></b> to Downloads.</p>
+          <ul class="note" style="padding-left:20px">
+            <li>Move it somewhere safe off this phone.</li>
+            <li>Anyone with the file and its password controls this wallet.</li>
+            <li>If you lose the password, the backup can't be opened. It can't be recovered.</li>
+          </ul>
+        </div>
+      </details>
       <hr>
       <form id="f-send" autocomplete="off">
         <h2 style="margin-top:14px">Send</h2>
@@ -340,7 +361,26 @@ $("b-fp-set").addEventListener("click", fpOn);
 $("b-fp-off").addEventListener("click", () => fpAskOff(true));
 $("b-fp-no").addEventListener("click", () => fpAskOff(false));
 $("b-fp-yes").addEventListener("click", fpOff);
-$("b-lock").addEventListener("click", async () => { await api("/api/wallet/lock", {}); setToken(null); resetSend(); show("v-locked"); });
+$("b-lock").addEventListener("click", async () => { await api("/api/wallet/lock", {}); setToken(null); resetSend(); resetBackup(); show("v-locked"); });
+
+// ---- backup: the server encrypts the node's key file; this page only ever sees the encrypted file ----
+function resetBackup() { for (const id of ["bk-pw1", "bk-pw2", "bk-pin"]) $(id).value = ""; $("m-bk").textContent = ""; }
+$("f-bk").addEventListener("submit", async e => {
+  e.preventDefault(); const m = $("m-bk"); m.className = "msg bad"; m.textContent = ""; $("bk-done").hidden = true;
+  const p1 = $("bk-pw1").value, p2 = $("bk-pw2").value;
+  if (p1.length < 12) return void (m.textContent = "The backup password must be at least 12 characters.");
+  if (p1 !== p2) return void (m.textContent = "The two backup passwords don't match.");
+  $("b-bk").disabled = true; m.className = "msg"; m.textContent = "Encrypting. This takes a few seconds.";
+  const r = await api("/api/wallet/backup", { password: p1, pin: $("bk-pin").value });
+  $("b-bk").disabled = false; $("bk-pin").value = "";
+  if (r.status === 401) { setToken(null); resetBackup(); return show("v-locked"); }
+  if (!r.ok) return void (m.className = "msg bad", m.textContent = r.data.error || "The backup couldn't be made.");
+  const d = new Date(), name = "logos-node-wallet-backup-" + d.getFullYear() + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0") + ".json";
+  const url = URL.createObjectURL(new Blob([JSON.stringify(r.data.backup, null, 2)], { type: "application/json" }));
+  const a = document.createElement("a"); a.href = url; a.download = name; document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+  resetBackup(); $("bk-name").textContent = name; $("bk-done").hidden = false;
+});
 
 // ---- send ----
 function resetSend() { clearInterval(txTimer); pending = null; $("f-send").hidden = false; $("v-review").hidden = true; $("v-sent").hidden = true; $("m-send").textContent = ""; $("m-review").textContent = ""; }

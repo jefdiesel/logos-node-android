@@ -4,7 +4,7 @@
 It listens on 127.0.0.1 only and talks to the node's own API on 127.0.0.1:8080.
 Python standard library only. Wallet calls need a PIN that is set on first use.
 """
-import base64, hashlib, hmac, http.server, json, os, re, secrets, subprocess, threading, time
+import base64, hashlib, hmac, http.server, json, os, re, secrets, struct, subprocess, threading, time
 import urllib.error, urllib.request
 
 HOME = os.path.expanduser("~")
@@ -129,18 +129,41 @@ def parse_keys(text):
     return out
 
 
+def show_config():
+    """The node's effective config (`--show-config`; secrets are redacted there)."""
+    cmd = [NODE_BIN]
+    if NODE_DEPLOYMENT:
+        cmd += ["--deployment", NODE_DEPLOYMENT]
+    cmd += ["--show-config", NODE_CFG]
+    return subprocess.run(cmd, cwd=os.path.dirname(NODE_CFG), capture_output=True, text=True, timeout=30).stdout
+
+
+def parse_keystore(text):
+    """`kms.keystore` from the node's effective config: the key file, relative to the config file. None if not there."""
+    top, child = None, None
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        if indent == 0:
+            top, child = s.rstrip(":"), None
+            continue
+        if top == "kms":
+            child = indent if child is None else child
+            m = re.match(r"^keystore:\s*(.+?)\s*$", s)
+            if m and indent == child:
+                return m.group(1).strip("'\"") or None
+    return None
+
+
 def wallet_keys():
     with lock:
         if keys_cache["keys"] or time.time() - keys_cache["at"] < 20:
             return keys_cache["keys"]
         keys_cache["at"] = time.time()
-    cmd = [NODE_BIN]
-    if NODE_DEPLOYMENT:
-        cmd += ["--deployment", NODE_DEPLOYMENT]
-    cmd += ["--show-config", NODE_CFG]
     try:
-        text = subprocess.run(cmd, cwd=os.path.dirname(NODE_CFG), capture_output=True, text=True, timeout=30).stdout
-        found = parse_keys(text)
+        found = parse_keys(show_config())
     except Exception:
         found = []
     with lock:
@@ -184,6 +207,28 @@ def event(name, req=None, **detail):
 
 
 # ---- PIN and session ------------------------------------------------------------------------
+
+def pin_attempt(req, pin, failed_event):
+    """Checks a typed PIN, with the shared pause after MAX_FAILS wrong ones (unlock, backup and update all
+    count). Returns None when the PIN is right, else (http status, reply). `failed_event` names the log line."""
+    with lock:
+        wait = int(fails["until"] - time.time())
+    if wait > 0:
+        return 429, {"error": "Too many wrong PINs. Try again in %d seconds." % wait, "wait": wait}
+    if pin_is_set() and pin_check(pin):
+        with lock:
+            fails["count"] = 0
+        return None
+    with lock:
+        fails["count"] += 1
+        n, paused = fails["count"], fails["count"] >= MAX_FAILS
+        if paused:
+            fails["count"], fails["until"] = 0, time.time() + FAIL_PAUSE
+    event(failed_event, req, attempt=n)
+    if paused:
+        event("lockout started", req, seconds=FAIL_PAUSE)
+    return 401, {"error": "Wrong PIN."}
+
 
 def pin_hash(pin, salt):
     return hashlib.scrypt(pin.encode(), salt=salt, n=2 ** 14, r=8, p=1, dklen=32)
@@ -298,6 +343,111 @@ def tx_status(h):
         # the sender's balance only drops once the transfer is in a block
         return 200, {"state": "in_block", "fee": str(tx["before"] - now - tx["amount"])}
     return 200, {"state": "waiting"}
+
+
+# ---- wallet backup: the node's key file, encrypted with scrypt + ChaCha20-Poly1305 (RFC 8439) ---
+# The keys never reach the page: it only receives the encrypted file. The format is plain JSON with
+# standard primitives, so it can be opened without this app (see tools/decrypt-backup.py, docs/backup.md).
+
+BACKUP_FORMAT, BACKUP_VERSION = "logos-node-wallet-backup", 1
+BACKUP_AAD = b"logos-node-wallet-backup v1"
+BACKUP_SCRYPT = {"n": 2 ** 16, "r": 8, "p": 1, "dklen": 32}
+MIN_BACKUP_PASSWORD = 12
+_M32 = 0xffffffff
+
+
+def _quarter(w, a, b, c, d):
+    w[a] = (w[a] + w[b]) & _M32; x = w[d] ^ w[a]; w[d] = ((x << 16) | (x >> 16)) & _M32
+    w[c] = (w[c] + w[d]) & _M32; x = w[b] ^ w[c]; w[b] = ((x << 12) | (x >> 20)) & _M32
+    w[a] = (w[a] + w[b]) & _M32; x = w[d] ^ w[a]; w[d] = ((x << 8) | (x >> 24)) & _M32
+    w[c] = (w[c] + w[d]) & _M32; x = w[b] ^ w[c]; w[b] = ((x << 7) | (x >> 25)) & _M32
+
+
+def chacha20_block(key, counter, nonce):
+    """RFC 8439 section 2.3: one 64-byte keystream block (32-byte key, 32-bit counter, 12-byte nonce)."""
+    state = [0x61707865, 0x3320646e, 0x79622d32, 0x6b206574] + list(struct.unpack("<8I", key)) \
+        + [counter & _M32] + list(struct.unpack("<3I", nonce))
+    w = state[:]
+    for _ in range(10):
+        _quarter(w, 0, 4, 8, 12); _quarter(w, 1, 5, 9, 13); _quarter(w, 2, 6, 10, 14); _quarter(w, 3, 7, 11, 15)
+        _quarter(w, 0, 5, 10, 15); _quarter(w, 1, 6, 11, 12); _quarter(w, 2, 7, 8, 13); _quarter(w, 3, 4, 9, 14)
+    return struct.pack("<16I", *((w[i] + state[i]) & _M32 for i in range(16)))
+
+
+def chacha20_xor(key, counter, nonce, data):
+    """RFC 8439 section 2.4: encrypts or decrypts `data`, starting at block `counter`."""
+    out = bytearray()
+    for i in range(0, len(data), 64):
+        chunk = data[i:i + 64]
+        ks = chacha20_block(key, counter + i // 64, nonce)[:len(chunk)]
+        out += (int.from_bytes(chunk, "little") ^ int.from_bytes(ks, "little")).to_bytes(len(chunk), "little")
+    return bytes(out)
+
+
+def poly1305(key, msg):
+    """RFC 8439 section 2.5: the 16-byte tag of `msg` under a 32-byte one-time key."""
+    r = int.from_bytes(key[:16], "little") & 0x0ffffffc0ffffffc0ffffffc0fffffff
+    s, p, acc = int.from_bytes(key[16:32], "little"), (1 << 130) - 5, 0
+    for i in range(0, len(msg), 16):
+        acc = (acc + int.from_bytes(msg[i:i + 16] + b"\x01", "little")) * r % p
+    return ((acc + s) & ((1 << 128) - 1)).to_bytes(16, "little")
+
+
+def _aead_mac_data(aad, ct):
+    return aad + b"\x00" * (-len(aad) % 16) + ct + b"\x00" * (-len(ct) % 16) + struct.pack("<QQ", len(aad), len(ct))
+
+
+def aead_encrypt(key, nonce, plaintext, aad):
+    """RFC 8439 section 2.8 AEAD_CHACHA20_POLY1305: returns ciphertext followed by the 16-byte tag."""
+    ct = chacha20_xor(key, 1, nonce, plaintext)
+    return ct + poly1305(chacha20_block(key, 0, nonce)[:32], _aead_mac_data(aad, ct))
+
+
+def aead_decrypt(key, nonce, sealed, aad):
+    """The plaintext, or None if the tag doesn't match."""
+    if len(sealed) < 16:
+        return None
+    ct, tag = sealed[:-16], sealed[-16:]
+    if not hmac.compare_digest(poly1305(chacha20_block(key, 0, nonce)[:32], _aead_mac_data(aad, ct)), tag):
+        return None
+    return chacha20_xor(key, 1, nonce, ct)
+
+
+def backup_key(password, salt, kdf=BACKUP_SCRYPT):
+    return hashlib.scrypt(password.encode("utf-8"), salt=salt, n=kdf["n"], r=kdf["r"], p=kdf["p"],
+                          dklen=kdf["dklen"], maxmem=2 ** 27)
+
+
+def keystore_location():
+    """(path, where it came from): `kms.keystore` from the node's effective config, resolved against the config
+    file's folder the way the node does it, or keystore.yaml beside the config when the config doesn't say."""
+    try:
+        found = parse_keystore(show_config())
+    except Exception:
+        found = None
+    return os.path.join(os.path.dirname(os.path.abspath(NODE_CFG)), found or "keystore.yaml"), ("config" if found else "default")
+
+
+def backup_export(password):
+    """(http status, reply, keystore source). The reply holds only the encrypted backup or an error without key material."""
+    path, source = keystore_location()
+    if not os.path.isfile(path):
+        return 409, {"error": "This node keeps its keys in its config file, so there is nothing to export.", "no_keystore": True}, source
+    try:
+        with open(path, "rb") as f:
+            text = f.read().decode("utf-8")
+    except Exception:
+        return 500, {"error": "The node's key file couldn't be read."}, source
+    salt, nonce = secrets.token_bytes(16), secrets.token_bytes(12)
+    sealed = aead_encrypt(backup_key(password, salt), nonce, json.dumps({"keystore.yaml": text}).encode(), BACKUP_AAD)
+    b64 = lambda b: base64.b64encode(b).decode()
+    return 200, {"backup": {
+        "format": BACKUP_FORMAT, "version": BACKUP_VERSION,
+        "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "addresses": [{"label": k["label"], "key": k["key"]} for k in wallet_keys()],
+        "kdf": dict(BACKUP_SCRYPT, name="scrypt", salt=b64(salt)),
+        "cipher": {"name": "chacha20-poly1305", "nonce": b64(nonce), "aad": BACKUP_AAD.decode()},
+        "ciphertext": b64(sealed)}}, source
 
 
 # ---- home-screen app: manifest and icon -----------------------------------------------------
@@ -596,24 +746,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
             event("pin set", self)
             return self.reply(200, {"session": session_new()})
         if path == "/api/wallet/unlock":
-            with lock:
-                wait = int(fails["until"] - time.time())
-            if wait > 0:
-                return self.reply(429, {"error": "Too many wrong PINs. Try again in %d seconds." % wait, "wait": wait})
-            if pin_is_set() and pin_check(str(body.get("pin", ""))):
-                with lock:
-                    fails["count"] = 0
-                event("unlock by PIN ok", self)
-                return self.reply(200, {"session": session_new()})
-            with lock:
-                fails["count"] += 1
-                n, paused = fails["count"], fails["count"] >= MAX_FAILS
-                if paused:
-                    fails["count"], fails["until"] = 0, time.time() + FAIL_PAUSE
-            event("unlock by PIN failed", self, attempt=n)
-            if paused:
-                event("lockout started", self, seconds=FAIL_PAUSE)
-            return self.reply(401, {"error": "Wrong PIN."})
+            refused = pin_attempt(self, str(body.get("pin", "")), "unlock by PIN failed")
+            if refused:
+                return self.reply(*refused)
+            event("unlock by PIN ok", self)
+            return self.reply(200, {"session": session_new()})
+        if path == "/api/wallet/backup":
+            # needs an unlocked page AND the PIN typed again: a fingerprint session alone can't export the keys
+            if not self.authed():
+                return self.reply(401, {"error": "locked"})
+            password = str(body.get("password", ""))
+            if len(password) < MIN_BACKUP_PASSWORD:
+                return self.reply(400, {"error": "The backup password must be at least %d characters." % MIN_BACKUP_PASSWORD})
+            refused = pin_attempt(self, str(body.get("pin", "")), "backup refused, wrong PIN")
+            if refused:
+                code, obj = refused
+                return self.reply(403 if code == 401 else code, obj)      # 401 means "locked" to the page
+            code, obj, source = backup_export(password)
+            if code == 200:
+                event("backup exported", self, keystore_from=source)
+            return self.reply(code, obj)
         if path == "/api/wallet/passkey/challenge":
             d = passkeys_load()
             if not d["keys"]:

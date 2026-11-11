@@ -35,8 +35,12 @@ jobs:
           A=$(curl -s -i -H "Origin: https://evil.example" http://127.0.0.1:8080/cryptarchia/info | grep -i "^access-control-allow-origin" | tr -d "\r")
           echo "$A"
           echo "$A" | grep -q "http://127.0.0.1:8090"
-      - name: Wallet locks (PIN, session, own page only, pause after wrong PINs)
-        run: EVENTS_LOG="$HOME/node/app/wallet-events.log" python3 tests/wallet_test.py guard
+      - name: The app's ChaCha20-Poly1305 matches the RFC 8439 test vectors
+        run: python3 tests/crypto_test.py
+      - name: The cryptography package, for the independent backup opener
+        run: python3 -c "import cryptography" 2>/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq python3-cryptography; }
+      - name: Wallet locks (PIN, session, own page only, pause after wrong PINs) and the backup
+        run: EVENTS_LOG="$HOME/node/app/wallet-events.log" KEYSTORE="$HOME/node/run/keystore.yaml" python3 tests/wallet_test.py guard
   wallet-send:
     # A real transfer through the web app, on a private one-node chain with the node's public test keys.
     runs-on: ubuntu-24.04-arm
