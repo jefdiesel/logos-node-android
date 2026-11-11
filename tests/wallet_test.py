@@ -166,6 +166,8 @@ def backup_checks(s, pin):
     code, d = call("/api/wallet/backup", {"password": BACKUP_PASSWORD, "pin": pin}, session=s)
     b = d.get("backup") or {}
     check("the backup is exported", code == 200 and b.get("format") == "logos-node-wallet-backup" and b.get("version") == 1, (code, d))
+    code, a = call("/api/wallet/accounts", session=s)
+    check("the wallet reports when the last backup was made", code == 200 and a.get("last_backup") == b.get("created"), (a.get("last_backup"), b.get("created")))
     secrets_ = secret_values(keystore)
     check("the node's key file has secret keys to protect", len(secrets_) > 0, len(secrets_))
     reply = json.dumps(d)
@@ -213,6 +215,7 @@ def guard():
     code, d = call("/api/wallet/setup", {"pin": "111111"})
     check("the PIN can't be set a second time", code == 409, (code, d))
     d = wait_accounts(s, balances=False)        # the testnet node here is still syncing
+    check("the wallet says no backup has been made yet", "last_backup" in d and d["last_backup"] is None, d.get("last_backup", "missing"))
     main = d["accounts"][0]
     check("the first key is the node's main key, 64 hex characters", main["label"] == "Main" and len(main["key"]) == 64, main)
     code, d = call("/api/wallet/accounts", session="0" * 64)

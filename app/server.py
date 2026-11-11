@@ -5,7 +5,7 @@ It listens on 127.0.0.1 only and talks to the node's own API on 127.0.0.1:8080.
 Python standard library only. Wallet calls need a PIN that is set on first use.
 """
 import base64, hashlib, hmac, http.server, json, os, re, secrets, struct, subprocess, threading, time
-import urllib.error, urllib.request
+import urllib.error, urllib.parse, urllib.request
 
 HOME = os.path.expanduser("~")
 NODE_API = os.environ.get("NODE_API", "http://127.0.0.1:8080")
@@ -89,6 +89,71 @@ def node_waiting():
     except Exception:
         pass
     return out
+
+
+# ---- outside requests (name service, updates) -------------------------------------------------
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None                       # a redirect is answered as an error, never followed
+
+
+_outside = urllib.request.build_opener(_NoRedirect)
+
+
+def outside_url_ok(url):
+    """HTTPS only; plain HTTP only to this machine itself, which tests use."""
+    u = urllib.parse.urlsplit(url)
+    return bool(u.hostname) and (u.scheme == "https" or (u.scheme == "http" and u.hostname in ("127.0.0.1", "localhost", "::1")))
+
+
+def fetch_outside(url, body=None, cap=65536, timeout=8):
+    """GET (or POST `body` as JSON) to a fixed outside URL: no redirects, at most `cap` bytes.
+    Returns (http status, bytes); raises on a bad URL, no answer or an answer that is too big."""
+    if not outside_url_ok(url):
+        raise ValueError("refused URL")
+    req = urllib.request.Request(url, data=None if body is None else json.dumps(body).encode(),
+                                 method="GET" if body is None else "POST",
+                                 headers={"Content-Type": "application/json", "User-Agent": "logos-node-app"})
+    try:
+        with _outside.open(req, timeout=timeout) as r:
+            code, data = r.status, r.read(cap + 1)
+    except urllib.error.HTTPError as e:
+        code, data = e.code, e.read(cap + 1)
+    if len(data) > cap:
+        raise ValueError("answer too big")
+    return code, data
+
+
+# ---- LNS names: the page resolves names itself; this only forwards the one read it needs -----
+# The page runs the names project's reference resolver (names/names.js). The name never leaves
+# the device: the page derives the name's record account and asks the sequencer for that account,
+# through here so the page can keep talking to this app only. Only getAccount of one account id
+# is forwarded. Defaults are the names project's own public testnet ones (mcp/server.js).
+
+NAMES_RPC_URL = os.environ.get("NAMES_RPC_URL", "https://testnet.lez.logos.co")
+NAMES_PROGRAM = os.environ.get("NAMES_PROGRAM", "38jEfVV1RCyMzu1FGbYcCn5FqxCxKyY58VgzjruAh2gq")
+ACCOUNT_ID_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
+NAME_RE = re.compile(r"^(?!-)[a-z0-9-]{1,32}(?<!-)$")
+NAMES_DIR = os.path.join(APP_DIR, "names")
+NAMES_FILE_RE = re.compile(r"^/names/((?:noble-hashes/)?[A-Za-z0-9_][A-Za-z0-9_.-]*\.js)$")
+
+
+def names_rpc(body):
+    """(http status, reply bytes or object) for one getAccount read, forwarded to the sequencer."""
+    params = body.get("params")
+    if body.get("method") != "getAccount" or not isinstance(params, list) or len(params) != 1 \
+            or not ACCOUNT_ID_RE.match(str(params[0])):
+        return 400, {"error": "Only getAccount of one account id is forwarded."}
+    try:
+        code, data = fetch_outside(NAMES_RPC_URL, {"jsonrpc": "2.0", "id": body.get("id", 1) if isinstance(body.get("id"), int) else 1,
+                                                   "method": "getAccount", "params": [str(params[0])]}, cap=262144, timeout=8)
+        reply = json.loads(data)
+    except Exception:
+        return 502, {"error": "The name service isn't answering."}
+    if code != 200 or not isinstance(reply, dict):
+        return 502, {"error": "The name service isn't answering."}
+    return 200, data
 
 
 # ---- wallet keys ----------------------------------------------------------------------------
@@ -343,6 +408,9 @@ def send(body):
              "hash": reply["hash"], "status": "pending", "height": st.get("height")}
     if to in labels:
         entry["to_label"] = labels[to]
+    name = str(body.get("name") or "")
+    if NAME_RE.match(name):                 # the LNS name the page resolved `to` from, kept for the history
+        entry["name"] = name
     history_record_send(entry)
     return 200, {"hash": reply["hash"]}
 
@@ -580,6 +648,18 @@ def keystore_location():
     return os.path.join(os.path.dirname(os.path.abspath(NODE_CFG)), found or "keystore.yaml"), ("config" if found else "default")
 
 
+BACKUP_STATE_FILE = os.path.join(DATA_DIR, "wallet-backup.json")
+
+
+def last_backup():
+    """When a backup was last exported (UTC), or None if never."""
+    try:
+        with open(BACKUP_STATE_FILE) as f:
+            return json.load(f).get("last") or None
+    except Exception:
+        return None
+
+
 def backup_export(password):
     """(http status, reply, keystore source). The reply holds only the encrypted backup or an error without key material."""
     path, source = keystore_location()
@@ -593,9 +673,17 @@ def backup_export(password):
     salt, nonce = secrets.token_bytes(16), secrets.token_bytes(12)
     sealed = aead_encrypt(backup_key(password, salt), nonce, json.dumps({"keystore.yaml": text}).encode(), BACKUP_AAD)
     b64 = lambda b: base64.b64encode(b).decode()
+    created = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    try:
+        fd = os.open(BACKUP_STATE_FILE + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump({"last": created}, f)
+        os.replace(BACKUP_STATE_FILE + ".tmp", BACKUP_STATE_FILE)
+    except Exception:
+        pass
     return 200, {"backup": {
         "format": BACKUP_FORMAT, "version": BACKUP_VERSION,
-        "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "created": created,
         "addresses": [{"label": k["label"], "key": k["key"]} for k in wallet_keys()],
         "kdf": dict(BACKUP_SCRYPT, name="scrypt", salt=b64(salt)),
         "cipher": {"name": "chacha20-poly1305", "nonce": b64(nonce), "aad": BACKUP_AAD.decode()},
@@ -824,7 +912,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         if ctype.startswith("text/html"):
             self.send_header("Content-Security-Policy",
-                             "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'")
+                             "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'")
         self.end_headers()
         self.wfile.write(data)
 
@@ -847,6 +935,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self.reply(200, raw=f.read(), ctype="text/html; charset=utf-8")
             except Exception:
                 return self.reply(500, {"error": "index.html is missing"})
+        m = NAMES_FILE_RE.match(path)
+        if m:                               # the names resolver, served as files so the page can import it
+            try:
+                with open(os.path.join(NAMES_DIR, m.group(1)), "rb") as f:
+                    return self.reply(200, raw=f.read(), ctype="text/javascript; charset=utf-8")
+            except Exception:
+                return self.reply(404, {"error": "not found"})
         if path == "/manifest.webmanifest":
             return self.reply(200, raw=MANIFEST, ctype="application/manifest+json")
         if path in ("/lambda-192.png", "/lambda-512.png", "/lambda-maskable-512.png"):
@@ -861,11 +956,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with lock:
                 wait = max(0, int(fails["until"] - time.time()))
             return self.reply(200, {"pin_set": pin_is_set(), "unlocked": self.authed(), "wait": wait,
-                                    "passkeys": len(passkeys_load()["keys"])})
+                                    "passkeys": len(passkeys_load()["keys"]), "names_program": NAMES_PROGRAM})
         if path == "/api/wallet/accounts":
             if not self.authed():
                 return self.reply(401, {"error": "locked"})
-            return self.reply(200, {"accounts": accounts(), "node": node_status()})
+            return self.reply(200, {"accounts": accounts(), "node": node_status(), "last_backup": last_backup()})
         if path == "/api/wallet/history":
             if not self.authed():
                 return self.reply(401, {"error": "locked"})
@@ -955,6 +1050,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 session["token"] = None
             event("wallet locked", self, by_unlocked_page="yes" if had else "no")
             return self.reply(200, {"ok": True})
+        if path == "/api/names/rpc":
+            if not self.authed():
+                return self.reply(401, {"error": "locked"})
+            code, obj = names_rpc(body)
+            return self.reply(code, raw=obj) if isinstance(obj, bytes) else self.reply(code, obj)
         if path == "/api/wallet/receipts":
             if not self.authed():
                 return self.reply(401, {"error": "locked"})

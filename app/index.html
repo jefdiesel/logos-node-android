@@ -129,7 +129,9 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
         <span id="fp-confirm" hidden>Turn off? <button type="button" id="b-fp-yes">Yes</button><button type="button" id="b-fp-no">Cancel</button></span>
       </div>
       <p class="msg" id="m-fp" role="status"></p>
-      <details id="bk"><summary>Back up wallet</summary>
+      <button type="button" id="b-bk-open" style="width:100%;margin-top:12px" aria-expanded="false" aria-controls="bk">Back up wallet</button>
+      <p class="msg warn" id="bk-state" style="margin-top:8px"></p>
+      <div id="bk" hidden>
         <form id="f-bk" autocomplete="off">
           <p class="note">Saves this node's keys as an encrypted file. The file is locked with a backup password you choose here, not your PIN. Use a long one you won't forget.</p>
           <label for="bk-pw1">Backup password (at least 12 characters)</label>
@@ -149,14 +151,15 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
             <li>If you lose the password, the backup can't be opened. It can't be recovered.</li>
           </ul>
         </div>
-      </details>
+      </div>
       <hr>
       <form id="f-send" autocomplete="off">
         <h2 style="margin-top:14px">Send</h2>
         <label for="from" id="l-from">From</label>
         <select id="from"></select>
-        <label for="to">To (address, 64 characters)</label>
-        <input id="to" class="mono" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="64" required>
+        <label for="to">To (a 64-character address, or a name)</label>
+        <input id="to" class="mono" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="70" required>
+        <p class="note" style="margin-top:6px">A name is looked up on this phone. Only an identifier made from it goes to the name service, never the name itself. The wallet trusts the answer, so check the address on the next screen.</p>
         <label for="amount" id="l-amount">Amount, in Logos</label>
         <input id="amount" type="text" inputmode="numeric" maxlength="24" required>
         <button class="primary" type="submit" id="b-review">Review</button>
@@ -167,10 +170,12 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
         <h2 style="margin-top:14px">Check before sending</h2>
         <dl>
           <div><dt>Amount</dt><dd id="r-amount"></dd></div>
+          <div id="r-name-row" hidden><dt>To name</dt><dd id="r-name"></dd></div>
           <div><dt>To</dt><dd class="hash" id="r-to"></dd></div>
           <div><dt>From</dt><dd id="r-from"></dd></div>
           <div><dt>Network fee</dt><dd>added on top, shown after</dd></div>
         </dl>
+        <p class="note" id="r-name-note" hidden>This address came from the name service. For a large amount, check it with the person you're paying.</p>
         <p class="note">This can't be undone.</p>
         <div class="row"><button type="button" id="b-back">Back</button><button type="button" id="b-go" class="primary">Send now</button></div>
         <p class="msg bad" id="m-review" role="alert"></p>
@@ -328,7 +333,7 @@ async function fpOn() {
 async function loadWallet() {
   const r = await api("/api/wallet");
   if (!r.ok) { show("v-loading"); $("v-loading").textContent = r.data.error || "The wallet isn't available."; return; }
-  passkeys = r.data.passkeys || 0; fpUi();
+  passkeys = r.data.passkeys || 0; namesProgram = r.data.names_program || null; fpUi();
   if (!r.data.pin_set) return show("v-setup");
   if (!r.data.unlocked) { setToken(null); return show("v-locked"); }
   show("v-open"); loadAccounts(); loadHistory();
@@ -355,6 +360,9 @@ async function loadAccounts() {
   if (r.status === 401) { setToken(null); return show("v-locked"); }
   if (!r.ok) return;
   accts = r.data.accounts || [];
+  const lb = r.data.last_backup, st = $("bk-state");
+  st.className = lb ? "msg" : "msg warn";
+  st.textContent = lb ? "Last backup: " + when(lb) : "No backup yet. If this device is wiped, the coins are lost.";
   const main = accts.filter((a, i) => i === 0 || (a.balance && a.balance !== "0"));
   const rest = accts.filter(a => !main.includes(a));
   $("accts").replaceChildren(...(main.length ? main.map(acctNode) : [Object.assign(document.createElement("p"), { className: "note", textContent: "The node hasn't reported its wallet keys yet. This can take a minute after it starts." })]));
@@ -388,6 +396,10 @@ $("b-fp-yes").addEventListener("click", fpOff);
 $("b-lock").addEventListener("click", async () => { await api("/api/wallet/lock", {}); setToken(null); resetSend(); resetBackup(); show("v-locked"); });
 
 // ---- backup: the server encrypts the node's key file; this page only ever sees the encrypted file ----
+$("b-bk-open").addEventListener("click", () => {
+  const open = $("bk").hidden; $("bk").hidden = !open; $("b-bk-open").setAttribute("aria-expanded", String(open));
+  $("b-bk-open").textContent = open ? "Close backup" : "Back up wallet"; if (open) $("bk-pw1").focus();
+});
 function resetBackup() { for (const id of ["bk-pw1", "bk-pw2", "bk-pin"]) $(id).value = ""; $("m-bk").textContent = ""; }
 $("f-bk").addEventListener("submit", async e => {
   e.preventDefault(); const m = $("m-bk"); m.className = "msg bad"; m.textContent = ""; $("bk-done").hidden = true;
@@ -403,27 +415,56 @@ $("f-bk").addEventListener("submit", async e => {
   const url = URL.createObjectURL(new Blob([JSON.stringify(r.data.backup, null, 2)], { type: "application/json" }));
   const a = document.createElement("a"); a.href = url; a.download = name; document.body.append(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 30000);
-  resetBackup(); $("bk-name").textContent = name; $("bk-done").hidden = false;
+  resetBackup(); $("bk-name").textContent = name; $("bk-done").hidden = false; loadAccounts();
 });
 
 // ---- send ----
 function resetSend() { clearInterval(txTimer); pending = null; $("f-send").hidden = false; $("v-review").hidden = true; $("v-sent").hidden = true; $("m-send").textContent = ""; $("m-review").textContent = ""; }
-$("f-send").addEventListener("submit", e => {
-  e.preventDefault(); const m = $("m-send"); m.textContent = "";
-  const to = $("to").value.trim().toLowerCase(), raw = $("amount").value.replace(/[,\s]/g, "");
+// LNS names are resolved here in the page by the names project's reference resolver (names/names.js);
+// its one network read goes to this app's /api/names/rpc, which forwards it to the sequencer.
+const NAMES_RPC = "/api/names/rpc";
+let namesProgram = null, namesMod = null;
+const namesLib = async () => namesMod || (namesMod = await import("/names/lookup.js"));
+const pageFetch = window.fetch.bind(window);
+window.fetch = (url, opt = {}) => String(url) === NAMES_RPC
+  ? pageFetch(url, { ...opt, headers: { ...(opt.headers || {}), "X-Session": token || "" } }) : pageFetch(url, opt);
+$("f-send").addEventListener("submit", async e => {
+  e.preventDefault(); const m = $("m-send"); m.className = "msg bad"; m.textContent = "";
+  const raw = $("amount").value.replace(/[,\s]/g, "");
   const from = $("from").value || (accts[0] && accts[0].key), acct = accts.find(a => a.key === from);
   if (!acct) return void (m.textContent = "The wallet has no key to send from yet.");
-  if (!/^[0-9a-f]{64}$/.test(to)) return void (m.textContent = "The address must be 64 characters, using only 0-9 and a-f.");
-  if (to === from) return void (m.textContent = "That would send to the same key it comes from.");
   if (!/^\d+$/.test(raw) || BigInt(raw) <= 0n) return void (m.textContent = "The amount must be a whole number above zero.");
   if (acct.balance != null && BigInt(raw) > BigInt(acct.balance)) return void (m.textContent = acct.label + " holds " + amt(acct.balance) + ", less than " + amt(raw) + ".");
-  pending = { from, to, amount: raw };
+  let lib;
+  try { lib = await namesLib(); } catch (err) { lib = null; }
+  const typed = $("to").value;
+  let to = /^\s*[0-9a-fA-F]{64}\s*$/.test(typed) ? typed.trim().toLowerCase() : null, name = null;
+  if (!to) {
+    if (!lib) return void (m.textContent = "Enter a 64-character address (0-9 and a-f). Names can't be looked up right now.");
+    const p = lib.parseTo(typed);
+    if (p.error) return void (m.textContent = p.error);
+    name = p.name;
+    const b = $("b-review"); b.disabled = true; m.className = "msg"; m.textContent = "Looking up " + name + "… this takes a few seconds.";
+    const r = await lib.lookupName(name, NAMES_RPC, namesProgram);
+    b.disabled = false; m.className = "msg bad"; m.textContent = "";
+    if (r.error) return void (m.textContent = r.error);
+    to = r.address;
+  }
+  if (to === from) return void (m.textContent = "That would send to the same key it comes from.");
+  pending = { from, to, amount: raw, ...(name ? { name } : {}) };
   $("r-amount").textContent = amt(raw); $("r-to").textContent = to; $("r-from").textContent = acct.label + " (" + short(from) + ")";
+  $("r-name").textContent = name || ""; $("r-name-row").hidden = !name; $("r-name-note").hidden = !name;
   $("f-send").hidden = true; $("v-review").hidden = false;
 });
 $("b-back").addEventListener("click", () => { $("v-review").hidden = true; $("f-send").hidden = false; });
 $("b-go").addEventListener("click", async () => {
-  if (!pending) return; const b = $("b-go"), m = $("m-review"); m.textContent = ""; b.disabled = true; b.textContent = "Sending…";
+  if (!pending) return; const b = $("b-go"), m = $("m-review"); m.textContent = ""; b.disabled = true;
+  if (pending.name) {                 // look the name up again: send only if it still gives the reviewed address
+    b.textContent = "Checking " + pending.name + "…";
+    const changed = await (await namesLib()).recheckName(pending.name, pending.to, NAMES_RPC, namesProgram);
+    if (changed) { b.disabled = false; b.textContent = "Send now"; return void (m.textContent = changed.error); }
+  }
+  b.textContent = "Sending…";
   const r = await api("/api/wallet/send", pending); b.disabled = false; b.textContent = "Send now";
   if (r.status === 401) { setToken(null); resetSend(); return show("v-locked"); }
   if (!r.ok) return void (m.textContent = r.data.error || "The transfer failed.");
