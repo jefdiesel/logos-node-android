@@ -44,6 +44,8 @@ button.primary{background:var(--accent);border-color:var(--accent);color:var(--a
 button.small{min-height:36px;padding:6px 10px;font-size:13px;font-weight:500}
 button:disabled{opacity:.45;cursor:not-allowed}
 .row{display:flex;gap:10px;margin-top:14px}.row button{flex:1;margin-top:0}
+.fpline{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:12px;font-size:14px;color:var(--dim)}
+.fpline span{display:flex;align-items:center;gap:8px}.fpline button{min-height:32px;padding:4px 10px;font-size:13px;font-weight:500;color:var(--dim)}
 .acct{padding:14px 0;border-top:1px solid var(--line)}.acct:first-child{border-top:0;padding-top:0}
 .acct .top{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
 .acct .name{font-weight:600}.acct .bal{font-size:24px;font-weight:650;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
@@ -111,6 +113,11 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
       <div class="row" style="margin-top:12px">
         <button type="button" id="b-lock" class="small">Lock wallet</button>
         <button type="button" id="b-fp-set" class="small" hidden>Turn on fingerprint unlock</button>
+      </div>
+      <div class="fpline" id="fp-on" hidden>
+        <span>Fingerprint unlock: on</span>
+        <button type="button" id="b-fp-off">Turn off</button>
+        <span id="fp-confirm" hidden>Turn off? <button type="button" id="b-fp-yes">Yes</button><button type="button" id="b-fp-no">Cancel</button></span>
       </div>
       <p class="msg" id="m-fp" role="status"></p>
       <hr>
@@ -230,7 +237,17 @@ function fpUi() {
   $("l-pin").textContent = on && canPasskey() ? "Or your PIN" : "PIN";
   $("l-pin").style.marginTop = on && canPasskey() ? "16px" : "0";
   $("b-pin").className = on && canPasskey() ? "" : "primary"; $("b-pin").style.width = "100%"; $("b-pin").style.marginTop = "14px";
-  $("b-fp-set").hidden = !canPasskey(); $("b-fp-set").textContent = on ? "Turn off fingerprint unlock" : "Turn on fingerprint unlock";
+  // turning on is one tap; turning off is a separate small control that asks first
+  $("b-fp-set").hidden = on || !canPasskey();
+  $("fp-on").hidden = !on; $("b-fp-off").hidden = false; $("fp-confirm").hidden = true;
+}
+function fpAskOff(ask) { $("b-fp-off").hidden = ask; $("fp-confirm").hidden = !ask; if (ask) $("b-fp-no").focus(); }
+async function fpOff() {
+  const m = $("m-fp"); m.className = "msg"; m.textContent = "";
+  const r = await api("/api/wallet/passkey/remove", {});
+  if (r.ok) { passkeys = 0; m.textContent = "Fingerprint unlock is off. The PIN still works."; }
+  else { m.className = "msg bad"; m.textContent = r.data.error || "Couldn't turn fingerprint unlock off."; }
+  fpUi();
 }
 async function fpUnlock() {
   const m = $("m-locked"); m.textContent = "";
@@ -245,13 +262,8 @@ async function fpUnlock() {
   if (!r.ok) return void (m.textContent = r.data.error || "Fingerprint unlock failed. Use your PIN.");
   setToken(r.data.session); loadWallet();
 }
-async function fpToggle() {
+async function fpOn() {
   const m = $("m-fp"); m.className = "msg"; m.textContent = "";
-  if (passkeys > 0) {
-    const r = await api("/api/wallet/passkey/remove", {});
-    if (r.ok) { passkeys = 0; m.textContent = "Fingerprint unlock is off. The PIN still works."; }
-    return fpUi();
-  }
   const o = await api("/api/wallet/passkey/options", {});
   if (!o.ok) return void (m.className = "msg bad", m.textContent = o.data.error || "Couldn't start fingerprint setup.");
   let cred;
@@ -324,7 +336,10 @@ $("v-locked").addEventListener("submit", async e => {
   setToken(r.data.session); loadWallet();
 });
 $("b-fp").addEventListener("click", fpUnlock);
-$("b-fp-set").addEventListener("click", fpToggle);
+$("b-fp-set").addEventListener("click", fpOn);
+$("b-fp-off").addEventListener("click", () => fpAskOff(true));
+$("b-fp-no").addEventListener("click", () => fpAskOff(false));
+$("b-fp-yes").addEventListener("click", fpOff);
 $("b-lock").addEventListener("click", async () => { await api("/api/wallet/lock", {}); setToken(null); resetSend(); show("v-locked"); });
 
 // ---- send ----

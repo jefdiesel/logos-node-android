@@ -37,13 +37,16 @@ def check(name, cond, detail=""):
         sys.exit(1)
 
 
-def wait_accounts(session, want=1, tries=30):
+def wait_accounts(session, want=1, tries=30, balances=True):
+    """Waits until the wallet lists at least `want` keys, and with `balances`, a balance for every one of them.
+    A node that is still syncing often can't give balances yet (its wallet trails the chain), so the app shows
+    none; only the test on an online node asks for them."""
     for _ in range(tries):
         code, d = call("/api/wallet/accounts", session=session)
-        if code == 200 and len(d.get("accounts", [])) >= want and all(a["balance"] is not None for a in d["accounts"]):
+        if code == 200 and len(d.get("accounts", [])) >= want and (not balances or all(a["balance"] is not None for a in d["accounts"])):
             return d
         time.sleep(4)
-    check("the wallet lists its keys with balances", False, d)
+    check("the wallet lists its keys" + (" with balances" if balances else ""), False, d)
 
 
 def b64u(b):
@@ -154,7 +157,7 @@ def guard():
     s = d["session"]
     code, d = call("/api/wallet/setup", {"pin": "111111"})
     check("the PIN can't be set a second time", code == 409, (code, d))
-    d = wait_accounts(s)
+    d = wait_accounts(s, balances=False)        # the testnet node here is still syncing
     main = d["accounts"][0]
     check("the first key is the node's main key, 64 hex characters", main["label"] == "Main" and len(main["key"]) == 64, main)
     code, d = call("/api/wallet/accounts", session="0" * 64)

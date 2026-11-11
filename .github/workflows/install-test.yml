@@ -35,6 +35,13 @@ jobs:
           A=$(curl -s -i -H "Origin: https://evil.example" http://127.0.0.1:8080/cryptarchia/info | grep -i "^access-control-allow-origin" | tr -d "\r")
           echo "$A"
           echo "$A" | grep -q "http://127.0.0.1:8090"
+      - name: DIAG (temporary) node answers for balances while syncing
+        continue-on-error: true
+        run: |
+          for k in $(python3 -c "import sys; sys.path.insert(0, 'app'); import server; print(' '.join(k['key'] for k in server.wallet_keys()))"); do
+            echo "--- $k"; curl -sS -m 10 -w " [HTTP %{http_code}, %{time_total}s]" http://127.0.0.1:8080/wallet/$k/balance | cut -c1-300; echo
+          done
+          curl -sS http://127.0.0.1:8080/cryptarchia/info; echo
       - name: Wallet locks (PIN, session, own page only, pause after wrong PINs)
         run: python3 tests/wallet_test.py guard
   wallet-send:
