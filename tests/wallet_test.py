@@ -9,6 +9,7 @@ import base64, hashlib, json, os, re, subprocess, sys, tempfile, time, urllib.er
 BASE = "http://127.0.0.1:8090"
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 BACKUP_PASSWORD = "correct horse battery staple"
+SHORT_PASSWORD = "8chars!x"           # the shortest allowed: 8 characters
 
 
 def call(path, body=None, session=None, origin=BASE, host=None):
@@ -161,8 +162,15 @@ def backup_checks(s, pin):
     check("KEYSTORE names the node's key file", bool(keystore) and os.path.isfile(keystore), keystore)
     code, d = call("/api/wallet/backup", {"password": BACKUP_PASSWORD, "pin": pin})
     check("a backup without an unlocked wallet is refused", code == 401, (code, d))
-    code, d = call("/api/wallet/backup", {"password": "short pass", "pin": pin}, session=s)
-    check("a backup password under 12 characters is refused", code == 400, (code, d))
+    code, d = call("/api/wallet/backup", {"password": "7chars!", "pin": pin}, session=s)
+    check("a backup password of 7 characters is refused", code == 400, (code, d))
+    code, d = call("/api/wallet/backup", {"password": SHORT_PASSWORD, "pin": pin}, session=s)
+    check("a backup password of 8 characters is accepted", code == 200 and "backup" in d, (code, d))
+    out = os.path.join(tempfile.mkdtemp(), "keystore.yaml")
+    r = decrypt(d["backup"], SHORT_PASSWORD, out)
+    check("and that backup opens with the independent tool", r.returncode == 0, r.stderr.strip())
+    with open(out, "rb") as f1, open(keystore, "rb") as f2:
+        check("to the node's key file, byte for byte", f1.read() == f2.read())
     code, d = call("/api/wallet/backup", {"password": BACKUP_PASSWORD, "pin": pin}, session=s)
     b = d.get("backup") or {}
     check("the backup is exported", code == 200 and b.get("format") == "logos-node-wallet-backup" and b.get("version") == 1, (code, d))
@@ -245,7 +253,7 @@ def guard():
         check("wrong PIN %d is refused, %d tries left" % (i + 2, 3 - i), code == 401 and d.get("tries_left") == 3 - i, (code, d))
     code, d = call("/api/wallet/unlock", {"pin": "246810"})
     check("after 5 wrong PINs (the first in a backup request) even the right one has to wait", code == 429 and d.get("wait", 0) > 0, (code, d))
-    events_log_checks([s0, s], ["246810", "000000", BACKUP_PASSWORD] + key_secrets)
+    events_log_checks([s0, s], ["246810", "000000", BACKUP_PASSWORD, SHORT_PASSWORD] + key_secrets)
 
 
 def events_log_checks(sessions, pins):

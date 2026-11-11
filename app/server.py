@@ -8,7 +8,7 @@ Python standard library only. Wallet calls need a PIN that is set on first use.
 import base64, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.7.2"       # set by tools/release.py, which also writes release.json
+APP_VERSION = "0.7.3"       # set by tools/release.py, which also writes release.json
 HOME = os.path.expanduser("~")
 NODE_API = os.environ.get("NODE_API", "http://127.0.0.1:8080")
 NODE_BIN = os.environ.get("NODE_BIN", HOME + "/node/logos-blockchain-node")
@@ -714,7 +714,7 @@ def receipts_take():
 BACKUP_FORMAT, BACKUP_VERSION = "logos-node-wallet-backup", 1
 BACKUP_AAD = b"logos-node-wallet-backup v1"
 BACKUP_SCRYPT = {"n": 2 ** 16, "r": 8, "p": 1, "dklen": 32}
-MIN_BACKUP_PASSWORD = 12
+MIN_BACKUP_PASSWORD = 8      # the page advises 12 or more, or four random words
 _M32 = 0xffffffff
 
 
@@ -1168,9 +1168,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
-        # This app only listens on 127.0.0.1. The status endpoints are safe for something else on the
-        # device to pass on to its network; everything else answers only to requests addressed to
-        # this device itself (127.0.0.1 or localhost), never under another host name.
+        # This app listens on 127.0.0.1 only, so nothing off this device can reach it. The status
+        # endpoints answer whatever Host name a request carries (they hold nothing private). The wallet
+        # answers only requests addressed to 127.0.0.1 or localhost, so a web page that points another
+        # name at this address (DNS rebinding) can't reach it.
         if path.startswith("/api/wallet") and not self.host_ok():
             return self.reply(403, {"error": "The wallet only opens on the device that runs the node.", "local_only": True})
         if path == "/":

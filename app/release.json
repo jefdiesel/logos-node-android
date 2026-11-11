@@ -1,6 +1,6 @@
 {
  "files": {
-  "index.html": "c1b174c0e5bdc738e183cbb359fbbd5f943f5b6d788c2f52bf42509ca8e5b4cf",
+  "index.html": "eee3a697e27689715e228b70d6d6f0e34f44d8ace818d15571cfe6f75e7598d3",
   "names/LICENSE-APACHE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
   "names/LICENSE-MIT": "f6fb0855df1560d57cacae6ed5b6dfe65c0cfbe03beba374c0a2d490ce726bcd",
   "names/lookup.js": "e40e15b3dcf3b16da456c11f56368902031eab0a8a163bc4e542f6ea837f60bd",
@@ -12,7 +12,7 @@
   "names/noble-hashes/argon2.js": "f39753324bdf2f484150731d24b1d71236f26bf10bedd594f7d190fcdfdefdc9",
   "names/noble-hashes/blake2.js": "03f00237bcc0b4d822a80f7c0ac22e42632c48e246c3b6da584e6452186e32f0",
   "names/noble-hashes/utils.js": "037ad49adb78168b6b699598fd33f85f7877456b1d28b4d032e2a1a16807947c",
-  "server.py": "f5527d7e41c937aae489ee99825cc16d68c87b52b96604188385e24951ea501e"
+  "server.py": "b71de9109b42466835ac9c9a252b08e75bdb475cbbe9f5712a6fa05c3d86e18d"
  },
- "version": "0.7.2"
+ "version": "0.7.3"
 }

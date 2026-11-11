@@ -13,6 +13,9 @@ from one seed, so the backup file is what takes a seed phrase's place.
 `logos-node-wallet-backup-YYYYMMDD.json`. It goes to the phone's Downloads folder.
 
 - The file is locked with the **backup password** you chose when you made it. Your PIN is not used for it.
+  It must be at least 8 characters. Longer is safer: anyone who gets the file can try passwords against it
+  without limit, so 12 or more characters, or four random words, is a better choice. **Show** lets you see
+  what you type; while it is shown you type it once, otherwise twice.
 - Anyone who has the file *and* the password controls the wallet. Keep the two apart.
 - If the password is lost, the file can't be opened. Nobody can recover it, including this app.
 - Move the file off the phone, for example to a USB stick or a computer you trust. A backup that only lives

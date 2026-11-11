@@ -1,6 +1,6 @@
 # Updating the web app
 
-The web app (status and wallet on http://127.0.0.1:8090) can update itself. The node is not part of
+The web app (status and wallet on http://localhost:8090) can update itself. The node is not part of
 this: it keeps running and is never restarted by an update.
 
 ## How it works
