@@ -201,6 +201,10 @@ def guard():
     check("no PIN is set at first", code == 200 and d.get("pin_set") is False and d.get("unlocked") is False, (code, d))
     code, d = call("/api/wallet/accounts")
     check("accounts are refused before unlocking", code == 401, (code, d))
+    code, d = call("/api/wallet/history")
+    check("history is refused before unlocking", code == 401 and "entries" not in d, (code, d))
+    code, d = call("/api/wallet/receipts", {})
+    check("new receipts are refused before unlocking", code == 401 and "receipts" not in d, (code, d))
     code, d = call("/api/wallet/setup", {"pin": "12"})
     check("a short PIN is refused", code == 400, (code, d))
     code, d = call("/api/wallet/setup", {"pin": "246810"})
@@ -268,6 +272,14 @@ def send():
     accts = wait_accounts(s, want=3)["accounts"]
     for a in accts:
         print("     %-8s %s  %s" % (a["label"], a["key"][:12], a["balance"]))
+    started = None
+    for _ in range(40):
+        code, hist = call("/api/wallet/history", session=s)
+        started = next((e for e in hist.get("entries", []) if e["kind"] == "tracking started"), None)
+        if started:
+            break
+        time.sleep(3)
+    check("the history starts tracking with the balances it found", started and int(started["amount"]) > 0, hist)
     rich = max(accts, key=lambda a: int(a["balance"]))
     check("a funded test key exists", int(rich["balance"]) >= 10000, rich)
     to = [a for a in accts if a["key"] != rich["key"] and a["label"] not in ("Main", "Service")][-1]
@@ -291,9 +303,35 @@ def send():
     after = {a["key"]: int(a["balance"]) for a in wait_accounts(s, want=3)["accounts"]}
     check("the receiver got exactly the amount", after[to["key"]] == to0 + amount, (to0, after[to["key"]]))
     check("the sender paid the amount plus the fee", after[rich["key"]] == rich0 - amount - fee, (rich0, after[rich["key"]]))
+    history_checks(s, h, rich["key"], to["key"], amount, fee, started["id"])
     code, d = call("/api/wallet/backup", {"password": BACKUP_PASSWORD, "pin": "135790"}, session=s)
     check("a node with its keys in its config file has no backup to export, and says so",
           code == 409 and "nothing to export" in d.get("error", ""), (code, d))
+
+
+def history_checks(s, h, frm, to, amount, fee, started_id):
+    """The transfer just made, as the history and the receipt popups see it."""
+    sent = got = None
+    for _ in range(40):
+        code, d = call("/api/wallet/history?limit=200", session=s)
+        es = d.get("entries", [])
+        sent = next((e for e in es if e["kind"] == "sent" and e.get("hash") == h), None)
+        got = next((e for e in es if e["kind"] == "received" and e["key"] == to and e["id"] > started_id), None)
+        if sent and sent.get("status") == "in block" and got:
+            break
+        time.sleep(3)
+    print("     history:", sent, got)
+    check("the history lists the transfer as sent and in a block",
+          sent and sent.get("status") == "in block" and sent["key"] == frm, sent)
+    check("the sent entry has the recipient, amount and fee",
+          sent["to"] == to and int(sent["amount"]) == amount and int(sent["fee"]) == fee, (sent, amount, fee))
+    check("the receiving key shows the amount as received", got and int(got["amount"]) == amount, got)
+    ids = [e["id"] for e in d["entries"]]
+    check("the history is newest first", ids == sorted(ids, reverse=True), ids[:10])
+    code, r1 = call("/api/wallet/receipts", {}, session=s)
+    check("the new receipt is reported to a page", code == 200 and got["id"] in [e["id"] for e in r1.get("receipts", [])], (code, r1))
+    code, r2 = call("/api/wallet/receipts", {}, session=s)
+    check("and not reported again", code == 200 and got["id"] not in [e["id"] for e in r2.get("receipts", [])], (code, r2))
 
 
 if __name__ == "__main__":

@@ -274,6 +274,17 @@ def session_ok(token):
 
 # ---- wallet actions -------------------------------------------------------------------------
 
+def notes_of(key):
+    """{note id: amount} for one of this node's wallet keys ({} for a key that never received anything, as the
+    node answers 404 then), or None when the node gives no usable answer (it answers 500 while syncing)."""
+    code, reply = node("/wallet/%s/balance" % key)
+    if code == 200 and isinstance(reply, dict):
+        return {str(i): as_int(v) for i, v in (reply.get("notes") or {}).items()}
+    if code == 404 and isinstance(reply, dict) and reply.get("code") == 404:
+        return {}
+    return None
+
+
 def balance_of(key):
     """(balance, number of notes) for one of this node's wallet keys, or None when the node gives no usable answer.
     The node answers 404 ("could not be found in the wallet") for a key of its own wallet that has never
@@ -327,6 +338,12 @@ def send(body):
         return 502, {"error": "The node refused the transfer: %s" % (detail or "no answer")[:300]}
     with lock:
         sent[reply["hash"]] = {"from": frm, "to": to, "amount": amount, "before": before, "at": time.time()}
+    labels = {k["key"]: k["label"] for k in wallet_keys()}
+    entry = {"key": frm, "label": labels.get(frm, ""), "to": to, "amount": str(amount), "fee": None,
+             "hash": reply["hash"], "status": "pending", "height": st.get("height")}
+    if to in labels:
+        entry["to_label"] = labels[to]
+    history_record_send(entry)
     return 200, {"hash": reply["hash"]}
 
 
@@ -343,6 +360,141 @@ def tx_status(h):
         # the sender's balance only drops once the transfer is in a block
         return 200, {"state": "in_block", "fee": str(tx["before"] - now - tx["amount"])}
     return 200, {"state": "waiting"}
+
+
+# ---- history: what came in and went out, tracked by the server itself ---------------------------
+# The node has no history endpoint, so every HISTORY_POLL seconds, while the node is online, the
+# server reads each wallet key's notes and records what changed: notes that appear are "received",
+# notes spent by a transfer this app sent mark that "sent" entry as in a block (with its fee), and
+# anything else is recorded as "changed" by the difference, not guessed at. The first look writes
+# one "tracking started" entry with the balances found; nothing before it is known. Kept in
+# DATA_DIR/wallet-history.json (owner-only), which also holds which receipts were already shown.
+
+HISTORY_FILE = os.path.join(DATA_DIR, "wallet-history.json")
+HISTORY_MAX, HISTORY_KEEP = 1000, 500
+HISTORY_POLL = int(os.environ.get("HISTORY_POLL", "15"))
+hist_lock = threading.Lock()
+
+
+def history_load():
+    try:
+        with open(HISTORY_FILE) as f:
+            h = json.load(f)
+        if isinstance(h.get("entries"), list) and isinstance(h.get("snapshot"), dict):
+            return h
+    except Exception:
+        pass
+    return {"version": 1, "next_id": 1, "seen": 0, "snapshot": {}, "entries": []}
+
+
+history = history_load()
+
+
+def history_save():
+    """Writes the history; the caller holds hist_lock."""
+    if len(history["entries"]) > HISTORY_MAX:
+        history["entries"] = history["entries"][-HISTORY_KEEP:]
+    tmp = HISTORY_FILE + ".tmp"
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(history, f)
+        os.replace(tmp, HISTORY_FILE)
+    except Exception:
+        pass
+
+
+def history_add(kind, **fields):
+    """Adds an entry; the caller holds hist_lock and saves."""
+    e = {"id": history["next_id"], "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "kind": kind}
+    e.update(fields)
+    history["next_id"] += 1
+    history["entries"].append(e)
+    return e
+
+
+def history_record_send(entry):
+    with hist_lock:
+        history_add("sent", **entry)
+        history_save()
+
+
+def history_round():
+    """One look at the wallet. Does nothing unless the node is online and answers."""
+    st = node_status()
+    if not st or st.get("state") != "Online":
+        return
+    keys = wallet_keys()
+    if not keys:
+        return
+    labels = {k["key"]: k["label"] for k in keys}
+    found = {}
+    for k in keys:
+        n = notes_of(k["key"])
+        if n is not None:
+            found[k["key"]] = n
+    height = st.get("height")
+    with hist_lock:
+        if not history["snapshot"]:
+            if len(found) < len(keys):
+                return                       # wait until every key answers, for a complete starting point
+            bal = [{"key": k, "label": labels[k], "balance": str(sum(found[k].values()))} for k in labels]
+            history_add("tracking started", height=height, balances=bal, amount=str(sum(int(b["balance"]) for b in bal)))
+            history["snapshot"] = found
+            return history_save()
+        changed = False
+        for key, new in found.items():
+            old = history["snapshot"].get(key)
+            label = labels.get(key, "")
+            if old is None:                  # a key that wasn't in the wallet before, e.g. restored from a backup
+                history_add("tracking started", key=key, label=label, amount=str(sum(new.values())), height=height)
+                history["snapshot"][key], changed = new, True
+                continue
+            added = {i: v for i, v in new.items() if i not in old}
+            removed = {i: v for i, v in old.items() if i not in new}
+            if not added and not removed:
+                continue
+            changed = True
+            if removed:
+                out = sum(removed.values()) - sum(added.values())
+                pending = [e for e in history["entries"] if e["kind"] == "sent" and e.get("status") == "pending" and e["key"] == key]
+                if len(pending) == 1 and out >= int(pending[0]["amount"]):
+                    # our own transfer is in a block: what left the key beyond the amount is the fee
+                    pending[0].update(status="in block", fee=str(out - int(pending[0]["amount"])), landed_height=height,
+                                      landed=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+                else:
+                    history_add("changed", key=key, label=label, amount=str(-out), height=height)
+            else:
+                for i, v in added.items():
+                    history_add("received", key=key, label=label, amount=str(v), note=i, height=height)
+            history["snapshot"][key] = new
+        if changed:
+            history_save()
+
+
+def history_loop():
+    while True:
+        try:
+            history_round()
+        except Exception:
+            pass
+        time.sleep(HISTORY_POLL)
+
+
+def history_page(before, limit):
+    with hist_lock:
+        out = [e for e in reversed(history["entries"]) if not before or e["id"] < before][:limit]
+        return {"entries": [dict(e) for e in out], "tracking": bool(history["snapshot"])}
+
+
+def receipts_take():
+    """Received entries no page has been given yet. Handing them out marks them shown, for every page."""
+    with hist_lock:
+        new = [dict(e) for e in history["entries"] if e["kind"] == "received" and e["id"] > history["seen"]]
+        if new:
+            history["seen"] = max(e["id"] for e in new)
+            history_save()
+        return new
 
 
 # ---- wallet backup: the node's key file, encrypted with scrypt + ChaCha20-Poly1305 (RFC 8439) ---
@@ -714,6 +866,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not self.authed():
                 return self.reply(401, {"error": "locked"})
             return self.reply(200, {"accounts": accounts(), "node": node_status()})
+        if path == "/api/wallet/history":
+            if not self.authed():
+                return self.reply(401, {"error": "locked"})
+            m1, m2 = re.search(r"[?&]before=(\d{1,12})", self.path), re.search(r"[?&]limit=(\d{1,4})", self.path)
+            return self.reply(200, history_page(int(m1.group(1)) if m1 else 0, min(200, int(m2.group(1)) if m2 else 50)))
         if path == "/api/wallet/tx":
             if not self.authed():
                 return self.reply(401, {"error": "locked"})
@@ -798,6 +955,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 session["token"] = None
             event("wallet locked", self, by_unlocked_page="yes" if had else "no")
             return self.reply(200, {"ok": True})
+        if path == "/api/wallet/receipts":
+            if not self.authed():
+                return self.reply(401, {"error": "locked"})
+            return self.reply(200, {"receipts": receipts_take()})
         if path == "/api/wallet/send":
             if not self.authed():
                 return self.reply(401, {"error": "locked"})
@@ -814,4 +975,5 @@ class Handler(http.server.BaseHTTPRequestHandler):
 if __name__ == "__main__":
     event("app start", port=PORT)
     threading.Thread(target=wallet_keys, daemon=True).start()
+    threading.Thread(target=history_loop, daemon=True).start()
     http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
