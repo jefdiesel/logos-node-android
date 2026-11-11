@@ -54,9 +54,12 @@ if [ -n "$GMP_H" ]; then cp "$GMP_H" "$INC/gmp.h"; else
 fi
 cp -r /usr/include/nlohmann "$INC/"        # header-only JSON library used by circom's main.cpp
 mkdir -p "$OUT/lib" && cp "$GMP_A" "$OUT/lib/libgmp.a"
-# upstream's build script asks the linker for "stdc++"; Android's C++ library is libc++ (linked by
-# the prover library). An empty archive of that name satisfies the request without adding anything.
-"$TC/bin/llvm-ar" rcs "$OUT/lib/libstdc++.a"
+# The circuits crates ask the linker for "stdc++" and the prover crate for "c++". Android's C++
+# library is libc++, and a standalone executable is simplest with it linked statically (nothing to
+# ship next to the binary). This folder is a linker search path, so these two linker scripts, the
+# same one the NDK ships as libc++.a, turn both requests into the static libc++.
+for l in libstdc++.a libc++.a; do echo 'INPUT(-lc++_static -lc++abi)' > "$OUT/lib/$l"; done
+echo "  NDK libc++.a: $(head -c 120 "$TC/sysroot/usr/lib/aarch64-linux-android/libc++.a" | tr -d '\0')"
 
 # 4. the four witness generators
 for entry in "pol mantle" "poq blend" "signature mantle" "poc mantle"; do
