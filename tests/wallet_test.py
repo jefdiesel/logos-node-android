@@ -4,7 +4,7 @@
   wallet_test.py guard   the wallet's locks: PIN, session, own-page-only, pause after wrong PINs
   wallet_test.py send    a real transfer on a private one-node chain with funded test keys
 """
-import json, sys, time, urllib.error, urllib.request
+import base64, hashlib, json, os, subprocess, sys, tempfile, time, urllib.error, urllib.request
 
 BASE = "http://127.0.0.1:8090"
 
@@ -46,6 +46,94 @@ def wait_accounts(session, want=1, tries=30):
     check("the wallet lists its keys with balances", False, d)
 
 
+def b64u(b):
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+
+class FakePasskey:
+    """Plays the phone's part in fingerprint unlock: a P-256 key made with openssl that signs like an authenticator."""
+    ORIGIN = "http://localhost:8090"
+
+    def __init__(self):
+        self.dir = tempfile.mkdtemp()
+        self.key = os.path.join(self.dir, "k.pem")
+        subprocess.run(["openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out", self.key], check=True, capture_output=True)
+        self.spki = subprocess.run(["openssl", "ec", "-in", self.key, "-pubout", "-outform", "DER"], check=True, capture_output=True).stdout
+        self.id = os.urandom(32)
+
+    def auth_data(self, flags=0x05, rp="localhost"):
+        return hashlib.sha256(rp.encode()).digest() + bytes([flags]) + (0).to_bytes(4, "big")
+
+    def client_data(self, kind, challenge, origin=None):
+        return json.dumps({"type": kind, "challenge": challenge, "origin": origin or self.ORIGIN, "crossOrigin": False}).encode()
+
+    def sign(self, auth, client):
+        msg = os.path.join(self.dir, "m")
+        with open(msg, "wb") as f:
+            f.write(auth + hashlib.sha256(client).digest())
+        return subprocess.run(["openssl", "dgst", "-sha256", "-sign", self.key, msg], check=True, capture_output=True).stdout
+
+    def assertion(self, challenge, **kw):
+        auth = self.auth_data(kw.get("flags", 0x05), kw.get("rp", "localhost"))
+        client = self.client_data("webauthn.get", challenge, kw.get("origin"))
+        sig = self.sign(auth, client)
+        if kw.get("tamper"):
+            sig = sig[:-1] + bytes([sig[-1] ^ 1])
+        return {"id": b64u(self.id), "clientDataJSON": b64u(client), "authenticatorData": b64u(auth), "signature": b64u(sig)}
+
+
+def passkey_checks(s):
+    """Fingerprint unlock, start to finish, and the ways it must fail. `s` is an unlocked session."""
+    pk = FakePasskey()
+    code, d = call("/api/wallet/passkey/challenge", {})
+    check("no fingerprint challenge before it is turned on", code == 404, (code, d))
+    code, d = call("/api/wallet/passkey/options", {})
+    check("turning fingerprint on needs an unlocked wallet", code == 401, (code, d))
+    code, o = call("/api/wallet/passkey/options", {}, session=s)
+    check("setup options are issued to an unlocked wallet", code == 200 and o.get("rpId") == "localhost", (code, o))
+    reg = {"id": b64u(pk.id), "publicKey": b64u(pk.spki), "authenticatorData": b64u(pk.auth_data()),
+           "clientDataJSON": b64u(pk.client_data("webauthn.create", o["challenge"], "https://evil.example"))}
+    code, d = call("/api/wallet/passkey/register", reg, session=s)
+    check("a key offered from another website is refused", code == 400, (code, d))
+    code, d = call("/api/wallet/passkey/register", dict(reg, clientDataJSON=b64u(pk.client_data("webauthn.create", o["challenge"]))), session=s)
+    check("a setup challenge can't be used twice", code == 400, (code, d))
+    code, o = call("/api/wallet/passkey/options", {}, session=s)
+    code, d = call("/api/wallet/passkey/register", dict(reg, clientDataJSON=b64u(pk.client_data("webauthn.create", o["challenge"]))), session=s)
+    check("fingerprint unlock is turned on", code == 200 and d.get("passkeys") == 1, (code, d))
+    call("/api/wallet/lock", {}, session=s)
+
+    def attempt(**kw):
+        code, c = call("/api/wallet/passkey/challenge", {})
+        check("a fingerprint challenge is issued", code == 200 and c.get("ids") == [b64u(pk.id)], (code, c))
+        return call("/api/wallet/passkey/unlock", pk.assertion(c["challenge"], **kw))
+    code, d = attempt(tamper=True)
+    check("a wrong signature is refused", code == 401, (code, d))
+    code, d = attempt(origin="https://evil.example")
+    check("a signature made for another website is refused", code == 401, (code, d))
+    code, d = attempt(flags=0x01)
+    check("a signature without fingerprint confirmation is refused", code == 401, (code, d))
+    code, d = attempt(rp="evil.example")
+    check("a signature for another site name is refused", code == 401, (code, d))
+    other = FakePasskey(); other.id = pk.id
+    code, c = call("/api/wallet/passkey/challenge", {})
+    code, d = call("/api/wallet/passkey/unlock", other.assertion(c["challenge"]))
+    check("a signature from a different key is refused", code == 401, (code, d))
+    code, c = call("/api/wallet/passkey/challenge", {})
+    good = pk.assertion(c["challenge"])
+    code, d = call("/api/wallet/passkey/unlock", good)
+    check("the right fingerprint key unlocks the wallet", code == 200 and len(d.get("session", "")) == 64, (code, d))
+    s2 = d["session"]
+    code, d = call("/api/wallet/passkey/unlock", good)
+    check("the same signature can't be replayed", code == 401, (code, d))
+    code, d = call("/api/wallet/accounts", session=s2)
+    check("the fingerprint session opens the wallet", code == 200, (code, d))
+    code, d = call("/api/wallet/passkey/remove", {}, session=s2)
+    check("fingerprint unlock can be turned off", code == 200 and d.get("passkeys") == 0, (code, d))
+    code, d = call("/api/wallet/passkey/challenge", {})
+    check("after turning it off there is no fingerprint challenge", code == 404, (code, d))
+    return s2
+
+
 def guard():
     code, d = call("/api/status", host="evil.example")
     check("status is readable under any host name", code == 200 and "node" in d, (code, d))
@@ -79,6 +167,7 @@ def guard():
     if (st.get("node") or {}).get("state") != "Online":
         code, d = call("/api/wallet/send", {"from": main["key"], "to": "cd" * 32, "amount": 5}, session=s)
         check("sending is refused while the node is not online", code == 409, (code, d))
+    s = passkey_checks(s)
     code, d = call("/api/wallet/lock", {}, session=s)
     code, d = call("/api/wallet/accounts", session=s)
     check("locking ends the session", code == 401, (code, d))

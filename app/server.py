@@ -4,7 +4,7 @@
 It listens on 127.0.0.1 only and talks to the node's own API on 127.0.0.1:8080.
 Python standard library only. Wallet calls need a PIN that is set on first use.
 """
-import hashlib, hmac, http.server, json, os, re, secrets, subprocess, threading, time
+import base64, hashlib, hmac, http.server, json, os, re, secrets, subprocess, threading, time
 import urllib.error, urllib.request
 
 HOME = os.path.expanduser("~")
@@ -289,36 +289,162 @@ def icon_png(n):
     return _icons[n]
 
 
-# ---- fingerprint test (temporary): does this browser allow a passkey for a page on this device? ----
+# ---- fingerprint unlock (a WebAuthn passkey) -------------------------------------------------
+# The browser only allows passkeys on a name, not on a bare IP address, so this works when the
+# page is opened as http://localhost:PORT. The PIN stays as the fallback and is needed to turn
+# fingerprint unlock on. Signatures are ECDSA P-256 / SHA-256, checked here with plain integers
+# (verification only handles public values, so it needs no constant-time care).
 
-fp_result = {"result": None}
-FP_PAGE = b"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="light dark"><title>Fingerprint test</title>
-<style>body{font:17px/1.5 system-ui,sans-serif;max-width:480px;margin:0 auto;padding:28px 18px}
-button{font:inherit;font-weight:600;padding:14px 18px;border-radius:10px;border:0;background:#b4451b;color:#fff;width:100%;min-height:52px}
-#out{margin-top:18px;white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body>
-<h1 style="font-size:22px">Fingerprint test</h1>
-<p>This checks whether this phone lets the wallet page use your fingerprint. It creates a test key and nothing else. Tap the button, then touch the fingerprint sensor if asked.</p>
-<button id="b">Test fingerprint</button><div id="out"></div>
-<script>
-const out = t => { document.getElementById("out").textContent = t; fetch("/api/fp-test", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({result: t})}).catch(()=>{}); };
-document.getElementById("b").addEventListener("click", async () => {
-  if (location.hostname !== "localhost") return out("Open this page as localhost:" + location.port + "/fp-test (not " + location.hostname + ") and try again.");
-  if (!window.PublicKeyCredential) return out("FAIL: this browser has no passkey support.");
-  try {
-    const avail = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
-    const cred = await navigator.credentials.create({ publicKey: {
-      rp: { id: "localhost", name: "Logos node" },
-      user: { id: crypto.getRandomValues(new Uint8Array(16)), name: "wallet", displayName: "Logos node wallet" },
-      challenge: crypto.getRandomValues(new Uint8Array(32)),
-      pubKeyCredParams: [{ type: "public-key", alg: -7 }],
-      authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "required", residentKey: "discouraged" },
-      timeout: 60000, attestation: "none" } });
-    const r = cred.response, alg = r.getPublicKeyAlgorithm ? r.getPublicKeyAlgorithm() : "?";
-    out("OK: fingerprint works here. (platform sensor reported: " + avail + ", key type " + alg + ", transports " + (r.getTransports ? r.getTransports().join(",") : "?") + ")");
-  } catch (e) { out("FAIL: " + e.name + ": " + e.message); }
-});
-</script></body></html>"""
+PASSKEY_FILE = os.path.join(DATA_DIR, "wallet-passkeys.json")
+RP_ID = "localhost"
+PASSKEY_ORIGIN = "http://localhost:%d" % PORT
+challenges = {}      # "reg" / "get" -> (challenge bytes, expiry time)
+
+P256_P = 0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff
+P256_N = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551
+P256_B = 0x5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b
+P256_G = (0x6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296,
+          0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5)
+P256_OID = bytes.fromhex("2a8648ce3d030107")
+
+
+def b64u(b):
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+
+def b64u_dec(v):
+    v = str(v)
+    return base64.urlsafe_b64decode(v + "=" * (-len(v) % 4))
+
+
+def _ec_add(a, b):
+    if a is None:
+        return b
+    if b is None:
+        return a
+    (x1, y1), (x2, y2) = a, b
+    if x1 == x2:
+        if (y1 + y2) % P256_P == 0:
+            return None
+        lam = (3 * x1 * x1 - 3) * pow(2 * y1, -1, P256_P) % P256_P
+    else:
+        lam = (y2 - y1) * pow(x2 - x1, -1, P256_P) % P256_P
+    x3 = (lam * lam - x1 - x2) % P256_P
+    return x3, (lam * (x1 - x3) - y1) % P256_P
+
+
+def _ec_mul(k, pt):
+    out = None
+    while k:
+        if k & 1:
+            out = _ec_add(out, pt)
+        pt = _ec_add(pt, pt)
+        k >>= 1
+    return out
+
+
+def p256_on_curve(x, y):
+    return 0 < x < P256_P and 0 < y < P256_P and (y * y - (x * x * x - 3 * x + P256_B)) % P256_P == 0
+
+
+def p256_verify(x, y, digest, sig):
+    """True if `sig` (DER) is a valid ECDSA P-256 signature of the 32-byte `digest` under public key (x, y)."""
+    try:
+        if len(sig) < 8 or sig[0] != 0x30 or sig[1] != len(sig) - 2 or sig[2] != 0x02:
+            return False
+        lr = sig[3]
+        r = int.from_bytes(sig[4:4 + lr], "big")
+        j = 4 + lr
+        if sig[j] != 0x02 or j + 2 + sig[j + 1] != len(sig):
+            return False
+        s_ = int.from_bytes(sig[j + 2:], "big")
+        if not (0 < r < P256_N and 0 < s_ < P256_N) or not p256_on_curve(x, y):
+            return False
+        w = pow(s_, -1, P256_N)
+        z = int.from_bytes(digest, "big")
+        pt = _ec_add(_ec_mul(z * w % P256_N, P256_G), _ec_mul(r * w % P256_N, (x, y)))
+        return pt is not None and pt[0] % P256_N == r
+    except Exception:
+        return False
+
+
+def passkeys_load():
+    try:
+        with open(PASSKEY_FILE) as f:
+            d = json.load(f)
+        if isinstance(d.get("keys"), list) and d.get("user_id"):
+            return d
+    except Exception:
+        pass
+    return {"user_id": b64u(secrets.token_bytes(16)), "keys": []}
+
+
+def passkeys_save(d):
+    tmp = PASSKEY_FILE + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(d, f)
+    os.replace(tmp, PASSKEY_FILE)
+
+
+def challenge_new(kind):
+    c = secrets.token_bytes(32)
+    with lock:
+        challenges[kind] = (c, time.time() + 120)
+    return c
+
+
+def challenge_take(kind):
+    with lock:
+        c, until = challenges.pop(kind, (None, 0))
+    return c if c and time.time() < until else None
+
+
+def webauthn_ok(client_data, auth_data, kind, challenge):
+    """Checks what the browser and the authenticator say about a passkey operation."""
+    try:
+        cd = json.loads(client_data)
+    except Exception:
+        return False
+    if not challenge or cd.get("type") != kind or cd.get("origin") != PASSKEY_ORIGIN or cd.get("crossOrigin"):
+        return False
+    if not hmac.compare_digest(str(cd.get("challenge", "")), b64u(challenge)):
+        return False
+    if len(auth_data) < 37 or auth_data[:32] != hashlib.sha256(RP_ID.encode()).digest():
+        return False
+    return auth_data[32] & 0x05 == 0x05          # user present and user verified (fingerprint, face or screen lock)
+
+
+def passkey_register(body):
+    try:
+        cid, client, auth, spki = (b64u_dec(body.get(k, "")) for k in ("id", "clientDataJSON", "authenticatorData", "publicKey"))
+    except Exception:
+        return 400, {"error": "bad request"}
+    if not webauthn_ok(client, auth, "webauthn.create", challenge_take("reg")):
+        return 400, {"error": "The fingerprint setup didn't check out. Try again."}
+    if len(spki) < 65 or spki[-65] != 0x04 or P256_OID not in spki or not 0 < len(cid) <= 1024:
+        return 400, {"error": "This device offered a key type the wallet can't use."}
+    x, y = int.from_bytes(spki[-64:-32], "big"), int.from_bytes(spki[-32:], "big")
+    if not p256_on_curve(x, y):
+        return 400, {"error": "This device offered a key the wallet can't use."}
+    d = passkeys_load()
+    d["keys"] = [k for k in d["keys"] if k["id"] != b64u(cid)][-4:] + [{"id": b64u(cid), "x": "%064x" % x, "y": "%064x" % y, "added": int(time.time())}]
+    passkeys_save(d)
+    return 200, {"ok": True, "passkeys": len(d["keys"])}
+
+
+def passkey_unlock(body):
+    try:
+        cid, client, auth, sig = (b64u_dec(body.get(k, "")) for k in ("id", "clientDataJSON", "authenticatorData", "signature"))
+    except Exception:
+        return 400, {"error": "bad request"}
+    key = next((k for k in passkeys_load()["keys"] if k["id"] == b64u(cid)), None)
+    if not key or not webauthn_ok(client, auth, "webauthn.get", challenge_take("get")):
+        return 401, {"error": "Fingerprint unlock failed. Use your PIN."}
+    digest = hashlib.sha256(auth + hashlib.sha256(client).digest()).digest()
+    if not p256_verify(int(key["x"], 16), int(key["y"], 16), digest, sig):
+        return 401, {"error": "Fingerprint unlock failed. Use your PIN."}
+    return 200, {"session": session_new()}
 
 
 # ---- HTTP -----------------------------------------------------------------------------------
@@ -364,10 +490,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.reply(200, raw=MANIFEST, ctype="application/manifest+json")
         if path in ("/icon-192.png", "/icon-512.png"):
             return self.reply(200, raw=icon_png(192 if "192" in path else 512), ctype="image/png")
-        if path == "/fp-test":
-            return self.reply(200, raw=FP_PAGE, ctype="text/html; charset=utf-8")
-        if path == "/api/fp-test":
-            return self.reply(200, fp_result)
         if path == "/api/status":
             st = node_status()
             return self.reply(200, {"node": st} if st else {"node": None, "waiting": node_waiting()})
@@ -377,7 +499,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/api/wallet":
             with lock:
                 wait = max(0, int(fails["until"] - time.time()))
-            return self.reply(200, {"pin_set": pin_is_set(), "unlocked": self.authed(), "wait": wait})
+            return self.reply(200, {"pin_set": pin_is_set(), "unlocked": self.authed(), "wait": wait,
+                                    "passkeys": len(passkeys_load()["keys"])})
         if path == "/api/wallet/accounts":
             if not self.authed():
                 return self.reply(401, {"error": "locked"})
@@ -397,15 +520,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.reply(415, {"error": "send JSON"})
         try:
             n = int(self.headers.get("Content-Length", "0"))
-            body = json.loads(self.rfile.read(n) or b"{}") if 0 <= n <= 4096 else None
+            body = json.loads(self.rfile.read(n) or b"{}") if 0 <= n <= 16384 else None
         except Exception:
             body = None
         if not isinstance(body, dict):
             return self.reply(400, {"error": "bad request"})
         path = self.path.split("?", 1)[0]
-        if path == "/api/fp-test":
-            fp_result["result"] = str(body.get("result", ""))[:500]
-            return self.reply(200, {"ok": True})
         if path == "/api/wallet/setup":
             pin = str(body.get("pin", ""))
             if not PIN_RE.match(pin):
@@ -429,6 +549,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if fails["count"] >= MAX_FAILS:
                     fails["count"], fails["until"] = 0, time.time() + FAIL_PAUSE
             return self.reply(401, {"error": "Wrong PIN."})
+        if path == "/api/wallet/passkey/challenge":
+            d = passkeys_load()
+            if not d["keys"]:
+                return self.reply(404, {"error": "Fingerprint unlock isn't turned on."})
+            return self.reply(200, {"challenge": b64u(challenge_new("get")), "rpId": RP_ID, "ids": [k["id"] for k in d["keys"]]})
+        if path == "/api/wallet/passkey/unlock":
+            code, obj = passkey_unlock(body)
+            return self.reply(code, obj)
+        if path in ("/api/wallet/passkey/options", "/api/wallet/passkey/register", "/api/wallet/passkey/remove"):
+            if not self.authed():
+                return self.reply(401, {"error": "locked"})
+            d = passkeys_load()
+            if path.endswith("/options"):
+                return self.reply(200, {"challenge": b64u(challenge_new("reg")), "rpId": RP_ID, "userId": d["user_id"],
+                                        "exclude": [k["id"] for k in d["keys"]]})
+            if path.endswith("/remove"):
+                d["keys"] = []
+                passkeys_save(d)
+                return self.reply(200, {"ok": True, "passkeys": 0})
+            code, obj = passkey_register(body)
+            return self.reply(code, obj)
         if path == "/api/wallet/lock":
             with lock:
                 session["token"] = None

@@ -94,9 +94,11 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
     </form>
 
     <form id="v-locked" hidden autocomplete="off">
-      <label for="pin" style="margin-top:0">PIN</label>
+      <button class="primary" type="button" id="b-fp" style="margin-top:0" hidden>Unlock with fingerprint</button>
+      <p class="note" id="n-fp-host" hidden>To use your fingerprint, open this page as <b>localhost</b>, not 127.0.0.1.</p>
+      <label for="pin" id="l-pin" style="margin-top:0">PIN</label>
       <input id="pin" type="password" inputmode="numeric" maxlength="12" autocomplete="off" required>
-      <button class="primary" type="submit">Unlock</button>
+      <button class="primary" type="submit" id="b-pin">Unlock</button>
       <p class="msg bad" id="m-locked" role="alert"></p>
     </form>
 
@@ -140,7 +142,11 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
       </div>
 
       <hr>
-      <button type="button" id="b-lock" class="small" style="margin-top:10px">Lock wallet</button>
+      <div class="row" style="margin-top:10px">
+        <button type="button" id="b-lock" class="small">Lock wallet</button>
+        <button type="button" id="b-fp-set" class="small" hidden>Turn on fingerprint unlock</button>
+      </div>
+      <p class="msg" id="m-fp" role="status"></p>
     </div>
   </section>
 
@@ -206,10 +212,61 @@ function syncNote() {
   $("b-review").disabled = !online;
 }
 
+// ---- fingerprint (passkey) ----
+const b64u = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const unb64u = t => Uint8Array.from(atob(t.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
+const canPasskey = () => location.hostname === "localhost" && !!window.PublicKeyCredential;
+let passkeys = 0;
+function fpUi() {
+  const on = passkeys > 0;
+  $("b-fp").hidden = !(on && canPasskey());
+  $("n-fp-host").hidden = !(on && !canPasskey() && location.hostname === "127.0.0.1");
+  $("l-pin").textContent = on && canPasskey() ? "Or your PIN" : "PIN";
+  $("l-pin").style.marginTop = on && canPasskey() ? "16px" : "0";
+  $("b-pin").className = on && canPasskey() ? "" : "primary"; $("b-pin").style.width = "100%"; $("b-pin").style.marginTop = "14px";
+  $("b-fp-set").hidden = !canPasskey(); $("b-fp-set").textContent = on ? "Turn off fingerprint unlock" : "Turn on fingerprint unlock";
+}
+async function fpUnlock() {
+  const m = $("m-locked"); m.textContent = "";
+  const c = await api("/api/wallet/passkey/challenge", {});
+  if (!c.ok) return void (m.textContent = c.data.error || "Fingerprint unlock isn't available.");
+  let a;
+  try {
+    a = await navigator.credentials.get({ publicKey: { challenge: unb64u(c.data.challenge), rpId: c.data.rpId, userVerification: "required", timeout: 60000,
+      allowCredentials: c.data.ids.map(id => ({ type: "public-key", id: unb64u(id) })) } });
+  } catch (e) { return void (m.textContent = "Fingerprint wasn't confirmed. Use your PIN, or try again."); }
+  const r = await api("/api/wallet/passkey/unlock", { id: b64u(a.rawId), clientDataJSON: b64u(a.response.clientDataJSON), authenticatorData: b64u(a.response.authenticatorData), signature: b64u(a.response.signature) });
+  if (!r.ok) return void (m.textContent = r.data.error || "Fingerprint unlock failed. Use your PIN.");
+  setToken(r.data.session); loadWallet();
+}
+async function fpToggle() {
+  const m = $("m-fp"); m.className = "msg"; m.textContent = "";
+  if (passkeys > 0) {
+    const r = await api("/api/wallet/passkey/remove", {});
+    if (r.ok) { passkeys = 0; m.textContent = "Fingerprint unlock is off. The PIN still works."; }
+    return fpUi();
+  }
+  const o = await api("/api/wallet/passkey/options", {});
+  if (!o.ok) return void (m.className = "msg bad", m.textContent = o.data.error || "Couldn't start fingerprint setup.");
+  let cred;
+  try {
+    cred = await navigator.credentials.create({ publicKey: { rp: { id: o.data.rpId, name: "Logos node" },
+      user: { id: unb64u(o.data.userId), name: "wallet", displayName: "Logos node wallet" }, challenge: unb64u(o.data.challenge),
+      pubKeyCredParams: [{ type: "public-key", alg: -7 }], timeout: 60000, attestation: "none",
+      authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "required", residentKey: "discouraged" },
+      excludeCredentials: o.data.exclude.map(id => ({ type: "public-key", id: unb64u(id) })) } });
+  } catch (e) { return void (m.className = "msg bad", m.textContent = "Fingerprint setup was cancelled or isn't available here."); }
+  const a = cred.response;
+  const r = await api("/api/wallet/passkey/register", { id: b64u(cred.rawId), clientDataJSON: b64u(a.clientDataJSON), authenticatorData: b64u(a.getAuthenticatorData()), publicKey: b64u(a.getPublicKey()) });
+  if (!r.ok) return void (m.className = "msg bad", m.textContent = r.data.error || "Fingerprint setup failed.");
+  passkeys = r.data.passkeys; m.className = "msg ok"; m.textContent = "Fingerprint unlock is on. Your PIN still works too."; fpUi();
+}
+
 // ---- wallet views ----
 async function loadWallet() {
   const r = await api("/api/wallet");
   if (!r.ok) { show("v-loading"); $("v-loading").textContent = r.data.error || "The wallet isn't available."; return; }
+  passkeys = r.data.passkeys || 0; fpUi();
   if (!r.data.pin_set) return show("v-setup");
   if (!r.data.unlocked) { setToken(null); return show("v-locked"); }
   show("v-open"); loadAccounts();
@@ -260,6 +317,8 @@ $("v-locked").addEventListener("submit", async e => {
   if (!r.ok) return void (m.textContent = r.data.error || "Couldn't unlock.");
   setToken(r.data.session); loadWallet();
 });
+$("b-fp").addEventListener("click", fpUnlock);
+$("b-fp-set").addEventListener("click", fpToggle);
 $("b-lock").addEventListener("click", async () => { await api("/api/wallet/lock", {}); setToken(null); resetSend(); show("v-locked"); });
 
 // ---- send ----
