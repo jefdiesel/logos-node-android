@@ -149,6 +149,40 @@ def wallet_keys():
         return keys_cache["keys"]
 
 
+# ---- security event log ---------------------------------------------------------------------
+# One line per wallet event in DATA_DIR/wallet-events.log (owner-only), so it can be told later what
+# unlocked, locked or changed the wallet, and from which page. It never holds the PIN, session tokens,
+# challenges, signatures or keys, and there is no way to read it over HTTP.
+
+EVENTS_FILE = os.path.join(DATA_DIR, "wallet-events.log")
+EVENTS_MAX, EVENTS_KEEP = 1000, 500
+events_lock = threading.Lock()
+
+
+def event(name, req=None, **detail):
+    """Appends one event. `req` is the request handler, for its Host, Origin and User-Agent."""
+    parts = [time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), name]
+    parts += ["%s=%s" % (k, json.dumps(str(v)[:120])) for k, v in detail.items()]
+    if req is not None:
+        parts += ["%s=%s" % (h.lower(), json.dumps(str(req.headers.get(h, ""))[:120])) for h in ("Host", "Origin", "User-Agent")]
+    line = " ".join(parts) + "\n"
+    try:
+        with events_lock:
+            fd = os.open(EVENTS_FILE, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "a") as f:
+                f.write(line)
+            with open(EVENTS_FILE) as f:
+                lines = f.readlines()
+            if len(lines) > EVENTS_MAX:
+                tmp = EVENTS_FILE + ".tmp"
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w") as f:
+                    f.writelines(lines[-EVENTS_KEEP:])
+                os.replace(tmp, EVENTS_FILE)
+    except Exception:
+        pass
+
+
 # ---- PIN and session ------------------------------------------------------------------------
 
 def pin_hash(pin, salt):
@@ -559,6 +593,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 pin_save(pin)
             except FileExistsError:
                 return self.reply(409, {"error": "A PIN is already set."})
+            event("pin set", self)
             return self.reply(200, {"session": session_new()})
         if path == "/api/wallet/unlock":
             with lock:
@@ -568,11 +603,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if pin_is_set() and pin_check(str(body.get("pin", ""))):
                 with lock:
                     fails["count"] = 0
+                event("unlock by PIN ok", self)
                 return self.reply(200, {"session": session_new()})
             with lock:
                 fails["count"] += 1
-                if fails["count"] >= MAX_FAILS:
+                n, paused = fails["count"], fails["count"] >= MAX_FAILS
+                if paused:
                     fails["count"], fails["until"] = 0, time.time() + FAIL_PAUSE
+            event("unlock by PIN failed", self, attempt=n)
+            if paused:
+                event("lockout started", self, seconds=FAIL_PAUSE)
             return self.reply(401, {"error": "Wrong PIN."})
         if path == "/api/wallet/passkey/challenge":
             d = passkeys_load()
@@ -581,6 +621,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.reply(200, {"challenge": b64u(challenge_new("get")), "rpId": RP_ID, "ids": [k["id"] for k in d["keys"]]})
         if path == "/api/wallet/passkey/unlock":
             code, obj = passkey_unlock(body)
+            event("unlock by fingerprint ok" if code == 200 else "unlock by fingerprint failed", self)
             return self.reply(code, obj)
         if path in ("/api/wallet/passkey/options", "/api/wallet/passkey/register", "/api/wallet/passkey/remove"):
             if not self.authed():
@@ -590,19 +631,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply(200, {"challenge": b64u(challenge_new("reg")), "rpId": RP_ID, "userId": d["user_id"],
                                         "exclude": [k["id"] for k in d["keys"]]})
             if path.endswith("/remove"):
+                removed = len(d["keys"])
                 d["keys"] = []
                 passkeys_save(d)
+                event("fingerprint keys removed", self, removed=removed)
                 return self.reply(200, {"ok": True, "passkeys": 0})
             code, obj = passkey_register(body)
+            if code == 200:
+                event("fingerprint key added", self, total=obj.get("passkeys"))
             return self.reply(code, obj)
         if path == "/api/wallet/lock":
+            had = self.authed()
             with lock:
                 session["token"] = None
+            event("wallet locked", self, by_unlocked_page="yes" if had else "no")
             return self.reply(200, {"ok": True})
         if path == "/api/wallet/send":
             if not self.authed():
                 return self.reply(401, {"error": "locked"})
             code, obj = send(body)
+            if code == 200:
+                event("transfer sent", self, hash=obj.get("hash"))
             return self.reply(code, obj)
         return self.reply(404, {"error": "not found"})
 
@@ -611,5 +660,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    event("app start", port=PORT)
     threading.Thread(target=wallet_keys, daemon=True).start()
     http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

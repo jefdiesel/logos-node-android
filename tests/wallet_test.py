@@ -170,6 +170,7 @@ def guard():
     if (st.get("node") or {}).get("state") != "Online":
         code, d = call("/api/wallet/send", {"from": main["key"], "to": "cd" * 32, "amount": 5}, session=s)
         check("sending is refused while the node is not online", code == 409, (code, d))
+    s0 = s
     s = passkey_checks(s)
     code, d = call("/api/wallet/lock", {}, session=s)
     code, d = call("/api/wallet/accounts", session=s)
@@ -179,6 +180,25 @@ def guard():
         check("wrong PIN %d is refused" % (i + 1), code == 401, (code, d))
     code, d = call("/api/wallet/unlock", {"pin": "246810"})
     check("after 5 wrong PINs even the right one has to wait", code == 429 and d.get("wait", 0) > 0, (code, d))
+    events_log_checks([s0, s], ["246810", "000000"])
+
+
+def events_log_checks(sessions, pins):
+    """The wallet's event log, read from disk on this machine (the app has no way to read it over HTTP)."""
+    path = os.environ.get("EVENTS_LOG")
+    if not path:
+        return print("     (EVENTS_LOG not set: event log not checked)")
+    check("the event log is readable by its owner only", os.stat(path).st_mode & 0o077 == 0, oct(os.stat(path).st_mode))
+    with open(path) as f:
+        text = f.read()
+    for name in ["pin set", "unlock by PIN failed", "lockout started", "fingerprint key added", "unlock by fingerprint failed",
+                 "unlock by fingerprint ok", "fingerprint keys removed", "wallet locked"]:
+        check("the event log records '%s'" % name, " %s " % name in text, name)
+    check("the event log records where requests came from", 'origin="http://127.0.0.1:8090"' in text and "user-agent=" in text)
+    secrets_found = [x for x in sessions + pins if x and x in text]
+    check("the event log holds no PIN or session token", not secrets_found, len(secrets_found))
+    code, d = call("/wallet-events.log")
+    check("the event log can't be fetched from the app", code == 404 and "pin set" not in json.dumps(d), code)
 
 
 def send():
