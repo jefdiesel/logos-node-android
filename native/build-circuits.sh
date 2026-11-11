@@ -57,9 +57,9 @@ mkdir -p "$OUT/lib" && cp "$GMP_A" "$OUT/lib/libgmp.a"
 # The circuits crates ask the linker for "stdc++" and the prover crate for "c++". Android's C++
 # library is libc++, and a standalone executable is simplest with it linked statically (nothing to
 # ship next to the binary). This folder is a linker search path, so these two linker scripts, the
-# same one the NDK ships as libc++.a, turn both requests into the static libc++.
+# same one older NDKs shipped as libc++.a (r30 no longer does), turn both requests into the static
+# libc++. The resulting binary needs only libc, libm and libdl from the system.
 for l in libstdc++.a libc++.a; do echo 'INPUT(-lc++_static -lc++abi)' > "$OUT/lib/$l"; done
-echo "  NDK libc++.a: $(head -c 120 "$TC/sysroot/usr/lib/aarch64-linux-android/libc++.a" | tr -d '\0')"
 
 # 4. the four witness generators
 for entry in "pol mantle" "poq blend" "signature mantle" "poc mantle"; do

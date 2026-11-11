@@ -38,7 +38,6 @@ jobs:
           TC="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
           echo "ndk: $NDK"; grep Pkg.Revision "$NDK/source.properties"
           ls -la "$TC/sysroot/usr/lib/aarch64-linux-android/" | grep -E 'libc\+\+|unwind' || true
-          for f in libc++.a libc++.so; do echo "$f: $(head -c 200 "$TC/sysroot/usr/lib/aarch64-linux-android/$f" | tr -d '\0')"; done
           (cd node && rustc -V && cargo -V)
           LBC_TAG=$(grep -m1 -E '^lbc-pol-sys' node/Cargo.toml | sed -E 's/.*tag = "([^"]+)".*/\1/')
           CIRCOM_TAG=$(curl -fsSL "https://raw.githubusercontent.com/logos-blockchain/logos-blockchain-circuits/$LBC_TAG/.github/workflows/ci.yml" | grep -m1 'CIRCOM_TAG:' | awk '{print $2}')
