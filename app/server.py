@@ -260,9 +260,9 @@ def tx_status(h):
 MANIFEST = json.dumps({
     "name": "Logos node", "short_name": "Logos node", "start_url": "/", "scope": "/", "display": "standalone",
     "background_color": "#11110f", "theme_color": "#11110f",
-    "icons": [{"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
-              {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
-              {"src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}]}).encode()
+    "icons": [{"src": "/lambda-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+              {"src": "/lambda-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+              {"src": "/lambda-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}]}).encode()
 _icons = {}
 # the lambda, as thick round-ended strokes on a unit square: the long leg, the short leg, the top hook
 LAMBDA = (((0.375, 0.255), (0.665, 0.745)), ((0.508, 0.480), (0.335, 0.745)), ((0.315, 0.275), (0.375, 0.255)))
@@ -502,7 +502,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply(500, {"error": "index.html is missing"})
         if path == "/manifest.webmanifest":
             return self.reply(200, raw=MANIFEST, ctype="application/manifest+json")
-        if path in ("/icon-192.png", "/icon-512.png", "/icon-maskable-512.png"):
+        if path in ("/lambda-192.png", "/lambda-512.png", "/lambda-maskable-512.png"):
             return self.reply(200, raw=icon_png(192 if "192" in path else 512, "maskable" in path), ctype="image/png")
         if path == "/api/status":
             st = node_status()
