@@ -8,7 +8,7 @@ Python standard library only. Wallet calls need a PIN that is set on first use.
 import base64, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.7.3"       # set by tools/release.py, which also writes release.json
+APP_VERSION = "0.7.4"       # set by tools/release.py, which also writes release.json
 HOME = os.path.expanduser("~")
 NODE_API = os.environ.get("NODE_API", "http://127.0.0.1:8080")
 NODE_BIN = os.environ.get("NODE_BIN", HOME + "/node/logos-blockchain-node")
@@ -25,12 +25,17 @@ ORIGINS = {"http://" + h for h in HOSTS}
 PIN_FILE = os.path.join(DATA_DIR, "wallet-pin.json")
 PIN_RE = re.compile(r"^\d{6,12}$")
 KEY_RE = re.compile(r"^[0-9a-f]{64}$")
-SESSION_IDLE = 600      # seconds without use before the wallet locks again
+# Auto-lock: the wallet locks after AUTOLOCK minutes without the user doing anything (background
+# polling doesn't count), or LEAVE_GRACE seconds after the page said it was hidden. The minute length
+# and the grace can be shortened through the environment so the tests run in seconds.
+AUTOLOCK_CHOICES = (1, 5, 15)
+MINUTE = float(os.environ.get("AUTOLOCK_MINUTE_SECONDS", "60"))
+LEAVE_GRACE = float(os.environ.get("LEAVE_GRACE_SECONDS", "60"))
 MAX_FAILS = 5           # wrong PINs before a pause
 FAIL_PAUSE = 300        # seconds
 
 lock = threading.Lock()
-session = {"token": None, "used": 0.0}
+session = {"token": None, "active": 0.0, "hidden_since": None}
 fails = {"count": 0, "until": 0.0}
 sent = {}               # tx hash -> what we sent, to report when it lands
 keys_cache = {"keys": [], "at": 0.0}
@@ -461,22 +466,76 @@ def pin_check(pin):
         return False
 
 
+SETTINGS_FILE = os.path.join(DATA_DIR, "wallet-settings.json")
+
+
+def settings_load():
+    try:
+        with open(SETTINGS_FILE) as f:
+            d = json.load(f)
+        if d.get("autolock_minutes") in AUTOLOCK_CHOICES:
+            return d
+    except Exception:
+        pass
+    return {"autolock_minutes": 5}
+
+
+wallet_settings = settings_load()
+
+
+def settings_save():
+    fd = os.open(SETTINGS_FILE + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(wallet_settings, f)
+    os.replace(SETTINGS_FILE + ".tmp", SETTINGS_FILE)
+
+
 def session_new():
     with lock:
-        session["token"], session["used"] = secrets.token_hex(32), time.time()
+        session.update(token=secrets.token_hex(32), active=time.time(), hidden_since=None)
         return session["token"]
 
 
+def session_expire():
+    """Ends the session when the user has been idle too long or left the page; logs why. The server
+    decides this, not the page: timers in a hidden page don't run reliably."""
+    now, reason = time.time(), None
+    with lock:
+        if not session["token"]:
+            return
+        if session["hidden_since"] is not None and now - session["hidden_since"] > LEAVE_GRACE:
+            reason = "left the page"
+        elif now - session["active"] > wallet_settings["autolock_minutes"] * MINUTE:
+            reason = "idle"
+        if reason:
+            session["token"] = None
+    if reason:
+        event("wallet locked", reason=reason)
+
+
 def session_ok(token):
+    """Whether `token` is the open session. Only checks: requests don't keep the wallet unlocked."""
+    session_expire()
     with lock:
         t = session["token"]
-        if not t or not token or not hmac.compare_digest(t, token):
-            return False
-        if time.time() - session["used"] > SESSION_IDLE:
-            session["token"] = None
-            return False
-        session["used"] = time.time()
-        return True
+        return bool(t and token and hmac.compare_digest(t, token))
+
+
+def session_touch(visible=False):
+    """The user did something (or came back to the page): the idle clock starts again."""
+    with lock:
+        session["active"] = time.time()
+        if visible:
+            session["hidden_since"] = None
+
+
+def session_watch():
+    while True:
+        time.sleep(max(0.2, min(5.0, LEAVE_GRACE / 4, MINUTE / 4)))
+        try:
+            session_expire()
+        except Exception:
+            pass
 
 
 # ---- wallet actions -------------------------------------------------------------------------
@@ -1166,6 +1225,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def authed(self):
         return session_ok(self.headers.get("X-Session", ""))
 
+    # POSTs that are the user doing something; they count as activity for auto-lock. Everything the
+    # page does on a timer (status, accounts, history, receipts, transfer status) does not.
+    USER_ACTIONS = {"/api/wallet/activity", "/api/wallet/send", "/api/wallet/backup", "/api/wallet/restore",
+                    "/api/wallet/settings", "/api/wallet/passkey/options", "/api/wallet/passkey/register",
+                    "/api/wallet/passkey/remove", "/api/update/check", "/api/update/passkey/challenge",
+                    "/api/update/apply", "/api/names/rpc"}
+
     def do_GET(self):
         path = self.path.split("?", 1)[0]
         # This app listens on 127.0.0.1 only, so nothing off this device can reach it. The status
@@ -1204,7 +1270,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with lock:
                 wait = max(0, int(fails["until"] - time.time()))
             return self.reply(200, {"pin_set": pin_is_set(), "unlocked": self.authed(), "wait": wait,
-                                    "passkeys": len(passkeys_load()["keys"]), "names_program": NAMES_PROGRAM})
+                                    "passkeys": len(passkeys_load()["keys"]), "names_program": NAMES_PROGRAM,
+                                    "autolock_minutes": wallet_settings["autolock_minutes"], "leave_grace": LEAVE_GRACE})
         if path == "/api/wallet/accounts":
             if not self.authed():
                 return self.reply(401, {"error": "locked"})
@@ -1307,12 +1374,39 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if code == 200:
                 event("fingerprint key added", self, total=obj.get("passkeys"))
             return self.reply(code, obj)
+        if path in self.USER_ACTIONS and self.authed():
+            session_touch(visible=True)
         if path == "/api/wallet/lock":
             had = self.authed()
             with lock:
                 session["token"] = None
-            event("wallet locked", self, by_unlocked_page="yes" if had else "no")
+            event("wallet locked", self, reason="user", by_unlocked_page="yes" if had else "no")
             return self.reply(200, {"ok": True})
+        if path == "/api/wallet/activity":
+            return self.reply(200, {"ok": True}) if self.authed() else self.reply(401, {"error": "locked"})
+        if path == "/api/wallet/visibility":
+            # the page tells us when it is hidden or shown again; leaving locks after LEAVE_GRACE
+            if not self.authed():
+                return self.reply(401, {"error": "locked"})
+            if body.get("state") == "hidden":
+                with lock:
+                    if session["hidden_since"] is None:
+                        session["hidden_since"] = time.time()
+            elif body.get("state") == "visible":
+                session_touch(visible=True)
+            else:
+                return self.reply(400, {"error": "state must be hidden or visible"})
+            return self.reply(200, {"ok": True})
+        if path == "/api/wallet/settings":
+            if not self.authed():
+                return self.reply(401, {"error": "locked"})
+            n = body.get("autolock_minutes")
+            if n not in AUTOLOCK_CHOICES or isinstance(n, bool):
+                return self.reply(400, {"error": "Auto-lock can be 1, 5 or 15 minutes."})
+            wallet_settings["autolock_minutes"] = n
+            settings_save()
+            event("auto-lock changed", self, minutes=n)
+            return self.reply(200, {"autolock_minutes": n})
         if path == "/api/update/check":
             if not self.authed():
                 return self.reply(401, {"error": "locked"})
@@ -1371,4 +1465,5 @@ if __name__ == "__main__":
     threading.Thread(target=wallet_keys, daemon=True).start()
     threading.Thread(target=history_loop, daemon=True).start()
     threading.Thread(target=update_loop, daemon=True).start()
+    threading.Thread(target=session_watch, daemon=True).start()
     http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

@@ -12,7 +12,8 @@ BACKUP_PASSWORD = "correct horse battery staple"
 SHORT_PASSWORD = "8chars!x"           # the shortest allowed: 8 characters
 
 
-def call(path, body=None, session=None, origin=BASE, host=None):
+def call(path, body=None, session=None, origin="", host=None):
+    origin = BASE if origin == "" else origin      # "" means this app's own page; None sends no Origin
     req = urllib.request.Request(BASE + path, data=None if body is None else json.dumps(body).encode(),
                                  method="GET" if body is None else "POST")
     if body is not None:
