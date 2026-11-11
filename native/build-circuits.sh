@@ -11,7 +11,7 @@
 set -euo pipefail
 NODE_DIR=$(cd "$1" && pwd); OUT=$2
 WORK=${WORK:-$PWD/work}; API=${ANDROID_API:-28}
-NDK=${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:?set ANDROID_NDK_HOME}}
+NDK=${ANDROID_NDK_HOME:?set ANDROID_NDK_HOME}
 TC=$NDK/toolchains/llvm/prebuilt/linux-x86_64
 CXX=$TC/bin/aarch64-linux-android$API-clang++
 CC=$TC/bin/aarch64-linux-android$API-clang

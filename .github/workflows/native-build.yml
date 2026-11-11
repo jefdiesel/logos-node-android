@@ -15,6 +15,8 @@ permissions:
 env:
   NODE_VERSION: ${{ inputs.node_version || '0.3.4' }}
   ANDROID_API: "28"
+  # pinned NDK; installed with sdkmanager if the runner image does not have it
+  NDK_VERSION: "30.0.16248370"
   # "1" = faster, non-release-equivalent build (thin LTO, parallel codegen) for iterating on errors.
   FAST: "0"
 jobs:
@@ -33,8 +35,12 @@ jobs:
         id: v
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq nlohmann-json3-dev m4 unzip >/dev/null
-          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
-          echo "ANDROID_NDK_HOME=$NDK" >> "$GITHUB_ENV"
+          NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
+          if [ ! -f "$NDK/source.properties" ]; then
+            echo "installing NDK $NDK_VERSION..."
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" >/dev/null
+          fi
+          printf 'ANDROID_NDK_HOME=%s\nANDROID_NDK_ROOT=%s\n' "$NDK" "$NDK" >> "$GITHUB_ENV"
           TC="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
           echo "ndk: $NDK"; grep Pkg.Revision "$NDK/source.properties"
           ls -la "$TC/sysroot/usr/lib/aarch64-linux-android/" | grep -E 'libc\+\+|unwind' || true
