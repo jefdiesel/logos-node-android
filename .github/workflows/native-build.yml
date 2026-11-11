@@ -48,7 +48,7 @@ jobs:
           echo "circuits $LBC_TAG, circom $CIRCOM_TAG"
       - name: Cache circuits folder
         id: lbc
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: lbc-android
           key: lbc-android-${{ steps.v.outputs.lbc }}-${{ steps.v.outputs.ndk }}-api${{ env.ANDROID_API }}-${{ hashFiles('native/build-circuits.sh') }}
@@ -60,6 +60,12 @@ jobs:
       - name: Circuits libraries for Android
         if: steps.lbc.outputs.cache-hit != 'true'
         run: native/build-circuits.sh node "$GITHUB_WORKSPACE/lbc-android"
+      # saved straight away, so a later failure in the node build does not throw it away
+      - uses: actions/cache/save@v4
+        if: steps.lbc.outputs.cache-hit != 'true'
+        with:
+          path: lbc-android
+          key: ${{ steps.lbc.outputs.cache-primary-key }}
       - name: Circuits folder
         run: find lbc-android -maxdepth 2 -type f -exec ls -la {} \;
       - uses: Swatinem/rust-cache@v2
@@ -69,16 +75,26 @@ jobs:
           cache-on-failure: true
       - name: Build the node for Android
         working-directory: node
+        # Plain cargo with the NDK's API-level clang wrappers. (cargo-ndk overwrites the bindgen
+        # arguments with an unversioned target, which NDK r28+ headers reject.)
         run: |
           rustup target add aarch64-linux-android
-          cargo ndk --version 2>/dev/null || cargo install -q cargo-ndk
-          cargo ndk --version
+          TC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+          T=aarch64-linux-android; CLANG="$TC/bin/$T$ANDROID_API-clang"
+          export CC_aarch64_linux_android="$CLANG" CXX_aarch64_linux_android="$CLANG++"
+          export AR_aarch64_linux_android="$TC/bin/llvm-ar" RANLIB_aarch64_linux_android="$TC/bin/llvm-ranlib"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CLANG"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_AR="$TC/bin/llvm-ar"
+          # the cc crate would link C++ code (RocksDB) against libc++_shared; "c++" resolves to the
+          # static libc++ through the linker script in $LBC_ROOT_DIR/lib (see build-circuits.sh)
+          export CXXSTDLIB_aarch64_linux_android=c++
+          export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--target=$T$ANDROID_API --sysroot=$TC/sysroot"
           export LBC_ROOT_DIR="$GITHUB_WORKSPACE/lbc-android"
           EXTRA=()
           if [ "$FAST" = 1 ]; then
             EXTRA=(--config 'profile.release.lto="thin"' --config 'profile.release.codegen-units=16' --config 'profile.release.package."*".codegen-units=16')
           fi
-          cargo ndk -t arm64-v8a --platform "$ANDROID_API" build -p logos-blockchain-node --release "${EXTRA[@]}"
+          cargo build --target $T -p logos-blockchain-node --release "${EXTRA[@]}"
           df -h /
       - name: Describe and package the result
         run: |
