@@ -16,7 +16,7 @@ env:
   NODE_VERSION: ${{ inputs.node_version || '0.3.4' }}
   ANDROID_API: "28"
   # "1" = faster, non-release-equivalent build (thin LTO, parallel codegen) for iterating on errors.
-  FAST: "1"
+  FAST: "0"
 jobs:
   android-arm64:
     runs-on: ubuntu-latest
