@@ -1,0 +1,57 @@
+name: native-build
+# Work in progress: compiles the official Logos node for Android (arm64) with the NDK.
+on:
+  push:
+    paths: ['native/**', .github/workflows/native-build.yml]
+  workflow_dispatch:
+    inputs:
+      node_version:
+        description: Node release tag to build
+        default: "0.3.4"
+permissions:
+  contents: read
+env:
+  NODE_VERSION: ${{ inputs.node_version || '0.3.4' }}
+  ANDROID_API: "28"
+jobs:
+  android-arm64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Node source
+        run: git clone -q --depth 1 --branch "$NODE_VERSION" https://github.com/logos-blockchain/logos-blockchain.git node
+      - name: Tools
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq nlohmann-json3-dev m4 unzip >/dev/null
+          echo "ANDROID_NDK_HOME=${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}" >> "$GITHUB_ENV"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/circom
+          key: circom-bin-v2.2.2
+      - name: Circuits libraries for Android
+        run: native/build-circuits.sh node "$PWD/lbc-android"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: node
+          key: android-${{ env.NODE_VERSION }}
+      - name: Build the node for Android
+        working-directory: node
+        run: |
+          rustup target add aarch64-linux-android
+          cargo install -q cargo-ndk
+          export LBC_ROOT_DIR="$GITHUB_WORKSPACE/lbc-android"
+          cargo ndk -t arm64-v8a --platform "$ANDROID_API" build -p logos-blockchain-node --release
+      - name: Describe and package the result
+        run: |
+          TC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+          B=node/target/aarch64-linux-android/release/logos-blockchain-node
+          file "$B"; ls -la "$B"
+          "$TC/bin/llvm-readelf" -d "$B" | grep -E "NEEDED|RUNPATH" || true
+          mkdir out && cp "$B" out/ && "$TC/bin/llvm-strip" out/logos-blockchain-node
+          cp "$TC/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" out/ || true
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: logos-blockchain-node-android-arm64-${{ env.NODE_VERSION }}
+          path: out/
