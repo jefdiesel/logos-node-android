@@ -1,0 +1,33 @@
+name: install-test
+# Runs install.sh on a clean arm64 Linux machine and checks the node really starts and syncs.
+# This is not an Android phone: it tests the script itself (same CPU type, same binary).
+on:
+  push:
+    paths: [install.sh, apiproxy.py, .github/workflows/install-test.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  fresh-install:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the installer on a clean machine
+        run: SWAP_GB=1 sh install.sh
+      - name: Both services are running
+        run: systemctl is-active logos-node logos-node-status
+      - name: Status page answers
+        run: curl -fsS http://127.0.0.1:8090/ | grep -q "Logos node on this phone"
+      - name: Wallet paths are refused on the status port
+        run: '[ "$(curl -s -o /dev/null -w %{http_code} http://127.0.0.1:8090/wallet/x)" = 403 ]'
+      - name: Node joins the testnet and syncs blocks
+        run: |
+          for i in $(seq 1 36); do
+            H=$(curl -fsS -m 5 http://127.0.0.1:8090/cryptarchia/info | grep -oE '"height":[0-9]+' | grep -oE '[0-9]+' || true)
+            echo "height: ${H:-no answer yet}"
+            if [ -n "$H" ] && [ "$H" -gt 100 ]; then exit 0; fi
+            sleep 10
+          done
+          journalctl -u logos-node --no-pager -n 60
+          exit 1
