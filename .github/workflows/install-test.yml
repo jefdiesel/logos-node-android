@@ -33,15 +33,15 @@ jobs:
           done
           journalctl -u logos-node --no-pager -n 60
           exit 1
-      - name: Node API on port 880 (below the Terminal app's port prompt) lets only the web app's page read it
+      - name: Node API on port 880 (below the Terminal app's port prompt) keeps other websites out
         run: |
           ss -ltn | grep -E "127.0.0.1:880 " || { echo "the node API isn't on 127.0.0.1:880"; exit 1; }
           if ss -ltn | grep -q ":8080 "; then echo "something still listens on 8080"; exit 1; fi
           acao() { curl -s -i -H "Origin: $1" http://127.0.0.1:880/cryptarchia/info | grep -i "^access-control-allow-origin" | tr -d "\r" | cut -d" " -f2; }
-          E=$(acao https://evil.example); L=$(acao http://localhost:8090); I=$(acao http://127.0.0.1:8090)
-          echo "another website gets: '${E:-no header}'; the page on localhost gets: '$L'; on 127.0.0.1: '$I'"
+          E=$(acao https://evil.example); I=$(acao http://127.0.0.1:8090)
+          echo "another website gets: '${E:-no header}'; the app's page gets: '$I'"
           [ "$E" != "*" ] && [ "$E" != "https://evil.example" ] || exit 1
-          [ "$L" = "http://localhost:8090" ] && [ "$I" = "http://127.0.0.1:8090" ] || exit 1
+          [ "$I" = "http://127.0.0.1:8090" ] || exit 1
       - name: The app's ChaCha20-Poly1305 matches the RFC 8439 test vectors
         run: python3 tests/crypto_test.py
       - name: The cryptography package, for the independent backup opener

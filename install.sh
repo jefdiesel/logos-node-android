@@ -80,11 +80,11 @@ Nice=10
 WantedBy=multi-user.target
 U
 }
-# --http-cors-origin: browsers then let only the web app's own page read the node's API, not other websites
-# (the page itself goes through the app, so this only keeps other sites out).
+# --http-cors-origin: browsers then let no other website read the node's API. The node keeps one origin
+# (given twice, it uses the last), and the page itself only talks to the app, so this one is enough.
 # CAP_NET_BIND_SERVICE: lets the node, running as you, listen on port 880.
 unit logos-node "Logos blockchain node" \
-  "$HOME/node/logos-blockchain-node --http-cors-origin http://localhost:8090 --http-cors-origin http://127.0.0.1:8090 user_config.yaml" \
+  "$HOME/node/logos-blockchain-node --http-cors-origin http://127.0.0.1:8090 user_config.yaml" \
   "AmbientCapabilities=CAP_NET_BIND_SERVICE"
 # NODE_API: where the app finds the node. NODE_RESTART_CMD: after restoring a wallet backup the app
 # restarts the node with this (passwordless sudo, as in this install).
