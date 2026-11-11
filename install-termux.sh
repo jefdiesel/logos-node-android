@@ -63,7 +63,7 @@ cat > /root/node/start.sh <<'S'
 cd /root/node/run
 python3 /root/node/app/server.py >/dev/null 2>&1 &
 # --http-cors-origin: the node API then only accepts the status page, not other websites
-exec /root/node/logos-blockchain-node --http-cors-origin http://127.0.0.1:8090 user_config.yaml
+exec /root/node/logos-blockchain-node --http-cors-origin http://localhost:8090 --http-cors-origin http://127.0.0.1:8090 user_config.yaml
 S
 chmod +x /root/node/start.sh
 IN
@@ -78,4 +78,4 @@ chmod +x "$HOME/logos-node"
 
 echo
 echo "done. start the node with:  ~/logos-node"
-echo "then open http://127.0.0.1:8090 in the phone's browser."
+echo "then open http://localhost:8090 in the phone's browser (localhost, not 127.0.0.1: fingerprint unlock only works there)."

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Local web app for a Logos node running on the same device: node status plus a small wallet.
 
-It listens on 127.0.0.1 only and talks to the node's own API on 127.0.0.1:8080.
+It listens on 127.0.0.1 only and talks to the node's own API at NODE_API (127.0.0.1:8080 unless set;
+the Linux Terminal install uses port 880).
 Python standard library only. Wallet calls need a PIN that is set on first use.
 """
 import base64, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.7.0"       # set by tools/release.py, which also writes release.json
+APP_VERSION = "0.7.1"       # set by tools/release.py, which also writes release.json
 HOME = os.path.expanduser("~")
 NODE_API = os.environ.get("NODE_API", "http://127.0.0.1:8080")
 NODE_BIN = os.environ.get("NODE_BIN", HOME + "/node/logos-blockchain-node")
@@ -1149,8 +1150,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
-        # Status is public and may be relayed to other devices. Everything else answers only
-        # when the request was addressed to this device itself.
+        # This app only listens on 127.0.0.1. The status endpoints are safe for something else on the
+        # device to pass on to its network; everything else answers only to requests addressed to
+        # this device itself (127.0.0.1 or localhost), never under another host name.
         if path.startswith("/api/wallet") and not self.host_ok():
             return self.reply(403, {"error": "The wallet only opens on the device that runs the node.", "local_only": True})
         if path == "/":

@@ -364,8 +364,8 @@ def restore_before():
     b0 = d["backup"]
     with open(keystore, "rb") as f:
         original = f.read()
-    with open(state, "w") as f:
-        json.dump({"keys": k0, "backup": b0, "keystore": base64.b64encode(original).decode()}, f)
+    if os.path.exists(state):
+        os.remove(state)
     code, d = call("/api/wallet/restore", {"backup": b0, "password": BACKUP_PASSWORD, "pin": pin})
     check("a restore without an unlocked wallet is refused", code == 401, (code, d))
     code, d = call("/api/wallet/restore", {"backup": b0, "password": BACKUP_PASSWORD, "pin": "000000"}, session=s)
@@ -375,12 +375,16 @@ def restore_before():
     with open(keystore, "rb") as f:
         check("the key file is untouched", f.read() == original)
     check("no copy of a replaced key file was made", not [f for f in os.listdir(os.path.dirname(keystore)) if ".replaced-" in f])
+    # written only once everything above passed: part 2 relies on it
+    with open(state, "w") as f:
+        json.dump({"keys": k0, "backup": b0, "keystore": base64.b64encode(original).decode()}, f)
 
 
 def restore_after():
     """Restore, part 2: the node now has fresh keys (as on a new device); restore the original ones."""
-    pin, keystore = os.environ["APP_PIN"], os.environ["KEYSTORE"]
-    with open(os.environ["RESTORE_STATE"]) as f:
+    pin, keystore, state = os.environ["APP_PIN"], os.environ["KEYSTORE"], os.environ.get("RESTORE_STATE", "")
+    check("part 1 (restore-before) passed and saved the original keys", os.path.isfile(state), state or "RESTORE_STATE not set")
+    with open(state) as f:
         st = json.load(f)
     k0, b0, original = st["keys"], st["backup"], base64.b64decode(st["keystore"])
     with open(keystore, "rb") as f:
