@@ -255,6 +255,72 @@ def tx_status(h):
     return 200, {"state": "waiting"}
 
 
+# ---- home-screen app: manifest and icon -----------------------------------------------------
+
+MANIFEST = json.dumps({
+    "name": "Logos node", "short_name": "Logos node", "start_url": "/", "scope": "/", "display": "standalone",
+    "background_color": "#11110f", "theme_color": "#11110f",
+    "icons": [{"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+              {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+              {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}]}).encode()
+_icons = {}
+
+
+def icon_png(n):
+    """A plain icon drawn in code (a ring with a dot, on a dark square), so the repo carries no image files."""
+    if n in _icons:
+        return _icons[n]
+    import struct, zlib
+    bg, fg = (0x11, 0x11, 0x0f), (0xf0, 0x79, 0x4a)
+    c, ring, half, dot = (n - 1) / 2.0, 0.27 * n, 0.04 * n, 0.085 * n
+    rows = []
+    for y in range(n):
+        row = bytearray([0])
+        for x in range(n):
+            d = ((x - c) ** 2 + (y - c) ** 2) ** 0.5
+            a = max(min(half - abs(d - ring) + 0.5, 1.0), min(dot - d + 0.5, 1.0), 0.0)
+            row += bytes(int(round(b + (f - b) * a)) for b, f in zip(bg, fg))
+        rows.append(bytes(row))
+
+    def chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff)
+    _icons[n] = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", n, n, 8, 2, 0, 0, 0))
+                 + chunk(b"IDAT", zlib.compress(b"".join(rows), 9)) + chunk(b"IEND", b""))
+    return _icons[n]
+
+
+# ---- fingerprint test (temporary): does this browser allow a passkey for a page on this device? ----
+
+fp_result = {"result": None}
+FP_PAGE = b"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><title>Fingerprint test</title>
+<style>body{font:17px/1.5 system-ui,sans-serif;max-width:480px;margin:0 auto;padding:28px 18px}
+button{font:inherit;font-weight:600;padding:14px 18px;border-radius:10px;border:0;background:#b4451b;color:#fff;width:100%;min-height:52px}
+#out{margin-top:18px;white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body>
+<h1 style="font-size:22px">Fingerprint test</h1>
+<p>This checks whether this phone lets the wallet page use your fingerprint. It creates a test key and nothing else. Tap the button, then touch the fingerprint sensor if asked.</p>
+<button id="b">Test fingerprint</button><div id="out"></div>
+<script>
+const out = t => { document.getElementById("out").textContent = t; fetch("/api/fp-test", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({result: t})}).catch(()=>{}); };
+document.getElementById("b").addEventListener("click", async () => {
+  if (location.hostname !== "localhost") return out("Open this page as localhost:" + location.port + "/fp-test (not " + location.hostname + ") and try again.");
+  if (!window.PublicKeyCredential) return out("FAIL: this browser has no passkey support.");
+  try {
+    const avail = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+    const cred = await navigator.credentials.create({ publicKey: {
+      rp: { id: "localhost", name: "Logos node" },
+      user: { id: crypto.getRandomValues(new Uint8Array(16)), name: "wallet", displayName: "Logos node wallet" },
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+      authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "required", residentKey: "discouraged" },
+      timeout: 60000, attestation: "none" } });
+    const r = cred.response, alg = r.getPublicKeyAlgorithm ? r.getPublicKeyAlgorithm() : "?";
+    out("OK: fingerprint works here. (platform sensor reported: " + avail + ", key type " + alg + ", transports " + (r.getTransports ? r.getTransports().join(",") : "?") + ")");
+  } catch (e) { out("FAIL: " + e.name + ": " + e.message); }
+});
+</script></body></html>"""
+
+
 # ---- HTTP -----------------------------------------------------------------------------------
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -271,7 +337,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         if ctype.startswith("text/html"):
             self.send_header("Content-Security-Policy",
-                             "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'")
+                             "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'")
         self.end_headers()
         self.wfile.write(data)
 
@@ -294,6 +360,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self.reply(200, raw=f.read(), ctype="text/html; charset=utf-8")
             except Exception:
                 return self.reply(500, {"error": "index.html is missing"})
+        if path == "/manifest.webmanifest":
+            return self.reply(200, raw=MANIFEST, ctype="application/manifest+json")
+        if path in ("/icon-192.png", "/icon-512.png"):
+            return self.reply(200, raw=icon_png(192 if "192" in path else 512), ctype="image/png")
+        if path == "/fp-test":
+            return self.reply(200, raw=FP_PAGE, ctype="text/html; charset=utf-8")
+        if path == "/api/fp-test":
+            return self.reply(200, fp_result)
         if path == "/api/status":
             st = node_status()
             return self.reply(200, {"node": st} if st else {"node": None, "waiting": node_waiting()})
@@ -329,6 +403,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not isinstance(body, dict):
             return self.reply(400, {"error": "bad request"})
         path = self.path.split("?", 1)[0]
+        if path == "/api/fp-test":
+            fp_result["result"] = str(body.get("result", ""))[:500]
+            return self.reply(200, {"ok": True})
         if path == "/api/wallet/setup":
             pin = str(body.get("pin", ""))
             if not PIN_RE.match(pin):
