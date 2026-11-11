@@ -3,7 +3,7 @@ name: install-test
 # This is not an Android phone: it tests the script itself (same CPU type, same binary).
 on:
   push:
-    paths: [install.sh, apiproxy.py, .github/workflows/install-test.yml]
+    paths: [install.sh, install-termux.sh, apiproxy.py, .github/workflows/install-test.yml]
   workflow_dispatch:
 permissions:
   contents: read
@@ -31,3 +31,33 @@ jobs:
           done
           journalctl -u logos-node --no-pager -n 60
           exit 1
+      - name: Probe (info only) - CORS on the node API by default and with --http-cors-origin
+        continue-on-error: true
+        run: |
+          echo "default, other site:"; curl -s -i -H "Origin: https://evil.example" http://127.0.0.1:8080/cryptarchia/info | grep -i access-control || echo "(no CORS header)"
+          sudo systemctl stop logos-node
+          cd ~/node/run && (~/node/logos-blockchain-node --http-cors-origin http://127.0.0.1:8090 user_config.yaml > /tmp/n.log 2>&1 &)
+          for i in $(seq 1 30); do curl -fsS -m 3 http://127.0.0.1:8080/cryptarchia/info >/dev/null 2>&1 && break; sleep 2; done
+          echo "with flag, other site:"; curl -s -i -H "Origin: https://evil.example" http://127.0.0.1:8080/cryptarchia/info | grep -i access-control || echo "(no CORS header)"
+          echo "with flag, allowed site:"; curl -s -i -H "Origin: http://127.0.0.1:8090" http://127.0.0.1:8080/cryptarchia/info | grep -i access-control || echo "(no CORS header)"
+          tail -3 /tmp/n.log
+  termux:
+    # Runs install-termux.sh inside the official Termux Docker image (Termux userland on arm64).
+    # Not a real phone: it tests the script and that the node runs under proot.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install and start the node inside Termux
+        run: |
+          docker run --rm --security-opt seccomp=unconfined -e NO_WAKE_LOCK=1 -v "$PWD":/repo:ro termux/termux-docker:aarch64 bash -c '
+            set -e
+            sh /repo/install-termux.sh
+            (~/logos-node > ~/node.log 2>&1 &)
+            for i in $(seq 1 36); do
+              H=$(curl -fsS -m 5 http://127.0.0.1:8090/cryptarchia/info | grep -oE "\"height\":[0-9]+" | grep -oE "[0-9]+" || true)
+              echo "height: ${H:-no answer yet}"
+              if [ -n "$H" ] && [ "$H" -gt 100 ]; then exit 0; fi
+              sleep 10
+            done
+            tail -40 ~/node.log; exit 1'
