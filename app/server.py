@@ -262,31 +262,45 @@ MANIFEST = json.dumps({
     "background_color": "#11110f", "theme_color": "#11110f",
     "icons": [{"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
               {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
-              {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}]}).encode()
+              {"src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}]}).encode()
 _icons = {}
+# the lambda, as thick round-ended strokes on a unit square: the long leg, the short leg, the top hook
+LAMBDA = (((0.375, 0.255), (0.665, 0.745)), ((0.508, 0.480), (0.335, 0.745)), ((0.315, 0.275), (0.375, 0.255)))
 
 
-def icon_png(n):
-    """A plain icon drawn in code (a ring with a dot, on a dark square), so the repo carries no image files."""
-    if n in _icons:
-        return _icons[n]
+def icon_png(n, maskable=False):
+    """The app icon, drawn in code: a black lambda on a cream circle. `maskable` fills the whole square with
+    cream and shrinks the lambda into the safe zone, for launchers that cut their own shape."""
+    if (n, maskable) in _icons:
+        return _icons[(n, maskable)]
     import struct, zlib
-    bg, fg = (0x11, 0x11, 0x0f), (0xf0, 0x79, 0x4a)
-    c, ring, half, dot = (n - 1) / 2.0, 0.27 * n, 0.04 * n, 0.085 * n
+    cream, black = (0xf3, 0xea, 0xd7), (0x14, 0x13, 0x11)
+    c, radius = (n - 1) / 2.0, n / 2.0 - 0.5
+    scale = 0.74 if maskable else 1.0
+    half = 0.045 * n * scale
+    segs = [tuple((c + (x - 0.5) * n * scale, c + (y - 0.5) * n * scale) for x, y in seg) for seg in LAMBDA]
+
+    def stroke(px, py):
+        best = 1e9
+        for (ax, ay), (bx, by) in segs:
+            dx, dy = bx - ax, by - ay
+            t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)))
+            best = min(best, ((px - ax - t * dx) ** 2 + (py - ay - t * dy) ** 2) ** 0.5)
+        return max(0.0, min(1.0, half - best + 0.5))
     rows = []
     for y in range(n):
         row = bytearray([0])
         for x in range(n):
-            d = ((x - c) ** 2 + (y - c) ** 2) ** 0.5
-            a = max(min(half - abs(d - ring) + 0.5, 1.0), min(dot - d + 0.5, 1.0), 0.0)
-            row += bytes(int(round(b + (f - b) * a)) for b, f in zip(bg, fg))
+            disc = 1.0 if maskable else max(0.0, min(1.0, radius - ((x - c) ** 2 + (y - c) ** 2) ** 0.5 + 0.5))
+            ink = stroke(x, y) if disc > 0 else 0.0
+            row += bytes(int(round(a + (b - a) * ink)) for a, b in zip(cream, black)) + bytes([int(round(255 * disc))])
         rows.append(bytes(row))
 
     def chunk(tag, data):
         return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff)
-    _icons[n] = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", n, n, 8, 2, 0, 0, 0))
-                 + chunk(b"IDAT", zlib.compress(b"".join(rows), 9)) + chunk(b"IEND", b""))
-    return _icons[n]
+    _icons[(n, maskable)] = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", n, n, 8, 6, 0, 0, 0))
+                             + chunk(b"IDAT", zlib.compress(b"".join(rows), 9)) + chunk(b"IEND", b""))
+    return _icons[(n, maskable)]
 
 
 # ---- fingerprint unlock (a WebAuthn passkey) -------------------------------------------------
@@ -488,8 +502,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply(500, {"error": "index.html is missing"})
         if path == "/manifest.webmanifest":
             return self.reply(200, raw=MANIFEST, ctype="application/manifest+json")
-        if path in ("/icon-192.png", "/icon-512.png"):
-            return self.reply(200, raw=icon_png(192 if "192" in path else 512), ctype="image/png")
+        if path in ("/icon-192.png", "/icon-512.png", "/icon-maskable-512.png"):
+            return self.reply(200, raw=icon_png(192 if "192" in path else 512, "maskable" in path), ctype="image/png")
         if path == "/api/status":
             st = node_status()
             return self.reply(200, {"node": st} if st else {"node": None, "waiting": node_waiting()})
