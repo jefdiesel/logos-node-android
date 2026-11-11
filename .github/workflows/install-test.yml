@@ -1,9 +1,9 @@
 name: install-test
-# Runs install.sh on a clean arm64 Linux machine and checks the node really starts and syncs.
-# This is not an Android phone: it tests the script itself (same CPU type, same binary).
+# Runs the installers on clean arm64 Linux machines and checks the node and the web app for real.
+# These are not Android phones: they test the scripts and the app (same CPU type, same node binary).
 on:
   push:
-    paths: [install.sh, install-termux.sh, apiproxy.py, .github/workflows/install-test.yml]
+    paths: [install.sh, install-termux.sh, 'app/**', 'tests/**', .github/workflows/install-test.yml]
   workflow_dispatch:
 permissions:
   contents: read
@@ -14,13 +14,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run the installer on a clean machine
-        run: SWAP_GB=1 sh install.sh
+        run: APP_SRC="$PWD/app" SWAP_GB=1 sh install.sh
       - name: Both services are running
-        run: systemctl is-active logos-node logos-node-status
-      - name: Status page answers
-        run: curl -fsS http://127.0.0.1:8090/ | grep -q "Logos node on this phone"
-      - name: Wallet paths are refused on the status port
-        run: '[ "$(curl -s -o /dev/null -w %{http_code} http://127.0.0.1:8090/wallet/x)" = 403 ]'
+        run: systemctl is-active logos-node logos-node-app
+      - name: The web app page answers
+        run: curl -fsS http://127.0.0.1:8090/ | grep -q "<title>Logos node</title>"
       - name: Node joins the testnet and syncs blocks
         run: |
           for i in $(seq 1 36); do
@@ -31,11 +29,37 @@ jobs:
           done
           journalctl -u logos-node --no-pager -n 60
           exit 1
-      - name: Node API accepts the local status page only, not other websites
+      - name: Node API accepts the local web app only, not other websites
         run: |
           A=$(curl -s -i -H "Origin: https://evil.example" http://127.0.0.1:8080/cryptarchia/info | grep -i "^access-control-allow-origin" | tr -d "\r")
           echo "$A"
           echo "$A" | grep -q "http://127.0.0.1:8090"
+      - name: Wallet locks (PIN, session, own page only, pause after wrong PINs)
+        run: python3 tests/wallet_test.py guard
+  wallet-send:
+    # A real transfer through the web app, on a private one-node chain with the node's public test keys.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start a one-node test chain and the web app
+        run: |
+          V=0.3.4
+          mkdir chain && cd chain
+          curl -fsSL "https://github.com/logos-blockchain/logos-blockchain/releases/download/$V/logos-blockchain-node-linux-aarch64-$V.tar.gz" | tar xz
+          for f in standalone-node-config.yaml standalone-deployment-config.yaml; do
+            curl -fsSL -o $f "https://raw.githubusercontent.com/logos-blockchain/logos-blockchain/$V/nodes/node/$f"
+          done
+          nohup ./logos-blockchain-node --deployment standalone-deployment-config.yaml standalone-node-config.yaml > node.log 2>&1 &
+          NODE_BIN="$PWD/logos-blockchain-node" NODE_CFG="$PWD/standalone-node-config.yaml" \
+          NODE_DEPLOYMENT="$PWD/standalone-deployment-config.yaml" APP_DATA="$PWD" \
+            nohup python3 ../app/server.py > app.log 2>&1 &
+          sleep 5
+      - name: Send coins through the web app and check both balances
+        run: python3 tests/wallet_test.py send
+      - name: Logs, if something failed
+        if: failure()
+        run: tail -40 chain/node.log; cat chain/app.log
   termux:
     # Runs install-termux.sh inside the official Termux Docker image (Termux userland on arm64).
     # Not a real phone: it tests the script and that the node runs under proot.
@@ -45,14 +69,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install and start the node inside Termux
         run: |
-          docker run --rm --security-opt seccomp=unconfined -e NO_WAKE_LOCK=1 -v "$PWD":/repo:ro termux/termux-docker:aarch64 bash -c '
+          docker run --rm --security-opt seccomp=unconfined -e NO_WAKE_LOCK=1 -e APP_SRC=/repo/app -v "$PWD":/repo:ro termux/termux-docker:aarch64 bash -c '
             set -e
             sh /repo/install-termux.sh
             (~/logos-node > ~/node.log 2>&1 &)
             for i in $(seq 1 36); do
               H=$(curl -fsS -m 5 http://127.0.0.1:8090/cryptarchia/info | grep -oE "\"height\":[0-9]+" | grep -oE "[0-9]+" || true)
               echo "height: ${H:-no answer yet}"
-              if [ -n "$H" ] && [ "$H" -gt 100 ]; then exit 0; fi
+              if [ -n "$H" ] && [ "$H" -gt 100 ]; then
+                curl -fsS http://127.0.0.1:8090/ | grep -q "<title>Logos node</title>" && echo "web app page ok" && exit 0
+              fi
               sleep 10
             done
             tail -40 ~/node.log; exit 1'

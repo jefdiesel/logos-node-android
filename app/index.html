@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Logos node</title>
+<style>
+:root{
+  --bg:#f4f2ec;--card:#fffefb;--ink:#1b1a17;--dim:#6d6960;--line:#dfdbd0;--field:#f7f5ef;
+  --accent:#b4451b;--accent-ink:#fff;--ok:#1d7448;--warn:#9a5b00;--bad:#b3261e;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#11110f;--card:#1a1a17;--ink:#edeae2;--dim:#9c978b;--line:#2c2b27;--field:#141412;
+  --accent:#f0794a;--accent-ink:#1a0d06;--ok:#62d19b;--warn:#e6ad55;--bad:#ff8a80;
+}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%}
+main{max-width:520px;margin:0 auto;padding:20px 16px 48px}
+header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:4px 2px 16px}
+h1{font-size:19px;margin:0;letter-spacing:-.01em}
+h1 small{display:block;font-size:13px;font-weight:400;color:var(--dim);letter-spacing:0}
+h2{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin:0 0 12px}
+.pill{font-size:13px;font-weight:600;padding:4px 10px;border-radius:999px;border:1px solid var(--line);white-space:nowrap}
+.pill.ok{color:var(--ok)}.pill.warn{color:var(--warn)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 16px;margin-bottom:14px}
+.big{font-size:42px;font-weight:650;line-height:1.05;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+.sub{color:var(--dim);font-size:14px;margin-top:4px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
+.grid div span{display:block;font-size:12px;color:var(--dim)}
+.grid div b{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+label{display:block;font-size:13px;color:var(--dim);margin:12px 0 5px}
+input,select{width:100%;font:inherit;color:var(--ink);background:var(--field);border:1px solid var(--line);border-radius:10px;padding:12px;min-height:46px}
+input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+input.mono{font-family:var(--mono);font-size:14px}
+button{font:inherit;font-weight:600;border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--ink);padding:11px 14px;min-height:46px;cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);width:100%;margin-top:14px}
+button.small{min-height:36px;padding:6px 10px;font-size:13px;font-weight:500}
+button:disabled{opacity:.45;cursor:not-allowed}
+.row{display:flex;gap:10px;margin-top:14px}.row button{flex:1;margin-top:0}
+.acct{padding:14px 0;border-top:1px solid var(--line)}.acct:first-child{border-top:0;padding-top:0}
+.acct .top{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.acct .name{font-weight:600}.acct .bal{font-size:24px;font-weight:650;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.acct .addr{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:6px}
+.acct code,.hash{font-family:var(--mono);font-size:13px;color:var(--dim);overflow-wrap:anywhere}
+.note{font-size:14px;color:var(--dim);margin:10px 0 0}
+.msg{font-size:14px;margin:12px 0 0;min-height:1px}.msg.bad{color:var(--bad)}.msg.ok{color:var(--ok)}.msg.warn{color:var(--warn)}
+dl{margin:0}dl div{display:flex;justify-content:space-between;gap:14px;padding:9px 0;border-top:1px solid var(--line)}dl div:first-child{border-top:0}
+dt{color:var(--dim);font-size:14px;flex:none}dd{margin:0;text-align:right;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+details{margin-top:8px;border-top:1px solid var(--line);padding-top:10px}summary{cursor:pointer;color:var(--dim);font-size:14px}
+hr{border:0;border-top:1px solid var(--line);margin:18px 0 6px}
+[hidden]{display:none!important}
+footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Logos node<small>running on this device</small></h1>
+    <span id="pill" class="pill warn">connecting</span>
+  </header>
+
+  <section class="card" aria-labelledby="h-node">
+    <h2 id="h-node">Node</h2>
+    <div class="big" id="height">-</div>
+    <div class="sub" id="nodeline">block height</div>
+    <div class="grid">
+      <div><span>State</span><b id="state">-</b></div>
+      <div><span>Peers</span><b id="peers">-</b></div>
+      <div><span>Blocks / min</span><b id="rate">-</b></div>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="h-wallet">
+    <h2 id="h-wallet">Wallet</h2>
+
+    <div id="v-loading" class="note">Loading…</div>
+
+    <form id="v-setup" hidden autocomplete="off">
+      <p class="note" style="margin-top:0">Choose a PIN for this wallet. You'll need it to see balances and to send. It protects the wallet from other apps and websites on this device. It can't be recovered if you forget it.</p>
+      <label for="pin1">New PIN (6 to 12 digits)</label>
+      <input id="pin1" type="password" inputmode="numeric" pattern="\d{6,12}" maxlength="12" autocomplete="new-password" required>
+      <label for="pin2">Repeat the PIN</label>
+      <input id="pin2" type="password" inputmode="numeric" pattern="\d{6,12}" maxlength="12" autocomplete="new-password" required>
+      <button class="primary" type="submit">Set PIN</button>
+      <p class="msg bad" id="m-setup" role="alert"></p>
+    </form>
+
+    <form id="v-locked" hidden autocomplete="off">
+      <label for="pin" style="margin-top:0">PIN</label>
+      <input id="pin" type="password" inputmode="numeric" maxlength="12" autocomplete="off" required>
+      <button class="primary" type="submit">Unlock</button>
+      <p class="msg bad" id="m-locked" role="alert"></p>
+    </form>
+
+    <div id="v-open" hidden>
+      <div id="accts"></div>
+      <details id="more" hidden><summary>Other keys in this wallet</summary><div id="accts-more"></div></details>
+      <p class="msg warn" id="m-sync"></p>
+
+      <hr>
+      <form id="f-send" autocomplete="off">
+        <h2 style="margin-top:14px">Send</h2>
+        <label for="from" id="l-from">From</label>
+        <select id="from"></select>
+        <label for="to">To (address, 64 characters)</label>
+        <input id="to" class="mono" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="64" required>
+        <label for="amount">Amount</label>
+        <input id="amount" type="text" inputmode="numeric" maxlength="24" required>
+        <button class="primary" type="submit" id="b-review">Review</button>
+        <p class="msg bad" id="m-send" role="alert"></p>
+      </form>
+
+      <div id="v-review" hidden>
+        <h2 style="margin-top:14px">Check before sending</h2>
+        <dl>
+          <div><dt>Amount</dt><dd id="r-amount"></dd></div>
+          <div><dt>To</dt><dd class="hash" id="r-to"></dd></div>
+          <div><dt>From</dt><dd id="r-from"></dd></div>
+          <div><dt>Network fee</dt><dd>added on top, shown after</dd></div>
+        </dl>
+        <p class="note">This can't be undone.</p>
+        <div class="row"><button type="button" id="b-back">Back</button><button type="button" id="b-go" class="primary">Send now</button></div>
+        <p class="msg bad" id="m-review" role="alert"></p>
+      </div>
+
+      <div id="v-sent" hidden>
+        <h2 style="margin-top:14px">Sent</h2>
+        <dl>
+          <div><dt>Status</dt><dd id="s-state">waiting for a block</dd></div>
+          <div><dt>Fee paid</dt><dd id="s-fee">-</dd></div>
+          <div><dt>Transaction</dt><dd class="hash" id="s-hash"></dd></div>
+        </dl>
+        <button type="button" id="b-again" class="primary">Done</button>
+      </div>
+
+      <hr>
+      <button type="button" id="b-lock" class="small" style="margin-top:10px">Lock wallet</button>
+    </div>
+  </section>
+
+  <footer>This page is served by your own device and talks only to the node running on it. Testnet.</footer>
+</main>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const fmt = v => { try { return BigInt(v).toLocaleString("en-US"); } catch (e) { return String(v); } };
+const short = k => k.slice(0, 10) + "…" + k.slice(-8);
+let token = null, nodeState = null, prev = null, accts = [], pending = null, txTimer = null;
+try { token = sessionStorage.getItem("session"); } catch (e) {}
+
+async function api(path, body) {
+  const opt = { headers: {}, cache: "no-store" };
+  if (token) opt.headers["X-Session"] = token;
+  if (body !== undefined) { opt.method = "POST"; opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
+  try {
+    const r = await fetch(path, opt);
+    let data = null; try { data = await r.json(); } catch (e) {}
+    return { ok: r.ok, status: r.status, data: data || {} };
+  } catch (e) { return { ok: false, status: 0, data: { error: "The app on this device isn't answering." } }; }
+}
+function setToken(t) { token = t; try { t ? sessionStorage.setItem("session", t) : sessionStorage.removeItem("session"); } catch (e) {} }
+function show(view) { for (const v of ["v-loading", "v-setup", "v-locked", "v-open"]) $(v).hidden = v !== view; }
+
+// ---- node status ----
+async function tickStatus() {
+  const r = await api("/api/status");
+  const n = r.ok ? r.data.node : null;
+  nodeState = n ? n.state : null;
+  const pill = $("pill");
+  if (!n) {
+    pill.className = "pill warn";
+    const w = r.ok ? r.data.waiting : null;
+    $("nodeline").textContent = !w ? "The app on this device isn't answering."
+      : w.running === false ? "The node isn't running."
+      : w.replay ? "Re-checking " + Number(w.replay).toLocaleString("en-US") + " saved blocks before it carries on. This can take a while."
+      : "The node is starting. No answer yet.";
+    pill.textContent = !w || w.running === false ? "stopped" : w.replay ? "re-checking" : "starting";
+    $("state").textContent = "-";
+  } else {
+    const online = n.state === "Online";
+    pill.textContent = online ? "online" : "syncing"; pill.className = "pill " + (online ? "ok" : "warn");
+    $("height").textContent = Number(n.height).toLocaleString("en-US");
+    $("nodeline").textContent = "block height";
+    $("state").textContent = n.state || "-";
+    $("peers").textContent = n.peers == null ? "-" : n.peers;
+    const now = Date.now();
+    if (prev && now - prev.t >= 20000) { $("rate").textContent = Math.max(0, Math.round((n.height - prev.h) / ((now - prev.t) / 60000))).toLocaleString("en-US"); prev = { h: n.height, t: now }; }
+    if (!prev) prev = { h: n.height, t: now };
+  }
+  syncNote();
+}
+function syncNote() {
+  const online = nodeState === "Online";
+  $("m-sync").textContent = online ? "" : "The node isn't online yet. Balances may be behind, and sending opens once it has finished syncing.";
+  $("b-review").disabled = !online;
+}
+
+// ---- wallet views ----
+async function loadWallet() {
+  const r = await api("/api/wallet");
+  if (!r.ok) { show("v-loading"); $("v-loading").textContent = r.data.error || "The wallet isn't available."; return; }
+  if (!r.data.pin_set) return show("v-setup");
+  if (!r.data.unlocked) { setToken(null); return show("v-locked"); }
+  show("v-open"); loadAccounts();
+}
+function acctNode(a) {
+  const d = document.createElement("div"); d.className = "acct";
+  const top = document.createElement("div"); top.className = "top";
+  const name = document.createElement("span"); name.className = "name"; name.textContent = a.label;
+  const bal = document.createElement("span"); bal.className = "bal"; bal.textContent = a.balance == null ? "…" : fmt(a.balance);
+  top.append(name, bal);
+  const addr = document.createElement("div"); addr.className = "addr";
+  const code = document.createElement("code"); code.textContent = short(a.key); code.title = a.key;
+  const btn = document.createElement("button"); btn.type = "button"; btn.className = "small"; btn.textContent = "Copy address";
+  btn.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(a.key); btn.textContent = "Copied"; }
+    catch (e) { code.textContent = a.key; btn.textContent = "Shown in full"; }
+    setTimeout(() => { btn.textContent = "Copy address"; }, 2000);
+  });
+  addr.append(code, btn); d.append(top, addr); return d;
+}
+async function loadAccounts() {
+  const r = await api("/api/wallet/accounts");
+  if (r.status === 401) { setToken(null); return show("v-locked"); }
+  if (!r.ok) return;
+  accts = r.data.accounts || [];
+  const main = accts.filter((a, i) => i === 0 || (a.balance && a.balance !== "0"));
+  const rest = accts.filter(a => !main.includes(a));
+  $("accts").replaceChildren(...(main.length ? main.map(acctNode) : [Object.assign(document.createElement("p"), { className: "note", textContent: "The node hasn't reported its wallet keys yet. This can take a minute after it starts." })]));
+  $("accts-more").replaceChildren(...rest.map(acctNode)); $("more").hidden = rest.length === 0;
+  const sel = $("from"), keep = sel.value; sel.replaceChildren();
+  for (const a of main) { const o = document.createElement("option"); o.value = a.key; o.textContent = a.label + " (" + (a.balance == null ? "…" : fmt(a.balance)) + ")"; sel.append(o); }
+  if (keep) sel.value = keep;
+  const one = main.length <= 1; sel.hidden = one; $("l-from").hidden = one;
+}
+
+$("v-setup").addEventListener("submit", async e => {
+  e.preventDefault(); const m = $("m-setup"); m.textContent = "";
+  const a = $("pin1").value, b = $("pin2").value;
+  if (!/^\d{6,12}$/.test(a)) return void (m.textContent = "The PIN must be 6 to 12 digits.");
+  if (a !== b) return void (m.textContent = "The two PINs don't match.");
+  const r = await api("/api/wallet/setup", { pin: a });
+  if (!r.ok) return void (m.textContent = r.data.error || "Couldn't set the PIN.");
+  $("pin1").value = $("pin2").value = ""; setToken(r.data.session); loadWallet();
+});
+$("v-locked").addEventListener("submit", async e => {
+  e.preventDefault(); const m = $("m-locked"); m.textContent = "";
+  const r = await api("/api/wallet/unlock", { pin: $("pin").value }); $("pin").value = "";
+  if (!r.ok) return void (m.textContent = r.data.error || "Couldn't unlock.");
+  setToken(r.data.session); loadWallet();
+});
+$("b-lock").addEventListener("click", async () => { await api("/api/wallet/lock", {}); setToken(null); resetSend(); show("v-locked"); });
+
+// ---- send ----
+function resetSend() { clearInterval(txTimer); pending = null; $("f-send").hidden = false; $("v-review").hidden = true; $("v-sent").hidden = true; $("m-send").textContent = ""; $("m-review").textContent = ""; }
+$("f-send").addEventListener("submit", e => {
+  e.preventDefault(); const m = $("m-send"); m.textContent = "";
+  const to = $("to").value.trim().toLowerCase(), raw = $("amount").value.replace(/[,\s]/g, "");
+  const from = $("from").value || (accts[0] && accts[0].key), acct = accts.find(a => a.key === from);
+  if (!acct) return void (m.textContent = "The wallet has no key to send from yet.");
+  if (!/^[0-9a-f]{64}$/.test(to)) return void (m.textContent = "The address must be 64 characters, using only 0-9 and a-f.");
+  if (to === from) return void (m.textContent = "That would send to the same key it comes from.");
+  if (!/^\d+$/.test(raw) || BigInt(raw) <= 0n) return void (m.textContent = "The amount must be a whole number above zero.");
+  if (acct.balance != null && BigInt(raw) > BigInt(acct.balance)) return void (m.textContent = acct.label + " holds " + fmt(acct.balance) + ", less than " + fmt(raw) + ".");
+  pending = { from, to, amount: raw };
+  $("r-amount").textContent = fmt(raw); $("r-to").textContent = to; $("r-from").textContent = acct.label + " (" + short(from) + ")";
+  $("f-send").hidden = true; $("v-review").hidden = false;
+});
+$("b-back").addEventListener("click", () => { $("v-review").hidden = true; $("f-send").hidden = false; });
+$("b-go").addEventListener("click", async () => {
+  if (!pending) return; const b = $("b-go"), m = $("m-review"); m.textContent = ""; b.disabled = true; b.textContent = "Sending…";
+  const r = await api("/api/wallet/send", pending); b.disabled = false; b.textContent = "Send now";
+  if (r.status === 401) { setToken(null); resetSend(); return show("v-locked"); }
+  if (!r.ok) return void (m.textContent = r.data.error || "The transfer failed.");
+  const hash = r.data.hash; $("s-hash").textContent = hash; $("s-state").textContent = "waiting for a block"; $("s-fee").textContent = "-";
+  $("v-review").hidden = true; $("v-sent").hidden = false; $("to").value = ""; $("amount").value = "";
+  clearInterval(txTimer);
+  txTimer = setInterval(async () => {
+    const s = await api("/api/wallet/tx?hash=" + encodeURIComponent(hash));
+    if (s.ok && s.data.state === "in_block") { clearInterval(txTimer); $("s-state").textContent = "in a block"; $("s-fee").textContent = fmt(s.data.fee); loadAccounts(); }
+  }, 5000);
+});
+$("b-again").addEventListener("click", () => { resetSend(); loadAccounts(); });
+
+tickStatus(); setInterval(tickStatus, 5000);
+loadWallet(); setInterval(() => { if (!$("v-open").hidden && $("v-review").hidden) loadAccounts(); }, 15000);
+</script>
+</body>
+</html>
