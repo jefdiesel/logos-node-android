@@ -43,14 +43,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           # the commit and the three files' sha256 are committed in android/ (messaging-commit.txt, messaging.sha256)
+          # several runs may exist for one commit (e.g. started by hand with other options): take the
+          # newest one whose files match the pinned sha256s exactly
           C=$(tr -d '[:space:]' < android/messaging-commit.txt)
-          RUN=$(gh run list -R "$GITHUB_REPOSITORY" --workflow waku-build.yml --commit "$C" --status success \
-                --limit 1 --json databaseId --jq '.[0].databaseId // empty')
-          if [ -z "$RUN" ]; then echo "::error::no successful waku-build run for commit $C"; exit 1; fi
-          echo "waku-build run $RUN (commit $C)"
-          gh run download "$RUN" -R "$GITHUB_REPOSITORY" -p 'logos-delivery-android-arm64-*' -D wdl
-          W=$(ls -d wdl/logos-delivery-android-arm64-* | head -1)
-          [ -n "$W" ] || { echo "::error::run $RUN has no messaging artifact"; exit 1; }
+          RUNS=$(gh run list -R "$GITHUB_REPOSITORY" --workflow waku-build.yml --commit "$C" --status success \
+                 --limit 10 --json databaseId --jq '.[].databaseId')
+          W=
+          for RUN in $RUNS; do
+            rm -rf wdl
+            gh run download "$RUN" -R "$GITHUB_REPOSITORY" -p 'logos-delivery-android-arm64-*' -D wdl || continue
+            D=$(ls -d wdl/logos-delivery-android-arm64-* 2>/dev/null | head -1)
+            if [ -n "$D" ] && (cd "$D" && sha256sum --quiet -c "$GITHUB_WORKSPACE/android/messaging.sha256"); then
+              W=$D; echo "waku-build run $RUN (commit $C) has the pinned files"; break
+            fi
+            echo "waku-build run $RUN: files differ from the pinned ones, trying the next run"
+          done
+          [ -n "$W" ] || { echo "::error::no waku-build run for commit $C has the files pinned in android/messaging.sha256"; exit 1; }
           (cd "$W" && sha256sum -c "$GITHUB_WORKSPACE/android/messaging.sha256")
           J=android/app/src/main/jniLibs/arm64-v8a
           cp "$W/waku-runner" "$J/libwakurunner.so"        # Android installs only lib*.so files
