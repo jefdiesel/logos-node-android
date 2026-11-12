@@ -261,6 +261,33 @@ class SnapshotTest {
         }
     }
 
+    @Test fun anotherNodeBinaryDropsTheMarker() {
+        val h = home()
+        val state = h.state("state", "current")
+        val record = File(h.dir, "state-node.sha256")
+        val a = "aa".repeat(32); val b = "bb".repeat(32)
+        marker(state).writeText("m")
+        // no record yet (first start of an app that keeps one): the marker can't be trusted
+        assertTrue(NodeBinaryRecord.check(record, state, a))
+        assertFalse(marker(state).exists())
+        assertEquals(a, record.readText().trim())
+        // the same binary again: a marker it wrote is kept
+        marker(state).writeText("m")
+        assertFalse(NodeBinaryRecord.check(record, state, a))
+        assertTrue(marker(state).exists())
+        // another binary (new build, or patched <-> unpatched): dropped, and the new one recorded
+        assertTrue(NodeBinaryRecord.check(record, state, b))
+        assertFalse(marker(state).exists())
+        assertEquals(b, record.readText().trim())
+        assertFalse(NodeBinaryRecord.check(record, state, b))      // nothing left to drop
+        h.untouched()
+    }
+
+    @Test fun binaryHashIsTheFileSha256() {
+        val f = File(tmp.root, "bin").apply { writeText("abc") }
+        assertEquals("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", NodeBinaryRecord.sha256(f))
+    }
+
     @Test fun aMarkerInsideASnapshotIsStripped() {
         val tar = goodDb().entry("db/$REPLAY_MARKER", "x".toByteArray()).entry(REPLAY_MARKER, "y".toByteArray())
             .entry("state/$REPLAY_MARKER", "z".toByteArray()).end()

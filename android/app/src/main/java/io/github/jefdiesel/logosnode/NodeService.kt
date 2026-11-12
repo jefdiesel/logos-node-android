@@ -535,6 +535,17 @@ class NodeService : Service() {
         files.mkdirs()
         // an import or go-back cut short when the app was killed: undo or finish it before the node opens the state
         if (!importRunning) StateSwap(files.home).recover()?.let { saveImportStatus(it) }
+        // a different node binary than the one that last ran on this state: its first start replays in full
+        try {
+            val sha = NodeBinaryRecord.sha256(files.binary)
+            if (NodeBinaryRecord.check(files.binaryRecord, files.state, sha)) {
+                log.app("another node binary ran on this state before (now sha256 ${sha.take(16)}…): replay marker dropped, this start replays in full")
+            }
+        } catch (e: Exception) {
+            // if this can't be checked, don't trust the marker either
+            File(files.state, REPLAY_MARKER).delete()
+            log.app("couldn't check which node binary ran on this state ($e): replay marker dropped")
+        }
         val bin = files.binary
         if (!bin.exists()) throw IllegalStateException("node binary missing at ${bin.path}")
         if (!files.keystore.exists()) {

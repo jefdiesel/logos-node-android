@@ -19,6 +19,41 @@ import java.nio.file.StandardCopyOption
  */
 const val REPLAY_MARKER = "db.replay-verified"
 
+/**
+ * Which node binary last ran against the state: its sha256, kept next to the state
+ * (files/node/state-node.sha256). When the binary about to start is a different one (an app update
+ * with a new node build, or a switch between patched and unpatched), the replay marker is dropped
+ * first: the other binary may have written blocks the marker's build never verified.
+ */
+object NodeBinaryRecord {
+    /** Call before every node start. Returns true if a marker was there and was dropped. */
+    fun check(record: File, state: File, binarySha256: String): Boolean {
+        val last = try { record.readText().trim() } catch (_: Exception) { "" }
+        if (last == binarySha256) return false
+        val marker = File(state, REPLAY_MARKER)
+        val dropped = marker.exists()
+        marker.delete()
+        File(state, "db/$REPLAY_MARKER").delete()
+        val tmp = File(record.path + ".tmp")
+        tmp.writeText(binarySha256 + "\n")
+        Files.move(tmp.toPath(), record.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        return dropped
+    }
+
+    fun sha256(file: File): String {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buf = ByteArray(1 shl 20)
+            while (true) {
+                val n = input.read(buf)
+                if (n < 0) break
+                md.update(buf, 0, n)
+            }
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
+    }
+}
+
 /** Something about the snapshot or the swap that stops the import, in words for the screen. */
 class SnapshotError(message: String) : Exception(message)
 

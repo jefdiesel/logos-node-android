@@ -223,6 +223,11 @@ checks the APK's copy byte for byte. The screen shows the variant under "Node bi
   state, and recovery from an interrupted swap all delete the marker of the state put in place.
   The snapshot reader also drops any `db.replay-verified` found inside a tar. So the first start
   after any of them is a full replay.
+- **A different node binary drops the marker too.** The app keeps the sha256 of the node binary
+  that last ran on the state, in `files/node/state-node.sha256`. Before each start it hashes the
+  bundled binary. If the hash differs (an app update with a new node build, or a switch between
+  patched and unpatched), it deletes the marker first and records the new hash, because another
+  binary may have written blocks the marker's build never verified.
 - **To force a full replay:**
   - delete `files/node/state/db.replay-verified`, or
   - in debug builds, start once with `adb shell am start-foreground-service -n
