@@ -1,0 +1,18 @@
+What is vendored here, and how to update it
+
+msg-crypto.js     jefdiesel/logos-names, gateway/app-src/msg-crypto.js, commit 27029987a81e703c88876d967c04a25f4c841681.
+                  A header comment was added and its five import lines point at the folders below (the curves at
+                  ../noble-curves/).
+../noble-curves/  @noble/curves 2.4.0 (npm, sha512-P4/62zrgfH33CneE3Dn4WhJVA22YUU0eR51wKIan4NVRvwsA0YnPTwWGpNbpuacSujmSFLvyzpyuR30+fbq2Ew==),
+                  ed25519.js and what it imports, in app/noble-curves/ (the phones' updater takes files at most two
+                  folders deep). In ed25519.js, utils.js and abstract/frost.js the imports of '@noble/hashes/...' point
+                  at ../messages/noble-hashes/ (../../messages/noble-hashes/ from abstract/). Nothing else changed.
+noble-ciphers/    @noble/ciphers 2.4.0 (npm, sha512-AnjFn0Jv92laAkvMrghlFZq4qQCIN/4DxFV/eooqtC2YTjB7kBeLMS2T9KJX4Dn+ZVXLOwK0lSgqDtx9gvxtiw==),
+                  chacha.js and what it imports, unchanged.
+noble-hashes/     @noble/hashes 2.4.0 (npm, sha512-X5XaVWZIBCT7HHZGm5I7ZQXDwLG+bGXuSrMQAW+7Zvl87h1kmc1ZB1VSRJcpUfoUrGQp4Fkoxm5kZ+Ms+aW+eA==),
+                  the files msg-crypto.js and the curves need, unchanged (a second copy beside ../names/noble-hashes/,
+                  so the messaging files are served only when messaging is on).
+
+These are the versions the names project pins (gateway/app-src/package-lock.json). To update: take the new
+msg-crypto.js from the names project, the matching npm tarballs (check each against the lockfile's
+integrity), apply the same import-path changes, run tests/msg_test.mjs, and `python3 tools/release.py write`.

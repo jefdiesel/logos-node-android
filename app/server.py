@@ -8,7 +8,7 @@ Python standard library only. Wallet calls need a PIN that is set on first use.
 import base64, calendar, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.7.7"
+APP_VERSION = "0.8.0"
 # APP_EMBEDDED=android: this app runs inside the Android app (embedded Python, page in a WebView).
 # Then it never updates or restarts itself (the Android app brings new versions), and fingerprint
 # unlock goes through the phone's own fingerprint check instead of a passkey. Unset: nothing changes.
@@ -267,6 +267,7 @@ NAMES_PROGRAM = os.environ.get("NAMES_PROGRAM", "38jEfVV1RCyMzu1FGbYcCn5FqxCxKyY
 ACCOUNT_ID_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 NAME_RE = re.compile(r"^(?!-)[a-z0-9-]{1,32}(?<!-)$")
 NAMES_DIR = os.path.join(APP_DIR, "names")
+MESSAGES_FILE_RE = re.compile(r"^/((?:messages/(?:noble-(?:ciphers|hashes)/)?|noble-curves/(?:abstract/)?)[A-Za-z0-9_][A-Za-z0-9_.-]*\.js)$")
 NAMES_FILE_RE = re.compile(r"^/names/((?:noble-hashes/)?[A-Za-z0-9_][A-Za-z0-9_.-]*\.js)$")
 
 
@@ -901,6 +902,9 @@ def receipts_take():
 
 BACKUP_FORMAT, BACKUP_VERSION = "logos-node-wallet-backup", 1
 BACKUP_AAD = b"logos-node-wallet-backup v1"
+# Version 2 also carries the messaging key (see "messages" below). It is written only when this app has
+# one, so a wallet without messaging still gets exactly a version 1 file. Restore reads both.
+BACKUP_AADS = {1: b"logos-node-wallet-backup v1", 2: b"logos-node-wallet-backup v2"}
 BACKUP_SCRYPT = {"n": 2 ** 16, "r": 8, "p": 1, "dklen": 32}
 MIN_BACKUP_PASSWORD = 8      # the page advises 12 or more, or four random words
 _M32 = 0xffffffff
@@ -1009,6 +1013,327 @@ def native_unlock():
     return token
 
 
+# ---- messages: LNS name-to-name messages through a Logos Messaging (Waku) node on this device -----
+# Only when WAKU_API names that node's REST API on this device (the Android app sets it while its
+# messaging node runs). Without it nothing below is reachable and the page is unchanged.
+# The format is the names project's (app/messages/msg-crypto.js): the page seals and opens messages;
+# this server only stores the device's messaging key for unlocked pages, forwards sealed payloads to
+# the node, and collects the sealed payloads that arrive on this device's inbox topic.
+
+def _waku_api():
+    raw = os.environ.get("WAKU_API", "").strip()
+    if not raw:
+        return ""
+    try:
+        u = urllib.parse.urlsplit(raw)
+        if u.scheme == "http" and u.hostname in ("127.0.0.1", "localhost", "::1") and u.port and u.path.strip("/") == "" \
+                and not u.query and not u.username:
+            return "http://%s:%d" % ("[::1]" if u.hostname == "::1" else u.hostname, u.port)
+    except Exception:
+        pass
+    sys.stderr.write("WAKU_API refused: it must be http://127.0.0.1:<port>, a node on this device\n")
+    return ""
+
+
+WAKU_API = _waku_api()
+MESSAGING = bool(WAKU_API)
+MSG_KEY_FILE = os.path.join(DATA_DIR, "wallet-msgkey.json")
+INBOX_FILE = os.path.join(DATA_DIR, "wallet-inbox.json")
+INBOX_MAX, SEEN_MAX, PAYLOAD_MAX = 500, 4000, 16384      # messages kept, hashes remembered, bytes per message
+MSG_POLL = float(os.environ.get("MESSAGING_POLL_SECONDS", "3"))
+MSG_HEALTH_EVERY = float(os.environ.get("MESSAGING_HEALTH_SECONDS", "10"))
+MSG_TOPIC_RE = re.compile(r"^/names/1/msg-[0-9a-f]{16}/proto$")
+HEX32_RE = re.compile(r"^[0-9a-f]{64}$")
+msg_lock = threading.Lock()
+msg_state = {"reachable": None, "misses": 0, "health": None, "connection": None, "checked": 0.0,
+             "subscribed": None, "subscribed_at": 0.0, "last_seq": 0, "missed": 0}
+
+
+def x25519(k, u):
+    """RFC 7748 X25519 (used only to check that a public key belongs to its secret key)."""
+    p = 2 ** 255 - 19
+    kb = bytearray(k); kb[0] &= 248; kb[31] &= 127; kb[31] |= 64
+    k = int.from_bytes(kb, "little")
+    x1 = int.from_bytes(u, "little") & ((1 << 255) - 1)
+    x2, z2, x3, z3, swap = 1, 0, x1, 1, 0
+    for t in reversed(range(255)):
+        bit = (k >> t) & 1
+        if swap ^ bit:
+            x2, x3, z2, z3 = x3, x2, z3, z2
+        swap = bit
+        a, b, c, d = (x2 + z2) % p, (x2 - z2) % p, (x3 + z3) % p, (x3 - z3) % p
+        aa, bb, da, cb = a * a % p, b * b % p, d * a % p, c * b % p
+        e = (aa - bb) % p
+        x3, z3 = (da + cb) ** 2 % p, x1 * (da - cb) ** 2 % p
+        x2, z2 = aa * bb % p, e * (aa + 121665 * e) % p
+    if swap:
+        x2, z2 = x3, z3
+    return (x2 * pow(z2, p - 2, p) % p).to_bytes(32, "little")
+
+
+def msg_key_valid(d):
+    return (isinstance(d, dict) and isinstance(d.get("secret"), str) and isinstance(d.get("public"), str)
+            and HEX32_RE.match(d["secret"]) and HEX32_RE.match(d["public"])
+            and x25519(bytes.fromhex(d["secret"]), (9).to_bytes(32, "little")).hex() == d["public"]
+            and (d.get("name") in (None, "") or NAME_RE.match(str(d.get("name")))))
+
+
+def msg_key_load():
+    try:
+        with open(MSG_KEY_FILE) as f:
+            d = json.load(f)
+        return d if msg_key_valid(d) else None
+    except Exception:
+        return None
+
+
+def msg_key_save(d):
+    fd = os.open(MSG_KEY_FILE + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(d, f)
+    os.replace(MSG_KEY_FILE + ".tmp", MSG_KEY_FILE)
+    with msg_lock:
+        msg_state["subscribed"] = None            # the inbox topic may have changed: subscribe again
+
+
+def msg_key_restore(d):
+    """Puts a messaging key from a backup in place; True if it changed anything."""
+    cur = msg_key_load() or {}
+    new = {k: d[k] for k in ("secret", "public", "name") if d.get(k)}
+    if cur.get("secret") == new["secret"] and cur.get("name") == new.get("name"):
+        return False
+    msg_key_save(dict(new, created=cur.get("created") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())))
+    event("messaging key restored from a backup")
+    return True
+
+
+def inbox_topic(public_hex):
+    return "/names/1/msg-%s/proto" % hashlib.sha256(bytes.fromhex(public_hex)).hexdigest()[:16]
+
+
+def inbox_load():
+    try:
+        with open(INBOX_FILE) as f:
+            d = json.load(f)
+        if isinstance(d.get("items"), list) and isinstance(d.get("seen"), list):
+            return d
+    except Exception:
+        pass
+    return {"version": 1, "items": [], "seen": [], "next": 1}
+
+
+inbox = inbox_load() if MESSAGING else {"version": 1, "items": [], "seen": [], "next": 1}
+
+
+def inbox_save():
+    """Writes the inbox; the caller holds msg_lock. It holds sealed payloads only."""
+    inbox["items"] = inbox["items"][-INBOX_MAX:]
+    inbox["seen"] = inbox["seen"][-SEEN_MAX:]
+    fd = os.open(INBOX_FILE + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(inbox, f)
+    os.replace(INBOX_FILE + ".tmp", INBOX_FILE)
+
+
+def messaging_inbox_count():
+    """How many sealed messages wait in the inbox (for a notification without content). No HTTP route."""
+    with msg_lock:
+        return len(inbox["items"]) if MESSAGING else 0
+
+
+def waku(method, path, body=None, timeout=6):
+    """(http status, parsed JSON or text) from the messaging node; status 0 when it doesn't answer."""
+    req = urllib.request.Request(WAKU_API + path, data=None if body is None else json.dumps(body).encode(), method=method,
+                                 headers={"Content-Type": "application/json", "Accept": "application/json"})
+    try:
+        with _outside.open(req, timeout=timeout) as r:
+            code, data = r.status, r.read(4 * 1024 * 1024 + 1)
+    except urllib.error.HTTPError as e:
+        code, data = e.code, e.read(65536)
+    except Exception:
+        return 0, None
+    try:
+        return code, json.loads(data) if data else None
+    except Exception:
+        return code, data.decode(errors="replace")[:300]
+
+
+def messaging_health():
+    """Reads /health; the node counts as off only after 3 misses in a row (it can stall for seconds)."""
+    code, h = waku("GET", "/health", timeout=6)
+    with msg_lock:
+        msg_state["checked"] = time.time()
+        if code == 200 and isinstance(h, dict):
+            back = msg_state["reachable"] is False
+            msg_state.update(reachable=True, misses=0, health=h.get("nodeHealth"), connection=h.get("connectionStatus"))
+            if back:
+                msg_state["subscribed"] = None    # it came back: subscribe again (that also brings what it missed)
+        else:
+            msg_state["misses"] += 1
+            if msg_state["misses"] >= 3:
+                msg_state.update(reachable=False, subscribed=None)
+
+
+def messaging_round():
+    key = msg_key_load()
+    if time.time() - msg_state["checked"] >= MSG_HEALTH_EVERY:
+        messaging_health()
+    if not key or msg_state["reachable"] is False:
+        return
+    topic = inbox_topic(key["public"])
+    if msg_state["subscribed"] != topic or time.time() - msg_state["subscribed_at"] > 300:
+        code, _ = waku("POST", "/messaging/v1/subscriptions", [topic])
+        if code != 200:
+            return
+        with msg_lock:
+            msg_state.update(subscribed=topic, subscribed_at=time.time())
+    code, records = waku("GET", "/messaging/v1/events/received", timeout=10)
+    if code != 200 or not isinstance(records, list):
+        if code == 0:
+            with msg_lock:
+                msg_state["subscribed"] = None
+        return
+    changed = False
+    with msg_lock:
+        for r in records:
+            if not isinstance(r, dict):
+                continue
+            seq = r.get("seq")
+            if isinstance(seq, int) and not isinstance(seq, bool):
+                if seq < msg_state["last_seq"]:
+                    msg_state["subscribed"] = None          # the node restarted: subscribe again next round
+                elif msg_state["last_seq"] and seq > msg_state["last_seq"] + 1:
+                    msg_state["missed"] += seq - msg_state["last_seq"] - 1
+                msg_state["last_seq"] = seq
+            m = r.get("message") if isinstance(r.get("message"), dict) else {}
+            if m.get("contentTopic") != topic or not isinstance(m.get("payload"), str):
+                continue
+            try:
+                payload = base64.b64decode(m["payload"], validate=True)
+            except Exception:
+                continue
+            if not payload or len(payload) > PAYLOAD_MAX:
+                continue                                    # not a message of ours: too big or empty
+            ids = {"p:" + hashlib.sha256(payload).hexdigest()}
+            if isinstance(r.get("messageHash"), str) and re.match(r"^0x[0-9a-fA-F]{64}$", r["messageHash"]):
+                ids.add("h:" + r["messageHash"].lower())
+            if ids & set(inbox["seen"]):
+                continue                                    # delivered before (live and again from history)
+            inbox["seen"].extend(sorted(ids))
+            inbox["items"].append({"n": inbox["next"], "payload": base64.b64encode(payload).decode(),
+                                   "source": r.get("source") if r.get("source") in ("live", "history") else None,
+                                   "received": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+            inbox["next"] += 1
+            changed = True
+        if changed:
+            inbox_save()
+
+
+def messaging_loop():
+    while True:
+        try:
+            messaging_round()
+        except Exception:
+            pass
+        time.sleep(MSG_POLL)
+
+
+def messaging_post(path, body, req):
+    """The /api/messages/* POST routes: (http status, reply)."""
+    if path == "/api/messages/key":
+        d = {"secret": str(body.get("secret", "")).lower(), "public": str(body.get("public", "")).lower()}
+        if not msg_key_valid(d):
+            return 400, {"error": "That isn't a messaging key pair (the public key must belong to the secret key)."}
+        cur = msg_key_load()
+        if cur and cur["secret"] != d["secret"]:
+            # replacing the key orphans the name's published msg entry: only with the PIN and on purpose
+            if body.get("replace") is not True:
+                return 409, {"error": "This device already has a messaging key."}
+            refused = pin_attempt(req, str(body.get("pin", "")), "messaging key refused, wrong PIN")
+            if refused:
+                code, obj = refused
+                return (403 if code == 401 else code), obj
+        if cur and cur["secret"] == d["secret"]:
+            return 200, {"public": d["public"], "topic": inbox_topic(d["public"])}
+        d.update(name=(cur or {}).get("name", ""), created=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+        msg_key_save(d)
+        event("messaging key replaced" if cur else "messaging key set", req)
+        return 200, {"public": d["public"], "topic": inbox_topic(d["public"])}
+    if path == "/api/messages/name":
+        cur = msg_key_load()
+        name = str(body.get("name", ""))
+        if not cur:
+            return 409, {"error": "Turn on messages first."}
+        if name and not NAME_RE.match(name):
+            return 400, {"error": "That isn't an LNS name."}
+        cur["name"] = name
+        msg_key_save(cur)
+        return 200, {"name": name}
+    if path == "/api/messages/send":
+        topic, payload = str(body.get("topic", "")), body.get("payload")
+        if not MSG_TOPIC_RE.match(topic):
+            return 400, {"error": "That isn't a names inbox topic."}
+        try:
+            raw = base64.b64decode(str(payload), validate=True)
+        except Exception:
+            return 400, {"error": "The message isn't base64."}
+        if not raw or len(raw) > PAYLOAD_MAX:
+            return 413, {"error": "That message is too long."}
+        code, reply = waku("POST", "/messaging/v1/messages",
+                           {"payload": base64.b64encode(raw).decode(), "contentTopic": topic, "ephemeral": False}, timeout=10)
+        if code == 0:
+            return 503, {"error": "The messaging node is off, so the message wasn't sent.", "node_off": True}
+        if code == 429:
+            return 429, {"error": "The messaging node is busy. Try again in a moment."}
+        if code != 200 or not isinstance(reply, dict) or not isinstance(reply.get("requestId"), str):
+            return 502, {"error": "The messaging node didn't take the message."}
+        event("message sent", req)
+        return 200, {"requestId": reply["requestId"]}
+    if path == "/api/messages/inbox/delete":
+        ns = {n for n in (body.get("ids") or []) if isinstance(n, int) and not isinstance(n, bool)}
+        with msg_lock:
+            before = len(inbox["items"])
+            inbox["items"] = [i for i in inbox["items"] if i["n"] not in ns]
+            removed = before - len(inbox["items"])
+            if removed:
+                inbox_save()
+        return 200, {"removed": removed}
+    return 404, {"error": "not found"}
+
+
+def messaging_get(path, query):
+    """The /api/messages/* GET routes: (http status, reply)."""
+    if path == "/api/messages/status":
+        key = msg_key_load()
+        with msg_lock:
+            st = dict(msg_state)
+            count = len(inbox["items"])
+        return 200, {"node": {"reachable": st["reachable"], "health": st["health"], "connection": st["connection"],
+                              "checked_s_ago": round(time.time() - st["checked"]) if st["checked"] else None},
+                     "key": key["public"] if key else None, "name": (key or {}).get("name", ""),
+                     "topic": inbox_topic(key["public"]) if key else None, "subscribed": bool(key and st["subscribed"]),
+                     "inbox": count, "missed": st["missed"]}
+    if path == "/api/messages/key":
+        key = msg_key_load()
+        if not key:
+            return 404, {"error": "This device has no messaging key yet."}
+        return 200, {"secret": key["secret"], "public": key["public"], "name": key.get("name", "")}
+    if path == "/api/messages/inbox":
+        with msg_lock:
+            return 200, {"items": [dict(i) for i in inbox["items"]]}
+    m = re.match(r"^/api/messages/send/([A-Za-z0-9_.:-]{1,128})$", path)
+    if m:
+        code, st = waku("GET", "/messaging/v1/events/send/" + m.group(1), timeout=6)
+        if code == 404:
+            return 200, {"events": [], "done": False}
+        if code != 200 or not isinstance(st, dict):
+            return 200, {"events": [], "done": False, "node_off": code == 0}
+        kinds = [str(e.get("kind")) for e in st.get("events") or [] if isinstance(e, dict)]
+        err = next((str(e.get("error") or "") for e in st.get("events") or [] if isinstance(e, dict) and e.get("kind") == "error"), "")
+        return 200, {"events": kinds, "done": "sent" in kinds or "error" in kinds, "error": err[:200]}
+    return 404, {"error": "not found"}
+
+
 def native_fingerprint_reset():
     """Inside the Android app: the phone's fingerprints were added or removed, so the key behind fingerprint
     unlock is gone. Turns native fingerprint unlock off (the PIN turns it on again) and locks an open
@@ -1036,7 +1361,8 @@ def node_cmd(cfg, flag):
 def restore_backup(doc, password):
     """(http status, reply, event detail). Puts the key file from a backup in place of the node's own,
     only after the node itself has checked it, and keeps the old one beside it."""
-    if not isinstance(doc, dict) or doc.get("format") != BACKUP_FORMAT or doc.get("version") != BACKUP_VERSION:
+    if not isinstance(doc, dict) or doc.get("format") != BACKUP_FORMAT or doc.get("version") not in BACKUP_AADS \
+            or isinstance(doc.get("version"), bool):
         return 400, {"error": "This isn't a Logos node wallet backup, or it's a version this app can't read."}, "format"
     try:
         kdf, cipher = doc["kdf"], doc["cipher"]
@@ -1050,14 +1376,18 @@ def restore_backup(doc, password):
     except Exception:
         return 400, {"error": "This backup file is damaged or isn't in the expected format."}, "format"
     try:
-        plain = aead_decrypt(backup_key(password, salt, params), nonce, sealed, BACKUP_AAD) if len(nonce) == 12 else None
+        plain = aead_decrypt(backup_key(password, salt, params), nonce, sealed, BACKUP_AADS[doc["version"]]) if len(nonce) == 12 else None
     except Exception:
         plain = None
     if plain is None:
         return 400, {"error": "Wrong backup password, or the file has been changed or damaged. Nothing was changed."}, "password"
     try:
-        new_text = json.loads(plain)["keystore.yaml"]
+        content = json.loads(plain)
+        new_text = content["keystore.yaml"]
         new_bytes = new_text.encode("utf-8")
+        msg_key = content.get("messaging_key") if doc["version"] >= 2 else None
+        if msg_key is not None and not msg_key_valid(msg_key):
+            raise ValueError
     except Exception:
         return 400, {"error": "This backup file is damaged. Nothing was changed."}, "format"
     live, _ = keystore_location()
@@ -1094,6 +1424,9 @@ def restore_backup(doc, password):
     except Exception:
         current = []
     if reported == current:
+        if msg_key and msg_key_restore(msg_key):
+            return 200, {"unchanged": True, "messaging_key_restored": True,
+                         "message": "These are the wallet keys already in use. The messaging key from the backup is back in place."}, "same keys, messaging key"
         return 200, {"unchanged": True, "message": "These are the keys this wallet already uses. Nothing was changed."}, "same keys"
     # keep the old key file beside the new one, then swap the new one in atomically
     if os.path.exists(live):
@@ -1114,6 +1447,8 @@ def restore_backup(doc, password):
         except Exception:
             restarted = False
     reply = {"ok": True, "restarted": restarted, "addresses": len(reported), "replaced": len(current)}
+    if msg_key and msg_key_restore(msg_key):
+        reply["messaging_key_restored"] = True
     if not restarted:
         reply["manual"] = restart_hint()
     return 200, reply, "restored"
@@ -1130,7 +1465,12 @@ def backup_export(password):
     except Exception:
         return 500, {"error": "The node's key file couldn't be read."}, source
     salt, nonce = secrets.token_bytes(16), secrets.token_bytes(12)
-    sealed = aead_encrypt(backup_key(password, salt), nonce, json.dumps({"keystore.yaml": text}).encode(), BACKUP_AAD)
+    content, version = {"keystore.yaml": text}, BACKUP_VERSION
+    mk = msg_key_load()
+    if mk:                                    # the messaging key goes along: version 2
+        content["messaging_key"] = {k: mk[k] for k in ("secret", "public", "name") if mk.get(k)}
+        version = 2
+    sealed = aead_encrypt(backup_key(password, salt), nonce, json.dumps(content).encode(), BACKUP_AADS[version])
     b64 = lambda b: base64.b64encode(b).decode()
     created = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     try:
@@ -1141,11 +1481,11 @@ def backup_export(password):
     except Exception:
         pass
     return 200, {"backup": {
-        "format": BACKUP_FORMAT, "version": BACKUP_VERSION,
+        "format": BACKUP_FORMAT, "version": version,
         "created": created,
         "addresses": [{"label": k["label"], "key": k["key"]} for k in wallet_keys()],
         "kdf": dict(BACKUP_SCRYPT, name="scrypt", salt=b64(salt)),
-        "cipher": {"name": "chacha20-poly1305", "nonce": b64(nonce), "aad": BACKUP_AAD.decode()},
+        "cipher": {"name": "chacha20-poly1305", "nonce": b64(nonce), "aad": BACKUP_AADS[version].decode()},
         "ciphertext": b64(sealed)}}, source
 
 
@@ -1396,7 +1736,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     USER_ACTIONS = {"/api/wallet/activity", "/api/wallet/send", "/api/wallet/backup", "/api/wallet/restore",
                     "/api/wallet/settings", "/api/wallet/passkey/options", "/api/wallet/passkey/register",
                     "/api/wallet/passkey/remove", "/api/update/check", "/api/update/passkey/challenge",
-                    "/api/update/apply", "/api/names/rpc", "/api/wallet/native-fingerprint"}
+                    "/api/update/apply", "/api/names/rpc", "/api/wallet/native-fingerprint",
+                    "/api/messages/key", "/api/messages/name", "/api/messages/send", "/api/messages/inbox/delete"}
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
@@ -1404,16 +1745,32 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # endpoints answer whatever Host name a request carries (they hold nothing private). The wallet
         # answers only requests addressed to 127.0.0.1 or localhost, so a web page that points another
         # name at this address (DNS rebinding) can't reach it.
-        if path.startswith("/api/wallet") and not self.host_ok():
+        if (path.startswith("/api/wallet") or path.startswith("/api/messages")) and not self.host_ok():
             return self.reply(403, {"error": "The wallet only opens on the device that runs the node.", "local_only": True})
         if path == "/":
             try:
                 with open(os.path.join(APP_DIR, "index.html"), "rb") as f:
                     page = f.read().replace(b"__APP_VERSION__", APP_VERSION.encode())
                 page = page.replace(b"__APP_EMBEDDED__", b"android" if EMBEDDED else b"")
+                if MESSAGING:                     # the Messages panel, only when a messaging node is there
+                    page = page.replace(b"</body>", b'<script type="module" src="/messages/messages.js"></script>\n</body>', 1)
                 return self.reply(200, raw=page, ctype="text/html; charset=utf-8")
             except Exception:
                 return self.reply(500, {"error": "index.html is missing"})
+        if path.startswith("/api/messages/") or path.startswith("/messages/") or path.startswith("/noble-curves/"):
+            if not MESSAGING:
+                return self.reply(404, {"error": "not found"})
+            m = MESSAGES_FILE_RE.match(path)
+            if m:
+                try:
+                    with open(os.path.join(APP_DIR, m.group(1)), "rb") as f:
+                        return self.reply(200, raw=f.read(), ctype="text/javascript; charset=utf-8")
+                except Exception:
+                    return self.reply(404, {"error": "not found"})
+            if not self.authed():
+                return self.reply(401, {"error": "locked"})
+            code, obj = messaging_get(path, self.path)
+            return self.reply(code, obj)
         m = NAMES_FILE_RE.match(path)
         if m:                               # the names resolver, served as files so the page can import it
             try:
@@ -1579,6 +1936,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             settings_save()
             event("auto-lock changed", self, minutes=n)
             return self.reply(200, {"autolock_minutes": n})
+        if path.startswith("/api/messages/"):
+            if not MESSAGING:
+                return self.reply(404, {"error": "not found"})
+            if not self.authed():
+                return self.reply(401, {"error": "locked"})
+            code, obj = messaging_post(path, body, self)
+            return self.reply(code, obj)
         if EMBEDDED and path.startswith("/api/update/"):
             return self.reply(409, {"error": EMBEDDED_UPDATES})
         if path == "/api/wallet/native-fingerprint":
@@ -1663,6 +2027,8 @@ def main():
     threading.Thread(target=history_loop, daemon=True).start()
     if not EMBEDDED:
         threading.Thread(target=update_loop, daemon=True).start()
+    if MESSAGING:
+        threading.Thread(target=messaging_loop, daemon=True).start()
     threading.Thread(target=session_watch, daemon=True).start()
     http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
 

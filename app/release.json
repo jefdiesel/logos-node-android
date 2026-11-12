@@ -1,6 +1,21 @@
 {
  "files": {
   "index.html": "c8cbce48989455d88ecf72223eebef492b7c08bf0fecc7e02752873ff4613965",
+  "messages/VENDORED.txt": "6fbf95fc9f8f846e65996ac4c9e2179002b631af229d8c222ab19a4a756d98e0",
+  "messages/messages.js": "b9629a389caa49b8e40684cb1616f30dd9bf27b299e0e93a4bcd87ff8ab2637e",
+  "messages/msg-crypto.js": "cd3e81b81c503bfbdb04104c86067f0d7121dbec4758a824b0b57f6dd90a83b5",
+  "messages/noble-ciphers/LICENSE": "f36671a5487c9c5050efacb58011c37c24c55a889803cb036cf9d9a6347c1e2d",
+  "messages/noble-ciphers/_arx.js": "ead142ba410404c0698bb80e0d6f77780799bb77a9e3b098cf0f9fca1c486e37",
+  "messages/noble-ciphers/_poly1305.js": "5d2afd73b40dbafb7b6740c6e6388e7123c79a4e57306861b28c5734925fa84d",
+  "messages/noble-ciphers/chacha.js": "5f1c00575e227b75163f4bac50b79442dec50ee3047c46c18887808ba8af0a69",
+  "messages/noble-ciphers/utils.js": "a443ec1f60d1aaa25d1b7d8c102d33c0e8e6d683ada1ad17be9c32e69170ff95",
+  "messages/noble-hashes/LICENSE": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec",
+  "messages/noble-hashes/_md.js": "60cf3010fda89e3e4d3f0e7ff1ce249e9c467f34b4fd41b6fd6101d9f69be763",
+  "messages/noble-hashes/_u64.js": "b09da8c07fe8187c07649494cdb7cd0bcf13df90b506a9473d19e4d5f8c2e102",
+  "messages/noble-hashes/hkdf.js": "ccb942a8008f974018965eeb1e33b8f4739bf767c6f95f2ceb06f5873a302f67",
+  "messages/noble-hashes/hmac.js": "fec9f8f3aeda785ea2de91cc4c059d54ef98196261c026c43f48341007ae52c9",
+  "messages/noble-hashes/sha2.js": "471746bba6ec4c6238ca41358d1d3b40b6ff31cf3363f0b4d550c649c1a8e83b",
+  "messages/noble-hashes/utils.js": "037ad49adb78168b6b699598fd33f85f7877456b1d28b4d032e2a1a16807947c",
   "names/LICENSE-APACHE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
   "names/LICENSE-MIT": "f6fb0855df1560d57cacae6ed5b6dfe65c0cfbe03beba374c0a2d490ce726bcd",
   "names/lookup.js": "e40e15b3dcf3b16da456c11f56368902031eab0a8a163bc4e542f6ea837f60bd",
@@ -12,7 +27,18 @@
   "names/noble-hashes/argon2.js": "f39753324bdf2f484150731d24b1d71236f26bf10bedd594f7d190fcdfdefdc9",
   "names/noble-hashes/blake2.js": "03f00237bcc0b4d822a80f7c0ac22e42632c48e246c3b6da584e6452186e32f0",
   "names/noble-hashes/utils.js": "037ad49adb78168b6b699598fd33f85f7877456b1d28b4d032e2a1a16807947c",
-  "server.py": "8a82f541abb78b170feada2784757d27c21dce630182b2f403bb39d63fd8ec3f"
+  "noble-curves/LICENSE": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec",
+  "noble-curves/abstract/curve.js": "dbaeee3b41ff47efb76b78e14170fe4dda7c7ecdc387c402f16c5118e0bac356",
+  "noble-curves/abstract/edwards.js": "f24a9c221a549a8fff259eb8f245ab0dc17679b13c532c3970d91acc4df9fffd",
+  "noble-curves/abstract/fft.js": "a4b2ff7ca33f4acc85d61f0e83ec3303c3f6b38ecc19b20d0f6462d820e518cf",
+  "noble-curves/abstract/frost.js": "ac5229f7a863c4a7927cabc6726cc5fe3cc6f0b447b260dec6a5299ef4650122",
+  "noble-curves/abstract/hash-to-curve.js": "e3c97e7d0827b728b14e3311ed11d8e386d8a70d8fc77e0b9fd2a3090f19d955",
+  "noble-curves/abstract/modular.js": "9ced3aa10598277a735e54f7b61d88e929d565da884ba5385f9006ebb3b6aab2",
+  "noble-curves/abstract/montgomery.js": "cdafa8816dad5a24475ec51952c5f71fdd5d1b46880ab982694c4f8ff605fc46",
+  "noble-curves/abstract/oprf.js": "2ca36b3e4930092db1f91559410e86975816c036e248067bc65a8055aa1c504c",
+  "noble-curves/ed25519.js": "3bef00ec8466eeb85a4a0d055846aafe4cc1df4bfc09ddfe75758f379fca22f9",
+  "noble-curves/utils.js": "ba29ee6d5c0129f0913e0cb11e1c84d09b7e1dd73c55e158cd49b5987bb62a65",
+  "server.py": "8f540736402996a194c9e073d36222e1510f6318dc461a87e50cf05f18d9f39e"
  },
- "version": "0.7.7"
+ "version": "0.8.0"
 }

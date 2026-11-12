@@ -11,6 +11,9 @@ A phone updates only when the version goes up, so bump the version for every cha
 import argparse, hashlib, json, os, re, sys
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+# The updater on phones only accepts files at most two folders deep (server.py UPDATE_NAME_RE since 0.7.0).
+# A release with a deeper path could never reach them, so the check refuses one.
+UPDATER_NAME = re.compile(r"^(?:[a-z0-9][a-z0-9_-]*/){0,2}[A-Za-z0-9_][A-Za-z0-9_.-]*$")
 RELEASE_URL = "https://raw.githubusercontent.com/jefdiesel/logos-node-android/release/app/"
 VERSION_LINE = re.compile(r'^APP_VERSION = "([0-9.]+)"', re.M)
 
@@ -69,6 +72,9 @@ def check(app_dir):
     want = release_for(app_dir)
     if have.get("version") != want["version"]:
         problems.append("release.json says version %s, server.py says %s" % (have.get("version"), want["version"]))
+    for f in want["files"]:
+        if not UPDATER_NAME.match(f) or ".." in f or f.rsplit("/", 1)[-1].startswith("wallet-"):
+            problems.append("%s: phones' updaters can't take this path (at most two folders deep)" % f)
     for f in sorted(set(want["files"]) | set(have.get("files", {}))):
         if have.get("files", {}).get(f) != want["files"].get(f):
             problems.append("%s: %s" % (f, "not in release.json" if f not in have.get("files", {}) else

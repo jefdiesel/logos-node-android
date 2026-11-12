@@ -56,4 +56,15 @@ check("AEAD decryption refuses a changed ciphertext", server.aead_decrypt(akey, 
 check("AEAD decryption refuses a changed tag", server.aead_decrypt(akey, nonce, sealed[:-1] + bytes([sealed[-1] ^ 1]), aad) is None)
 check("AEAD decryption refuses other associated data", server.aead_decrypt(akey, nonce, sealed, aad + b"x") is None)
 check("AEAD handles an empty message", server.aead_decrypt(akey, nonce, server.aead_encrypt(akey, nonce, b"", b""), b"") == b"")
+# RFC 7748 X25519, which the server uses to check that a messaging public key belongs to its secret key
+check("X25519 (RFC 7748 5.2)", server.x25519(
+    h("a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4"),
+    h("e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c")) ==
+    h("c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552"))
+check("X25519 public key (RFC 7748 6.1)", server.x25519(
+    h("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a"), (9).to_bytes(32, "little")) ==
+    h("8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a"))
+check("a messaging key pair is checked", server.msg_key_valid({"secret": "11" * 32,
+      "public": server.x25519(bytes(32 * [0x11]), (9).to_bytes(32, "little")).hex()})
+      and not server.msg_key_valid({"secret": "11" * 32, "public": "22" * 32}))
 print("all checks passed")

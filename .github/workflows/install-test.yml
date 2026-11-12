@@ -110,6 +110,21 @@ jobs:
         run: python3 tests/autolock_test.py
       - name: Inside the Android app (APP_EMBEDDED=android) and unchanged without it
         run: python3 tests/embedded_test.py
+      - name: An app already on phones (0.7.7, as released) updates itself to this release
+        run: |
+          OLD="$RUNNER_TEMP/app-0.7.7"; base=https://raw.githubusercontent.com/jefdiesel/logos-node-android/152b0cb7fb692bc6bcb11a0808ae3cd3879aa51a/app
+          mkdir -p "$OLD" && curl -fsSL -o "$OLD/release.json" "$base/release.json"
+          for f in $(python3 -c "import json,sys; print(' '.join(json.load(open(sys.argv[1]))['files']))" "$OLD/release.json"); do
+            mkdir -p "$OLD/$(dirname "$f")" && curl -fsSL -o "$OLD/$f" "$base/$f"
+          done
+          python3 tests/upgrade_test.py "$OLD"
+      - name: Messages between LNS names - interop with the names project, two apps through a fake messaging node, nothing new without one
+        run: |
+          python3 -c "import cryptography" 2>/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq python3-cryptography; }
+          curl -fsSL -o "$RUNNER_TEMP/names-msg-crypto.js" \
+            https://raw.githubusercontent.com/jefdiesel/logos-names/27029987a81e703c88876d967c04a25f4c841681/gateway/public/app/msg-crypto.js
+          node --version
+          NAMES_MSG_CRYPTO="$RUNNER_TEMP/names-msg-crypto.js" node tests/messaging_test.mjs
   wallet-send:
     # A real transfer through the web app, on a private one-node chain with the node's public test keys.
     runs-on: ubuntu-24.04-arm

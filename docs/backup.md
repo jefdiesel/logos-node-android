@@ -40,7 +40,9 @@ puts the new one in place and restarts the node:
 - Termux: the app can't restart the node there. It tells you to press Ctrl-C where the node runs and
   start it again with `~/logos-node`.
 
-Your PIN, fingerprint unlock and the app's event log stay as they are. The history starts tracking the
+If the backup holds a messaging key (version 2, made with messages turned on), restoring puts that key
+back too, so your name's published `msg` entry keeps reaching this device without a new
+`names set-text`. Your PIN, fingerprint unlock and the app's event log stay as they are. The history starts tracking the
 restored keys from that moment. If the file holds the keys already in use, nothing changes.
 
 ## Restoring by hand
@@ -63,6 +65,8 @@ open the file. On the phone's Linux Terminal that is `sudo apt install python3-c
    ```
 
    "wrong password, or the file has been changed or damaged" means exactly that. Nothing is written.
+   A version 2 backup also writes `messaging-key.json` beside it: this device's messaging key. Keep it
+   private; delete it once you no longer need it.
 
 3. Stop the node, put the file next to the node's settings, and start the node again.
 
@@ -96,13 +100,16 @@ The file is JSON:
 
 | field | meaning |
 |---|---|
-| `format`, `version` | `"logos-node-wallet-backup"`, `1` |
+| `format`, `version` | `"logos-node-wallet-backup"`, `1`, or `2` when the backup also holds the messaging key |
 | `created` | when it was made, UTC |
 | `addresses` | the wallet's public keys with their labels (not secret) |
 | `kdf` | `{"name": "scrypt", "n": 65536, "r": 8, "p": 1, "dklen": 32, "salt": base64}` |
-| `cipher` | `{"name": "chacha20-poly1305", "nonce": base64 (12 bytes), "aad": "logos-node-wallet-backup v1"}` |
+| `cipher` | `{"name": "chacha20-poly1305", "nonce": base64 (12 bytes), "aad": "logos-node-wallet-backup v1"}` (`v2` for version 2) |
 | `ciphertext` | base64 of the ChaCha20-Poly1305 (RFC 8439) ciphertext followed by its 16-byte tag |
 
 The key is scrypt of the password's UTF-8 bytes, exactly as typed, with the parameters above. The
-associated data is the ASCII text `logos-node-wallet-backup v1`. The decrypted text is a JSON object
-`{"keystore.yaml": "<the file's text>"}`.
+associated data is the ASCII text `logos-node-wallet-backup v1` (or `v2`). The decrypted text is a JSON object
+`{"keystore.yaml": "<the file's text>"}`. In version 2 it also has
+`"messaging_key": {"secret": "<64 hex>", "public": "<64 hex>", "name": "<your LNS name>"}`: this device's
+X25519 key for messages between LNS names (the key a name's `msg` entry points at). The app writes
+version 2 only when messages are turned on; otherwise the file is exactly version 1. It restores both.
