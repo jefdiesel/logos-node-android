@@ -533,7 +533,17 @@ class WalletActivity : Activity() {
                 r.pinField = !!$("pin");
                 r.fingerprintButtonShown = shown($("b-fp"));
                 r.messagesScreenShown = shown($("page-msg"));
-                if (r.lockShown) return JSON.stringify(r);       // locked: don't touch the tabs
+                // the old "Logos node / running on this device" header (gone in web app 0.9.3): yes/no only
+                const visible = document.body ? document.body.innerText : "";
+                r.logosNodeVisible = visible.includes("Logos node");
+                r.runningOnDeviceVisible = visible.includes("running on this device");
+                r.topHeaderShown = shown(document.querySelector("body > header, header"));
+                if (r.lockShown) {
+                  // the lock screen's own headings and header: app wording, never wallet content
+                  r.lockHeaderText = [...$("lock").querySelectorAll("header, h1, h2")].filter(shown)
+                    .map(e => e.innerText.trim().slice(0, 80));
+                  return JSON.stringify(r);                       // locked: don't touch the tabs
+                }
                 const msg = $("nav-msg");
                 if (msg) msg.click();
                 setTimeout(() => {
