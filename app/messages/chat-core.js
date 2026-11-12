@@ -20,7 +20,8 @@
 //
 // Sending without an LNS name: the names format needs a name-shaped `from`, so a sender with no name puts
 // "msg-" + the first 16 hex of its own messaging address there. A receiver that sees exactly that (it is
-// bound to the sender's key, which the message proves) treats the sender as an address, not as a name.
+// bound to the sender's key, which the message proves) treats the sender as an address, not as a name. So an
+// LNS name of that exact shape is always taken as an address.
 
 import { sealMessage, openMessage, inboxTopic, toHex, fromHex, parseMsgKey, MAX_TEXT } from "./msg-crypto.js";
 import { xchacha20poly1305 } from "./noble-ciphers/chacha.js";
@@ -320,9 +321,12 @@ export class Chat {
     // a copy of something this device sent (a note to self, or a node handing back its own message)
     for (const o of this.outbox.values()) if (o.ids.includes(msg.id)) return null;
     const received = Date.parse(item.received) || Date.now();
-    const pid = msg.from === nameless(msg.fromKey) ? "k:" + msg.fromKey : msg.from;
+    // "msg-<16 hex>" is the stand-in of a sender with no name; it must be the sender's own address, or the
+    // message is someone pretending (it is shown as unverified, and starts no chat)
+    const shaped = /^msg-[0-9a-f]{16}$/.test(msg.from);
+    const pid = shaped ? "k:" + msg.fromKey : msg.from;
     return { key: "i:" + item.n, n: item.n, dir: "in", kind: "direct", convo: convoIdOf(pid), sender: pid,
-             senderKey: msg.fromKey, authentic: msg.authentic, id: msg.id, text: msg.text,
+             senderKey: msg.fromKey, authentic: msg.authentic && (!shaped || msg.from === nameless(msg.fromKey)), id: msg.id, text: msg.text,
              ts: Math.min(msg.ts, received + 300000), received, source: item.source || null };
   }
   openCopy(item) {

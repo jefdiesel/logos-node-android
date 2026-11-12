@@ -76,3 +76,12 @@ and goes when it's back. Message details (tap a message) show the state for each
   in between are dropped and shown as missed.
 - History in a backup is capped at 1 MB, newest first.
 - Groups are not in this version.
+
+## Screens
+
+Taken by `tests/chat_ui.mjs` (headless Chrome at phone width; `SHOTS=<folder>` saves them), light and dark
+in `img/messages/`: `home-no-name`, `my-messaging-address`, `link-your-name`, `new-chat-by-name`,
+`new-chat-by-address`, `list`, `chat`, `chat-address`, `profile`, `profile-address`, `key-changed`,
+`message-details`, `turn-on`, `empty-list`.
+
+<img src="img/messages/list-light.png" width="240" alt="The chat list"> <img src="img/messages/chat-light.png" width="240" alt="A chat"> <img src="img/messages/profile-dark.png" width="240" alt="A profile with a note, in dark mode">

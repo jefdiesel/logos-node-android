@@ -36,6 +36,7 @@ export const MC = await import(pathToFileURL(join(MOD, "messages", "msg-crypto.j
 export const CORE = await import(pathToFileURL(join(MOD, "messages", "chat-core.js")));
 export const ID = await import(pathToFileURL(join(MOD, "messages", "identity.js")));
 export const N = await import(pathToFileURL(join(MOD, "names", "names.js")));
+export const ED = await import(pathToFileURL(join(MOD, "noble-curves", "ed25519.js")));
 export const hex = MC.toHex, unhex = MC.fromHex;
 export const b64 = (bytes) => Buffer.from(bytes).toString("base64");
 

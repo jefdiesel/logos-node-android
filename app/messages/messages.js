@@ -170,9 +170,9 @@ page.innerHTML = `
     <h3>Chat with anyone who has an LNS name</h3>
     <p class="note" style="margin:0">Messages are sealed on this phone so only the person they're for can open them, and travel through the Logos Messaging network.</p>
     <ul>
-      <li>This phone gets its own messaging key, kept with the wallet and locked by your PIN.</li>
-      <li>People reach you at your LNS name once its <b>msg</b> entry is this key.</li>
-      <li>The key and your chats go into the wallet backup.</li>
+      <li>This phone gets its own messaging address, kept with the wallet and locked by your PIN.</li>
+      <li>People reach you by your LNS name once you link it, or by your messaging address.</li>
+      <li>Your messaging address and your chats go into the wallet backup.</li>
     </ul>
     <button type="button" class="primary" id="mg-on">Turn on messages</button>
     <p class="msg bad" id="mg-on-m" role="alert"></p>
@@ -180,7 +180,7 @@ page.innerHTML = `
   <div id="mg-home" hidden>
     <p class="msg warn" id="mg-node" role="status" hidden style="margin:0 2px 12px"></p>
     <button type="button" class="me" id="mg-me"></button>
-    <p class="msg warn" id="mg-store-warn" hidden style="margin:0 2px 12px">Saved chats from an earlier messaging key can't be opened with this one.</p>
+    <p class="msg warn" id="mg-store-warn" hidden style="margin:0 2px 12px">Saved chats from an earlier messaging address can't be opened on this one.</p>
     <section class="card" aria-labelledby="h-chats">
       <div class="chats-top"><h2 class="top" id="h-chats">Chats</h2><button type="button" id="mg-new"></button></div>
       <div id="mg-rows"></div>
@@ -208,7 +208,7 @@ page.innerHTML = `
       <p class="msg" id="mg-name-m" role="status"></p>
       <p class="hint">Without a name you can still write and get messages: people use your messaging address instead, and see your messages as from that address.</p>
       <details id="mg-link"><summary>Link your LNS name to this phone</summary>
-        <p class="note">Messages to your name come to this phone once the name's <b>msg</b> entry is this phone's messaging address. The name's holder key is on your computer, so run this there:</p>
+        <p class="note">Messages to your name come to this phone once the name's <b>msg</b> entry is this phone's messaging address. Your name is managed from the computer that holds it, so run this there:</p>
         <code class="cmd" id="mg-cmd"></code>
         <div class="row"><button type="button" id="mg-copy">Copy command</button><button type="button" id="mg-check">Check again</button></div>
       </details>

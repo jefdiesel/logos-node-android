@@ -13,8 +13,8 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { world, app, restart, person, chatOf, check, until, sleep, stopAll, MC, CORE, ID, hex, unhex, b64, ROOT, here } from "./chat_world.mjs";
-import { ed25519, x25519 } from "../app/noble-curves/ed25519.js";
+import { world, app, restart, person, chatOf, check, until, sleep, stopAll, MC, CORE, ID, ED, hex, unhex, b64, ROOT, here } from "./chat_world.mjs";
+const { ed25519, x25519 } = ED;
 const N_RE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 
 // ---- 1. the identity ---------------------------------------------------------------------------------
@@ -51,12 +51,14 @@ check("the page gets the seed and the key", r.d.seed === hex(A.id.seed) && r.d.p
   check("a seed that doesn't give the secret key is refused", r.code === 400, r);
   // a key file as 0.8.1 wrote it: X25519 only
   const kp = MC.newKeyPair();
+  D.pin = "444555";
   writeFileSync(join(D.data, "wallet-msgkey.json"), JSON.stringify({ secret: hex(kp.secretKey), public: hex(kp.publicKey), name: "dave", created: "2026-11-01T00:00:00Z" }));
-  r = await D.call("/api/messages/key");
+  const D2 = await restart(w, D);              // as after the update from 0.8.1
+  r = await D2.call("/api/messages/key");
   check("an 0.8.1 key file still loads", r.code === 200 && r.d.public === hex(kp.publicKey) && r.d.seed === null && r.d.groups === false && r.d.version === 1, r.d);
   const d = JSON.parse(readFileSync(join(D.data, "wallet-msgkey.json"), "utf8"));
-  check("and is marked in the file: version 1, no groups (nothing replaced)", d.version === 1 && d.groups === false && d.secret === hex(kp.secretKey), d);
-  D.proc.kill();
+  check("and is marked in the file at start: version 1, no groups (nothing replaced)", d.version === 1 && d.groups === false && d.secret === hex(kp.secretKey), d);
+  D2.proc.kill();
 }
 
 // ---- 2. 1:1 both ways -------------------------------------------------------------------------------------
@@ -183,10 +185,12 @@ if (process.env.NAMES_MSG_CRYPTO) {
   const raw = (await A.call("/api/messages/inbox")).d.items.map(i => THEIRS.openMessage(A.id.secretKey, new Uint8Array(Buffer.from(i.payload, "base64")))).find(o => o && o.text === "hello from someone with no name");
   check("the names project's build opens a message from someone with no name (from: msg-<16 hex>), unverified", raw && raw.from === f.fromName() && !THEIRS.isVerified(raw, null), raw);
 }
-const forgedAddr = MC.sealMessage({ to: A.id.publicKey, from: f.fromName(), fromSecret: MC.newKeyPair().secretKey, text: "not really them" });
+const pretender = MC.newKeyPair();
+const forgedAddr = MC.sealMessage({ to: A.id.publicKey, from: f.fromName(), fromSecret: pretender.secretKey, text: "not really them" });
 await w.control("inject/0", { topic: MC.inboxTopic(A.id.publicKey), payload: b64(forgedAddr) });
 await sleep(1200); await a.sync();
 check("someone else can't write as that address (the stand-in name is bound to the key)", !a.messages(fid).some(x => x.text === "not really them"));
+check("and the pretender gets no chat of its own", !a.convo("k:" + hex(pretender.publicKey)));
 await a.setProfile(fid, { nickname: "Flyer person", note: "met at the market" });
 check("an address chat takes a nickname", a.title(a.convo(fid)) === "Flyer person");
 // later the address turns out to be a name's
@@ -241,12 +245,25 @@ await until("and goes once the node is back", async () => { await a.sync(); retu
 await until("bob gets it", async () => { await b2.sync(); return b2.messages("d:alice").some(x => x.text === "sent while the node was off"); });
 
 // ---- 10. backup and restore: profiles, notes, history ----
+for (let i = 0; i < 130; i++) {                 // enough history for a backup over 64 KiB
+  const p = MC.sealMessage({ to: A.id.publicKey, from: "bob", fromSecret: B.id.secretKey, text: "filler message number " + i + " ".repeat(200) });
+  await w.control("inject/0", { topic: MC.inboxTopic(A.id.publicKey), payload: b64(p) });
+  if (i % 30 === 29) await sleep(800);           // the node keeps 50 between two reads
+}
+await until("the filler arrives", async () => (await A.call("/api/messages/status")).d.unread >= 130, 15000);
 r = await A.call("/api/wallet/backup", { password: "alice backup password", pin: A.pin });
 check("the backup has the chats", r.code === 200 && r.d.backup.version === 2, r.code);
 const full = r.d.backup;
 r = await A.call("/api/wallet/backup", { password: "alice backup password", pin: A.pin, history: false });
 const small = r.d.backup;
-check("without history it is smaller", JSON.stringify(small).length < JSON.stringify(full).length);
+check("without history it is smaller", JSON.stringify(small).length < JSON.stringify(full).length && JSON.stringify(full).length > 65536 && JSON.stringify(small).length < 65536, [JSON.stringify(small).length, JSON.stringify(full).length]);
+{
+  const G = await app(w, 8128, null, { WAKU_API: null });
+  G.session = (await G.call("/api/wallet/setup", { pin: "888999" })).d.session;
+  r = await G.call("/api/wallet/restore", { backup: full, password: "alice backup password", pin: "888999" });
+  check("an app without messages restores the keys from a backup with history (over 64 KiB), and leaves the chats", r.code === 200 && r.d.ok && !("messages_restored" in r.d), r);
+  G.proc.kill();
+}
 const E = await app(w, 8125, w.NODES[4]);
 E.session = (await E.call("/api/wallet/setup", { pin: "555666" })).d.session;
 r = await E.call("/api/wallet/restore", { backup: full, password: "alice backup password", pin: "555666" });

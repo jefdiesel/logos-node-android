@@ -1157,13 +1157,22 @@ def msg_key_load():
         return None
     if not msg_key_valid(d):
         return None
-    if "version" not in d:                     # a key made by 0.8.x: say once in the file that groups need a new one
+    if "version" not in d:                     # a key made by 0.8.x (msg_key_mark writes this into the file)
         d.update(version=1, groups=False)
-        try:
-            msg_key_save(d, quiet=True)
-        except Exception:
-            pass
     return d
+
+
+def msg_key_mark():
+    """Once, at start: marks a key made by 0.8.x as version 1 without groups, in the file. Never replaces it."""
+    with msg_lock:
+        try:
+            with open(MSG_KEY_FILE) as f:
+                d = json.load(f)
+        except Exception:
+            return
+        if msg_key_valid(d) and "version" not in d:
+            d.update(version=1, groups=False)
+            msg_key_save(d, quiet=True)
 
 
 def msg_key_save(d, quiet=False):
@@ -1480,6 +1489,10 @@ def store_load():
 
 def messaging_start():
     """Loads the inbox and starts the messaging loop and the sender, once."""
+    try:
+        msg_key_mark()
+    except Exception:
+        pass
     with msg_lock:
         if _waku["thread"]:
             return
@@ -2179,8 +2192,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def body_limit(self):
         # a backup with message history, and the saved chats, are larger than anything else
         path = self.path.split("?", 1)[0]
-        if messaging_on() and path in ("/api/wallet/restore", "/api/messages/store"):
-            return 4 * 1048576 if path == "/api/wallet/restore" else STORE_MAX * 2
+        if path == "/api/wallet/restore":         # a backup made on a phone with messages can carry its history
+            return 4 * 1048576
+        if messaging_on() and path == "/api/messages/store":
+            return STORE_MAX * 2
         return 65536
 
     def host_ok(self):
