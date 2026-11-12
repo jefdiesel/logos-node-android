@@ -361,7 +361,7 @@ const INVENTORY = {
   msg: { all: ["s-msg", "h-s-msg", "mg-check-m", "mg-name", "mg-name-save", "mg-name-m", "mg-link", "mg-check", "mg-cmd-d", "mg-cmd", "mg-copy", "mg-addr", "mg-addr-qr", "mg-addr-show", "mg-addr-copy", "mg-addr-m"],
          show: ["mg-name", "mg-name-save", "mg-link", "mg-addr-show", "mg-addr-copy"] },
   node: { all: ["s-nodec", "h-node", "height", "nodeline", "syncline", "state", "peers", "rate", "b-open-node"], show: ["height", "nodeline", "state", "peers", "rate"] },
-  sec: { all: ["s-sec", "s-fp", "h-s-fp", "fp-off", "b-fp-set", "fp-on", "b-fp-off", "fp-confirm", "b-fp-yes", "b-fp-no", "nfp-on-form", "nfp-pin", "b-nfp-on", "fp-host", "m-fp", "s-lock", "h-s-lock", "al-min", "al-grace", "m-al", "b-lock"],
+  sec: { all: ["s-sec", "h-s-sec", "s-fp", "h-s-fp", "fp-off", "b-fp-set", "fp-on", "b-fp-off", "fp-confirm", "b-fp-yes", "b-fp-no", "nfp-on-form", "nfp-pin", "b-nfp-on", "fp-host", "m-fp", "s-lock", "h-s-lock", "al-min", "al-grace", "m-al", "b-lock"],
          show: ["h-s-fp", "h-s-lock", "al-min", "al-grace", "b-lock"] },
   upd: { all: ["s-upd", "h-s-upd", "s-version", "upd", "upd-text", "upd-go", "b-upd-fp", "l-upd-pin", "upd-pin", "b-upd", "m-upd", "b-upd-check", "m-upd-check", "upd-embedded", "upd-src"],
          show: ["s-version", "b-upd-check", "upd-src"] },
@@ -402,6 +402,8 @@ for (const width of [360, 412]) {
 await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
 await shot("settings");
 await noOldHeader("Settings home");
+check("the reload notice (after an update) shows above Settings' bar, not under it", await js(`(() => { const r = document.getElementById("reload"); r.hidden = false;
+  const ok = document.querySelector("#page-settings .bar").getBoundingClientRect().top >= r.getBoundingClientRect().bottom - 0.5; r.hidden = true; return ok; })()`));
 const seenIds = new Set();
 for (const [id, label] of GROUPS) {
   await click(`#go-${id}`);
@@ -469,6 +471,7 @@ for (const [id, label] of [["sec", "Security"], ["msg", "Messages"]]) {
   await js(`lockedNow(); true`);
   await waitFor("locked", `!document.getElementById("lock").hidden`);
   check(`locked on Settings > ${label}: nothing of it shows`, !/Auto-lock|alice|Your messaging address/.test(await js(`document.body.innerText`)));
+  check(`locked: the Settings rows keep no name, not even hidden`, !/alice/.test(await js(`document.getElementById("s-groups").textContent + [...document.querySelectorAll("#s-groups [aria-label]")].map(e => e.getAttribute("aria-label")).join()`)));
   await unlock();
   await stWait(`unlocked: back on Settings > ${label}`, id);
   check(`with its title, ${label}`, (await text("#h-settings")) === label);

@@ -248,8 +248,9 @@ let meShown = null;
 function msgSettingsUi(fresh = false) {
   const on = !!(chat && me);
   msgSettings.hidden = !on;
-  if (!on) { meShown = null; return; }
-  if (fresh || meShown !== me) { meShown = me; openMe(); }
+  if (!on) meShown = null;
+  else if (fresh || meShown !== me) { meShown = me; openMe(); }
+  stRows();                              // Settings' Messages row follows (and forgets the name on a lock)
 }
 /** Settings' Messages row: one line on your LNS name; "linked" only once the name service said so. */
 window.msgSettingsState = () => {

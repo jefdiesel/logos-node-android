@@ -52,6 +52,7 @@ h3{font-size:15px;font-weight:650;margin:16px 0 6px}
 .bar .back:active{background:var(--field)}
 .bar-t{font-size:17px;font-weight:620;line-height:1.3;letter-spacing:-.01em;margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
 #page-settings .bar{position:sticky;top:0;z-index:4;margin:-20px -16px 16px;padding-top:calc(6px + env(safe-area-inset-top))}
+#reload:not([hidden]) ~ #page-settings .bar{margin-top:0}
 /* Settings home: one row per group, each opening its own page */
 .card.groups{padding:0;overflow:hidden}
 .grow{display:flex;align-items:center;gap:14px;width:100%;min-height:66px;margin-top:-1px;padding:10px 10px 10px 14px;border:0;border-top:1px solid var(--line);border-radius:0;background:none;text-align:left;font-weight:400;color:var(--ink)}
@@ -662,10 +663,10 @@ function stRows() {
       b.addEventListener("click", () => openSettings(g.sections.find(id => $(id) && !$(id).hidden)));
       $("s-groups").append(b); g.row = b;
     }
-    const on = stAvail(g); g.row.hidden = !on;
-    if (!on) continue;
+    const on = stAvail(g), sm = g.row.querySelector("small"); g.row.hidden = !on;
+    if (!on) { sm.textContent = ""; g.row.setAttribute("aria-label", g.label); continue; }   // nothing kept (e.g. a name, while locked)
     let st = ""; try { st = g.state ? g.state() : ""; } catch (e) {}
-    const [text, cls] = Array.isArray(st) ? st : [st, ""], sm = g.row.querySelector("small");
+    const [text, cls] = Array.isArray(st) ? st : [st, ""];
     if (sm.textContent !== text) sm.textContent = text;
     sm.className = cls || "";
     g.row.setAttribute("aria-label", g.label + (text ? ". " + text : ""));
