@@ -68,6 +68,7 @@ async function lnsLoad() {
   if (running) lnsMsg((LNS_DOING[j.kind] ? LNS_DOING[j.kind](j.name, j.entry) : "Working…") + (j.progress ? " (" + j.progress + ")" : ""));
   else if (j.state === "done") lnsMsg(j.kind === "register" ? j.name + " is yours." : "Done: " + j.name + " now points " + (j.entry === "msg" ? "at your messaging address." : "at this wallet."), "ok");
   else if (j.state === "failed") lnsMsg("That didn't work: " + j.error, "bad");
+  if (typeof stRows === "function") stRows();      // Settings' list: the Your name row and its line
   clearTimeout(lnsTimer);
   if (running && !$("page-settings").hidden) lnsTimer = setTimeout(lnsLoad, 5000);
 }
@@ -95,6 +96,15 @@ $("b-lns-msg").addEventListener("click", () => lnsDo("/api/wallet/lns/text", { e
 window.LNS = {
   settings(unlocked, shown) { if (!unlocked) { $("s-lns").hidden = true; clearTimeout(lnsTimer); } else if (shown) lnsLoad(); },
   refresh() { if (!$("s-lns").hidden) lnsLoad(); },
+  // one short line for Settings' list; [text, "warn"] for something to look at
+  state() {
+    const d = lnsLast; if (!d) return "";
+    const j = d.job || {};
+    if (j.state === "running") return j.kind === "register" ? "Registering " + j.name : "Pointing " + j.name;
+    if (!d.account) return "No name account yet";
+    if (d.backup_needed) return [(d.name || "No name yet") + " · back up needed", "warn"];
+    return d.name || "No name yet";
+  },
 };
 if (!$("page-settings").hidden && !$("v-open").hidden) lnsLoad();
 })();

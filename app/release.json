@@ -1,12 +1,12 @@
 {
  "files": {
-  "index.html": "1bb0d893da90c83238cc99c62bb671c95c588a9816fb8eb2adb9885d8669d0df",
-  "lns/lns.js": "fcfec910e09bcd7eb606cb4b7a9b3b0c189fdb1714035752742e5847c62e2927",
+  "index.html": "c60af61a33dba2d1853c493537de58d39dd8268c20bad302dc1a292fa1da98a2",
+  "lns/lns.js": "41b8dc549c69c90323c1b4f6fdad239df443029341d28e734bfd1fe3e7278637",
   "messages/VENDORED.txt": "6fbf95fc9f8f846e65996ac4c9e2179002b631af229d8c222ab19a4a756d98e0",
   "messages/chat-core.js": "3ebe9fb5e6d1ff1267917f9ce822c010607df5e4682c390657aaab77a9def21c",
   "messages/icon.js": "98fb6697a01f5861e71e18c20cbe40a0cecff78fd205197edc40440db837b697",
   "messages/identity.js": "0a4943568abb6aae7a11b3555d02c4adfa1b9204322a09019afaf6541bf25445",
-  "messages/messages.js": "3288d031b67495f72876b25a1b1abb8b2d76d8b6bdb12b48de01cb3205ae4d41",
+  "messages/messages.js": "81ad17ab0d843caa5e04411dc6ee616a58aa9b5a603ee0009565829168a8ba17",
   "messages/msg-crypto.js": "cd3e81b81c503bfbdb04104c86067f0d7121dbec4758a824b0b57f6dd90a83b5",
   "messages/noble-ciphers/LICENSE": "f36671a5487c9c5050efacb58011c37c24c55a889803cb036cf9d9a6347c1e2d",
   "messages/noble-ciphers/_arx.js": "ead142ba410404c0698bb80e0d6f77780799bb77a9e3b098cf0f9fca1c486e37",

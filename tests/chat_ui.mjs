@@ -1,12 +1,14 @@
 // The Messages screen in a real browser (headless Chrome over the DevTools protocol), at phone width, in
 // light and dark: the empty states, the chat list, a chat, a key change, a profile with a note, a new chat.
 //
-//   CHROME=<path to chrome> SHOTS=<folder for screenshots, optional> node tests/chat_ui.mjs
+//   CHROME=<path to chrome> SHOTS=<folder for screenshots, optional> PORT_SHIFT=<n, optional> node tests/chat_ui.mjs
+//
+// PORT_SHIFT moves every port this test uses up by n (when the defaults are busy).
 //
 // Three apps on a fake messaging network: the browser shows alice's; bob and carol write from Node with the
 // page's own chat model. Checks what the screen shows; with SHOTS, saves a PNG of each state.
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inflateSync } from "node:zlib";
@@ -18,17 +20,18 @@ const CHROME = process.env.CHROME || "/Applications/Google Chrome.app/Contents/M
 const SHOTS = process.env.SHOTS || "";
 if (SHOTS) mkdirSync(SHOTS, { recursive: true });
 
-const w = await world(18570, 5);
+const PS = Number(process.env.PORT_SHIFT || 0);
+const w = await world(18570 + PS, 5);
 // alice's node: a stand-in for the node's own API, catching up at first (balances, state, peers)
-const NODE_PORT = 18596;
+const NODE_PORT = 18596 + PS;
 procs.push(spawn("python3", [join(here, "fake_node_api.py"), String(NODE_PORT), "syncing"], { stdio: "ignore" }));
 const nodeMode = async (m) => (await fetch(`http://127.0.0.1:${NODE_PORT}/mode/${m}`, { method: "POST" })).text();
-const A = await app(w, 8111, w.NODES[0], { NODE_API: `http://127.0.0.1:${NODE_PORT}`, HISTORY_POLL: "1" }), B = await app(w, 8112, w.NODES[1]), C = await app(w, 8113, w.NODES[2]);
+const A = await app(w, 8111 + PS, w.NODES[0], { NODE_API: `http://127.0.0.1:${NODE_PORT}`, HISTORY_POLL: "1" }), B = await app(w, 8112 + PS, w.NODES[1]), C = await app(w, 8113 + PS, w.NODES[2]);
 await person(w, B, "bob", "222333"); await person(w, C, "carol", "333444");
 A.pin = "111222"; A.session = (await A.call("/api/wallet/setup", { pin: A.pin })).d.session;
 
 // ---- a browser ----
-const port = 9333, prof = mkdtempSync(join(tmpdir(), "chrome-"));
+const port = 9333 + PS, prof = mkdtempSync(join(tmpdir(), "chrome-"));
 process.on("exit", () => { try { rmSync(prof, { recursive: true, force: true }); } catch {} });   // the headless profile goes with the run
 const chrome = spawn(CHROME, ["--headless=new", `--remote-debugging-port=${port}`, `--user-data-dir=${prof}`, "--no-first-run",
   "--no-default-browser-check", "--disable-gpu", "--hide-scrollbars", "--force-device-scale-factor=2",
@@ -79,6 +82,25 @@ const bigTargets = async (where) => {
   }).map(e => (e.id || e.className || e.tagName) + " " + Math.round(e.getBoundingClientRect().width) + "x" + Math.round(e.getBoundingClientRect().height))`);
   check(`${where}: every control is at least 44 px`, small.length === 0, small);
 };
+// a screen with a Back has one top bar: a chevron button labelled Back (44 px or more, no words) and the
+// title beside it, on one line, at a normal title size (no giant heading)
+const barOk = async (where, bar) => {
+  const m = await js(`(() => { const bar = document.querySelector(${JSON.stringify(bar)}); if (!bar) return null;
+    const b = bar.querySelector(".back"), t = bar.querySelector(".bar-t, .who"); if (!b || !t) return null;
+    const br = b.getBoundingClientRect(), tr = t.getBoundingClientRect(), te = t.matches(".who") ? t.querySelector("b") : t, cs = getComputedStyle(te);
+    const px = parseFloat(cs.fontSize), lh = parseFloat(cs.lineHeight) || px * 1.3;
+    return { label: b.getAttribute("aria-label"), words: b.innerText.trim(), bw: Math.round(br.width), bh: Math.round(br.height), px, title: te.innerText,
+      sameLine: Math.abs((br.top + br.bottom) / 2 - (tr.top + tr.bottom) / 2) <= 4, beside: br.right <= tr.left + 1,
+      oneLine: te.getBoundingClientRect().height <= lh * 1.5 }; })()`);
+  check(`${where}: one top bar, Back (a 44 px chevron) and the title "${m && m.title}" on one line, ${m && m.px} px`,
+    !!m && m.label === "Back" && m.words === "" && m.bw >= 44 && m.bh >= 44 && m.sameLine && m.beside && m.oneLine && m.px <= 20 && m.px >= 16, m);
+  return m;
+};
+// Settings: which page shows ("closed", "home", or a group's id)
+const stAt = () => js(`(() => { if (document.getElementById("page-settings").hidden) return "closed"; if (!document.getElementById("s-home").hidden) return "home";
+  const p = [...document.querySelectorAll("#page-settings > [id^=st-]")].filter(b => !b.hidden); return p.length === 1 ? p[0].id.slice(3) : "?" + p.length; })()`);
+const stWait = (name, want) => waitFor(name, `(${JSON.stringify(want)} === "closed" ? document.getElementById("page-settings").hidden
+  : !document.getElementById("page-settings").hidden && (${JSON.stringify(want)} === "home" ? !document.getElementById("s-home").hidden : !document.getElementById("st-" + ${JSON.stringify(want)}).hidden && document.getElementById("s-home").hidden))`);
 let shotN = 0;
 async function shot(name) {
   if (!SHOTS) return;
@@ -277,10 +299,17 @@ await waitFor("and comes back after", `getComputedStyle(document.getElementById(
 await click("#t-send");
 await click("#node-ic");
 await waitFor("the node icon opens Settings > Node", `!document.getElementById("page-settings").hidden && document.getElementById("s-nodec").innerText.includes("Nodes connected")`);
-await js(`document.getElementById("s-nodec").scrollIntoView(); true`);
+check("at the Node page itself", await stAt() === "node" && (await text("#h-settings")) === "Node", await stAt());
+await barOk("Settings > Node", "#page-settings .bar");
 await shot("settings-node");
 await noOldHeader("Settings");
 await click("#b-settings-back");
+check("opened from the node icon, Back goes back to the wallet", await stAt() === "closed" && await js(`!document.getElementById("page-main").hidden && !document.getElementById("hdr").hidden`));
+await click("#node-ic");
+await stWait("the node icon again", "node");
+await js(`history.back(); true`);
+await stWait("the phone's Back does the same", "closed");
+check("and the wallet is back", await js(`!document.getElementById("page-main").hidden`));
 await click("#nav-msg");
 await waitFor("no key yet: the turn-on screen", `!document.getElementById("mg-nokey").hidden`);
 check("the turn-on screen never says key", !/\bkey\b/i.test(await js(`document.getElementById("page-msg").innerText`)));
@@ -300,7 +329,9 @@ await waitFor("not linked on chain yet: it says so", `document.getElementById("m
 check("the link command is folded away until asked for", await js(`!document.getElementById("mg-link").open`));
 check("the messaging address is hidden until Show", await js(`document.getElementById("mg-addr").hidden`));
 check("no address or key shows in Settings", !/[0-9a-f]{20,}/.test(await js(`document.getElementById("page-settings").innerText`)));
-await shot("settings");
+check("the gear on Messages opens Settings' Messages page", await stAt() === "msg" && (await text("#h-settings")) === "Messages" && await js(`document.getElementById("st-msg").contains(document.getElementById("s-msg"))`));
+await barOk("Settings > Messages", "#page-settings .bar");
+await shot("settings-messages");
 await click("#mg-addr-show");
 check("Show reveals the shareable address", (await text("#mg-addr")).startsWith("msg:" + key.public));
 await waitFor("and its QR code", `!!document.querySelector("#mg-addr-qr .qr svg path")`);
@@ -324,9 +355,150 @@ await noOldHeader("Messages");
 check("Messages has its own top: no node header, no status pill", await js(`document.querySelector("main > header").hidden && !!document.getElementById("h-chats")`));
 check("no name linked yet: no name card on Messages home", !(await text("#mg-home")).includes("People reach you"));
 
+// ---- Settings: a home list of groups in a fixed order, each opening its own page; Back goes up one level ----
+const GROUPS = [["msg", "Messages"], ["name", "Your name"], ["node", "Node"], ["sec", "Security"], ["upd", "Updates"], ["bk", "Backup & restore"], ["about", "About"]];
+const ANDROID_ONLY = new Set(["name"]);        // only inside the Android app with the LNS signer (checked with erin's app below)
+const LINUX_GROUPS = GROUPS.filter(g => !ANDROID_ONLY.has(g[0]));
+// Everything Settings had in 0.9.7, by id, and the group page it now lives on. `show`: on screen whenever that page is
+// (the rest come and go with the state: fingerprint on or off, an update available, a file picked...).
+const INVENTORY = {
+  msg: { all: ["s-msg", "h-s-msg", "mg-check-m", "mg-name", "mg-name-save", "mg-name-m", "mg-link", "mg-check", "mg-cmd-d", "mg-cmd", "mg-copy", "mg-addr", "mg-addr-qr", "mg-addr-show", "mg-addr-copy", "mg-addr-m"],
+         show: ["mg-name", "mg-name-save", "mg-link", "mg-addr-show", "mg-addr-copy"] },
+  node: { all: ["s-nodec", "h-node", "height", "nodeline", "syncline", "state", "peers", "rate", "b-open-node"], show: ["height", "nodeline", "state", "peers", "rate"] },
+  sec: { all: ["s-sec", "h-s-sec", "s-fp", "h-s-fp", "fp-off", "b-fp-set", "fp-on", "b-fp-off", "fp-confirm", "b-fp-yes", "b-fp-no", "nfp-on-form", "nfp-pin", "b-nfp-on", "fp-host", "m-fp", "s-lock", "h-s-lock", "al-min", "al-grace", "m-al", "b-lock"],
+         show: ["h-s-fp", "h-s-lock", "al-min", "al-grace", "b-lock"] },
+  upd: { all: ["s-upd", "h-s-upd", "s-version", "upd", "upd-text", "upd-go", "b-upd-fp", "l-upd-pin", "upd-pin", "b-upd", "m-upd", "b-upd-check", "m-upd-check", "upd-embedded", "upd-src"],
+         show: ["s-version", "b-upd-check", "upd-src"] },
+  bk: { all: ["s-bk", "h-s-bk", "bk-state", "bk", "f-bk", "bk-what", "bk-pw1", "bk-show", "bk-short", "bk-pw2-row", "bk-pw2", "bk-hist", "bk-pin", "b-bk", "m-bk", "bk-done", "bk-name", "bk-who",
+              "s-rs", "h-s-rs", "rs", "rs-file", "rs-step2", "rs-compare", "rs-warn", "rs-msg", "rs-pw", "rs-show", "rs-pin", "rs-ok", "b-rs", "m-rs"],
+        show: ["h-s-bk", "bk-state", "bk-what", "bk-pw1", "bk-show", "bk-pw2", "bk-hist", "bk-pin", "b-bk", "h-s-rs", "rs-file"] },
+  about: { all: ["s-about", "h-s-about", "about-version", "about-upd", "about-talk"], show: ["about-version", "about-talk"] },
+  name: { all: ["s-lns", "h-s-lns", "lns-none", "b-lns-acct", "lns-acct", "lns-addr", "lns-copy", "lns-bal", "lns-bk", "b-lns-bk", "lns-noname", "lns-in",
+                "b-lns-reg", "b-lns-link", "lns-has", "lns-name", "b-lns-bc", "b-lns-msg", "lns-notes", "m-lns"],
+          show: ["b-lns-acct"] },
+};
+// and the words, as they were (a few from each)
+const WORDS = {
+  msg: ["Your name", "Without a name you can still write", "Link your name to this phone", "Your messaging address", "Anyone can write to this phone at this address"],
+  node: ["blocks on this device", "State", "Nodes connected", "New blocks a minute"],
+  sec: ["Fingerprint unlock", "Auto-lock", "Locks after this long without use", "after you leave the app", "Lock now"],
+  upd: ["Installed version", "Check for updates", "Updates come from the project's GitHub repository"],
+  bk: ["Back up", "Saves this wallet", "Backup password (at least 8 characters)", "Include message history", "Save backup file", "Restore from a backup", "Restoring replaces this wallet's accounts"],
+  about: ["Version", "This page is served by the app on this device", "Testnet."],
+  name: ["This phone can hold an LNS name of its own", "unencrypted like the wallet's own keys", "There is no recovery phrase", "Make a name account"],
+};
+await click("#nav-wallet");
+await click("#b-gear");
+await stWait("the gear opens Settings at its home list", "home");
+check("the home list has the groups, in this order: " + LINUX_GROUPS.map(g => g[1]).join(", "),
+  JSON.stringify(await js(`[...document.querySelectorAll("#s-groups .grow")].filter(b => !b.hidden).map(b => b.querySelector("b").textContent)`)) === JSON.stringify(LINUX_GROUPS.map(g => g[1])));
+check("outside the Android app there is no Your name", await js(`!document.getElementById("s-lns") && (!document.getElementById("go-name") || document.getElementById("go-name").hidden)`));
+check("and nothing else on it but the list", await js(`[...document.getElementById("s-home").children].filter(e => !e.hidden).map(e => e.id).join() === "s-groups"`));
+check("its title is Settings, at a normal size", (await text("#h-settings")) === "Settings");
+await barOk("Settings", "#page-settings .bar");
+const rowState = (id) => text(`#go-${id} small`);
+await waitFor("each row has one line on where it stands", `[...document.querySelectorAll("#s-groups .grow")].filter(b => !b.hidden).every(b => b.querySelector("small").textContent.length > 0)`);
+for (const [id, want] of [["msg", /^On · linked to alice$/], ["node", /^(Up to date|Online) · block [0-9,]+$/], ["sec", /^PIN · locks after 5 minutes$/], ["upd", /^Version \d+\.\d+\.\d+/], ["bk", /^No backup yet$/], ["about", /^Version \d+\.\d+\.\d+ · Testnet$/]])
+  check(`the ${id} row says ${want}`, want.test(await rowState(id)), await rowState(id));
+check("the rows say no key or address", !/\bkey\b|[0-9a-f]{20,}/i.test(await text("#s-groups")));
+for (const width of [360, 412]) {
+  await cdp("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 2, mobile: true });
+  await sleep(150);
+  check(`${width} px: the list fits (no sideways scroll), each row 44 px or more, one line each`, await js(`document.documentElement.scrollWidth <= innerWidth && [...document.querySelectorAll("#s-groups .grow")].filter(b => !b.hidden).every(b => {
+    const r = b.getBoundingClientRect(), c = b.closest(".card").getBoundingClientRect(), sm = b.querySelector("small"); return r.height >= 44 && r.right <= c.right + 0.5 && sm.scrollHeight <= parseFloat(getComputedStyle(sm).lineHeight) * 1.5; })`));
+  await barOk(`${width} px: Settings`, "#page-settings .bar");
+}
+await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+await shot("settings");
+await noOldHeader("Settings home");
+check("the reload notice (after an update) shows above Settings' bar, not under it", await js(`(() => { const r = document.getElementById("reload"); r.hidden = false;
+  const ok = document.querySelector("#page-settings .bar").getBoundingClientRect().top >= r.getBoundingClientRect().bottom - 0.5; r.hidden = true; return ok; })()`));
+const seenIds = new Set();
+async function groupPage(id, label) {
+  await click(`#go-${id}`);
+  await stWait(`${label} opens its own page`, id);
+  check(`${label}: the title is ${label}`, (await text("#h-settings")) === label);
+  await barOk(`Settings > ${label}`, "#page-settings .bar");
+  await noOldHeader(`Settings > ${label}`);
+  const inv = INVENTORY[id];
+  const where = await js(`${JSON.stringify(inv.all)}.map(x => { const n = document.querySelectorAll("#" + x); const b = n.length === 1 && n[0].closest("#page-settings > [id^=st-]"); return n.length + ":" + (b ? b.id : "-"); })`);
+  check(`${label}: every control and text of the group is on this page, once (${inv.all.length})`, where.every(x => x === "1:st-" + id), inv.all.map((x, i) => x + " " + where[i]).filter(x => !x.endsWith("1:st-" + id)));
+  const hid = await js(`${JSON.stringify(inv.show)}.filter(x => { const e = document.getElementById(x); return !e || e.offsetParent === null; })`);
+  check(`${label}: and what is always there shows`, hid.length === 0, hid);
+  const words = await text(`#st-${id}`);
+  const lost = WORDS[id].filter(w => !words.includes(w));
+  check(`${label}: its words are all there`, lost.length === 0, lost);
+  check(`${label}: no other group's sections on this page`, await js(`[...document.querySelectorAll("#page-settings > [id^=st-]")].filter(b => !b.hidden).length === 1`));
+  for (const x of inv.all) seenIds.add(x);
+  const names = { msg: null, node: null, sec: "settings-security", upd: "settings-updates", bk: "settings-backup", about: "settings-about" };
+  if (names[id]) await shot(names[id]);
+  if (id === "bk") { await js(`document.getElementById("s-rs").scrollIntoView({ block: "start" }); true`); await shot("settings-restore"); }
+  if (id === "sec") {      // the controls still work from here: auto-lock saves (and the row says it), then back as it was
+    await js(`(() => { const s = document.getElementById("al-min"); s.value = "15"; s.dispatchEvent(new Event("change")); return true; })()`);
+    await waitFor("auto-lock saves from Settings > Security", `document.getElementById("m-al").textContent.includes("15 minutes")`);
+    await js(`(() => { const s = document.getElementById("al-min"); s.value = "5"; s.dispatchEvent(new Event("change")); return true; })()`);
+    await waitFor("and back to 5", `document.getElementById("m-al").textContent.includes("5 minutes") && !document.getElementById("m-al").textContent.includes("15")`);
+  }
+  if (id === "upd") {
+    await click("#b-upd-check");
+    await waitFor("Check for updates answers from Settings > Updates", `document.getElementById("m-upd-check").textContent.length > 0 && document.getElementById("m-upd-check").textContent !== "Checking GitHub…"`, 20000);
+  }
+  if (id === "msg") check("Settings > Messages is the same page as the gear's", await js(`document.getElementById("st-msg").contains(document.getElementById("s-msg")) && document.querySelectorAll("#s-msg").length === 1`));
+  await click("#b-settings-back");
+  await stWait(`Back from ${label} returns to the list`, "home");
+  await click(`#go-${id}`);
+  await stWait(`${label} again`, id);
+  await js(`history.back(); true`);
+  await stWait(`the phone's Back from ${label} returns to the list too`, "home");
+}
+for (const [id, label] of LINUX_GROUPS) await groupPage(id, label);
+check(`nothing from 0.9.7's Settings is lost: ${seenIds.size} ids, each on one group page`, seenIds.size === LINUX_GROUPS.reduce((n, g) => n + INVENTORY[g[0]].all.length, 0));
+check("the not-unlocked note is on the home list", await js(`document.getElementById("s-home").contains(document.getElementById("s-locked"))`));
+await js(`history.back(); true`);
+await stWait("the phone's Back from the list leaves Settings", "closed");
+check("back on the wallet", await js(`!document.getElementById("page-main").hidden && !document.getElementById("nav").hidden`));
+// the notices on the wallet open their group's page; Back goes back to the wallet
+await waitFor("the no-backup notice shows", `!document.getElementById("n-bk").hidden`);
+await click("#n-bk");
+await stWait("the no-backup notice opens Backup & restore", "bk");
+await waitFor("with the cursor in the backup password", `document.activeElement && document.activeElement.id === "bk-pw1"`);
+await js(`document.activeElement.blur(); true`);
+await click("#b-settings-back");
+await stWait("Back from there returns to the wallet", "closed");
+// the gear on Messages and Settings > Messages: one page, Back goes back where it came from
+await click("#nav-msg");
+await waitFor("Messages home", `!document.getElementById("mg-home").hidden`);
+await click("#mg-me");
+await stWait("the gear on Messages opens Settings > Messages", "msg");
+await waitFor("filled in", `document.getElementById("mg-name").value === "alice"`);
+await click("#b-settings-back");
+await stWait("Back returns to Messages", "closed");
+check("Messages, as it was", await js(`!document.getElementById("page-msg").hidden && !document.getElementById("mg-home").hidden`));
+// a lock (auto-lock) and unlock comes back to the same Settings page
+for (const [id, label] of [["sec", "Security"], ["msg", "Messages"]]) {
+  await click("#nav-wallet"); await click("#b-gear"); await stWait("Settings", "home");
+  await click(`#go-${id}`); await stWait(label, id);
+  await js(`lockedNow(); true`);
+  await waitFor("locked", `!document.getElementById("lock").hidden`);
+  check(`locked on Settings > ${label}: nothing of it shows`, !/Auto-lock|alice|Your messaging address/.test(await js(`document.body.innerText`)));
+  check(`locked: the Settings rows keep no name, not even hidden`, !/alice/.test(await js(`document.getElementById("s-groups").textContent + [...document.querySelectorAll("#s-groups [aria-label]")].map(e => e.getAttribute("aria-label")).join()`)));
+  await unlock();
+  await stWait(`unlocked: back on Settings > ${label}`, id);
+  check(`with its title, ${label}`, (await text("#h-settings")) === label);
+  if (id === "msg") await waitFor("and Messages filled in again", `!document.getElementById("s-msg").hidden && document.getElementById("mg-name").value === "alice"`, 15000);
+  await js(`history.back(); true`);
+  await stWait("the phone's Back still goes up one level", "home");
+  await click("#b-settings-back");
+  await stWait("and out", "closed");
+}
+await click("#nav-msg");
+await waitFor("Messages home", `!document.getElementById("mg-home").hidden`);
+
 // ---- new chat: not registered, no msg entry, found ----
 await w.register("dave", { display: "Dave" });
 await click("#mg-new");
+await barOk("New chat", "#mg-newv .bar");
+check("New chat's title is New chat", (await text("#h-new")) === "New chat");
 for (const [name, want] of [["zed", "isn't a registered name"], ["dave", "hasn't turned on messages"], ["bob", "Start chat"]]) {
   await js(`document.getElementById("mg-to").value = ${JSON.stringify(name)}; document.getElementById("mg-find").requestSubmit(); true`);
   await waitFor(`new chat with ${name}: ${want}`, `document.getElementById("mg-found").innerText.includes(${JSON.stringify(want)})`);
@@ -356,6 +528,7 @@ await bob.send("d:alice", "Also: could you send me the address of that bakery yo
 await waitFor("bob's replies arrive", `document.querySelector(".cv-in").innerText.includes("sourdough")`, 15000);
 check("day separators: Yesterday and Today", (await text(".cv-in")).includes("Yesterday") && (await text(".cv-in")).includes("Today"));
 check("a fine chat says nothing about verification (problems only)", !/verified/i.test(await text(".ov .ov-top")));
+await barOk("a chat", ".ov .bar");
 await shot("chat");
 // a small phone with the keyboard up: 360 px wide, the composer above the keyboard
 await cdp("Emulation.setDeviceMetricsOverride", { width: 360, height: 420, deviceScaleFactor: 2, mobile: true });
@@ -379,6 +552,7 @@ await waitFor("the sheet closes", `!document.querySelector(".sheet")`);
 // ---- a profile with a note ----
 await click(".ov .who");
 await waitFor("bob's profile", `!!document.getElementById("pv-note")`);
+await barOk("a profile", ".ov[aria-label=Profile] .bar");
 await js(`(() => { const n = document.getElementById("pv-nick"); n.value = "Bob (meetup)"; n.dispatchEvent(new Event("change")); return true; })()`);
 await waitFor("nickname saved", `document.querySelector(".saved").textContent.includes("Saved")`);
 await js(`(() => { const n = document.getElementById("pv-note"); n.value = "Runs the Thursday meetup. Prefers Signal for anything urgent."; n.dispatchEvent(new Event("input")); n.dispatchEvent(new Event("blur")); return true; })()`);
@@ -392,7 +566,7 @@ await waitFor("back on the list", `document.querySelectorAll("#mg-rows .crow").l
 check("the list shows the nickname", (await text("#mg-rows")).includes("Bob (meetup)"));
 
 // ---- someone with no LNS name: by messaging address, both ways ----
-const D = await app(w, 8114, w.NODES[3]);
+const D = await app(w, 8114 + PS, w.NODES[3]);
 D.pin = "444555"; D.session = (await D.call("/api/wallet/setup", { pin: D.pin })).d.session;
 const did = ID.newIdentity();
 await D.call("/api/messages/key", { seed: hex(did.seed), secret: hex(did.secretKey), public: hex(did.publicKey) });
@@ -469,7 +643,9 @@ for (let i = 0; i < 130; i++) {                 // enough history for a file ove
 }
 await until("the filler arrives", async () => (await A.call("/api/messages/status")).d.unread >= 130, 15000);
 await click("#nav-wallet"); await click("#b-gear");
-await waitFor("Settings", `!document.getElementById("page-settings").hidden`);
+await stWait("Settings", "home");
+await click("#go-bk");
+await stWait("Settings > Backup & restore", "bk");
 await js(`window.__blobs = []; const o = URL.createObjectURL; URL.createObjectURL = b => { window.__blobs.push(b); return o(b); }; true`);
 await js(`(() => { for (const [id, v] of [["bk-pw1", "a long backup password"], ["bk-pw2", "a long backup password"], ["bk-pin", ${JSON.stringify(A.pin)}]]) { const e = document.getElementById(id); e.value = v; e.dispatchEvent(new Event("input", { bubbles: true })); } return true; })()`);
 check("history is in the backup unless unticked", await js(`document.getElementById("bk-hist").checked`));
@@ -488,6 +664,10 @@ await js(`(() => { for (const [id, v] of [["rs-pw", "a long backup password"], [
 await js(`document.getElementById("b-rs").click(); true`);
 await waitFor("restored through the page", `document.getElementById("m-rs").className === "msg ok"`, 30000);
 await click("#b-settings-back");
+await stWait("Back to the list", "home");
+await waitFor("the Backup & restore row now says when the last backup was", `/^Last backup .* ago$/.test(document.querySelector("#go-bk small").textContent)`);
+await click("#b-settings-back");
+await stWait("and out of Settings", "closed");
 
 // ---- the node's state as an icon; Settings' Node row with the Android bridge ----
 await click("#nav-wallet");
@@ -500,26 +680,35 @@ for (const [words, kind] of [["catching up", "sync"], ["stopped", "stop"], ["up 
 }
 check("stopped is labelled", (await js(`(document.getElementById("pill").textContent = "stopped", new Promise(r => setTimeout(() => r(document.getElementById("node-ic").getAttribute("aria-label")), 50)))`)).startsWith("Node stopped"));
 await click("#b-gear");
-await waitFor("Settings", `!document.getElementById("page-settings").hidden`);
+await stWait("Settings", "home");
+await click("#go-node");
+await stWait("Settings > Node", "node");
 check("without the Android bridge there is no Open node", await js(`document.getElementById("b-open-node").hidden`));
-await shot("settings");
+await click("#b-settings-back"); await stWait("Back to the list", "home");
+await click("#b-settings-back"); await stWait("and out of Settings", "closed");
 await cdp("Page.addScriptToEvaluateOnNewDocument", { source: "window.LogosAndroid = { openNode() { window.__opened = (window.__opened || 0) + 1; } };" });
 await load();
 await waitFor("the wallet loads", `!document.getElementById("v-open").hidden || !document.getElementById("v-locked").hidden`);
 if (await js(`!document.getElementById("v-locked").hidden`)) await unlock();
 await click("#b-gear");
-await waitFor("Settings > Node has Open node with the bridge", `!document.getElementById("b-open-node").hidden`);
-await js(`document.getElementById("s-nodec").scrollIntoView(); true`);
+await stWait("Settings", "home");
+await click("#go-node");
+await waitFor("Settings > Node has Open node with the bridge", `!document.getElementById("b-open-node").hidden && !document.getElementById("st-node").hidden`);
 await shot("settings-android");
 await js(`document.getElementById("b-open-node").click(); true`);
 check("it calls LogosAndroid.openNode()", await js(`window.__opened === 1`));
-await click("#b-settings-back");
+await click("#b-settings-back"); await stWait("Back to the list", "home");
+await click("#b-settings-back"); await stWait("and out of Settings", "closed");
 await click("#nav-msg");
 await waitFor("Messages home", `!document.getElementById("mg-home").hidden`);
 await shot("messages-home");
 
 // ---- the lock screen inside the Android app, with fingerprint on (a stand-in bridge counts the prompts) ----
-const E = await app(w, 8115, w.NODES[4], { APP_EMBEDDED: "android" });
+// erin's app is the Android app's, with the LNS signer (a stand-in), so Settings has Your name too
+const signerDir = mkdtempSync(join(tmpdir(), "signer-"));
+process.on("exit", () => { try { rmSync(signerDir, { recursive: true, force: true }); } catch {} });
+copyFileSync(join(here, "fake_names_bin.py"), join(signerDir, "libnames.so")); chmodSync(join(signerDir, "libnames.so"), 0o755);
+const E = await app(w, 8115 + PS, w.NODES[4], { APP_EMBEDDED: "android", NAMES_BIN: join(signerDir, "libnames.so") });
 await person(w, E, "erin", "565656");
 let r0 = await E.call("/api/wallet/native-fingerprint", { on: true, pin: E.pin });
 check("fingerprint unlock is on for the Android app", r0.code === 200, r0);
@@ -550,6 +739,19 @@ await shot("locked-android-keypad");
 await enterPin(E.pin, "unlocking in the Android app");
 await waitFor("unlocked with the PIN", `!document.getElementById("v-open").hidden`);
 E.session = await js("token");
+await click("#b-gear"); await stWait("Settings in the Android app", "home");
+await waitFor("Security says fingerprint is on", `document.querySelector("#go-sec small").textContent.startsWith("Fingerprint on · locks after")`);
+check("Updates says they come with the Android app", (await text("#go-upd small")).includes("comes with the Android app"), await text("#go-upd small"));
+// (erin's Messages row comes and goes with her messages state; the order is the list's own: Your name right after Messages)
+const rowsNow = async () => JSON.parse(await js(`JSON.stringify([...document.querySelectorAll("#s-groups .grow")].filter(b => !b.hidden).map(b => b.querySelector("b").textContent))`)).filter(l => l !== "Messages");
+const wantRows = JSON.stringify(GROUPS.map(g => g[1]).filter(l => l !== "Messages"));
+for (let i = 0; i < 50 && JSON.stringify(await rowsNow()) !== wantRows; i++) await sleep(200);
+check("in the Android app with the signer, the list has Your name first after Messages: " + GROUPS.map(g => g[1]).join(", "),
+  JSON.stringify(await rowsNow()) === wantRows && await js(`(() => { const r = [...document.querySelectorAll("#s-groups .grow")]; return r.indexOf(document.getElementById("go-name")) === r.indexOf(document.getElementById("go-msg")) + 1; })()`), await rowsNow());
+await waitFor("the Your name row says where it stands", `document.querySelector("#go-name small").textContent === "No name account yet"`);
+await groupPage("name", "Your name");
+check("Your name's ids are all on its page", [...seenIds].filter(x => INVENTORY.name.all.includes(x)).length === INVENTORY.name.all.length);
+await click("#b-settings-back"); await stWait("out of Settings", "closed");
 await click("#nav-msg");
 await waitFor("erin's chat with bob", `[...document.querySelectorAll("#mg-rows .crow")].some(r => r.innerText.includes("bob"))`, 15000);
 await js(`[...document.querySelectorAll("#mg-rows .crow")].find(r => r.innerText.includes("bob")).click(); true`);
