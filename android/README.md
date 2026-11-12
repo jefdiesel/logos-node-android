@@ -257,9 +257,19 @@ traffic; discovery (discv5) traffic is not in it.
 status interval, the cap, the stop grace, and `EXTRA` for further flat options such as shards. The
 values for a smaller relay will go in `EXTRA`.
 
-**The wallet.** While the messaging node runs, the wallet server gets
-`WAKU_API=http://127.0.0.1:18645` in its environment; while it doesn't, the variable is unset. The
-wallet process checks `files/waku/state.txt` every 5 s.
+**The wallet.** The wallet process tells the web app where the messaging node is:
+- `server.set_waku_api("http://127.0.0.1:18645")` while it runs, and `set_waku_api(None)` while it
+  doesn't (web app 0.8.0). Older web apps get a `WAKU_API` environment variable instead.
+- This happens when the wallet starts and within a second of every change. It reads
+  `files/waku/state.txt`, which the node service writes.
+- Only the web app reads the node's messages; the app never polls the node's message endpoints.
+
+**Orphan guard.** A runner nothing watches would cost gigabytes an hour. A runner counts as the
+supervisor's only while it is being launched, or while the supervisor's handle is of a live process.
+- Every other runner process is killed: at service start, on every switch change, and once a minute.
+- A supervisor whose thread is alive but holds no live runner is "stuck". The minute guard restarts
+  it.
+- Debug builds can force that case: `--ez break true` on the `MESSAGING` action.
 
 ## Signing
 

@@ -157,6 +157,30 @@ class MessagingTest {
         waitFor("cap stop", 40) { s.state.contains("data cap") && !s.running }
     }
 
+    @Test fun stuckSupervisorIsSeenAndRestarted() {
+        // the phone case: the supervisor loses its runner and stops reading, while the runner keeps running
+        val procs = java.util.Collections.synchronizedList(mutableListOf<Process>())
+        val s = MessagingSupervisor(files(), DataUsage(File(tmp.root, "u6.txt")),
+            { ProcessBuilder("sh", "-c", "while true; do echo '2026-11-12T15:00:00Z [runner] status connection=Connected connected_peers=1 rss_kb=1'; sleep 0.2; done")
+                .redirectErrorStream(true).start().also { procs += it } },
+            log = {})
+        s.start()
+        waitFor("connected") { s.state.startsWith("connected") }
+        assertTrue(s.ownsRunner); assertFalse(s.stuck)
+        s.debugAbandon = true
+        waitFor("stuck") { s.stuck }
+        assertTrue(s.running)                             // the thread is alive, which is why "running" isn't enough
+        assertFalse(s.ownsRunner)                         // so the service's guard treats the runner as an orphan
+        assertTrue(procs[0].isAlive)
+        assertTrue(s.recoverIfStuck())
+        waitFor("relaunched") { procs.size == 2 && s.ownsRunner }
+        assertFalse(s.stuck)
+        assertFalse(s.recoverIfStuck())
+        s.stop("test over")
+        assertFalse(s.ownsRunner)
+        procs.forEach { it.destroyForcibly() }
+    }
+
     @Test fun supervisorIsIndependentOfOtherProcesses() {
         // the "blockchain node": a separate child the messaging supervisor knows nothing about
         val node = ProcessBuilder("sh", "-c", "sleep 60").start()

@@ -94,7 +94,16 @@ class NodeService : Service() {
         guard = thread(name = "messaging-orphan-guard", isDaemon = true) {
             while (true) {
                 try { Thread.sleep(60_000) } catch (_: InterruptedException) { return@thread }
-                // orphans out, then the switches again (a broken supervisor is started afresh if still wanted)
+                // a stuck supervisor is restarted, orphans go, then the switches are checked again
+                messagingWork.execute {
+                    try {
+                        val m = messaging
+                        if (m != null && m.recoverIfStuck()) log.app("messaging: guard restarted a stuck supervisor")
+                    } catch (e: Exception) {
+                        log.app("messaging: guard: $e")
+                    }
+                    killUnownedRunners()
+                }
                 main.post { if (messaging != null) evaluateMessaging() }
             }
         }
@@ -133,7 +142,8 @@ class NodeService : Service() {
      * once a minute.
      */
     private fun killUnownedRunners() {
-        if (messaging?.running == true) return
+        // owned = being launched, or the supervisor's handle is of a live process (not just "its thread is alive")
+        if (messaging?.ownsRunner == true) return
         val pids = runnerPids()
         if (pids.isEmpty()) return
         log.app("messaging: stopping ${pids.size} runner process(es) that nothing supervises: $pids")
@@ -235,7 +245,8 @@ class NodeService : Service() {
             }
             ACTION_MESSAGING -> {
                 // debug builds: the switches can be set from adb (--ez enabled true|false, --ez mobile true|false),
-                // and --ez break true breaks the supervisor on purpose, leaving its runner unwatched (orphan-guard test)
+                // and --ez break true makes the supervisor get stuck on purpose, leaving its runner unwatched
+                // (orphan-guard test: the minute guard should kill the runner and restart the supervisor)
                 if (BuildConfig.DEBUG) {
                     val edit = messagingPrefs(this).edit()
                     for (key in listOf("enabled", "mobile")) if (intent.hasExtra(key)) edit.putBoolean(key, intent.getBooleanExtra(key, false))

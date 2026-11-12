@@ -57,6 +57,15 @@ def set_env(name, value):
         os.environ[str(name)] = str(value)
 
 
+def set_waku_api(url):
+    """Where the messaging node's REST API is now (a loopback URL), or None while it is off. Uses the web
+    app's set_waku_api() (0.8.0 and later), else the WAKU_API environment variable. True if it was taken."""
+    if _server is not None and hasattr(_server, "set_waku_api"):
+        return bool(_server.set_waku_api(url))
+    set_env("WAKU_API", url)
+    return True
+
+
 def native_unlock():
     """server.native_unlock(): a session token after the phone's fingerprint check, or None."""
     return _server.native_unlock() if _server is not None else None

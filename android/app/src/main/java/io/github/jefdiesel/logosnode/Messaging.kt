@@ -268,7 +268,39 @@ class MessagingSupervisor(
     private var worker: Thread? = null
     private var key: String? = null
 
+    @Volatile private var launching = false
+    /** Set while the runner should be running under this supervisor (after launch, until it exits). */
+    @Volatile private var watching = false
+
+    /** The supervisor's thread is alive (running the runner, or waiting to restart it). */
     val running get() = worker?.isAlive == true
+
+    /**
+     * Whether a runner process belongs to this supervisor right now: only while it is being launched,
+     * or while the handle the supervisor holds is of a live process. Any runner beyond that is an orphan.
+     */
+    val ownsRunner get() = launching || process?.isAlive == true
+
+    /**
+     * The supervisor's thread is alive and believes it watches a runner, but holds no live one: it is
+     * stuck (the case that left a runner unwatched on the phone). Not while launching or waiting to restart.
+     */
+    val stuck get() = running && watching && !launching && process?.isAlive != true
+
+    /** Restarts a stuck supervisor: its thread is interrupted and a fresh one started. True if it was stuck. */
+    @Synchronized
+    fun recoverIfStuck(): Boolean {
+        if (!stuck) return false
+        log("messaging: the supervisor was stuck without its runner; starting it again")
+        val w = worker
+        w?.interrupt()
+        w?.join(10_000)
+        process = null
+        watching = false
+        worker = null
+        start()
+        return true
+    }
 
     @Synchronized
     fun start() {
@@ -330,18 +362,25 @@ class MessagingSupervisor(
             status = MessagingStatus()
             setState("starting")
             val started = System.currentTimeMillis()
+            launching = true
             val p = try { launch(files.config) } catch (e: Exception) {
+                launching = false
                 log("messaging: couldn't start the runner: $e")
                 setState("stopped: couldn't start the runner")
                 return
             }
             process = p
+            watching = true
+            launching = false
             log("messaging: started")
             try {
                 p.inputStream.bufferedReader().forEachLine { raw -> onLine(raw) }
-            } catch (_: Exception) {
+            } catch (_: java.io.IOException) {
+                // the runner's output closed under us (it was stopped): fall through to waitFor
             }
+            // anything else thrown while reading goes up to start()'s catch, which stops the runner
             val code = p.waitFor()
+            watching = false
             process = null
             if (stopRequested) return
             if (System.currentTimeMillis() - started > 10 * 60_000) backoff = 10
@@ -352,13 +391,16 @@ class MessagingSupervisor(
         }
     }
 
-    /** Debug builds, for the orphan-guard test: the supervisor dies and leaves its runner unwatched. */
+    /**
+     * Debug builds and tests, for the orphan guard: at the runner's next line the supervisor loses its
+     * runner and gets stuck (it drops the handle and stops reading), leaving the runner unwatched.
+     */
     @Volatile var debugAbandon = false
 
     private fun onLine(raw: String) {
         if (debugAbandon) {
             process = null
-            throw IllegalStateException("supervisor broken on purpose (debug test)")
+            Thread.sleep(Long.MAX_VALUE)                   // stuck until recoverIfStuck() interrupts it
         }
         val line = RunnerLines.redact(raw, key)
         appendCapped(line)

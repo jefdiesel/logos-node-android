@@ -95,26 +95,30 @@ object WalletServer {
     }
 
     /**
-     * WAKU_API for the web app: set while the messaging node runs (the node service, in the main process,
-     * writes files/waku/state.txt), removed while it doesn't. Checked every 5 seconds.
+     * Tells the web app where the messaging node is: server.set_waku_api(url) while it runs, (None) while
+     * it doesn't (web app 0.8.0; older ones get the WAKU_API environment variable instead). The node
+     * service, in the main process, writes files/waku/state.txt. Applied at once when the wallet starts,
+     * whatever the state, then within a second of every change, so the web app subscribes promptly.
+     * Never reads the node's messages itself: only server.py does.
      */
     private fun watchMessaging(context: Context) {
         val state = MessagingFiles(File(context.filesDir, "waku")).state
-        thread(name = "wallet-waku-env", isDaemon = true) {
+        thread(name = "wallet-waku-api", isDaemon = true) {
             var last: Boolean? = null
             while (true) {
                 val running = try { state.readText().trim() == "running" } catch (_: Exception) { false }
                 if (running != last) {
                     try {
-                        Python.getInstance().getModule("logos_embed")
-                            .callAttr("set_env", "WAKU_API", if (running) MessagingSettings.WAKU_API else null)
-                        log(context, if (running) "WAKU_API set: the messaging node runs" else "WAKU_API unset")
+                        val taken = Python.getInstance().getModule("logos_embed")
+                            .callAttr("set_waku_api", if (running) MessagingSettings.WAKU_API else null)?.toBoolean() ?: false
+                        log(context, (if (running) "messaging node on: set_waku_api(${MessagingSettings.WAKU_API})" else "messaging node off: set_waku_api(None)") +
+                            if (taken) "" else " was refused")
                     } catch (e: Exception) {
-                        log(context, "couldn't set WAKU_API: $e")
+                        log(context, "couldn't tell the web app about the messaging node: $e")
                     }
                     last = running
                 }
-                Thread.sleep(5000)
+                Thread.sleep(1000)
             }
         }
     }
