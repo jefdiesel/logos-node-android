@@ -4,7 +4,7 @@ a stand-in node, for tests/lns_ui.mjs. Serves on 127.0.0.1:<port> until killed; 
 
   python3 tests/lns_ui_app.py <port>
 """
-import http.server, json, os, shutil, sys, tempfile, threading, time
+import http.server, json, os, shutil, signal, sys, tempfile, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 port = sys.argv[1]
@@ -28,7 +28,16 @@ class Seq(http.server.BaseHTTPRequestHandler):
 
 seq = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Seq)
 threading.Thread(target=seq.serve_forever, daemon=True).start()
-data, node, bins = tempfile.mkdtemp(), tempfile.mkdtemp(), tempfile.mkdtemp()
+top = tempfile.mkdtemp(prefix="lns-ui-")                 # everything this run makes, removed on SIGTERM
+data, node, bins = (tempfile.mkdtemp(dir=top) for _ in range(3))
+
+
+def bye(*_):
+    shutil.rmtree(top, ignore_errors=True)
+    os._exit(0)
+
+
+signal.signal(signal.SIGTERM, bye)
 with open(os.path.join(node, "user_config.yaml"), "w") as f:
     f.write("kms:\n  keystore: keystore.yaml\n")
 with open(os.path.join(node, "keystore.yaml"), "w") as f:

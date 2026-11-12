@@ -5,7 +5,7 @@
 //
 //   CHROME=<path to chrome> node tests/lns_ui.mjs
 import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,7 +15,8 @@ const CHROME = process.env.CHROME || "/Applications/Google Chrome.app/Contents/M
 const PORT = 8121, BASE = `http://127.0.0.1:${PORT}`, PIN = "246813";
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
 const procs = [];
-const stop = () => { for (const p of procs) { try { p.kill("SIGKILL"); } catch {} } };
+let prof = "";
+const stop = () => { for (const p of procs) { try { p.kill(p === app ? "SIGTERM" : "SIGKILL"); } catch {} } if (prof) { try { rmSync(prof, { recursive: true, force: true }); } catch {} } };
 let failed = false;
 const check = (name, ok, detail) => { console.log((ok ? "ok   " : "FAIL ") + name + (!ok && detail !== undefined ? " - " + JSON.stringify(detail).slice(0, 400) : "")); if (!ok) { failed = true; stop(); process.exit(1); } };
 
@@ -25,7 +26,7 @@ await new Promise((ok) => app.stdout.on("data", (d) => { if (String(d).includes(
 const post = async (path, body, session) => (await fetch(BASE + path, { method: "POST", headers: { "Content-Type": "application/json", Origin: BASE, ...(session ? { "X-Session": session } : {}) }, body: JSON.stringify(body) })).json();
 const session = (await post("/api/wallet/setup", { pin: PIN })).session;
 
-const cport = 9343, prof = mkdtempSync(join(tmpdir(), "chrome-"));
+const cport = 9343; prof = mkdtempSync(join(tmpdir(), "chrome-"));
 const chrome = spawn(CHROME, ["--headless=new", `--remote-debugging-port=${cport}`, `--user-data-dir=${prof}`, "--no-first-run",
   "--no-default-browser-check", "--disable-gpu", ...(process.env.CI ? ["--no-sandbox"] : []), "about:blank"], { stdio: "ignore" });
 procs.push(chrome);
@@ -64,12 +65,14 @@ await click("#b-lns-acct");
 await waitFor("the account shows, with its balance", `!document.getElementById("lns-acct").hidden && /5,000,000 LEZ testnet/.test(document.getElementById("lns-bal").innerText)`);
 await waitFor("right away it asks for a new backup", `!document.getElementById("lns-bk").hidden`);
 check("no long address or key shows", !/[0-9a-fA-F]{20,}|[1-9A-HJ-NP-Za-km-z]{30,}/.test(await text("#s-lns")), await text("#s-lns"));
-await js(`(() => { const i = document.getElementById("lns-in"); i.value = "alice"; i.dispatchEvent(new Event("input")); return true; })()`);
+await js(`(() => { const i = document.getElementById("lns-in"); i.value = "slow"; i.dispatchEvent(new Event("input")); return true; })()`);
 await waitFor("a valid name enables Register", `!document.getElementById("b-lns-reg").disabled`);
 await click("#b-lns-reg");
-await waitFor("it says the registration is under way", `/Registering alice/.test(document.getElementById("m-lns").innerText)`, 5000);
-await waitFor("then that alice is yours", `/alice is yours/.test(document.getElementById("m-lns").innerText)`, 20000);
-await waitFor("the name shows bare", `document.getElementById("lns-name").innerText === "alice"`);
+await waitFor("it says the registration is under way", `/Registering slow/.test(document.getElementById("m-lns").innerText)`, 5000);
+check("while it runs, the page doesn't offer a backup", await js(`document.getElementById("lns-bk").hidden`));
+await waitFor("then that slow is yours", `/slow is yours/.test(document.getElementById("m-lns").innerText)`, 20000);
+await waitFor("and now it asks for a backup again", `!document.getElementById("lns-bk").hidden`);
+await waitFor("the name shows bare", `document.getElementById("lns-name").innerText === "slow"`);
 await click("#b-lns-bc");
 await waitFor("pointing it at this wallet finishes", `/now points at this wallet/.test(document.getElementById("m-lns").innerText)`, 20000);
 check("Point it at my messaging address waits for messages", await js(`document.getElementById("b-lns-msg").disabled`));

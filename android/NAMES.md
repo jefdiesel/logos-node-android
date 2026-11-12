@@ -111,6 +111,8 @@ pay the phone through the `blockchain` entry.
   - With no name account on the phone, restoring puts the backup's back.
   - Before anything changes, the signer reads the backup's wallet file in a temporary folder and
     must find the account written on the backup in it.
+  - Accounts are compared, not files: the signer reports the account in each wallet file. A backup
+    of this phone's own account, even an older one, leaves this phone's (newer) files as they are.
   - **When the phone already has a different name account, nothing is replaced unless the person
     asks.** The reply and the page say which two accounts these are. Restoring again with "Replace
     this phone's name account" ticked swaps them. The one that was there is then kept as
@@ -118,10 +120,16 @@ pay the phone through the `blockchain` entry.
     and the page says so.
   - A restore while a change to the name account is running leaves the name account alone and asks
     for the restore to be run again.
+  - A replacing restore saves the state first, with a marker, then swaps the files (the other
+    account's `names.json` is kept aside too). If the app stops in between, the next start makes the
+    state name the account that is really in the wallet file.
+- **Backing up during a change** is refused ("Back up when it has finished"), and the page offers no
+  backup while a change runs: the signer may be rewriting the files then.
 - **During a change.** `names` rewrites the wallet file in place (truncate, then write). Before
   every change the app copies `storage.json` and `names.json` to `*.prev`, written atomically and
   0600. After the change, when the app starts, and before a backup, a file that no longer reads as
-  JSON is put back from its copy, and the page says so.
+  JSON is put back from its copy, and the page says so. A copy is used only if it is of the same
+  account, and a missing wallet file is never filled in: the page says what is wrong instead.
 - **What is shown of the signer's output.** Only the account address, fixed progress texts and
   fixed error texts. Each comes from an allowlist of the patterns `names` prints, and only digits
   and names are carried over. Any other error shows as one fixed sentence. The forwarder's secret

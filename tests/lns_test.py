@@ -9,7 +9,7 @@ Runs the app the way the Android app does (APP_EMBEDDED=android, server.py impor
 127.0.0.1:8099. The fake signer prints a recovery phrase when it makes the wallet, and noise with that phrase
 in every registration: the test checks it reaches no reply, no log and no file other than the wallet's own.
 """
-import base64, http.server, json, os, shutil, stat, sys, tempfile, threading, time
+import atexit, base64, http.server, json, os, shutil, stat, sys, tempfile, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -46,13 +46,15 @@ seq = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Seq)
 threading.Thread(target=seq.serve_forever, daemon=True).start()
 
 # ---- the app, as the Android app runs it, with a node config the fake node reads keys from ---------------
-data = tempfile.mkdtemp()
-node = tempfile.mkdtemp()
+top = tempfile.mkdtemp(prefix="lns-test-")             # everything this run makes, removed at exit
+atexit.register(shutil.rmtree, top, True)
+data = tempfile.mkdtemp(dir=top)
+node = tempfile.mkdtemp(dir=top)
 with open(os.path.join(node, "user_config.yaml"), "w") as f:
     f.write("kms:\n  keystore: keystore.yaml\n")
 with open(os.path.join(node, "keystore.yaml"), "w") as f:
     f.write("public_keys:\n  LeaderFunding: %s\n  SdpFunding: %s\nsecret_keys:\n  LeaderFunding: %s\n" % (MAIN, "b2" * 32, "c3" * 32))
-bins = tempfile.mkdtemp()
+bins = tempfile.mkdtemp(dir=top)
 fake_node = os.path.join(bins, "fake_node_bin.py")
 fake_names = os.path.join(bins, "libnames.so")          # named as the app ships it
 shutil.copy(os.path.join(HERE, "fake_node_bin.py"), fake_node)
@@ -389,11 +391,131 @@ code, d = call("/api/wallet/backup", {"password": PASSWORD, "pin": PIN}, session
 kdf2 = d["backup"]["kdf"]
 inner = json.loads(server.aead_decrypt(server.backup_key(PASSWORD, base64.b64decode(kdf2["salt"])), base64.b64decode(d["backup"]["cipher"]["nonce"]),
                                        base64.b64decode(d["backup"]["ciphertext"]), server.BACKUP_AADS[d["backup"]["version"]]))
-check("a name account restore would refuse is left out of the backup", code == 200 and "lns_wallet" not in inner, inner.keys())
+check("a wallet file with no account in the state is backed up under the account the signer finds in it",
+      code == 200 and inner.get("lns_wallet", {}).get("account") == FAKE.ACCOUNT and inner["lns_wallet"]["name"] == "", inner.keys())
 code, r = call("/api/wallet/restore", {"backup": d["backup"], "password": PASSWORD, "pin": PIN}, session=s)
 check("and that backup still restores", code == 200, (code, r))
 with open(server.LNS_STATE_FILE, "w") as f:
     f.write(state_before)
+
+# ---- second review: no backup during a change, restores by account, a stop part way, snapshots, the lock -------
+storage_p = os.path.join(server.LNS_HOME, "storage.json")
+names_p = os.path.join(server.LNS_HOME, "names.json")
+read = lambda p: open(p).read()
+
+
+def set_other(names=None):
+    """This phone holds the other account OTHER (its own wallet file and state), as after using another backup."""
+    for f in os.listdir(server.LNS_HOME):
+        if f.endswith(".prev"):
+            os.remove(os.path.join(server.LNS_HOME, f))
+    with open(storage_p, "w") as f:
+        f.write(other_wallet)
+    if names is not None:
+        with open(names_p, "w") as f:
+            f.write(names)
+    server.lns_state_save(account=OTHER, name="otherone", restoring=None)
+
+
+# 1. a backup while a change runs is refused: the signer may be rewriting the files
+server.lns_state_save(name="")
+check("register slow starts (for the backup test)", call("/api/wallet/lns/register", {"name": "slow"}, session=s)[0] == 200)
+code, d = call("/api/wallet/backup", {"password": PASSWORD, "pin": PIN}, session=s)
+check("a backup while a change to the name account runs is refused, and says to wait",
+      code == 409 and d.get("lns_busy") is True and "has finished" in d.get("error", ""), (code, d))
+wait_job(s)
+code, d = call("/api/wallet/backup", {"password": PASSWORD, "pin": PIN}, session=s)
+check("once it has finished the backup works", code == 200, (code, d))
+doc_old = d["backup"]
+
+# 2. an older backup of this same account: same account, this phone's newer files are kept, never replaced
+server.lns_state_save(name="")
+call("/api/wallet/lns/register", {"name": "newer"}, session=s)
+wait_job(s)
+newer_storage, newer_names = read(storage_p), (read(names_p) if os.path.exists(names_p) else None)
+check("registering changed the wallet file since that backup", "receiving-newer" in newer_storage)
+for flag in (False, True):
+    code, d = call("/api/wallet/restore", {"backup": doc_old, "password": PASSWORD, "pin": PIN, "replace_name_account": flag}, session=s)
+    check("an older backup of the same account is 'same', not a different account (replace %s)" % flag,
+          code == 200 and d.get("lns") == "same" and "newer one" in d.get("lns_message", "") and FAKE.ACCOUNT in d["lns_message"], d)
+    check("and the phone's newer files and name stay (replace %s)" % flag, read(storage_p) == newer_storage
+          and call("/api/wallet/lns", session=s)[1]["name"] == "newer")
+
+# 3. a stop between saving the state and swapping the files: the state ends up naming what is in the file
+set_other()
+real_write = server.lns_write
+
+
+def failing_write(path, data):
+    if path == server.lns_storage():
+        raise OSError("no space left")
+    return real_write(path, data)
+
+
+server.lns_write = failing_write
+code, d = call("/api/wallet/restore", {"backup": doc, "password": PASSWORD, "pin": PIN, "replace_name_account": True}, session=s)
+server.lns_write = real_write
+check("a restore that fails part way still answers, and says so", code == 200 and d.get("lns") == "failed", (code, d))
+st = server.lns_state()
+check("and the state names the account really in the file", st["account"] == OTHER and st["name"] == "otherone"
+      and "restoring" not in st and read(storage_p) == other_wallet, st)
+server.lns_state_save(account=FAKE.ACCOUNT, name="android", restoring={"account": OTHER, "name": "otherone"})
+server.lns_reconcile()                                  # as at the next start, after a stop in that window
+st = server.lns_state()
+check("a restore stopped in that window is undone at start", st["account"] == OTHER and st["name"] == "otherone" and "restoring" not in st, st)
+
+# 4. a snapshot of another account is never put in place; a missing file is never filled in
+mine_wallet = json.dumps({"seed": "f" * 128, "public": {FAKE.ACCOUNT: "0" * 64}})
+with open(storage_p + ".prev", "w") as f:
+    f.write(mine_wallet)                                # the copy is of FAKE.ACCOUNT, the state says OTHER
+with open(storage_p, "w") as f:
+    f.write("{trunc")
+check("a broken file is not replaced by another account's copy", server.lns_repair() == [] and read(storage_p) == "{trunc")
+d = call("/api/wallet/lns", session=s)[1]
+check("and the page is told", any("another account" in n for n in d.get("notes", [])), d.get("notes"))
+set_other()
+with open(storage_p + ".prev", "w") as f:
+    f.write(other_wallet)
+os.remove(storage_p)
+check("a missing wallet file is not filled in from a copy", server.lns_repair() == [] and not os.path.exists(storage_p))
+d = call("/api/wallet/lns", session=s)[1]
+check("and the page is told it is missing", any("missing" in n for n in d.get("notes", [])), d.get("notes"))
+
+# 5. replacing with a backup that has no names.json moves the one here aside too
+set_other(names='{"pending": {"carol": {"owner": "x"}}}')
+code, d = call("/api/wallet/restore", {"backup": sealed_with(dict(lw0, names=None)), "password": PASSWORD, "pin": PIN,
+                                       "replace_name_account": True}, session=s)
+aside = [f for f in os.listdir(server.LNS_HOME) if f.startswith("names.json.replaced-")]
+check("replaced", code == 200 and d.get("lns") == "replaced", d)
+check("the other account's names.json is kept aside, and the live one is empty", read(names_p) == "{}"
+      and any("carol" in read(os.path.join(server.LNS_HOME, f)) for f in aside), aside)
+check("the snapshots are of the new account now", FAKE.ACCOUNT in read(storage_p + ".prev"))
+
+# 8. register and set-text read the state inside the lock
+seen_locked, real_state = [], server.lns_state
+
+
+def recording_state():
+    seen_locked.append(server.lns_change.locked())
+    return real_state()
+
+
+server.lns_state_save(name="android")
+server.lns_state = recording_state
+code1, _ = server.lns_register({"name": "zz9"})
+server.lns_state = real_state
+server.lns_state_save(name="")
+server.lns_state = recording_state
+code2, _ = server.lns_text({"entry": "blockchain"})
+server.lns_state = real_state
+check("register and set-text read the state only with the lock held", code1 == 409 and code2 == 409 and seen_locked
+      and all(seen_locked), seen_locked)
+server.lns_state_save(name="android")
+
+# 7. check folders left by a stop are swept at start
+os.makedirs(os.path.join(data, ".lns-check-left"))
+server.lns_sweep()
+check("leftover check folders are removed", not os.path.exists(os.path.join(data, ".lns-check-left")))
 
 # ---- logs ------------------------------------------------------------------------------------------------------------
 with open(os.path.join(data, "wallet-events.log")) as f:

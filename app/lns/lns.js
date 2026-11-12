@@ -37,6 +37,7 @@ slot.innerHTML = `
           <button type="button" id="b-lns-msg" style="width:100%;margin-top:8px">Point it at my messaging address</button>
         </div>
       </div>
+      <p class="msg warn" id="lns-notes" role="alert" hidden></p>
       <p class="msg" id="m-lns" role="status"></p>
     </section>`;
 var lnsTimer = null, lnsLast = null;
@@ -58,7 +59,9 @@ async function lnsLoad() {
     $("b-lns-bc").disabled = !d.values.blockchain; $("b-lns-msg").disabled = !d.values.msg;
     $("b-lns-msg").title = d.values.msg ? "" : "Turn on messages first";
   }
-  $("lns-bk").hidden = !(has && d.backup_needed);
+  // not while a change runs: the signer may be rewriting the files a backup would read
+  $("lns-bk").hidden = !(has && d.backup_needed && !(d.job && d.job.state === "running"));
+  if (d.notes && d.notes.length) { $("lns-notes").textContent = d.notes.join(" "); $("lns-notes").hidden = false; }
   const j = d.job || {}, running = j.state === "running";
   for (const id of ["b-lns-acct", "b-lns-reg", "b-lns-link", "b-lns-bc", "b-lns-msg"]) if (running) $(id).disabled = true;
   if (!running) { lnsInput(); $("b-lns-acct").disabled = false; if (has) { $("b-lns-bc").disabled = !d.values.blockchain; $("b-lns-msg").disabled = !d.values.msg; } }

@@ -6,7 +6,7 @@
 // Three apps on a fake messaging network: the browser shows alice's; bob and carol write from Node with the
 // page's own chat model. Checks what the screen shows; with SHOTS, saves a PNG of each state.
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inflateSync } from "node:zlib";
@@ -29,6 +29,7 @@ A.pin = "111222"; A.session = (await A.call("/api/wallet/setup", { pin: A.pin })
 
 // ---- a browser ----
 const port = 9333, prof = mkdtempSync(join(tmpdir(), "chrome-"));
+process.on("exit", () => { try { rmSync(prof, { recursive: true, force: true }); } catch {} });   // the headless profile goes with the run
 const chrome = spawn(CHROME, ["--headless=new", `--remote-debugging-port=${port}`, `--user-data-dir=${prof}`, "--no-first-run",
   "--no-default-browser-check", "--disable-gpu", "--hide-scrollbars", "--force-device-scale-factor=2",
   ...(process.env.CI ? ["--no-sandbox"] : []), "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });   // CI: Ubuntu 24.04 blocks the sandbox's user namespaces
