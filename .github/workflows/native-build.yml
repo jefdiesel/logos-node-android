@@ -14,6 +14,11 @@ on:
         default: "0.3.4"
 permissions:
   contents: read
+# "shell: bash" runs every step with -eo pipefail (the default is -e only), so a failing command
+# inside a pipe (cargo test | tee, apply-patches | ...) fails the step.
+defaults:
+  run:
+    shell: bash
 env:
   NODE_VERSION: ${{ inputs.node_version || '0.3.4' }}
   ANDROID_API: "28"
@@ -40,9 +45,9 @@ jobs:
       - name: Apply patches (fails if one does not apply cleanly)
         if: matrix.variant == 'patched'
         run: |
-          id=$(native/apply-patches.sh node | tail -1)
-          echo "LOGOS_NODE_PATCHES_ID=$id" >> "$GITHUB_ENV"
-          echo "patch set id: $id"; cat node/PATCHES.txt
+          native/apply-patches.sh node
+          echo "LOGOS_NODE_PATCHES_ID=$(cat node/PATCHES.id)" >> "$GITHUB_ENV"
+          cat node/PATCHES.txt
       - name: Tools and versions
         id: v
         run: |
@@ -58,7 +63,9 @@ jobs:
           ls -la "$TC/sysroot/usr/lib/aarch64-linux-android/" | grep -E 'libc\+\+|unwind' || true
           (cd node && rustc -V && cargo -V)
           LBC_TAG=$(grep -m1 -E '^lbc-pol-sys' node/Cargo.toml | sed -E 's/.*tag = "([^"]+)".*/\1/')
-          CIRCOM_TAG=$(curl -fsSL "https://raw.githubusercontent.com/logos-blockchain/logos-blockchain-circuits/$LBC_TAG/.github/workflows/ci.yml" | grep -m1 'CIRCOM_TAG:' | awk '{print $2}')
+          # downloaded first: with pipefail, "curl | grep -m1" fails when grep stops reading early
+          curl -fsSL -o "$RUNNER_TEMP/lbc-ci.yml" "https://raw.githubusercontent.com/logos-blockchain/logos-blockchain-circuits/$LBC_TAG/.github/workflows/ci.yml"
+          CIRCOM_TAG=$(grep -m1 'CIRCOM_TAG:' "$RUNNER_TEMP/lbc-ci.yml" | awk '{print $2}')
           echo "lbc=$LBC_TAG" >> "$GITHUB_OUTPUT"
           echo "circom=$CIRCOM_TAG" >> "$GITHUB_OUTPUT"
           echo "ndk=$(basename "$NDK")" >> "$GITHUB_OUTPUT"
@@ -122,12 +129,15 @@ jobs:
           file "$B"; ls -la "$B"
           "$TC/bin/llvm-readelf" -d "$B" | grep -E "NEEDED|RUNPATH|RPATH" || true
           mkdir out && cp "$B" out/ && "$TC/bin/llvm-strip" out/logos-blockchain-node
-          if "$TC/bin/llvm-readelf" -d "$B" | grep -q 'libc++_shared'; then
+          "$TC/bin/llvm-readelf" -d "$B" > "$RUNNER_TEMP/dynamic.txt"
+          if grep -q 'libc++_shared' "$RUNNER_TEMP/dynamic.txt"; then
             cp "$TC/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" out/
           fi
-          if [ -f node/PATCHES.txt ]; then
+          if [ "${{ matrix.variant }}" = upstream ]; then
+            native/check-binary.sh out/logos-blockchain-node upstream
+          else
+            native/check-binary.sh out/logos-blockchain-node patched "$LOGOS_NODE_PATCHES_ID"
             { echo "logos-blockchain $NODE_VERSION with these patches (patch set id $LOGOS_NODE_PATCHES_ID):"; cat node/PATCHES.txt; } > out/PATCHES.txt
-            strings out/logos-blockchain-node | grep -q '0001-fast-replay-from-own-storage' || { echo "patch marker string missing from the binary"; exit 1; }
           fi
           (cd out && sha256sum * > SHA256SUMS)
           cat out/SHA256SUMS; ls -la out
@@ -146,6 +156,9 @@ jobs:
         run: |
           git clone -q --depth 1 --branch "$NODE_VERSION" https://github.com/logos-blockchain/logos-blockchain.git node
           native/apply-patches.sh node
+          # built with the patch-set id like the shipped node, and the tests check it arrived
+          echo "LOGOS_NODE_PATCHES_ID=$(cat node/PATCHES.id)" >> "$GITHUB_ENV"
+          echo "LOGOS_EXPECT_PATCHES_ID=$(cat node/PATCHES.id)" >> "$GITHUB_ENV"
       - name: Tools
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq clang libclang-dev pkg-config libssl-dev >/dev/null
@@ -163,7 +176,7 @@ jobs:
       - name: cargo test (chain service, ledger, node binary)
         working-directory: node
         run: |
-          # the step's shell runs with pipefail, so a failing test fails the step
+          # the job runs bash with pipefail (see defaults), so a failing test fails the step
           cargo test --locked -p logos-blockchain-chain-service -p logos-blockchain-ledger -p logos-blockchain-node --no-fail-fast 2>&1 | tee ../test.log
       - name: Test summary
         if: always()
@@ -188,12 +201,14 @@ jobs:
       - name: Apply patches (fails if one does not apply cleanly)
         if: matrix.variant != 'upstream'
         run: |
-          id=$(native/apply-patches.sh node | tail -1)
-          echo "LOGOS_NODE_PATCHES_ID=$id" >> "$GITHUB_ENV"
-      - name: Apply the bench-only profiling patch
-        if: matrix.variant == 'profile'
-        run: |
-          for p in native/bench-patches/9*.patch; do git -C node apply --check -p1 "$GITHUB_WORKSPACE/$p" && git -C node apply -p1 "$GITHUB_WORKSPACE/$p"; echo "applied $p"; done
+          # the profile build also gets the bench-only patch, and so its own patch-set id
+          if [ "${{ matrix.variant }}" = profile ]; then
+            native/apply-patches.sh node native/bench-patches/9*.patch
+          else
+            native/apply-patches.sh node
+          fi
+          echo "LOGOS_NODE_PATCHES_ID=$(cat node/PATCHES.id)" >> "$GITHUB_ENV"
+          cat node/PATCHES.txt
       - name: Tools
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq clang libclang-dev pkg-config libssl-dev >/dev/null
@@ -213,7 +228,12 @@ jobs:
       - name: Package
         run: |
           mkdir out && cp node/target/release/logos-blockchain-node out/
-          [ -f node/PATCHES.txt ] && { echo "logos-blockchain $NODE_VERSION with these patches (patch set id $LOGOS_NODE_PATCHES_ID):"; cat node/PATCHES.txt; } > out/PATCHES.txt
+          if [ "${{ matrix.variant }}" = upstream ]; then
+            native/check-binary.sh out/logos-blockchain-node upstream
+          else
+            native/check-binary.sh out/logos-blockchain-node "${{ matrix.variant }}" "$LOGOS_NODE_PATCHES_ID"
+            { echo "logos-blockchain $NODE_VERSION with these patches (patch set id $LOGOS_NODE_PATCHES_ID):"; cat node/PATCHES.txt; } > out/PATCHES.txt
+          fi
           (cd out && sha256sum * > SHA256SUMS); cat out/SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:

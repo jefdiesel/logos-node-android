@@ -56,10 +56,16 @@ The leader-proof skip needs no ledger change: `prepare_update` is generic over `
 a wrapper whose `verify` returns `true` and which passes `entropy`, `leader_key` and `voucher_cm`
 through yields the same ledger state. The batch skip needs one method on `PreparedUpdate`.
 
-To keep this safe across upgrades and copied databases, the fast path is used only when a small
-marker next to the database names the same build and the same database (RocksDB `IDENTITY`) that
-last did a full replay. A new version, a changed build, a replaced database or a missing marker
-gives one full replay, then the marker is written. An environment variable forces full replays.
+Which blocks count as already verified: a small marker next to the database records the build and
+the tip and LIB ids of the chain the running node holds and verified, rewritten whenever the node
+records its recovery state. At the next start only the marker's tip and its ancestors replay fast,
+and only if the marker is from the same build and the stored LIB is the marker's LIB; every other
+block is verified in full. Header ids hash-chain the block contents, so the marker pins exactly
+the blocks it vouches for: a new version, a copied or replaced database, blocks added by another
+binary, or a start that fell back to LIB all lead to full verification of whatever is not pinned.
+An environment variable forces full replays. Upstream could do the same with the vouched tip kept
+in the recovery state itself (which would also tie it to the stored LIB state) instead of a
+separate file.
 
 We carry this as a patch for an Android build
 (`native/patches/0001-fast-replay-from-own-storage.patch` in jefdiesel/logos-node-android),
@@ -69,10 +75,12 @@ and in a full replay.
 
 ### Trade-off
 
-A fast replay trusts that the blocks between LIB and tip in the database are the ones this node
-verified, i.e. that nothing else wrote to the database. The stored LIB ledger state is already
-trusted the same way today and never re-verified. A database copied from another node (snapshot
-bootstrapping) must be replayed in full once, which the marker enforces.
+A fast replay trusts the marker (that it was written by this node for a chain it verified) and
+that the stored LIB ledger state at the marker's LIB is the one this build computed. The blocks
+themselves are pinned by their ids. The stored LIB ledger state is already trusted today and
+never re-verified. A database copied from another node (snapshot bootstrapping) is replayed in
+full unless it contains exactly the vouched chain from the same LIB; the Android app also deletes
+the marker on import.
 
 An alternative with no trust change would be to persist the tip ledger state as well as the LIB
 state, so a restart need not replay at all; that is a bigger change to the recovery state.

@@ -148,15 +148,15 @@ summary line at the end of the startup replay.
  
 --- b/services/chain/chain-service/src/lib.rs
 +++ c/services/chain/chain-service/src/lib.rs
-@@ -1138,6 +1138,7 @@
-             replay.as_str(), replay::REPLAY_VERIFY_ENV,
+@@ -1170,6 +1170,7 @@
          );
+         debug_assert!(vouched.is_none_or(|v| v.lib == recovery_state.lib));
          timing::reset();
 +        lb_ledger::bench_timing::reset();
          info!(
              target: LOG_TARGET, tip = ?recovery_state.tip, lib = ?recovery_state.lib, lib_height = recovery_state.lib_block_length, genesis = ?recovery_state.genesis_id,
              "recovering Cryptarchia",
-@@ -1328,6 +1329,21 @@
+@@ -1411,6 +1412,21 @@
          timing::secs(&timing::DECODE),
          apply_secs - ledger_secs - batch_secs - store_secs,
      );
