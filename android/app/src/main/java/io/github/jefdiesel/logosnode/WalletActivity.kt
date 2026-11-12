@@ -180,9 +180,35 @@ class WalletActivity : Activity() {
         super.onPause()
     }
 
+    /** Whether the page has its own step to go back to (e.g. an open chat), not the "Starting…" placeholder. */
+    private fun pageCanGoBack(): Boolean {
+        val list = web.copyBackForwardList()
+        val i = list.currentIndex
+        return i > 0 && isOwnPage(Uri.parse(list.getItemAtIndex(i - 1).url))
+    }
+
+    // Android 13+ with a current targetSdk delivers Back through this callback, not onBackPressed. It is
+    // registered only while the page has a step to go back to, so Back closes an open chat (the page's own
+    // history), and otherwise leaves the app as usual.
+    private var backCallback: android.window.OnBackInvokedCallback? = null
+
+    private fun updateBackHandling() {
+        if (Build.VERSION.SDK_INT < 33) return
+        val want = pageCanGoBack()
+        val cb = backCallback
+        if (want && cb == null) {
+            val c = android.window.OnBackInvokedCallback { if (pageCanGoBack()) web.goBack() }
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, c)
+            backCallback = c
+        } else if (!want && cb != null) {
+            onBackInvokedDispatcher.unregisterOnBackInvokedCallback(cb)
+            backCallback = null
+        }
+    }
+
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        if (web.canGoBack()) web.goBack() else @Suppress("DEPRECATION") super.onBackPressed()
+        if (pageCanGoBack()) web.goBack() else @Suppress("DEPRECATION") super.onBackPressed()
     }
 
     private fun isOwnPage(url: Uri?) =
@@ -196,20 +222,15 @@ class WalletActivity : Activity() {
             if (!isOwnPage(Uri.parse(url))) return
             view.evaluateJavascript(SAVE_HOOK, null)
             syncFingerprintKey()
-            if (BuildConfig.DEBUG) {
-                // debug builds: what the page shows, in logcat, so it can be checked without the screen
-                main.postDelayed({
-                    view.evaluateJavascript("document.body.innerText.replace(/\\s+/g,' ').slice(0,1500)") {
-                        Log.i(TAG, "page text: $it")
-                    }
-                    // started with --ez probe true: the embedded-mode checks, and one fingerprint request
-                    // (with fingerprint unlock off it must fail without a prompt). Never logs a token.
-                    if (intent.getBooleanExtra("probe", false)) {
-                        view.evaluateJavascript(PROBE) { Log.i(TAG, "probe: $it") }
-                        view.evaluateJavascript(PROBE_UNLOCK, null)
-                    }
-                }, 8000)
+            if (BuildConfig.DEBUG && intent.getBooleanExtra("probe", false)) {
+                // debug builds started with --ez probe true: the page's structure, in logcat. Never the
+                // page's text (it may show balances, chats or keys): only yes/no facts and element states.
+                main.postDelayed({ view.evaluateJavascript(PROBE) { Log.i(TAG, "probe: $it") } }, 8000)
             }
+        }
+
+        override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
+            updateBackHandling()                                  // e.g. a chat opened (pushState) or closed
         }
 
         override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
@@ -304,31 +325,43 @@ class WalletActivity : Activity() {
     companion object {
         private const val TAG = "LogosWallet"
 
-        /** Debug probe: the page's embedded mode, the bridge, and the Updates section (logged, see onPageFinished). */
+        /**
+         * Debug probe (--ez probe true): the page's structure as yes/no facts and element states, never its
+         * text (it may show balances, chats or keys). It looks at the Wallet screen, switches to the Messages
+         * tab, waits a second and a half, looks again, and switches back. It opens no chat, unlocks nothing,
+         * types nothing, and asks for no fingerprint.
+         */
         private val PROBE = """
             (function () {
-              const r = {}, $ = id => document.getElementById(id);
+              const $ = id => document.getElementById(id), shown = e => !!e && !e.hidden && e.offsetParent !== null;
+              const r = {};
               try {
-                r.meta = document.querySelector('meta[name="app-embedded"]').content;
+                r.version = (document.querySelector('meta[name="app-version"]') || {}).content;
+                r.embedded = (document.querySelector('meta[name="app-embedded"]') || {}).content;
                 r.bridge = typeof window.LogosAndroid;
-                r.bridgeMethods = window.LogosAndroid ? Object.keys(Object.getPrototypeOf(window.LogosAndroid) || {}).concat(Object.keys(window.LogosAndroid)) : [];
-                r.EMBEDDED = typeof EMBEDDED === "undefined" ? "n/a" : EMBEDDED;
-                r.NATIVE = typeof NATIVE === "undefined" ? "n/a" : NATIVE;
-                r.updatesText = $("upd-embedded") && !$("upd-embedded").hidden ? $("upd-embedded").textContent : "(hidden)";
-                r.updateControlsHidden = ["upd", "b-upd-check", "m-upd-check", "upd-src"].every(id => !$(id) || $(id).hidden);
-                r.footer = ($("footer-talk") || {}).textContent;
+                r.viewport = (document.querySelector('meta[name="viewport"]') || {}).content;
+                r.vvhSet = !!getComputedStyle(document.documentElement).getPropertyValue("--vvh").trim();
+                r.navShown = shown($("nav"));
+                r.navButtons = $("nav") ? [...$("nav").querySelectorAll("button")].map(b => b.id) : [];
+                r.walletScreenShown = shown($("page-main"));
+                const msg = $("nav-msg");
+                if (msg) msg.click();
+                setTimeout(() => {
+                  const m = {};
+                  try {
+                    m.messagesScreenShown = shown($("page-msg"));
+                    m.walletScreenHidden = !shown($("page-main"));
+                    m.visibleSections = ["mg-locked", "mg-nokey", "mg-home", "mg-newv", "mg-mev"].filter(id => shown($(id)));
+                    const page = $("page-msg");
+                    // whether a 20+ character hex run is visible anywhere on the Messages screen (yes/no only)
+                    m.longHexVisible = page ? /[0-9a-fA-F]{20,}/.test(page.innerText) : null;
+                    m.chatOpen = !!document.querySelector("#page-msg .cv, .cv");
+                  } catch (e) { m.error = String(e); }
+                  console.log("probe messages: " + JSON.stringify(m));
+                  const w = $("nav-wallet"); if (w) w.click();
+                }, 1500);
               } catch (e) { r.error = String(e); }
               return JSON.stringify(r);
-            })()
-        """.trimIndent()
-
-        /** Debug probe: one fingerprint request, with the page's answer logged to the console (never the token). */
-        private val PROBE_UNLOCK = """
-            (function () {
-              const failed = window.logosNativeUnlockFailed, unlocked = window.logosNativeUnlocked;
-              window.logosNativeUnlockFailed = m => { console.log("probe: unlock failed: " + m); window.logosNativeUnlockFailed = failed; failed && failed(m); };
-              window.logosNativeUnlocked = t => { console.log("probe: unlocked (token not logged)"); window.logosNativeUnlocked = unlocked; unlocked(t); };
-              window.LogosAndroid.unlockWithFingerprint();
             })()
         """.trimIndent()
         private const val PICK_FILE = 1
