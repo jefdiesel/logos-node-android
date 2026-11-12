@@ -585,8 +585,7 @@ export const REVIEW3 = {
     await A.engine.readd(gid, "bob");
     await settle(bus);
     check("readd() without bob asking changes nothing on bob's device", gt(B, gid).status === "active" && !of(B, "joined", gid).some((e) => e.readd) && A.engine.listGroups()[0].invited.includes("bob"));
-    await A.engine.remove(gid, "bob"); // ends the pending invitation (bob stays a member)
-    check("(bob is still a member)", A.engine.listGroups()[0].members.some((m) => m.id === "bob"));
+    // bob then asks: the admin's pending re-add re-sends its key-package request, and bob's device answers it
     const r = await B.engine.requestReadd(gid);
     check("requestReadd sends the request", r.asked === true && of(B, "rejoin-requested", gid).length === 1);
     const n0 = bus.posted.length;
@@ -690,7 +689,7 @@ export const REVIEW3 = {
   },
 
   // ---------- the fixes' own bad cases (each fix changes something else; these pin what it must not open) ----------
-  async "review 3 fixes' side effects: hand-backs end, no free identity upgrade, junk costs no write"({ check }) {
+  async "review 3 fixes' side effects: hand-backs end, no free identity upgrade, junk costs no write, remove ends a re-add"({ check }) {
     // (a) a name whose lookup always throws: its messages are handed back at most lookupTries times
     {
       const { bus, A, M, gid } = await group(["bob"]);
@@ -752,6 +751,27 @@ export const REVIEW3 = {
       await B.engine.incomingMany([...junk, ...B.queue.splice(0)]);
       B.held = false;
       check("the Welcome in the same batch as junk is handled", gt(B, gid)?.status === "active");
+    }
+    // (f) remove() of a member with a pending re-add (readd, or its own request) removes the member too
+    {
+      const { bus, A, M, gid } = await group(["bob", "carol"]);
+      const [B, C] = M;
+      B.held = true;
+      await A.engine.readd(gid, "bob");
+      await A.engine.remove(gid, "bob");
+      B.held = false;
+      await settle(bus);
+      check("remove() with a re-add pending: bob is out and told so", !A.engine.listGroups()[0].members.some((m) => m.id === "bob") && !A.engine.listGroups()[0].invited.includes("bob") && gt(B, gid).status === "removed" && epoch(C, gid) === epoch(A, gid));
+    }
+    // (g) replaceDeviceKey never replaces a blob that opens but is another version's
+    {
+      const { bus, M } = await group(["bob"]);
+      const [B] = M;
+      B.storage.blob = await B.cipher.encrypt(te.encode(JSON.stringify({ v: 99, groups: { keep: "me" } })));
+      const blob = B.storage.blob;
+      const v0 = B.storage.version;
+      const r = await code(createGroupEngine({ me: { name: "bob", seed: ed25519.utils.randomSecretKey() }, transport: B.transport, resolver: bus.resolver(), storage: B.storage, cipher: B.cipher, now: bus.now, replaceDeviceKey: { v: 1, kind: "names-groups", groups: [] } }));
+      check("another version's groups with replaceDeviceKey: refused, untouched", r === "STATE_UNREADABLE" && B.storage.blob === blob && B.storage.version === v0, r);
     }
     // (e) replaceDeviceKey with the seed the groups belong to is ignored: nothing is replaced
     {

@@ -88,8 +88,9 @@
 //     prefers old-topic and furthest-epoch items; 5 a pending re-add re-sends its kp-request, rate limit per
 //     (name, key); 6 an unreadable or other-version state blob is refused (STATE_UNREADABLE), never overwritten.
 //     Documented: the topic-collision effect, formerMember, grace-week visibility, acceptInvite clearing.
-//   Review 3 (00f9a88) found 2 must-fix and 9 should-fix; all have a scenario in tests/groups/review3.mjs named
-//   "review 3 <item>: ..." that fails at 00f9a88 and passes here. For each change: what else it changes.
+//   Review 3 (00f9a88) found 2 must-fix and 9 should-fix. Each has a scenario in tests/groups/review3.mjs named
+//   "review 3 <item>: ..."; all of them fail on an assertion at 00f9a88 except S6b (fails there because readd()
+//   doesn't exist) and S9 (a limit: passes there too). For each change: what else it changes.
 //     M1 a control message that threw after building a commit was refused, but its half-made commit was saved and
 //       posted (the admin split from its own group; any invitee or member could do it with one bad signature
 //       bit). Now every step that can fail halfway runs all or nothing (_txn): each inbox control message, the
@@ -145,9 +146,15 @@
 //       with createGroupEngine({ ..., replaceDeviceKey: <old engine's exportBackup()> }), ignored if the stored
 //       groups already belong to this key. Other effects: the page must handle the new code.
 //     S8 names could push out a real name's invitation. Now the page may pass isContact; contacts outrank every
-//       other name and are never pushed out by them. LIMIT (above): strangers' invitations still can be.
+//       other name and are never pushed out by them. LIMIT (above): strangers' invitations still can be. LIMIT:
+//       an invitation kept as unchecked (M2) has the lowest rank until tick() checks it again (every 10 minutes
+//       once the chain is back): during an outage free addresses can push it out, or a full list refuses it.
 //     S9 held flood on the current topic: LIMIT, not fixed in the engine (why: above, "Held flood"). The
 //       scenario pins its bounds and that old-topic junk goes first.
+//   "review 3 fixes' side effects" pins what the new mechanisms must not open (bounded hand-backs, no identity
+//   upgrade for a false claimer, non-members' requests cost no write, a junk control can't hold back a Welcome,
+//   replaceDeviceKey neither replaces another version's blob nor the right key's groups, remove() ends a pending
+//   re-add and the leaf); at 00f9a88 it fails only where it names new counters or options.
 //   Also pinned as guards (sound at 00f9a88, must stay): hostile Welcomes, false names, hidden leaves, same-epoch
 //   renames, what leave keeps, unreadable state. Not proven by a test: ts-mls refusals of a key package other
 //   than a bad signature (the rollback catches any exception; only the flipped signature bit is exercised).
@@ -380,8 +387,8 @@ const joinKey = (gid, adminKey) => `${gid}:${adminKey}`;
  *   isContact (optional) (name) -> boolean | Promise<boolean>: names the user has talked to. Their invitations are
  *             never pushed out by others'. Without it every name counts as a stranger (see "Invitation floods").
  *   replaceDeviceKey (optional) a backup (exportBackup() of an engine started with the PREVIOUS seed and cipher):
- *             only when the stored groups belong to another device key (DEVICE_KEY_CHANGED) or can't be read
- *             with this cipher (STATE_UNREADABLE), the stored groups are replaced by an empty state for this key
+ *             only when the stored groups belong to another device key (DEVICE_KEY_CHANGED) or can't be decrypted
+ *             with this cipher (STATE_UNREADABLE; never a blob that opens but is another version), they are replaced by an empty state for this key
  *             and every admin in the backup is asked to re-add this device. Without it the engine refuses to
  *             start in those cases and writes nothing.
  */
@@ -467,7 +474,7 @@ class GroupEngine {
       await this._reload();
       if (this.data.me?.key !== this.keyHex) code = "DEVICE_KEY_CHANGED";
     } catch (e) {
-      if (e?.code !== "STATE_UNREADABLE") throw e;
+      if (e?.code !== "STATE_UNREADABLE" || e.otherVersion) throw e;
       code = e.code;
     }
     if (code) {
@@ -497,7 +504,11 @@ class GroupEngine {
       d = null;
     }
     // Never start over on a blob we can't read: the next write would destroy it. Refuse and let the page say so.
-    if (d?.v !== STATE_VERSION) fail("STATE_UNREADABLE");
+    if (d?.v !== STATE_VERSION) {
+      const e = new GroupError("STATE_UNREADABLE", ERRORS.STATE_UNREADABLE);
+      e.otherVersion = d !== null; // it opened: another version's groups, which replaceDeviceKey never replaces
+      throw e;
+    }
     this.version = r.version;
     this.data = d;
   }
@@ -839,12 +850,12 @@ class GroupEngine {
       if (g.role !== "admin") fail("NOT_ADMIN");
       if (g.status !== "active") fail("NOT_ACTIVE");
       if (pid === this.pid) fail("ADMIN_CANNOT_LEAVE");
-      if (Object.hasOwn(g.invites, pid)) {
-        delete g.invites[pid];
-        return;
-      }
+      // a pending invitation (or re-add) ends; a current leaf is removed too
+      const invited = Object.hasOwn(g.invites, pid);
+      if (invited) delete g.invites[pid];
       let state = this._state(g);
       const gone = leaves(state).filter((l) => l.pid === pid && l.index !== ADMIN_LEAF);
+      if (!gone.length && invited) return;
       if (!gone.length) fail("NOT_MEMBER");
       state = await this._removeLeaves(d, ctx, g, state, gone.map((l) => l.index));
       this._keep(g, state);
@@ -1844,6 +1855,20 @@ class GroupEngine {
             }
           }
           for (const [k, t] of Object.entries(g.rejoins ?? {})) if (now - t > this.timings.rejoinRestoreGapMs) delete g.rejoins[k];
+        }
+      }
+      // invitations kept as unchecked during an outage: checked again (at most every 10 minutes each)
+      for (const inv of Object.values(d.invites)) {
+        if (!inv.unchecked || now - (this.kpTried.get(`inv|${inv.id}`) ?? 0) < 10 * 60_000) continue;
+        this.kpTried.set(`inv|${inv.id}`, now);
+        try {
+          if (eqBytes(await this._chain(inv.claimedName), unhex(inv.fromKey))) {
+            Object.assign(inv, { from: inv.claimedName, verified: true });
+            delete inv.claimedName;
+          }
+          delete inv.unchecked;
+        } catch {
+          /* still down */
         }
       }
       // accepted invitations whose Welcome never came, and restore requests never answered, stop counting
