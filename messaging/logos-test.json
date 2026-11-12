@@ -1,0 +1,10 @@
+{
+  "mode": "Core",
+  "preset": "logos.test",
+  "messagingOverrides": {
+    "nat": "none",
+    "tcp-port": 60000,
+    "discv5-udp-port": 9000,
+    "local-storage-path": "/data/local/tmp/waku-native/data"
+  }
+}
