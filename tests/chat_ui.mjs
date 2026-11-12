@@ -95,7 +95,7 @@ check("the page made a seeded identity", key.version === 2 && /^[0-9a-f]{64}$/.t
 await w.register("alice", { color: "#2d6a4f" });                // registered, no msg entry yet
 await js(`document.getElementById("mg-name").value = "alice"; document.getElementById("mg-name-save").click(); true`);
 await waitFor("the name is saved", `document.getElementById("mg-name-m").textContent.includes("Saved")`);
-await waitFor("not linked on chain yet: it says so", `document.getElementById("mg-check-m").textContent.includes("isn't linked")`);
+await waitFor("not linked on chain yet: it says so", `document.getElementById("mg-check-m").textContent.includes("not linked yet")`);
 check("the link command is folded away until asked for", await js(`!document.getElementById("mg-link").open`));
 check("the messaging address is hidden until Show", await js(`document.getElementById("mg-addr").hidden`));
 check("no address or key shows on the settings screen", !/[0-9a-f]{20,}/.test(await js(`document.getElementById("page-msg").innerText`)));
@@ -109,11 +109,13 @@ await js(`window.scrollTo(0, 0); document.getElementById("mg-link").open = true;
 await shot("link-your-name");
 await w.register("alice", { msg: key.public, color: "#2d6a4f" });
 await click("#mg-check");
-await waitFor("linked: it says messages come here", `document.getElementById("mg-check-m").textContent.includes("come to this phone")`);
+await waitFor("linked: it says messages come here", `document.getElementById("mg-check-m").textContent.includes("alice ✓")`);
 await click("#mg-mev .mg-home");
 await waitFor("the empty chat list", `!!document.querySelector("#mg-rows .empty")`);
 check("home shows names and icons only: no address", !/[0-9a-f]{20,}/.test(await js(`document.getElementById("page-msg").innerText`)));
 await shot("empty-list");
+check("Messages has its own top: no node header, no status pill", await js(`document.querySelector("main > header").hidden && !!document.getElementById("h-chats")`));
+check("no name linked yet: no name card on Messages home", !(await text("#mg-home")).includes("People reach you"));
 
 // ---- new chat: not registered, no msg entry, found ----
 await w.register("dave", { display: "Dave" });
@@ -227,6 +229,39 @@ await waitFor("back on the list", `!document.querySelector(".ov")`);
 
 check("no keys on the everyday screens: list", !/[0-9a-f]{20,}/.test(await js(`document.getElementById("page-msg").innerText`)));
 check("no errors in the page", errors.length === 0, errors);
+// ---- the node's state as an icon; Settings' Node row with the Android bridge ----
+await click("#nav-wallet");
+await waitFor("the wallet screen has the node header back", `!document.querySelector("main > header").hidden`);
+check("the status pill is replaced by one icon", await js(`document.getElementById("pill").hidden && !!document.getElementById("node-ic")`));
+check("stopped node: the warning icon, labelled", (await js(`document.getElementById("node-ic").getAttribute("aria-label")`)).startsWith("Node: stopped"));
+await shot("wallet-home");
+await click("#node-ic");
+await waitFor("tapping it shows the node details", `!!document.querySelector(".sheet") && document.querySelector(".sheet").innerText.includes("Block height")`);
+await shot("node-details");
+await js(`history.back(); true`);
+await waitFor("closed", `!document.querySelector(".sheet")`);
+for (const [words, kind] of [["catching up", "sync"], ["up to date", "ok"]]) {   // the page's own words, as tickStatus sets them
+  await js(`document.getElementById("pill").textContent = ${JSON.stringify(words)}; true`);
+  await waitFor(`"${words}" shows the ${kind} icon`, `document.getElementById("node-ic").dataset.kind === ${JSON.stringify(kind)}`);
+  await shot("wallet-header-" + kind);
+}
+await click("#b-gear");
+await waitFor("Settings", `!document.getElementById("page-settings").hidden`);
+check("without the Android bridge there is no Node row in Settings", !(await js(`!!document.getElementById("s-node")`)));
+await shot("settings");
+await cdp("Page.addScriptToEvaluateOnNewDocument", { source: "window.LogosAndroid = { openNode() { window.__opened = (window.__opened || 0) + 1; } };" });
+await load();
+await waitFor("the wallet loads", `!document.getElementById("v-open").hidden || !document.getElementById("v-locked").hidden`);
+if (await js(`!document.getElementById("v-locked").hidden`)) await unlock();
+await click("#b-gear");
+await waitFor("Settings has a Node row with the bridge", `!!document.getElementById("s-node")`);
+await shot("settings-android");
+await js(`document.querySelector("#s-node button").click(); true`);
+check("it calls LogosAndroid.openNode()", await js(`window.__opened === 1`));
+await click("#b-settings-back");
+await click("#nav-msg");
+await waitFor("Messages home", `!document.getElementById("mg-home").hidden`);
+await shot("messages-home");
 ws.close(); stopAll();
 console.log("all checks passed" + (SHOTS ? ` (screenshots in ${SHOTS})` : ""));
 process.exit(0);

@@ -5,7 +5,7 @@
   "messages/chat-core.js": "5631fa89f9644fde6aa7736cb8896eac06b95a4f73bb6bdc869d49ac6daad1c4",
   "messages/icon.js": "9fa95a2c2f1a05c474c4f2bee8cd79581f5c8102d6f4d6a78320f5bad7f3f8fa",
   "messages/identity.js": "0a4943568abb6aae7a11b3555d02c4adfa1b9204322a09019afaf6541bf25445",
-  "messages/messages.js": "a68d43efa3b7d581e20b8534a00b50e8019474cb3639b3c3fbcaa8490694a5fd",
+  "messages/messages.js": "b330acb692a40b7e3228a95e1041003e07071851c6ffe110d127f833a2615b01",
   "messages/msg-crypto.js": "cd3e81b81c503bfbdb04104c86067f0d7121dbec4758a824b0b57f6dd90a83b5",
   "messages/noble-ciphers/LICENSE": "f36671a5487c9c5050efacb58011c37c24c55a889803cb036cf9d9a6347c1e2d",
   "messages/noble-ciphers/_arx.js": "ead142ba410404c0698bb80e0d6f77780799bb77a9e3b098cf0f9fca1c486e37",
@@ -41,7 +41,7 @@
   "noble-curves/abstract/oprf.js": "2ca36b3e4930092db1f91559410e86975816c036e248067bc65a8055aa1c504c",
   "noble-curves/ed25519.js": "3bef00ec8466eeb85a4a0d055846aafe4cc1df4bfc09ddfe75758f379fca22f9",
   "noble-curves/utils.js": "ba29ee6d5c0129f0913e0cb11e1c84d09b7e1dd73c55e158cd49b5987bb62a65",
-  "server.py": "338f9eb720373b40917e32c66f1dc83e5940aaaf56bd7107d91383e5ea05e805"
+  "server.py": "b85ca614b1dacccb8bf5047eaf9415f367ebb690521f238873c97d13b595a0c1"
  },
- "version": "0.9.0"
+ "version": "0.9.1"
 }

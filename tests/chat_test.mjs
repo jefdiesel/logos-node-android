@@ -61,6 +61,23 @@ check("the page gets the seed and the key", r.d.seed === hex(A.id.seed) && r.d.p
   D2.proc.kill();
 }
 
+// ---- an 0.8.1 phone updating: its key file and inbox become a chat ----
+{
+  const H = await app(w, 8129, w.NODES[4]);
+  H.pin = "121212"; H.session = (await H.call("/api/wallet/setup", { pin: H.pin })).d.session;
+  const kp = MC.newKeyPair();
+  const sealed = MC.sealMessage({ to: kp.publicKey, from: "bob", fromSecret: B.id.secretKey, text: "sent to the 0.8.1 phone" });
+  writeFileSync(join(H.data, "wallet-msgkey.json"), JSON.stringify({ secret: hex(kp.secretKey), public: hex(kp.publicKey), name: "hank", created: "2026-11-10T00:00:00Z" }));
+  writeFileSync(join(H.data, "wallet-inbox.json"), JSON.stringify({ version: 1, next: 2, seen: ["p:x"],
+    items: [{ n: 1, payload: b64(sealed), source: "live", received: "2026-11-10T10:00:00Z" }] }));
+  const H2 = await restart(w, H);
+  const h = await chatOf(w, H2);
+  const got = h.messages("d:bob");
+  check("after the update, an 0.8.1 inbox shows as a chat with the sender, verified and unread",
+    got.length === 1 && got[0].text === "sent to the 0.8.1 phone" && h.trust(got[0]) === "ok" && h.unread.has(got[0].n) && h.conversations().length === 1, got);
+  H2.proc.kill();
+}
+
 // ---- 2. 1:1 both ways -------------------------------------------------------------------------------------
 const a = await chatOf(w, A), b = await chatOf(w, B);
 check("no chats at first", a.conversations().length === 0);

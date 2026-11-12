@@ -25,7 +25,14 @@ const P = {      // icon paths (constants)
   mute: '<path d="M6 9h3l4-4v14l-4-4H6zM16.5 9.5l4 4M20.5 9.5l-4 4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>',
   lock: '<rect x="5" y="10.5" width="14" height="9.5" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5" fill="none" stroke="currentColor" stroke-width="1.9"/>',
   chev: '<path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>',
+  sync: '<g fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M19.5 12a7.5 7.5 0 0 1-12.9 5.2M4.5 12a7.5 7.5 0 0 1 12.9-5.2"/><path d="M17.6 3.4v3.5h-3.5M6.4 20.6v-3.5h3.5"/></g>',
+  ok: '<g fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.6"/><path d="M8 12.3l2.8 2.8L16.2 9.6"/></g>',
+  stop: '<g fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4l8.5 15h-17z"/><path d="M12 10v4.2M12 17.1v.1"/></g>',
+  sliders: '<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2.2"/><circle cx="9" cy="17" r="2.2"/></g>',
+  close: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>',
 };
+const bridge = () => typeof window.LogosAndroid === "object" && window.LogosAndroid !== null && typeof window.LogosAndroid.openNode === "function";
+const openNode = () => { try { window.LogosAndroid.openNode(); } catch (e) {} };
 let names = null;
 const namesLib = async () => names || (names = await import("/names/names.js"));
 const resolve = async name => (await namesLib()).resolveName(NAMES_RPC, namesProgram, name);
@@ -117,7 +124,21 @@ body.has-nav main{padding-bottom:104px}
 .sheet h2{color:var(--ink);font-size:18px;text-transform:none;letter-spacing:-.01em;margin:0 0 4px}
 .sheet .quote{margin:10px 0 4px;padding:10px 12px;border-left:3px solid var(--line);color:var(--dim);font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:7.5em;overflow:hidden}
 .sheet dl div{padding:8px 0}.sheet .row button{min-height:44px}
-@media (prefers-reduced-motion:reduce){.sw::after{transition:none}}
+.st-ic{width:40px;min-height:40px;height:40px;padding:0;border:0;background:none;display:inline-flex;align-items:center;justify-content:center;border-radius:50%}
+.st-ic.ok{color:var(--ok)}.st-ic.sync{color:var(--warn)}.st-ic.stop{color:var(--bad)}
+.st-ic.sync svg{animation:st-spin 2.4s linear infinite}
+@keyframes st-spin{to{transform:rotate(360deg)}}
+.mtop{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:4px 2px 16px;min-height:44px}
+.mtop h1{font-size:24px;margin:0;letter-spacing:-.02em}
+.mtop .acts{display:flex;gap:8px;align-items:center}
+.mtop .new{min-height:40px;padding:6px 14px 6px 10px;font-size:14px;display:inline-flex;align-items:center;gap:4px;color:var(--accent);border-color:var(--accent)}
+.mtop .ic-b{width:40px;min-height:40px;padding:0;display:inline-flex;align-items:center;justify-content:center}
+.mnode{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 2px 12px;font-size:14px;color:var(--warn)}
+.mnode button{min-height:34px;font-size:13px;padding:4px 12px;flex:none}
+.hint-card{display:flex;gap:10px;align-items:flex-start;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 8px 12px 14px;margin:0 0 14px;font-size:14px}
+.hint-card p{margin:0;flex:1}.hint-card .lnk{border:0;background:none;padding:0;min-height:0;color:var(--accent);font-weight:600;font-size:14px}
+.hint-card .x{width:32px;min-height:32px;padding:0;border:0;display:inline-flex;align-items:center;justify-content:center;color:var(--dim);flex:none}
+@media (prefers-reduced-motion:reduce){.sw::after{transition:none}.st-ic.sync svg{animation:none}}
 ` }));
 const vp = document.querySelector('meta[name="viewport"]');               // keep the composer above the keyboard
 if (vp && !/interactive-widget/.test(vp.content)) vp.content += ",interactive-widget=resizes-content";
@@ -135,9 +156,11 @@ document.body.append(nav); document.body.classList.add("has-nav");
 const page = el("div", { id: "page-msg", hidden: true });
 $("page-main").after(page);
 let tab = "wallet";
+const pageHeader = document.querySelector("main > header");
 function setTab(t) {
   tab = t;
   $("page-main").hidden = t !== "wallet"; page.hidden = t !== "msg"; $("page-settings").hidden = true;
+  pageHeader.hidden = t === "msg";               // Messages has its own top; the node's header is the wallet's
   navWallet.removeAttribute("aria-current"); navMsg.removeAttribute("aria-current");
   (t === "wallet" ? navWallet : navMsg).setAttribute("aria-current", "page");
   window.scrollTo(0, 0);
@@ -150,6 +173,45 @@ setTab("wallet");
 const pageOpenSettings = window.openSettings, pageCloseSettings = window.closeSettings;
 window.openSettings = (...a) => { pageOpenSettings(...a); page.hidden = true; nav.hidden = true; document.body.classList.remove("has-nav"); };
 window.closeSettings = () => { pageCloseSettings(); nav.hidden = false; document.body.classList.add("has-nav"); setTab(tab); };
+window.openSettings = (open => (...a) => { open(...a); pageHeader.hidden = false; })(window.openSettings);
+
+// ---- the node's state as one icon instead of words: syncing, up to date, or stopped ---------------------
+// The page's own pill keeps its words (they are read here); tapping the icon shows them in full.
+const pill = $("pill");
+const stIcon = el("button", { type: "button", className: "st-ic", id: "node-ic" });
+pill.before(stIcon); pill.hidden = true;
+const nodeSentence = () => {
+  const words = pill.textContent.trim();
+  const line = $("syncline").textContent.trim() || $("nodeline").textContent.trim();
+  return { words, line: words === "connecting" ? "Connecting to the node on this device." : line && line !== "block height" ? line : "The node is " + words + "." };
+};
+function nodeIcon() {
+  const words = pill.textContent.trim();
+  const kind = words === "up to date" || words === "online" ? "ok" : words === "stopped" ? "stop" : "sync";
+  if (stIcon.dataset.kind !== kind) { stIcon.dataset.kind = kind; stIcon.className = "st-ic " + kind; stIcon.replaceChildren(svg(P[kind], 24)); }
+  const label = "Node: " + (kind === "ok" ? "up to date" : kind === "stop" ? "stopped" : words);
+  stIcon.setAttribute("aria-label", label + ". Show details"); stIcon.title = label;
+}
+new MutationObserver(nodeIcon).observe(pill, { childList: true, characterData: true, subtree: true, attributes: true });
+nodeIcon();
+stIcon.addEventListener("click", () => sheet((card, close) => {
+  const { line } = nodeSentence(), row = (k, id) => el("div", {}, el("dt", { textContent: k }), el("dd", { textContent: $(id).textContent }));
+  const parts = [el("h2", { textContent: stIcon.title }), el("p", { className: "note", style: "margin-top:4px", textContent: line }),
+    el("dl", { style: "margin-top:8px" }, row("State", "state"), row("Block height", "height"), row("Peers", "peers"), row("Blocks / min", "rate"))];
+  const done = el("button", { type: "button", textContent: "Close" }); done.addEventListener("click", close);
+  if (bridge()) { const o = el("button", { type: "button", className: "primary", textContent: "Open node" }); o.style.marginTop = "0"; o.addEventListener("click", () => { close(); openNode(); }); parts.push(el("div", { className: "row" }, done, o)); }
+  else parts.push(el("div", { className: "row" }, done));
+  card.append(...parts);
+}));
+
+// ---- Settings: a Node row that opens the Android app's node screen, where that exists --------------------
+if (bridge()) {
+  const go = el("button", { type: "button", style: "width:100%;margin-top:12px", textContent: "Open node" });
+  go.addEventListener("click", openNode);
+  const sec = el("section", { className: "card", id: "s-node" }, el("h2", { textContent: "Node" }),
+    el("p", { className: "note", style: "margin:0", textContent: "The node's own screen: its state, logs, and starting or stopping it." }), go);
+  $("s-upd").before(sec);
+}
 
 // say where messages go, in the footer and in Settings > About
 const ABOUT_MESSAGES = " Messages go through the Logos Messaging node on this device to the Logos Messaging network, sealed so only the person they're for can read them.";
@@ -178,11 +240,11 @@ page.innerHTML = `
     <p class="msg bad" id="mg-on-m" role="alert"></p>
   </section>
   <div id="mg-home" hidden>
-    <p class="msg warn" id="mg-node" role="status" hidden style="margin:0 2px 12px"></p>
-    <button type="button" class="me" id="mg-me"></button>
+    <div class="mtop"><h1 id="h-chats">Messages</h1><div class="acts"><button type="button" class="new" id="mg-new"></button><button type="button" class="ic-b" id="mg-me" aria-label="Messages settings" title="Messages settings"></button></div></div>
+    <div class="mnode" id="mg-node" role="status" hidden></div>
+    <div class="hint-card" id="mg-hint" hidden></div>
     <p class="msg warn" id="mg-store-warn" hidden style="margin:0 2px 12px">Saved chats from an earlier messaging address can't be opened on this one.</p>
     <section class="card" aria-labelledby="h-chats">
-      <div class="chats-top"><h2 class="top" id="h-chats">Chats</h2><button type="button" id="mg-new"></button></div>
       <div id="mg-rows"></div>
     </section>
   </div>
@@ -223,6 +285,7 @@ page.innerHTML = `
   </div>`;
 for (const b of page.querySelectorAll(".mg-home")) { b.append(svg(P.back, 20), "Chats"); b.addEventListener("click", () => home()); }
 $("mg-new").append(svg(P.plus, 18), "New chat");
+$("mg-me").append(svg(P.sliders, 22));
 $("mg-locked-art").append(svg(P.lock, 34));
 // room for "New group" next to New chat once groups exist; nothing is shown for it until then
 
@@ -270,8 +333,8 @@ function changed() { if (cv.id) renderConvo(); }       // a profile isn't redraw
 const nodeText = () => {
   if (!status) return "";
   const n = status.node;
-  if (n.starting && n.reachable !== false) return "The messaging node is starting. Messages come in once it's ready.";
-  if (n.reachable === false) return "The messaging node is off, so messages can't be sent or received right now. Messages you write wait and go out when it's back.";
+  if (n.starting && n.reachable !== false) return "The messaging node is starting.";
+  if (n.reachable === false) return "The messaging node is off. Messages you write wait until it's back.";
   return "";
 };
 function render() {
@@ -284,30 +347,31 @@ function render() {
   $("mg-mev").hidden = !ready || view !== "me";
   updateBadge();
   if (!ready) return;
-  const t = nodeText(); $("mg-node").hidden = !t; $("mg-node").textContent = t;
+  const t = nodeText(), nl = $("mg-node");
+  nl.hidden = !t;
+  if (t) {                    // only when the messaging node isn't fine; on the phone, a way to look at it
+    const fix = bridge() ? el("button", { type: "button", textContent: "Open node" }) : null;
+    if (fix) fix.addEventListener("click", openNode);
+    nl.replaceChildren(el("span", { textContent: t }), fix);
+  }
   $("mg-store-warn").hidden = !chat.storeUnreadable;
-  renderMe(); if (view === "home") renderList();
+  renderHint(); if (view === "home") renderList();
+}
+/** Once, while no LNS name is linked: a small hint that can be closed for good. */
+function renderHint() {
+  const h = $("mg-hint"), ui = chat.store.ui || {};
+  h.hidden = !!me.name || !!ui.nameHint || view !== "home";
+  if (h.hidden) return;
+  const go = el("button", { type: "button", className: "lnk", textContent: "Messages settings" });
+  go.addEventListener("click", () => { view = "me"; render(); openMe(); });
+  const x = el("button", { type: "button", className: "x", ariaLabel: "Close the hint" }, svg(P.close, 18));
+  x.addEventListener("click", async () => { h.hidden = true; try { await chat.mutate(st => { st.ui = Object.assign({}, st.ui, { nameHint: true }); }); } catch (e) {} });
+  h.replaceChildren(el("p", {}, "People can write to you at your messaging address. To be found by your LNS name, link it in ", go, "."), x);
 }
 function updateBadge() {
   const n = chat && unlocked() ? chat.unreadTotal() : 0;
   badge.hidden = !n; badge.textContent = n > 99 ? "99+" : String(n);
   navMsg.setAttribute("aria-label", n ? `Messages, ${n} unread` : "Messages");
-}
-async function renderMe() {
-  const b = $("mg-me");
-  let title = me.name || "No LNS name linked", line, cls = "";
-  if (!me.name) { line = "People can write to your messaging address"; }
-  else {
-    const c = chat.chainOf(me.name);
-    if (!c) { line = "Checking your name…"; chat.lookup(me.name).then(() => { if (view === "home") renderMe(); }).catch(() => {}); }
-    else if (c.key === me.public) { line = "✓ People reach you at " + me.name; cls = "ok"; }
-    else if (!c.registered) { line = me.name + " isn't a registered name"; cls = "warn"; }
-    else { line = "Link it to this phone so replies reach you"; cls = "warn"; }
-  }
-  b.className = "me" + (cls === "warn" ? " todo" : "");
-  b.replaceChildren(icon(me.name || "", { key: me.public, size: 40, letters: me.name ? null : "#", ...(me.name ? cardOf(me.name) : {}) }),
-    el("span", { className: "t" }, el("b", { textContent: title }), el("small", { className: cls, textContent: line })), svg(P.chev, 18));
-  b.setAttribute("aria-label", "Messages settings: " + title + ". " + line);
 }
 $("mg-me").addEventListener("click", () => { view = "me"; render(); openMe(); });
 const cardOf = pid => { const c = chat && !isAddressId(pid) && chat.chainOf(pid); return c ? { avatar: c.avatar, color: c.color } : {}; };
@@ -446,15 +510,15 @@ function openMe() {
 }
 async function checkMine(fresh) {
   const m = $("mg-check-m"); m.className = "msg"; m.textContent = "";
-  if (!me.name) { m.textContent = "No LNS name linked."; $("mg-link").open = false; return; }
+  if (!me.name) { m.textContent = "Your name: not linked."; $("mg-link").open = false; return; }
   m.textContent = "Checking " + me.name + "…";
   let c;
   try { c = await chat.lookup(me.name, fresh); } catch (e) { return void (m.className = "msg bad", m.textContent = "Couldn't reach the name service."); }
   if (!c.registered) return void (m.className = "msg bad", m.textContent = me.name + " isn't a registered name.");
-  if (c.key === me.public) { m.className = "msg ok"; m.textContent = "✓ Messages to " + me.name + " come to this phone."; $("mg-link").open = false; return; }
+  if (c.key === me.public) { m.className = "msg ok"; m.textContent = "Your name: " + me.name + " ✓ (messages to it come to this phone)"; $("mg-link").open = false; return; }
   m.className = "msg warn";
-  m.textContent = c.key ? me.name + "'s messages go to another phone or app. Link it to this phone to get them here."
-                        : me.name + " isn't linked to messages yet. Link it so replies to your name reach this phone.";
+  m.textContent = c.key ? "Your name: " + me.name + ", not linked to this phone (its messages go to another phone or app)."
+                        : "Your name: " + me.name + ", not linked yet. Link it so messages to your name reach this phone.";
 }
 $("mg-addr-show").addEventListener("click", () => {
   const show = $("mg-addr").hidden;

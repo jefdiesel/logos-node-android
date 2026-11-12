@@ -9,8 +9,14 @@ app and its page are exactly as before.
 - **Messages** in the bar at the bottom of the page. It locks with the wallet: the same PIN or fingerprint
   opens both, and auto-lock closes both.
 - **Turn on messages** makes this phone's messaging identity. Nothing key-like is shown on the everyday
-  screens; your own address and the command to link your name are in Messages settings (tap your name, or
-  "No LNS name linked", at the top of the chat list).
+  screens. Messages settings (the sliders button next to **New chat**) has your name ("Your name: alice ✓",
+  or not linked), the folded step that links it to this phone, and **My messaging address** (Show / Copy).
+- The Messages screen has its own top: no node header there. The messaging node's state shows only when it
+  isn't fine (off or starting), as one line; inside the Android app with a button to open the node.
+- On the Wallet screen the node's state is one icon: circling arrows while it starts, re-checks, catches
+  up or waits; a check when it is up to date; a warning sign when it is stopped. Tapping it shows the full
+  sentence and the node's numbers. Inside the Android app, Settings has a **Node** row that opens the app's
+  own node screen.
 - **New chat** takes an LNS name (`alice`) or a messaging address (`msg:` and 64 hex characters, copied from
   someone's Messages settings; spaces and line breaks are ignored, `msg:` may be left out).
 - A Logos Blockchain wallet address is also 64 hex characters, but it can't be messaged. The app says so
@@ -82,6 +88,8 @@ and goes when it's back. Message details (tap a message) show the state for each
 Taken by `tests/chat_ui.mjs` (headless Chrome at phone width; `SHOTS=<folder>` saves them), light and dark
 in `img/messages/`: `home-no-name`, `my-messaging-address`, `link-your-name`, `new-chat-by-name`,
 `new-chat-by-address`, `list`, `chat`, `chat-address`, `profile`, `profile-address`, `key-changed`,
-`message-details`, `turn-on`, `empty-list`.
+`message-details`, `turn-on`, `empty-list`, `messages-home`, `wallet-home`, `node-details`, `settings`,
+`settings-android` (with the Android bridge), and `wallet-header-sync` / `wallet-header-ok` (the page's
+status words set by hand, to show the icons; the test has no running node).
 
 <img src="img/messages/list-light.png" width="240" alt="The chat list"> <img src="img/messages/chat-light.png" width="240" alt="A chat"> <img src="img/messages/profile-dark.png" width="240" alt="A profile with a note, in dark mode">
