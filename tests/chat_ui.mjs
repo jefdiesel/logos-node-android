@@ -9,14 +9,18 @@ import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { world, app, person, chatOf, check, until, sleep, procs, stopAll, MC, ID, hex, b64 } from "./chat_world.mjs";
+import { world, app, person, chatOf, check, until, sleep, procs, stopAll, MC, ID, hex, b64, here } from "./chat_world.mjs";
 
 const CHROME = process.env.CHROME || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const SHOTS = process.env.SHOTS || "";
 if (SHOTS) mkdirSync(SHOTS, { recursive: true });
 
 const w = await world(18570, 5);
-const A = await app(w, 8111, w.NODES[0]), B = await app(w, 8112, w.NODES[1]), C = await app(w, 8113, w.NODES[2]);
+// alice's node: a stand-in for the node's own API, catching up at first (balances, state, peers)
+const NODE_PORT = 18596;
+procs.push(spawn("python3", [join(here, "fake_node_api.py"), String(NODE_PORT), "syncing"], { stdio: "ignore" }));
+const nodeMode = async (m) => (await fetch(`http://127.0.0.1:${NODE_PORT}/mode/${m}`, { method: "POST" })).text();
+const A = await app(w, 8111, w.NODES[0], { NODE_API: `http://127.0.0.1:${NODE_PORT}` }), B = await app(w, 8112, w.NODES[1]), C = await app(w, 8113, w.NODES[2]);
 await person(w, B, "bob", "222333"); await person(w, C, "carol", "333444");
 A.pin = "111222"; A.session = (await A.call("/api/wallet/setup", { pin: A.pin })).d.session;
 
@@ -24,10 +28,12 @@ A.pin = "111222"; A.session = (await A.call("/api/wallet/setup", { pin: A.pin })
 const port = 9333, prof = mkdtempSync(join(tmpdir(), "chrome-"));
 const chrome = spawn(CHROME, ["--headless=new", `--remote-debugging-port=${port}`, `--user-data-dir=${prof}`, "--no-first-run",
   "--no-default-browser-check", "--disable-gpu", "--hide-scrollbars", "--force-device-scale-factor=2",
-  ...(process.env.CI ? ["--no-sandbox"] : []), "about:blank"], { stdio: "ignore" });   // CI: Ubuntu 24.04 blocks the sandbox's user namespaces
+  ...(process.env.CI ? ["--no-sandbox"] : []), "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });   // CI: Ubuntu 24.04 blocks the sandbox's user namespaces
 procs.push(chrome);
+let chromeErr = ""; chrome.stderr.on("data", d => { chromeErr = (chromeErr + d).slice(-3000); });
 let target;
-for (let i = 0; i < 100 && !target; i++) { try { target = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find(t => t.type === "page"); } catch {} if (!target) await sleep(100); }
+for (let i = 0; i < 600 && !target; i++) { try { target = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find(t => t.type === "page"); } catch {} if (!target) await sleep(100); }
+if (!target) { console.error("Chrome didn't start (60 s): " + CHROME + "\n" + chromeErr); stopAll(); process.exit(1); }
 const ws = new WebSocket(target.webSocketDebuggerUrl);
 await new Promise((ok) => ws.addEventListener("open", ok));
 let seq = 0; const waiting = new Map(), errors = [];
@@ -50,6 +56,8 @@ const waitFor = async (name, expr, ms = 10000) => {
   while (Date.now() < end) { if (await js(expr).catch(() => false)) return true; await sleep(150); }
   check(name, false, { errors, page: (await js(`(document.querySelector(".ov") || document.getElementById("page-msg")).innerText`).catch(() => "")).slice(0, 400) });
 };
+// the old header's words must never show again, on any screen
+const noOldHeader = async (where) => check(`${where}: no "Logos node" or "running on this device"`, !/logos node|running on this device/i.test(await js(`document.body.innerText`)));
 let shotN = 0;
 async function shot(name) {
   if (!SHOTS) return;
@@ -77,8 +85,32 @@ await load();
 await waitFor("locked: one lock screen and nothing else", `!document.getElementById("lock").hidden && getComputedStyle(document.getElementById("nav")).display === "none" && getComputedStyle(document.getElementById("page-main")).display === "none"`);
 check("without fingerprint the PIN field has the focus", await js(`document.activeElement && document.activeElement.id === "pin"`));
 await shot("locked");
+await noOldHeader("the lock screen");
 await unlock();
 check("the bar shows Wallet and Messages", (await text("#nav")).includes("Wallet") && (await text("#nav")).includes("Messages"));
+// the wallet home: the header is the λ, Wallet, the node's icon and the gear; then the balance, Send and Receive
+check("no 'Logos node / running on this device' anywhere", !/running on this device/.test(await js(`document.body.innerText`)) && (await text("#hdr")).trim() === "Wallet");
+await waitFor("the node is catching up: the syncing icon, and one line on why Send waits", `document.getElementById("node-ic").dataset.kind === "sync" && document.getElementById("m-sync").textContent.includes("Sending opens")`, 15000);
+check("no node card on the wallet home", await js(`!document.getElementById("page-main").contains(document.getElementById("height"))`));
+await shot("wallet-home-starting");
+await nodeMode("online");
+await waitFor("online: up to date, the balance as the hero", `document.getElementById("node-ic").dataset.kind === "ok" && /75,000/.test(document.getElementById("bal-total").textContent)`, 20000);
+check("no addresses on the wallet home until Receive", await js(`document.getElementById("p-recv").hidden && !/[0-9a-f]{10}…/.test(document.getElementById("page-main").innerText)`));
+await shot("wallet-home");
+await noOldHeader("the wallet home");
+await click("#t-recv");
+await waitFor("Receive shows the address with Copy", `!document.getElementById("p-recv").hidden && document.getElementById("p-recv").innerText.includes("Copy address")`);
+await shot("wallet-receive");
+await click("#t-send");
+await waitFor("Send", `!document.getElementById("p-send").hidden && !document.getElementById("b-review").disabled`);
+await shot("wallet-send");
+await click("#t-send");
+await click("#node-ic");
+await waitFor("the node icon opens Settings > Node", `!document.getElementById("page-settings").hidden && document.getElementById("s-nodec").innerText.includes("Peers")`);
+await js(`document.getElementById("s-nodec").scrollIntoView(); true`);
+await shot("settings-node");
+await noOldHeader("Settings");
+await click("#b-settings-back");
 await click("#nav-msg");
 await waitFor("no key yet: the turn-on screen", `!document.getElementById("mg-nokey").hidden`);
 check("the turn-on screen never says key", !/\bkey\b/i.test(await js(`document.getElementById("page-msg").innerText`)));
@@ -88,16 +120,16 @@ await waitFor("turned on: the chat list, empty", `!document.getElementById("mg-h
 check("home says no key", !/\bkey\b/i.test(await js(`document.getElementById("page-msg").innerText`)));
 await shot("home-no-name");
 await click("#mg-me");
-await waitFor("Messages settings", `!document.getElementById("mg-mev").hidden`);
+await waitFor("Settings, at Messages", `!document.getElementById("page-settings").hidden && !document.getElementById("s-msg").hidden`);
 const key = (await A.call("/api/messages/key")).d;
 check("the page made a seeded identity", key.version === 2 && /^[0-9a-f]{64}$/.test(key.seed) && key.groups === true, key);
 await w.register("alice", { color: "#2d6a4f" });                // registered, no msg entry yet
 await js(`document.getElementById("mg-name").value = "alice"; document.getElementById("mg-name-save").click(); true`);
-await waitFor("the name is saved", `document.getElementById("mg-name-m").textContent.includes("Saved")`);
-await waitFor("not linked on chain yet: it says so", `document.getElementById("mg-check-m").textContent.includes("not linked yet")`);
+await until("the name is saved", async () => (await A.call("/api/messages/key")).d.name === "alice");
+await waitFor("not linked on chain yet: it says so", `document.getElementById("mg-check-m").textContent.includes("isn't linked yet")`);
 check("the link command is folded away until asked for", await js(`!document.getElementById("mg-link").open`));
 check("the messaging address is hidden until Show", await js(`document.getElementById("mg-addr").hidden`));
-check("no address or key shows on the settings screen", !/[0-9a-f]{20,}/.test(await js(`document.getElementById("page-msg").innerText`)));
+check("no address or key shows in Settings", !/[0-9a-f]{20,}/.test(await js(`document.getElementById("page-settings").innerText`)));
 await shot("settings");
 await click("#mg-addr-show");
 check("Show reveals the shareable address", (await text("#mg-addr")).startsWith("msg:" + key.public));
@@ -108,11 +140,12 @@ await js(`window.scrollTo(0, 0); document.getElementById("mg-link").open = true;
 await shot("link-your-name");
 await w.register("alice", { msg: key.public, color: "#2d6a4f" });
 await click("#mg-check");
-await waitFor("linked: it says messages come here", `document.getElementById("mg-check-m").textContent.includes("alice ✓")`);
-await click("#mg-mev .mg-home");
+await waitFor("linked: it says messages come here", `document.getElementById("mg-check-m").textContent.includes("linked to this phone")`);
+await click("#b-settings-back");
 await waitFor("the empty chat list", `!!document.querySelector("#mg-rows .empty")`);
 check("home shows names and icons only: no address", !/[0-9a-f]{20,}/.test(await js(`document.getElementById("page-msg").innerText`)));
 await shot("empty-list");
+await noOldHeader("Messages");
 check("Messages has its own top: no node header, no status pill", await js(`document.querySelector("main > header").hidden && !!document.getElementById("h-chats")`));
 check("no name linked yet: no name card on Messages home", !(await text("#mg-home")).includes("People reach you"));
 
@@ -148,6 +181,7 @@ await waitFor("bob's replies arrive", `document.querySelector(".cv-in").innerTex
 check("day separators: Yesterday and Today", (await text(".cv-in")).includes("Yesterday") && (await text(".cv-in")).includes("Today"));
 check("the header says verified", (await text(".ov-top")).includes("verified"));
 await shot("chat");
+await noOldHeader("a chat");
 // message details
 await js(`document.querySelector(".bub.out").click(); true`);
 await waitFor("details of my message", `!!document.querySelector(".sheet") && document.querySelector(".sheet").innerText.includes("To bob")`);
@@ -163,6 +197,7 @@ await waitFor("nickname saved", `document.querySelector(".saved").textContent.in
 await js(`(() => { const n = document.getElementById("pv-note"); n.value = "Runs the Thursday meetup. Prefers Signal for anything urgent."; n.dispatchEvent(new Event("input")); n.dispatchEvent(new Event("blur")); return true; })()`);
 await waitFor("note saved", `document.querySelector(".saved").textContent.includes("Saved")`);
 await shot("profile");
+await noOldHeader("a profile");
 await js(`history.back(); true`); await sleep(200);
 await js(`history.back(); true`);
 await waitFor("back on the list", `document.querySelectorAll("#mg-rows .crow").length >= 1 && !document.querySelector(".ov")`);
@@ -263,32 +298,27 @@ await click("#b-settings-back");
 
 // ---- the node's state as an icon; Settings' Node row with the Android bridge ----
 await click("#nav-wallet");
-await waitFor("the wallet screen has the node header back", `!document.querySelector("main > header").hidden`);
-check("the status pill is replaced by one icon", await js(`document.getElementById("pill").hidden && !!document.getElementById("node-ic")`));
-check("stopped node: the warning icon, labelled", (await js(`document.getElementById("node-ic").getAttribute("aria-label")`)).startsWith("Node: stopped"));
-await shot("wallet-home");
-await click("#node-ic");
-await waitFor("tapping it shows the node details", `!!document.querySelector(".sheet") && document.querySelector(".sheet").innerText.includes("Block height")`);
-await shot("node-details");
-await js(`history.back(); true`);
-await waitFor("closed", `!document.querySelector(".sheet")`);
-for (const [words, kind] of [["catching up", "sync"], ["up to date", "ok"]]) {   // the page's own words, as tickStatus sets them
+await waitFor("the wallet screen has its header back", `!document.querySelector("main > header").hidden`);
+check("the status pill is one icon", await js(`document.getElementById("pill").hidden && !!document.getElementById("node-ic")`));
+for (const [words, kind] of [["catching up", "sync"], ["stopped", "stop"], ["up to date", "ok"]]) {   // the page's own words, as tickStatus sets them
   await js(`document.getElementById("pill").textContent = ${JSON.stringify(words)}; true`);
   await waitFor(`"${words}" shows the ${kind} icon`, `document.getElementById("node-ic").dataset.kind === ${JSON.stringify(kind)}`);
   await shot("wallet-header-" + kind);
 }
+check("stopped is labelled", (await js(`(document.getElementById("pill").textContent = "stopped", new Promise(r => setTimeout(() => r(document.getElementById("node-ic").getAttribute("aria-label")), 50)))`)).startsWith("Node stopped"));
 await click("#b-gear");
 await waitFor("Settings", `!document.getElementById("page-settings").hidden`);
-check("without the Android bridge there is no Node row in Settings", !(await js(`!!document.getElementById("s-node")`)));
+check("without the Android bridge there is no Open node", await js(`document.getElementById("b-open-node").hidden`));
 await shot("settings");
 await cdp("Page.addScriptToEvaluateOnNewDocument", { source: "window.LogosAndroid = { openNode() { window.__opened = (window.__opened || 0) + 1; } };" });
 await load();
 await waitFor("the wallet loads", `!document.getElementById("v-open").hidden || !document.getElementById("v-locked").hidden`);
 if (await js(`!document.getElementById("v-locked").hidden`)) await unlock();
 await click("#b-gear");
-await waitFor("Settings has a Node row with the bridge", `!!document.getElementById("s-node")`);
+await waitFor("Settings > Node has Open node with the bridge", `!document.getElementById("b-open-node").hidden`);
+await js(`document.getElementById("s-nodec").scrollIntoView(); true`);
 await shot("settings-android");
-await js(`document.querySelector("#s-node button").click(); true`);
+await js(`document.getElementById("b-open-node").click(); true`);
 check("it calls LogosAndroid.openNode()", await js(`window.__opened === 1`));
 await click("#b-settings-back");
 await click("#nav-msg");
@@ -309,6 +339,7 @@ await waitFor("the lock screen", `!!document.getElementById("lock") && !document
 await sleep(600);
 check("the fingerprint check comes up by itself, once", await js(`window.__fp`) === 1);
 await shot("locked-android");
+await noOldHeader("the Android lock screen");
 await js(`window.logosNativeUnlockFailed(); true`);
 check("after a cancel the PIN field has the focus", await js(`document.activeElement.id === "pin"`));
 await sleep(1000);

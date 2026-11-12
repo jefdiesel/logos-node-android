@@ -8,7 +8,7 @@ Python standard library only. Wallet calls need a PIN that is set on first use.
 import base64, calendar, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.9.2"
+APP_VERSION = "0.9.3"
 # APP_EMBEDDED=android: this app runs inside the Android app (embedded Python, page in a WebView).
 # Then it never updates or restarts itself (the Android app brings new versions), and fingerprint
 # unlock goes through the phone's own fingerprint check instead of a passkey. Unset: nothing changes.
@@ -1752,7 +1752,7 @@ def restore_backup(doc, password):
     only after the node itself has checked it, and keeps the old one beside it."""
     if not isinstance(doc, dict) or doc.get("format") != BACKUP_FORMAT or doc.get("version") not in BACKUP_AADS \
             or isinstance(doc.get("version"), bool):
-        return 400, {"error": "This isn't a Logos node wallet backup, or it's a version this app can't read."}, "format"
+        return 400, {"error": "This isn't a wallet backup from this app, or it's a version this app can't read."}, "format"
     try:
         kdf, cipher = doc["kdf"], doc["cipher"]
         if kdf.get("name") != "scrypt" or cipher.get("name") != "chacha20-poly1305":

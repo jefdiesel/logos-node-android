@@ -9,14 +9,14 @@ app and its page are exactly as before.
 - **Messages** in the bar at the bottom of the page. It locks with the wallet: the same PIN or fingerprint
   opens both, and auto-lock closes both.
 - **Turn on messages** makes this phone's messaging identity. Nothing key-like is shown on the everyday
-  screens. Messages settings (the sliders button next to **New chat**) has your name ("Your name: alice ✓",
-  or not linked), the folded step that links it to this phone, and **My messaging address** (Show / Copy).
+  screens. Settings (the gear) has a Messages section: your name and whether it's linked to this phone,
+  the folded step that links it, and your messaging address (Show / Copy).
 - The Messages screen has its own top: no node header there. The messaging node's state shows only when it
   isn't fine (off or starting), as one line; inside the Android app with a button to open the node.
 - On the Wallet screen the node's state is one icon: circling arrows while it starts, re-checks, catches
-  up or waits; a check when it is up to date; a warning sign when it is stopped. Tapping it shows the full
-  sentence and the node's numbers. Inside the Android app, Settings has a **Node** row that opens the app's
-  own node screen.
+  up or waits; a check when it is up to date; a stop mark when it is stopped. Tapping it opens Settings >
+  Node with the full sentence and the node's numbers; inside the Android app that section also has
+  **Open node**, which opens the app's own node screen.
 - **New chat** takes an LNS name (`alice`) or a messaging address (`msg:` and 64 hex characters, copied from
   someone's Messages settings; spaces and line breaks are ignored, `msg:` may be left out).
 - A Logos Blockchain wallet address is also 64 hex characters, but it can't be messaged. The app says so

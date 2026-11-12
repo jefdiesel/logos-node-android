@@ -30,6 +30,7 @@ const P = {      // icon paths (constants)
   stop: '<g fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4l8.5 15h-17z"/><path d="M12 10v4.2M12 17.1v.1"/></g>',
   sliders: '<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2.2"/><circle cx="9" cy="17" r="2.2"/></g>',
   close: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>',
+  gear: '<path fill="currentColor" d="M19.4 13a7.5 7.5 0 0 0 0-2l2-1.6a.5.5 0 0 0 .1-.6l-1.9-3.3a.5.5 0 0 0-.6-.2l-2.4 1a7.3 7.3 0 0 0-1.7-1l-.4-2.6a.5.5 0 0 0-.5-.4h-3.8a.5.5 0 0 0-.5.4l-.4 2.6a7.3 7.3 0 0 0-1.7 1l-2.4-1a.5.5 0 0 0-.6.2L2.5 8.8a.5.5 0 0 0 .1.6l2 1.6a7.5 7.5 0 0 0 0 2l-2 1.6a.5.5 0 0 0-.1.6l1.9 3.3c.1.2.4.3.6.2l2.4-1c.5.4 1.1.7 1.7 1l.4 2.6c0 .2.3.4.5.4h3.8c.2 0 .5-.2.5-.4l.4-2.6c.6-.3 1.2-.6 1.7-1l2.4 1c.2.1.5 0 .6-.2l1.9-3.3a.5.5 0 0 0-.1-.6zM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"/>',
 };
 const bridge = () => typeof window.LogosAndroid === "object" && window.LogosAndroid !== null && typeof window.LogosAndroid.openNode === "function";
 const openNode = () => { try { window.LogosAndroid.openNode(); } catch (e) {} };
@@ -124,10 +125,6 @@ body.has-nav main{padding-bottom:104px}
 .sheet h2{color:var(--ink);font-size:18px;text-transform:none;letter-spacing:-.01em;margin:0 0 4px}
 .sheet .quote{margin:10px 0 4px;padding:10px 12px;border-left:3px solid var(--line);color:var(--dim);font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:7.5em;overflow:hidden}
 .sheet dl div{padding:8px 0}.sheet .row button{min-height:44px}
-.st-ic{width:40px;min-height:40px;height:40px;padding:0;border:0;background:none;display:inline-flex;align-items:center;justify-content:center;border-radius:50%}
-.st-ic.ok{color:var(--ok)}.st-ic.sync{color:var(--warn)}.st-ic.stop{color:var(--bad)}
-.st-ic.sync svg{animation:st-spin 2.4s linear infinite}
-@keyframes st-spin{to{transform:rotate(360deg)}}
 .mtop{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:4px 2px 16px;min-height:44px}
 .mtop h1{font-size:24px;margin:0;letter-spacing:-.02em}
 .mtop .acts{display:flex;gap:8px;align-items:center}
@@ -138,7 +135,7 @@ body.has-nav main{padding-bottom:104px}
 .hint-card{display:flex;gap:10px;align-items:flex-start;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 8px 12px 14px;margin:0 0 14px;font-size:14px}
 .hint-card p{margin:0;flex:1}.hint-card .lnk{border:0;background:none;padding:0;min-height:0;color:var(--accent);font-weight:600;font-size:14px}
 .hint-card .x{width:32px;min-height:32px;padding:0;border:0;display:inline-flex;align-items:center;justify-content:center;color:var(--dim);flex:none}
-@media (prefers-reduced-motion:reduce){.sw::after{transition:none}.st-ic.sync svg{animation:none}}
+@media (prefers-reduced-motion:reduce){.sw::after{transition:none}}
 ` }));
 const vp = document.querySelector('meta[name="viewport"]');               // keep the composer above the keyboard
 if (vp && !/interactive-widget/.test(vp.content)) vp.content += ",interactive-widget=resizes-content";
@@ -171,47 +168,12 @@ navMsg.addEventListener("click", () => setTab("msg"));
 setTab("wallet");
 // Settings is its own view; going back returns to the screen it came from
 const pageOpenSettings = window.openSettings, pageCloseSettings = window.closeSettings;
-window.openSettings = (...a) => { pageOpenSettings(...a); page.hidden = true; nav.hidden = true; document.body.classList.remove("has-nav"); };
-window.closeSettings = () => { pageCloseSettings(); nav.hidden = false; document.body.classList.add("has-nav"); setTab(tab); };
-window.openSettings = (open => (...a) => { open(...a); pageHeader.hidden = false; })(window.openSettings);
-
-// ---- the node's state as one icon instead of words: syncing, up to date, or stopped ---------------------
-// The page's own pill keeps its words (they are read here); tapping the icon shows them in full.
-const pill = $("pill");
-const stIcon = el("button", { type: "button", className: "st-ic", id: "node-ic" });
-pill.before(stIcon); pill.hidden = true;
-const nodeSentence = () => {
-  const words = pill.textContent.trim();
-  const line = $("syncline").textContent.trim() || $("nodeline").textContent.trim();
-  return { words, line: words === "connecting" ? "Connecting to the node on this device." : line && line !== "block height" ? line : "The node is " + words + "." };
+window.openSettings = (...a) => {
+  msgSettings.hidden = !(chat && me);
+  if (chat && me) openMe();
+  pageOpenSettings(...a); page.hidden = true; nav.hidden = true; document.body.classList.remove("has-nav");
 };
-function nodeIcon() {
-  const words = pill.textContent.trim();
-  const kind = words === "up to date" || words === "online" ? "ok" : words === "stopped" ? "stop" : "sync";
-  if (stIcon.dataset.kind !== kind) { stIcon.dataset.kind = kind; stIcon.className = "st-ic " + kind; stIcon.replaceChildren(svg(P[kind], 24)); }
-  const label = "Node: " + (kind === "ok" ? "up to date" : kind === "stop" ? "stopped" : words);
-  stIcon.setAttribute("aria-label", label + ". Show details"); stIcon.title = label;
-}
-new MutationObserver(nodeIcon).observe(pill, { childList: true, characterData: true, subtree: true, attributes: true });
-nodeIcon();
-stIcon.addEventListener("click", () => sheet((card, close) => {
-  const { line } = nodeSentence(), row = (k, id) => el("div", {}, el("dt", { textContent: k }), el("dd", { textContent: $(id).textContent }));
-  const parts = [el("h2", { textContent: stIcon.title }), el("p", { className: "note", style: "margin-top:4px", textContent: line }),
-    el("dl", { style: "margin-top:8px" }, row("State", "state"), row("Block height", "height"), row("Peers", "peers"), row("Blocks / min", "rate"))];
-  const done = el("button", { type: "button", textContent: "Close" }); done.addEventListener("click", close);
-  if (bridge()) { const o = el("button", { type: "button", className: "primary", textContent: "Open node" }); o.style.marginTop = "0"; o.addEventListener("click", () => { close(); openNode(); }); parts.push(el("div", { className: "row" }, done, o)); }
-  else parts.push(el("div", { className: "row" }, done));
-  card.append(...parts);
-}));
-
-// ---- Settings: a Node row that opens the Android app's node screen, where that exists --------------------
-if (bridge()) {
-  const go = el("button", { type: "button", style: "width:100%;margin-top:12px", textContent: "Open node" });
-  go.addEventListener("click", openNode);
-  const sec = el("section", { className: "card", id: "s-node" }, el("h2", { textContent: "Node" }),
-    el("p", { className: "note", style: "margin:0", textContent: "The node's own screen: its state, logs, and starting or stopping it." }), go);
-  $("s-upd").before(sec);
-}
+window.closeSettings = () => { pageCloseSettings(); nav.hidden = false; document.body.classList.add("has-nav"); setTab(tab); };
 
 // say where messages go, in the footer and in Settings > About
 const ABOUT_MESSAGES = " Messages go through the Logos Messaging node on this device to the Logos Messaging network, sealed so only the person they're for can read them.";
@@ -232,7 +194,7 @@ page.innerHTML = `
     <p class="msg bad" id="mg-on-m" role="alert"></p>
   </section>
   <div id="mg-home" hidden>
-    <div class="mtop"><h1 id="h-chats">Messages</h1><div class="acts"><button type="button" class="new" id="mg-new"></button><button type="button" class="ic-b" id="mg-me" aria-label="Messages settings" title="Messages settings"></button></div></div>
+    <div class="mtop"><h1 id="h-chats">Messages</h1><div class="acts"><button type="button" class="new" id="mg-new"></button><button type="button" class="ic-b" id="mg-me" aria-label="Settings" title="Settings"></button></div></div>
     <div class="mnode" id="mg-node" role="status" hidden></div>
     <div class="hint-card" id="mg-hint" hidden></div>
     <p class="msg warn" id="mg-store-warn" hidden style="margin:0 2px 12px">Saved chats from an earlier messaging address can't be opened on this one.</p>
@@ -252,32 +214,32 @@ page.innerHTML = `
       <div id="mg-found"></div>
     </section>
   </div>
-  <div id="mg-mev" hidden>
-    <div class="backrow"><button type="button" class="mg-home"></button></div>
-    <section class="card" aria-labelledby="h-mine">
-      <h2 id="h-mine">Your LNS name</h2>
-      <p class="msg" id="mg-check-m" role="status" style="margin-top:0"></p>
-      <label for="mg-name">Your name</label>
-      <div class="pwrow"><input id="mg-name" class="mono" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="40" placeholder="yourname"><button type="button" id="mg-name-save">Save</button></div>
-      <p class="msg" id="mg-name-m" role="status"></p>
-      <p class="hint">Without a name you can still write and get messages: people use your messaging address instead, and see your messages as from that address.</p>
-      <details id="mg-link"><summary>Link your LNS name to this phone</summary>
-        <p class="note">Messages to your name come to this phone once the name's <b>msg</b> entry is this phone's messaging address. Your name is managed from the computer that holds it, so run this there:</p>
-        <code class="cmd" id="mg-cmd"></code>
-        <div class="row"><button type="button" id="mg-copy">Copy command</button><button type="button" id="mg-check">Check again</button></div>
-      </details>
-    </section>
-    <section class="card" aria-labelledby="h-addr">
-      <h2 id="h-addr">My messaging address</h2>
-      <p class="note" style="margin-top:0">Anyone can write to this phone at this address, with or without an LNS name. It isn't a wallet address: coins can't be sent to it.</p>
-      <code class="cmd" id="mg-addr" hidden></code>
-      <div class="row"><button type="button" id="mg-addr-show" aria-controls="mg-addr" aria-expanded="false">Show</button><button type="button" id="mg-addr-copy">Copy</button></div>
-      <p class="msg" id="mg-addr-m" role="status"></p>
-    </section>
-  </div>`;
+`;
+
+// ---- Messages in the one Settings page: your name and how to link it, your messaging address ----
+const msgSettings = el("section", { className: "card", id: "s-msg", ariaLabelledby: "h-s-msg", hidden: true });
+msgSettings.innerHTML = `
+  <h2 id="h-s-msg">Messages</h2>
+  <h3 style="margin-top:0">Your name</h3>
+  <p class="msg" id="mg-check-m" role="status" style="margin-top:0"></p>
+  <div class="pwrow"><input id="mg-name" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="40" placeholder="yourname" aria-label="Your LNS name"><button type="button" id="mg-name-save">Save</button></div>
+  <p class="msg" id="mg-name-m" role="status"></p>
+  <p class="hint">Without a name you can still write and get messages: people use your messaging address, and see your messages as from it.</p>
+  <details id="mg-link"><summary>Link your name to this phone</summary>
+    <p class="note">Link it in the Names app where you registered it, by setting its msg entry to this phone's messaging address. On the computer that holds the name, this does it:</p>
+    <code class="cmd" id="mg-cmd"></code>
+    <div class="row"><button type="button" id="mg-copy">Copy command</button><button type="button" id="mg-check">I've linked it</button></div>
+  </details>
+  <h3>Your messaging address</h3>
+  <p class="note" style="margin-top:0">Anyone can write to this phone at this address, with or without an LNS name. It isn't a wallet address: coins can't be sent to it.</p>
+  <code class="cmd" id="mg-addr" hidden></code>
+  <div class="row"><button type="button" id="mg-addr-show" aria-controls="mg-addr" aria-expanded="false">Show</button><button type="button" id="mg-addr-copy">Copy</button></div>
+  <p class="msg" id="mg-addr-m" role="status"></p>`;
+$("s-slot").append(msgSettings);
+const openMsgSettings = () => { openSettings("s-msg"); };
 for (const b of page.querySelectorAll(".mg-home")) { b.append(svg(P.back, 20), "Chats"); b.addEventListener("click", () => home()); }
 $("mg-new").append(svg(P.plus, 18), "New chat");
-$("mg-me").append(svg(P.sliders, 22));
+$("mg-me").append(svg(P.gear, 22));
 // room for "New group" next to New chat once groups exist; nothing is shown for it until then
 
 let chat = null, me = null, status = null, view = "home", loading = null;
@@ -288,7 +250,7 @@ const forget = () => {        // nothing of the chats stays in the page while it
   for (const id of ["mg-cmd", "mg-addr", "mg-check-m", "mg-name-m", "mg-addr-m"]) $(id).textContent = "";
   badge.hidden = true;
 };
-function home() { view = "home"; for (const [id, v] of [["mg-newv", "new"], ["mg-mev", "me"]]) $(id).hidden = true; render(); }
+function home() { view = "home"; $("mg-newv").hidden = true; render(); }
 
 // everything goes when the wallet locks
 const pageShow = window.show;
@@ -343,7 +305,6 @@ function render() {
   const ready = open && !!chat && !!chat.ready;
   $("mg-home").hidden = !ready || view !== "home";
   $("mg-newv").hidden = !ready || view !== "new";
-  $("mg-mev").hidden = !ready || view !== "me";
   updateBadge();
   if (!ready) return;
   const t = nodeText(), nl = $("mg-node");
@@ -362,7 +323,7 @@ function renderHint() {
   h.hidden = !!me.name || !!ui.nameHint || view !== "home";
   if (h.hidden) return;
   const go = el("button", { type: "button", className: "lnk", textContent: "Messages settings" });
-  go.addEventListener("click", () => { view = "me"; render(); openMe(); });
+  go.addEventListener("click", openMsgSettings);
   const x = el("button", { type: "button", className: "x", ariaLabel: "Close the hint" }, svg(P.close, 18));
   x.addEventListener("click", async () => { h.hidden = true; try { await chat.mutate(st => { st.ui = Object.assign({}, st.ui, { nameHint: true }); }); } catch (e) {} });
   h.replaceChildren(el("p", {}, "People can write to you at your messaging address. To be found by your LNS name, link it in ", go, "."), x);
@@ -372,7 +333,7 @@ function updateBadge() {
   badge.hidden = !n; badge.textContent = n > 99 ? "99+" : String(n);
   navMsg.setAttribute("aria-label", n ? `Messages, ${n} unread` : "Messages");
 }
-$("mg-me").addEventListener("click", () => { view = "me"; render(); openMe(); });
+$("mg-me").addEventListener("click", openMsgSettings);
 const cardOf = pid => { const c = chat && !isAddressId(pid) && chat.chainOf(pid); return c ? { avatar: c.avatar, color: c.color } : {}; };
 /** A conversation's icon; a grey "?" for messages that didn't come from the name they claim. */
 const convoIcon = (c, size) => c.unverified ? icon("", { key: "", size, letters: "?", color: "#8a8476" })
@@ -484,7 +445,7 @@ $("mg-find").addEventListener("submit", async e => {
   if (c.lapsed) lines.push(el("p", { className: "msg warn", textContent: name + "'s registration has lapsed; it may change hands." }));
   const known = chat.pinned(name);
   if (known && c.key && known !== c.key) lines.push(el("p", { className: "msg warn", textContent: name + "'s messaging address changed since you last talked. The chat will ask you to accept it." }));
-  if (!c.key) lines.push(el("p", { className: "note", textContent: "They can turn messages on in the Names app or in the Logos node app. Until then you can write to them only if they give you their messaging address." }));
+  if (!c.key) lines.push(el("p", { className: "note", textContent: name + " can't get messages by name yet. Ask " + name + " for their messaging address." }));
   const merge = c.key && chat.addressChatFor(c.key);
   if (merge) {
     const mg = el("button", { type: "button", className: "primary", textContent: "Merge into " + name });
@@ -516,15 +477,15 @@ function openMe() {
 }
 async function checkMine(fresh) {
   const m = $("mg-check-m"); m.className = "msg"; m.textContent = "";
-  if (!me.name) { m.textContent = "Your name: not linked."; $("mg-link").open = false; return; }
+  if (!me.name) { m.textContent = "No name yet."; $("mg-link").open = false; return; }
   m.textContent = "Checking " + me.name + "…";
   let c;
   try { c = await chat.lookup(me.name, fresh); } catch (e) { return void (m.className = "msg bad", m.textContent = "Couldn't reach the name service."); }
   if (!c.registered) return void (m.className = "msg bad", m.textContent = me.name + " isn't a registered name.");
-  if (c.key === me.public) { m.className = "msg ok"; m.textContent = "Your name: " + me.name + " ✓ (messages to it come to this phone)"; $("mg-link").open = false; return; }
+  if (c.key === me.public) { m.className = "msg ok"; m.textContent = me.name + ", linked to this phone."; $("mg-link").open = false; return; }
   m.className = "msg warn";
-  m.textContent = c.key ? "Your name: " + me.name + ", not linked to this phone (its messages go to another phone or app)."
-                        : "Your name: " + me.name + ", not linked yet. Link it so messages to your name reach this phone.";
+  m.textContent = c.key ? me.name + " is linked to another phone or app. Until you link it here, people see your messages as from your messaging address."
+                        : me.name + " isn't linked yet. Until it is, people see your messages as from your messaging address.";
 }
 $("mg-addr-show").addEventListener("click", () => {
   const show = $("mg-addr").hidden;
@@ -544,7 +505,7 @@ $("mg-name-save").addEventListener("click", async () => {
   if (locked401(r)) return;
   if (!r.ok) return void (m.className = "msg bad", m.textContent = r.data.error || "Couldn't save it.");
   me.name = name; openMe();
-  m.className = "msg"; m.textContent = name ? "Saved. Messages go out under " + name + " once it's linked to this phone (below); until then they show your messaging address." : "";
+  m.className = "msg"; m.textContent = "";
   checkMine(true);
 });
 $("mg-copy").addEventListener("click", async () => {
