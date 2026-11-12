@@ -69,8 +69,9 @@ object WalletServer {
                         "NODE_CFG" to files.config.path,
                         // the node's service restarts the node when it exits, so stopping it is a restart
                         "NODE_RESTART_CMD" to "pkill -TERM -f '${files.launcher.name} ${files.config.name}'",
-                        // no self-update inside an APK: an empty address makes every update check fail
-                        "UPDATE_URL" to "",
+                        // the web app's Android mode (0.7.6): no self-update or restart, the app's
+                        // fingerprint check instead of passkeys, and the page's texts for the app
+                        "APP_EMBEDDED" to "android",
                     )
                 ).toString()
                 Python.getInstance().getModule("logos_embed").callAttr("start", web.path, env)

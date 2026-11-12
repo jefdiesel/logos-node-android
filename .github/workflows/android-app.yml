@@ -82,7 +82,7 @@ jobs:
           grep -q 'NodeService' manifest.txt || fail "NodeService not declared"
           grep -q 'foregroundServiceType(0x01010599)=0x40000000' manifest.txt || fail "service is not foregroundServiceType=specialUse"
           grep -q 'PROPERTY_SPECIAL_USE_FGS_SUBTYPE' manifest.txt || fail "specialUse subtype property missing"
-          for p in INTERNET FOREGROUND_SERVICE FOREGROUND_SERVICE_SPECIAL_USE POST_NOTIFICATIONS WAKE_LOCK; do
+          for p in INTERNET FOREGROUND_SERVICE FOREGROUND_SERVICE_SPECIAL_USE POST_NOTIFICATIONS WAKE_LOCK USE_BIOMETRIC; do
             grep -q "\"android.permission.$p\"" manifest.txt || fail "permission $p missing"
           done
           echo "all checks passed"

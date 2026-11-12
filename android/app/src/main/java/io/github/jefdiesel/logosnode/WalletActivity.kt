@@ -41,6 +41,46 @@ class WalletActivity : Activity() {
     private lateinit var web: WebView
     private var fileChosen: ValueCallback<Array<Uri>>? = null
     private var pendingSave: ByteArray? = null
+    private val io = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+    /** Fingerprint unlock: the page's window.LogosAndroid.unlockWithFingerprint(), see FingerprintUnlock. */
+    private val fingerprint = FingerprintUnlock(
+        featureOn = { walletSetting() },
+        authenticate = { onDone -> main.post { FingerprintKey.authenticate(this, onDone) } },
+        nativeUnlock = { python("native_unlock") },
+        turnOff = { python("native_fingerprint_reset") },
+        toPage = { js -> main.post { if (FingerprintUnlock.isOwnPage(web.url)) web.evaluateJavascript(js, null) } },
+    )
+
+    private fun python(function: String): String? = try {
+        com.chaquo.python.Python.getInstance().getModule("logos_embed").callAttr(function)?.toString()
+    } catch (e: Exception) {
+        Log.e(TAG, "logos_embed.$function failed", e)                 // never holds the token: it failed
+        null
+    }
+
+    /** native_fingerprint from the wallet's GET /api/wallet; null if it doesn't answer. */
+    private fun walletSetting(): Boolean? = try {
+        val c = java.net.URL(WalletServer.URL + "api/wallet").openConnection() as java.net.HttpURLConnection
+        c.connectTimeout = 2000
+        c.readTimeout = 5000
+        try {
+            org.json.JSONObject(c.inputStream.bufferedReader().readText()).optBoolean("native_fingerprint", false)
+        } finally {
+            c.disconnect()
+        }
+    } catch (_: Exception) {
+        null
+    }
+
+    /** Keeps the Keystore key in step with the setting: made while it is on, deleted when it is off. */
+    private fun syncFingerprintKey() = io.execute {
+        when (walletSetting()) {
+            true -> try { FingerprintKey.ensure() } catch (_: Exception) {}
+            false -> FingerprintKey.delete()
+            null -> {}
+        }
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -132,6 +172,7 @@ class WalletActivity : Activity() {
     override fun onResume() {
         super.onResume()
         web.onResume()       // the page sees itself visible again (its auto-lock listens for this)
+        if (FingerprintUnlock.isOwnPage(web.url)) syncFingerprintKey()
     }
 
     override fun onPause() {
@@ -154,11 +195,18 @@ class WalletActivity : Activity() {
         override fun onPageFinished(view: WebView, url: String) {
             if (!isOwnPage(Uri.parse(url))) return
             view.evaluateJavascript(SAVE_HOOK, null)
+            syncFingerprintKey()
             if (BuildConfig.DEBUG) {
                 // debug builds: what the page shows, in logcat, so it can be checked without the screen
                 main.postDelayed({
                     view.evaluateJavascript("document.body.innerText.replace(/\\s+/g,' ').slice(0,1500)") {
                         Log.i(TAG, "page text: $it")
+                    }
+                    // started with --ez probe true: the embedded-mode checks, and one fingerprint request
+                    // (with fingerprint unlock off it must fail without a prompt). Never logs a token.
+                    if (intent.getBooleanExtra("probe", false)) {
+                        view.evaluateJavascript(PROBE) { Log.i(TAG, "probe: $it") }
+                        view.evaluateJavascript(PROBE_UNLOCK, null)
                     }
                 }, 8000)
             }
@@ -193,7 +241,21 @@ class WalletActivity : Activity() {
     }
 
     /** Called from the page (through SAVE_HOOK) when it saves a file, e.g. the wallet backup. */
+    /**
+     * window.LogosAndroid, on this WebView only. Every call checks that the WebView shows the wallet's
+     * own page before doing anything (the WebView loads nothing else, but a call is checked anyway).
+     */
     private inner class Bridge {
+        /** The page's fingerprint button (web app 0.7.6). The answer comes back as logosNativeUnlocked/Failed. */
+        @JavascriptInterface
+        fun unlockWithFingerprint() {
+            main.post {
+                val url = web.url
+                io.execute { fingerprint.request(url) }
+            }
+        }
+
+        /** Called by SAVE_HOOK when the page saves a file (the wallet backup). */
         @JavascriptInterface
         fun saveFile(name: String, dataUrl: String) {
             val bytes = try {
@@ -202,6 +264,7 @@ class WalletActivity : Activity() {
                 return
             }
             main.post {
+                if (!FingerprintUnlock.isOwnPage(web.url)) return@post
                 pendingSave = bytes
                 val intent = Intent(Intent.ACTION_CREATE_DOCUMENT)
                     .addCategory(Intent.CATEGORY_OPENABLE)
@@ -240,6 +303,34 @@ class WalletActivity : Activity() {
 
     companion object {
         private const val TAG = "LogosWallet"
+
+        /** Debug probe: the page's embedded mode, the bridge, and the Updates section (logged, see onPageFinished). */
+        private val PROBE = """
+            (function () {
+              const r = {}, $ = id => document.getElementById(id);
+              try {
+                r.meta = document.querySelector('meta[name="app-embedded"]').content;
+                r.bridge = typeof window.LogosAndroid;
+                r.bridgeMethods = window.LogosAndroid ? Object.keys(Object.getPrototypeOf(window.LogosAndroid) || {}).concat(Object.keys(window.LogosAndroid)) : [];
+                r.EMBEDDED = typeof EMBEDDED === "undefined" ? "n/a" : EMBEDDED;
+                r.NATIVE = typeof NATIVE === "undefined" ? "n/a" : NATIVE;
+                r.updatesText = $("upd-embedded") && !$("upd-embedded").hidden ? $("upd-embedded").textContent : "(hidden)";
+                r.updateControlsHidden = ["upd", "b-upd-check", "m-upd-check", "upd-src"].every(id => !$(id) || $(id).hidden);
+                r.footer = ($("footer-talk") || {}).textContent;
+              } catch (e) { r.error = String(e); }
+              return JSON.stringify(r);
+            })()
+        """.trimIndent()
+
+        /** Debug probe: one fingerprint request, with the page's answer logged to the console (never the token). */
+        private val PROBE_UNLOCK = """
+            (function () {
+              const failed = window.logosNativeUnlockFailed, unlocked = window.logosNativeUnlocked;
+              window.logosNativeUnlockFailed = m => { console.log("probe: unlock failed: " + m); window.logosNativeUnlockFailed = failed; failed && failed(m); };
+              window.logosNativeUnlocked = t => { console.log("probe: unlocked (token not logged)"); window.logosNativeUnlocked = unlocked; unlocked(t); };
+              window.LogosAndroid.unlockWithFingerprint();
+            })()
+        """.trimIndent()
         private const val PICK_FILE = 1
         private const val SAVE_FILE = 2
 

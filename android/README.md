@@ -43,18 +43,42 @@ It is a debug build for testing, not something to publish.
   the API on `127.0.0.1:18180`, and log and state folders inside the app.
 - **The wallet server**, `server.py`, runs in a separate process, `:wallet`, together with the
   wallet screen. Whatever happens there cannot take the node down. It listens on
-  `127.0.0.1:18190`; the Linux Terminal route uses 8090, so both fit on one phone. It is started
-  with its usual settings:
+  `127.0.0.1:18190`; the Linux Terminal route uses 8090, so both fit on one phone. The app sets
+  the environment, imports `server.py` as a module and runs its `main()` in a thread
+  (`logos_embed.py`). It keeps the module, so it can call `server.native_unlock()` in the same
+  process. The settings:
 
   | setting | value |
   |---|---|
+  | `APP_EMBEDDED` | `android`: the web app's Android mode (0.7.6 and later) |
   | `NODE_API` | `http://127.0.0.1:18180` |
   | `NODE_BIN` | the link above |
   | `NODE_CFG` | `files/node/user_config.yaml` |
   | `APP_DATA` | `files/wallet` |
   | `APP_PORT` | `18190` |
   | `NODE_RESTART_CMD` | `pkill -TERM -f '<node> user_config.yaml'`; the service then restarts the node |
-  | `UPDATE_URL` | empty, so the app can't update its own files: updates come as a new APK |
+
+  In the Android mode the web app doesn't update or restart itself; updates come with a new APK, and
+  Settings says so. The texts about passkeys and localhost are hidden. Fingerprint unlock goes
+  through the phone's own check (below).
+
+- **Fingerprint unlock.** The page's fingerprint button calls
+  `window.LogosAndroid.unlockWithFingerprint()`. That interface exists only on the wallet's WebView,
+  which loads only `http://127.0.0.1:18190`, and every call checks the page's address first. The
+  app then:
+  1. asks the wallet (`GET /api/wallet`) whether fingerprint unlock is on, and refuses without a
+     prompt if it isn't
+  2. shows Android's fingerprint prompt, with strong biometrics only. There is no screen-lock PIN
+     fallback; the wallet's own PIN is the fallback.
+  3. on success, calls `server.native_unlock()` in-process. There is no HTTP route for it.
+  4. hands the session token to the page with `window.logosNativeUnlocked(token)`. Otherwise it
+     calls `window.logosNativeUnlockFailed(message)` with the reason.
+
+  The token is never logged. The check is bound to an Android Keystore key that needs a strong
+  biometric for each use and is invalidated when a fingerprint is added or removed. If that
+  happens, the app turns fingerprint unlock off, and the wallet PIN is needed to turn it on again.
+  The key is made when the page shows fingerprint unlock is on, and deleted when it is off.
+  Turning it on or off happens in the page's Settings, and turning it on needs the PIN.
 
 - **Network.** Cleartext HTTP is allowed to `127.0.0.1` and `localhost` only
   (`network_security_config.xml`). The wallet server itself makes HTTPS requests to the LNS
