@@ -8,7 +8,7 @@ Python standard library only. Wallet calls need a PIN that is set on first use.
 import base64, calendar, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.9.7"
+APP_VERSION = "0.9.8"
 # APP_EMBEDDED=android: this app runs inside the Android app (embedded Python, page in a WebView).
 # Then it never updates or restarts itself (the Android app brings new versions), and fingerprint
 # unlock goes through the phone's own fingerprint check instead of a passkey. Unset: nothing changes.
@@ -264,8 +264,8 @@ def fetch_outside(url, body=None, cap=65536, timeout=8):
 
 NAMES_RPC_URL = os.environ.get("NAMES_RPC_URL", "https://testnet.lez.logos.co")
 NAMES_PROGRAM = os.environ.get("NAMES_PROGRAM", "38jEfVV1RCyMzu1FGbYcCn5FqxCxKyY58VgzjruAh2gq")
-ACCOUNT_ID_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
-NAME_RE = re.compile(r"^(?!-)[a-z0-9-]{1,32}(?<!-)$")
+ACCOUNT_ID_RE = re.compile(r"\A[1-9A-HJ-NP-Za-km-z]{32,44}\Z")
+NAME_RE = re.compile(r"\A(?!-)[a-z0-9-]{1,32}(?<!-)\Z")
 NAMES_DIR = os.path.join(APP_DIR, "names")
 MESSAGES_FILE_RE = re.compile(r"^/((?:messages/(?:noble-(?:ciphers|hashes)/)?|noble-curves/(?:abstract/)?)[A-Za-z0-9_][A-Za-z0-9_.-]*\.js)$")
 NAMES_FILE_RE = re.compile(r"^/names/((?:noble-hashes/)?[A-Za-z0-9_][A-Za-z0-9_.-]*\.js)$")
@@ -293,8 +293,9 @@ def names_rpc(body):
 # The names project's own command line, `names`, built for Android (NAMES_BIN, set by the app), makes a
 # public LEZ account whose key stays in LNS_HOME, and signs plain public transactions with it: register a
 # name, set its `blockchain` and `msg` entries. No proofs. This server only starts it with fixed arguments,
-# keeps one job at a time, and forwards its sequencer calls (below). It never reads the key or the seed,
-# and never shows, logs or returns what `names` prints, except the account address and short progress lines.
+# keeps one change at a time, and forwards its sequencer calls (below). It never reads the key or the seed.
+# Of what `names` prints, only the account address, fixed progress texts and fixed error texts (allowlists)
+# ever reach a reply, a log or the page.
 
 NAMES_BIN = os.environ.get("NAMES_BIN", "")
 LNS_HOME = os.path.join(DATA_DIR, ".lns-wallet")           # the LEZ wallet's files: storage.json holds the key
@@ -307,21 +308,59 @@ LNS_RPC_METHODS = {"sendTransaction", "getFeeState", "checkHealth", "getBlock", 
                    "getAccountBalance", "getTransaction", "getAccountsNonces", "getAccountView", "getProofsAndRoot",
                    "getAccount", "getProgramIds", "getChannelId"}
 LNS_RPC_MAX = 2 * 1048576
-HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
-# progress lines of `names` that may be shown; everything else it prints is dropped
-LNS_PROGRESS_RE = re.compile(r"^(?:submitted [0-9a-f]{64}|applied in block \d+|step [12] of 2: [a-z0-9 -]{1,120}"
-                             r"|waiting \d+s before revealing.{0,80}|[a-z0-9-]{1,32} is registered"
-                             r"|resuming the commitment to [a-z0-9-]{1,32} made earlier"
-                             r"|the reveal did not land.{0,200})$")
+LNS_BACKUP_MAX = 1048576
+LNS_FILES = ("storage.json", "names.json")                 # what holds keys and commitments: snapshotted, backed up
+HEX64_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 LNS_ACCOUNT_LINE_RE = re.compile(r"\bPublic/([1-9A-HJ-NP-Za-km-z]{32,44})\b")
-lns_lock = threading.Lock()
-lns_account_lock = threading.Lock()                        # one account creation at a time
+_N = r"([0-9]{1,30})"
+_NAME = r"([a-z0-9-]{1,32})"
+# What may be shown of `names` output. Progress: a line that matches one of these, shown as the fixed text
+# beside it (with only the captured digits or name). Everything else it prints is dropped.
+LNS_PROGRESS = [
+    (re.compile(r"\Astep 1 of 2: committing to " + _NAME + r"\Z"), "step 1 of 2: committing to {0}"),
+    (re.compile(r"\Astep 2 of 2: registering " + _NAME + r" at [0-9]+ for .{0,40}\Z"), "step 2 of 2: registering {0}"),
+    (re.compile(r"\Awaiting " + _N + r"s before revealing.{0,80}\Z"), "waiting {0}s before the second step"),
+    (re.compile(r"\Aresuming the commitment to " + _NAME + r" made earlier\Z"), "carrying on with the registration started earlier"),
+    (re.compile(r"\Athe reveal did not land.{0,400}\Z"), "the second step didn't land yet; trying again"),
+    (re.compile(r"\Asubmitted [0-9a-f]{64}\Z"), "sent; waiting for a block"),
+    (re.compile(r"\Aapplied in block " + _N + r"\Z"), "in block {0}"),
+    (re.compile(r"\A" + _NAME + r" is registered\Z"), "{0} is registered"),
+]
+# Errors: the text after `names`'s "Error:" (with its causes) is searched for these; the first that matches
+# is shown as its fixed text. Anything else shows as LNS_ERROR_OTHER, never as what `names` printed.
+LNS_ERRORS = [
+    (re.compile(r"holds " + _N + r", less than the " + _N + r" that registering"), "the name account holds {0}, less than the {1} this name takes; add LEZ testnet tokens to it first"),
+    (re.compile(r"holds " + _N + r"; this takes " + _N + r", and about " + _N + r" more is held"), "the name account holds {0}; this takes {1}, and about {2} more is held for the fee while it runs"),
+    (re.compile(r"holds " + _N + r"; about " + _N + r" is held for the fee"), "the name account holds {0}; about {1} is held for the fee while this runs; add LEZ testnet tokens to it first"),
+    (re.compile(r"\b" + _NAME + r" is already registered"), "{0} is already registered"),
+    (re.compile(r"\b" + _NAME + r" is locked"), "{0} is locked: names that short are placed by the registry's admin"),
+    (re.compile(r"this wallet does not hold " + _NAME), "this phone's name account doesn't hold {0}"),
+    (re.compile(r"\b" + _NAME + r" is not registered"), "{0} isn't registered"),
+    (re.compile(r"someone else holds the name"), "someone else holds that name now"),
+    (re.compile(r"was included in block " + _N + r" but its changes were not"), "it was included in block {0} but didn't take effect"),
+    (re.compile(r"was not included in a block"), "the name service didn't include it in a block in time; try again"),
+    (re.compile(r"did not accept the transaction"), "the name service didn't accept the change"),
+    (re.compile(r"failed to read|isn't answering|error sending request|connection", re.I), "the name service didn't answer; try again"),
+]
+LNS_ERROR_OTHER = "it stopped with an error this app doesn't show; try again, and if it keeps failing, check the name account's balance"
+lns_lock = threading.Lock()                                # guards lns_job
+lns_change = threading.Lock()                              # one change of the name account at a time: making it,
+                                                           # starting a job, linking a name, restoring it
 lns_job = {"kind": None, "state": "idle", "name": "", "entry": "", "progress": "", "error": "", "started": None,
            "finished": None, "proc": None}
+LNS_BUSY = "Wait until the change that is running now has finished."
 
 
 def lns_available():
     return EMBEDDED and bool(NAMES_BIN) and os.path.isfile(NAMES_BIN) and os.access(NAMES_BIN, os.X_OK)
+
+
+def lns_name_ok(v):
+    return isinstance(v, str) and bool(NAME_RE.fullmatch(v))
+
+
+def lns_account_ok(v):
+    return isinstance(v, str) and bool(ACCOUNT_ID_RE.fullmatch(v))
 
 
 def lns_state():
@@ -330,9 +369,8 @@ def lns_state():
             d = json.load(f)
     except Exception:
         d = {}
-    acct = d.get("account") if isinstance(d.get("account"), str) and ACCOUNT_ID_RE.match(d["account"]) else None
-    name = d.get("name") if isinstance(d.get("name"), str) and NAME_RE.match(d["name"]) else ""
-    return {"account": acct, "name": name}
+    return {"account": d.get("account") if lns_account_ok(d.get("account")) else None,
+            "name": d.get("name") if lns_name_ok(d.get("name")) else ""}
 
 
 def lns_state_save(**changes):
@@ -358,91 +396,143 @@ def lns_lockdown():
             os.chmod(p, 0o600)
 
 
-def lns_env():
+def lns_write(path, data):
+    """Writes `data` to `path` atomically, owner-only."""
+    fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(path + ".tmp", path)
+
+
+def lns_json_file_ok(path):
+    """Whether `path` holds a JSON object (a missing names.json is fine: there is nothing to lose)."""
+    try:
+        with open(path, "rb") as f:
+            return isinstance(json.loads(f.read()), dict)
+    except Exception:
+        return False
+
+
+def lns_snapshot():
+    """Before a job: a copy of each wallet file as <file>.prev, so a job killed while `names` rewrites one
+    (it truncates and writes in place) can't lose the key."""
+    for f in LNS_FILES:
+        p = os.path.join(LNS_HOME, f)
+        if lns_json_file_ok(p):
+            with open(p, "rb") as src:
+                lns_write(p + ".prev", src.read())
+
+
+def lns_repair():
+    """After a job, at start and before a backup: a wallet file that no longer reads as JSON is put back from
+    its snapshot. Returns the files that were put back."""
+    fixed = []
+    for f in LNS_FILES:
+        p = os.path.join(LNS_HOME, f)
+        if (os.path.exists(p) or f == "storage.json" and os.path.exists(p + ".prev")) and not lns_json_file_ok(p) \
+                and lns_json_file_ok(p + ".prev"):
+            with open(p + ".prev", "rb") as src:
+                lns_write(p, src.read())
+            fixed.append(f)
+    if fixed:
+        event("lns wallet file put back from its snapshot", files=",".join(fixed))
+    return fixed
+
+
+def lns_env(home=None):
     """The whole environment of `names`: its wallet folder, the forwarder, the registry. Nothing of this
     process's own environment goes along."""
-    return {"PATH": "/system/bin:/usr/bin:/bin", "HOME": LNS_HOME, "TMPDIR": LNS_HOME, "LEE_WALLET_HOME_DIR": LNS_HOME,
+    home = home or LNS_HOME
+    return {"PATH": "/system/bin:/usr/bin:/bin", "HOME": home, "TMPDIR": home, "LEE_WALLET_HOME_DIR": home,
             "LOGOS_NAMES_RPC": "http://127.0.0.1:%d/lez-rpc/%s" % (PORT, LNS_RPC_SECRET),
             "LOGOS_NAMES_PROGRAM": NAMES_PROGRAM, "NO_COLOR": "1", "RUST_BACKTRACE": "0"}
+
+
+def lns_accounts_in(home):
+    """The public accounts `names wallet account list` finds in the wallet at `home` (the wallet exists, so
+    this makes no new one and prints no recovery phrase). It also writes the default config if there is none."""
+    r = subprocess.run([NAMES_BIN, "wallet", "account", "list"], env=lns_env(home), cwd=home, capture_output=True,
+                       timeout=120, stdin=subprocess.DEVNULL, umask=0o077)
+    if r.returncode != 0:
+        return []
+    return LNS_ACCOUNT_LINE_RE.findall(r.stdout.decode("utf-8", "replace"))
 
 
 def lns_set_gas(limit):
     p = os.path.join(LNS_HOME, "wallet_config.json")
     if not os.path.isfile(p):
-        # a wallet put back from a backup has no config yet: any `names` command writes the default one
-        # (the wallet exists, so this makes no new wallet and prints no recovery phrase)
-        subprocess.run([NAMES_BIN, "wallet", "account", "list"], env=lns_env(), cwd=LNS_HOME, capture_output=True,
-                       timeout=120, stdin=subprocess.DEVNULL, umask=0o077)
+        lns_accounts_in(LNS_HOME)             # a wallet put back from a backup has no config yet
     with open(p) as f:
         cfg = json.load(f)
     if not isinstance(cfg, dict):
         raise ValueError("wallet_config.json is not an object")
     cfg["gas_limit"] = limit
-    fd = os.open(p + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(cfg, f, indent=2)
-    os.replace(p + ".tmp", p)
+    lns_write(p, json.dumps(cfg, indent=2).encode())
 
 
 def lns_clean(line):
-    """One line of `names` output as it may be shown: a known progress line, else None."""
+    """One line of `names` output as it may be shown: the fixed text of a known progress line, else None."""
     s = ANSI_RE.sub(b"", line).decode("utf-8", "replace").strip()
-    return s if LNS_PROGRESS_RE.match(s) else None
+    for pattern, shown in LNS_PROGRESS:
+        m = pattern.fullmatch(s)
+        if m:
+            return shown.format(*m.groups())
+    return None
 
 
 def lns_error_text(lines):
-    """What went wrong, from the last `Error:` block `names` printed, cut short; never the key or seed
-    (`names` doesn't print those after the wallet exists, and the wallet must exist before any job)."""
+    """What went wrong, as one of the fixed LNS_ERRORS texts, from the last `Error:` block `names` printed."""
     text = [ANSI_RE.sub(b"", l).decode("utf-8", "replace").strip() for l in lines]
     for i in range(len(text) - 1, -1, -1):
         if text[i].startswith("Error:"):
-            # anyhow's shape: "Error: <what>", a blank line, "Caused by:", then one numbered line per cause
-            parts = [text[i][len("Error:"):].strip()]
-            for t in text[i + 1:i + 8]:
-                if t.startswith("Stack backtrace"):
-                    break
-                if t and t != "Caused by:":
-                    parts.append(re.sub(r"^\d+:\s*", "", t))
-            msg = re.sub(r"\s+", " ", ": ".join(p for p in parts if p)).strip().replace(LNS_RPC_SECRET, "…")
-            # a run of 12 or more plain words is what a recovery phrase looks like: never pass one on
-            msg = re.sub(r"(?:\b[a-z]{3,8}\b\s+){11,}\b[a-z]{3,8}\b", "…", msg)
-            return msg[:300] or "it stopped with an error"
+            block = " ".join(t for t in text[i:i + 12] if not t.startswith("Stack backtrace"))
+            for pattern, shown in LNS_ERRORS:
+                m = pattern.search(block)
+                if m:
+                    return shown.format(*m.groups())
+            return LNS_ERROR_OTHER
     return "it stopped without saying why"
 
 
 def lns_make_account():
     """(http status, reply). Makes the wallet and its one public account, once. Reads only the address from
     what `names` prints; the recovery phrase it prints for a new wallet is dropped here."""
-    if not lns_account_lock.acquire(blocking=False):
-        return 409, {"error": "The name account is being made."}
+    if not lns_change.acquire(blocking=False):
+        return 409, {"error": LNS_BUSY}
     try:
-        return lns_make_account_locked()
-    finally:
-        lns_account_lock.release()
-
-
-def lns_make_account_locked():
-    st = lns_state()
-    if st["account"] and os.path.isfile(lns_storage()):
-        return 409, {"error": "This phone already has a name account.", "account": st["account"]}
-    lns_lockdown()
-    args = ["wallet", "account", "list"] if os.path.isfile(lns_storage()) else ["wallet", "account", "new", "public"]
-    try:
-        r = subprocess.run([NAMES_BIN] + args, env=lns_env(), cwd=LNS_HOME, capture_output=True, timeout=120,
-                           stdin=subprocess.DEVNULL, umask=0o077)
-    except Exception:
-        return 502, {"error": "The name account couldn't be made: the signer didn't run."}
-    finally:
+        with lns_lock:
+            if lns_job["state"] == "running":
+                return 409, {"error": LNS_BUSY}
+        st = lns_state()
+        if st["account"] and os.path.isfile(lns_storage()):
+            return 409, {"error": "This phone already has a name account.", "account": st["account"]}
+        lns_lockdown()
+        lns_repair()
         try:
-            lns_lockdown()
+            if os.path.isfile(lns_storage()):     # a wallet without a recorded account: read it, make nothing
+                found = lns_accounts_in(LNS_HOME)
+                account = found[0] if found else None
+            else:
+                r = subprocess.run([NAMES_BIN, "wallet", "account", "new", "public"], env=lns_env(), cwd=LNS_HOME,
+                                   capture_output=True, timeout=120, stdin=subprocess.DEVNULL, umask=0o077)
+                m = LNS_ACCOUNT_LINE_RE.search(r.stdout.decode("utf-8", "replace")) if r.returncode == 0 else None
+                del r                             # its stdout held the recovery phrase of the new wallet
+                account = m.group(1) if m else None
         except Exception:
-            pass
-    found = LNS_ACCOUNT_LINE_RE.search(r.stdout.decode("utf-8", "replace")) if r.returncode == 0 else None
-    del r                                     # its stdout held the recovery phrase of a new wallet
-    if not found:
-        return 502, {"error": "The name account couldn't be made."}
-    lns_state_save(account=found.group(1))
-    return 200, {"account": found.group(1)}
+            return 502, {"error": "The name account couldn't be made: the signer didn't run."}
+        finally:
+            try:
+                lns_lockdown()
+            except Exception:
+                pass
+        if not lns_account_ok(account):
+            return 502, {"error": "The name account couldn't be made."}
+        lns_state_save(account=account)
+        return 200, {"account": account}
+    finally:
+        lns_change.release()
 
 
 def lns_balance(account):
@@ -463,12 +553,14 @@ def lns_view():
     mk = msg_key_load()
     main = next((k["key"] for k in wallet_keys() if k["label"] == "Main"), None)
     return {"account": st["account"], "balance": lns_balance(st["account"]) if st["account"] else None,
-            "name": st["name"], "job": job,
+            "name": st["name"], "job": job, "last_backup": last_backup(),
+            # the last backup doesn't hold the account as it is now (or there is none)
+            "backup_needed": bool(st["account"]) and lns_fingerprint() != lns_backed_up(),
             "values": {"blockchain": main, "msg": mk["public"] if mk else None}}
 
 
 def lns_watch(kind, proc, deadline, on_success):
-    """Reads one job's output to its end: keeps the latest progress line and, at the end, the error."""
+    """Reads one job's output to its end: keeps the latest progress text and, at the end, the error text."""
     tail, late = [], threading.Event()
 
     def stop():
@@ -490,6 +582,10 @@ def lns_watch(kind, proc, deadline, on_success):
         code = -1
     timer.cancel()
     ok = code == 0 and not late.is_set()
+    try:
+        repaired = lns_repair()
+    except Exception:
+        repaired = []
     if ok:
         try:
             on_success()
@@ -499,63 +595,82 @@ def lns_watch(kind, proc, deadline, on_success):
         lns_lockdown()
     except Exception:
         pass
+    error = "" if ok else ("it took too long and was stopped" if late.is_set() else lns_error_text(tail))
+    if repaired:
+        error = (error + "; " if error else "") + "the name account's file was put back from the copy made before this change"
     with lns_lock:
-        lns_job.update(state="done" if ok else "failed", finished=time.time(), proc=None,
-                       error="" if ok else ("it took too long and was stopped" if late.is_set() else lns_error_text(tail)))
+        lns_job.update(state="done" if ok else "failed", finished=time.time(), proc=None, error=error)
         name = lns_job["name"]
     event("lns %s %s" % (kind, "done" if ok else "failed"), lns_name=name)
 
 
 def lns_start(kind, args, gas, name, entry="", on_success=lambda: None):
-    """(http status, reply). Starts `names <args>` in the background with the gas limit for `kind`."""
-    if not os.path.isfile(lns_storage()) or not lns_state()["account"]:
-        return 409, {"error": "Make the name account first."}
-    with lns_lock:
-        if lns_job["state"] == "running":
-            return 409, {"error": "Wait until the change that is running now has finished."}
-        lns_job.update(kind=kind, state="running", name=name, entry=entry, progress="", error="",
-                       started=time.time(), finished=None)
+    """(http status, reply). Starts `names <args>` in the background with the gas limit for `kind`, after a
+    snapshot of the wallet files."""
+    if not lns_change.acquire(blocking=False):
+        return 409, {"error": LNS_BUSY}
     try:
-        lns_set_gas(gas)
-        proc = subprocess.Popen([NAMES_BIN] + args, env=lns_env(), cwd=LNS_HOME, stdin=subprocess.DEVNULL,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, umask=0o077)
-    except Exception:
         with lns_lock:
-            lns_job.update(state="failed", finished=time.time(), error="the signer didn't start")
-        return 502, {"error": "The signer didn't start."}
-    with lns_lock:
-        lns_job["proc"] = proc
-    threading.Thread(target=lns_watch, args=(kind, proc, time.time() + LNS_TIMEOUT[kind], on_success), daemon=True).start()
-    return 200, {"started": kind}
+            if lns_job["state"] == "running":
+                return 409, {"error": LNS_BUSY}
+        lns_repair()
+        if not os.path.isfile(lns_storage()) or not lns_state()["account"]:
+            return 409, {"error": "Make the name account first."}
+        with lns_lock:
+            lns_job.update(kind=kind, state="running", name=name, entry=entry, progress="", error="",
+                           started=time.time(), finished=None)
+        try:
+            lns_snapshot()
+            lns_set_gas(gas)
+            proc = subprocess.Popen([NAMES_BIN] + args, env=lns_env(), cwd=LNS_HOME, stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, umask=0o077)
+        except Exception:
+            with lns_lock:
+                lns_job.update(state="failed", finished=time.time(), error="the signer didn't start")
+            return 502, {"error": "The signer didn't start."}
+        with lns_lock:
+            lns_job["proc"] = proc
+        threading.Thread(target=lns_watch, args=(kind, proc, time.time() + LNS_TIMEOUT[kind], on_success), daemon=True).start()
+        return 200, {"started": kind}
+    finally:
+        lns_change.release()
 
 
 def lns_register(body):
     name = str(body.get("name", "")).strip().lower()
-    if not NAME_RE.match(name):
+    if not lns_name_ok(name):
         return 400, {"error": "That isn't an LNS name: use a to z, 0 to 9 and -, up to 32 characters."}
     st = lns_state()
     if st["name"]:
         return 409, {"error": "This phone already holds %s." % st["name"]}
+    if not st["account"]:
+        return 409, {"error": "Make the name account first."}
+    # registering also adds a receiving account to the wallet file: the account counts as changed either way
     return lns_start("register", ["register", name, "--owner", "Public/%s" % st["account"], "--term", "1y", "--wait"],
                      LNS_GAS["register"], name, on_success=lambda: lns_state_save(name=name))
 
 
 def lns_link(body):
     name = str(body.get("name", "")).strip().lower()
-    if name and not NAME_RE.match(name):
+    if name and not lns_name_ok(name):
         return 400, {"error": "That isn't an LNS name."}
-    if not lns_state()["account"]:
-        return 409, {"error": "Make the name account first."}
-    with lns_lock:
-        if lns_job["state"] == "running":
-            return 409, {"error": "Wait until the change that is running now has finished."}
-    lns_state_save(name=name)
-    return 200, {"name": name}
+    if not lns_change.acquire(blocking=False):
+        return 409, {"error": LNS_BUSY}
+    try:
+        with lns_lock:
+            if lns_job["state"] == "running":
+                return 409, {"error": LNS_BUSY}
+        if not lns_state()["account"]:
+            return 409, {"error": "Make the name account first."}
+        lns_state_save(name=name)
+        return 200, {"name": name}
+    finally:
+        lns_change.release()
 
 
 def lns_text(body):
     entry = body.get("entry")
-    if entry not in LNS_ENTRIES:
+    if not isinstance(entry, str) or entry not in LNS_ENTRIES:
         return 400, {"error": "Only blockchain and msg can be set here."}
     name = lns_state()["name"]
     if not name:
@@ -569,12 +684,33 @@ def lns_text(body):
         if not mk:
             return 409, {"error": "Turn on messages first: this phone has no messaging address yet."}
         value = mk["public"]
-    if not HEX64_RE.match(value):
+    if not HEX64_RE.fullmatch(value):
         return 500, {"error": "That address isn't in the expected form."}
     return lns_start("text", ["set-text", name, entry, value], LNS_GAS["text"], name, entry)
 
 
-LNS_BACKUP_MAX = 1048576
+def lns_fingerprint():
+    """A hash of what a backup must hold of the name account now: its wallet files, account and name."""
+    h = hashlib.sha256()
+    for f in LNS_FILES:
+        try:
+            with open(os.path.join(LNS_HOME, f), "rb") as src:
+                h.update(hashlib.sha256(src.read()).digest())
+        except Exception:
+            h.update(b"-")
+    st = lns_state()
+    h.update(json.dumps([st["account"], st["name"]]).encode())
+    return h.hexdigest()
+
+
+def lns_backed_up():
+    """lns_fingerprint() as it was at the last backup that carried the name account, or None."""
+    try:
+        with open(BACKUP_STATE_FILE) as f:
+            v = json.load(f).get("lns")
+        return v if isinstance(v, str) else None
+    except Exception:
+        return None
 
 
 def lns_backup():
@@ -583,6 +719,7 @@ def lns_backup():
     if not EMBEDDED or not os.path.isfile(lns_storage()):
         return None
     try:
+        lns_repair()
         with open(lns_storage(), "rb") as f:
             storage = f.read().decode("utf-8")
         names_file = os.path.join(LNS_HOME, "names.json")
@@ -603,47 +740,80 @@ def lns_backup_valid(lw):
                 and isinstance(json.loads(lw["storage"]), dict)
                 and (lw.get("names") is None or (isinstance(lw["names"], str) and len(lw["names"]) <= LNS_BACKUP_MAX
                                                  and isinstance(json.loads(lw["names"]), dict)))
-                and isinstance(lw.get("account"), str) and bool(ACCOUNT_ID_RE.match(lw["account"]))
-                and (lw.get("name") in (None, "") or (isinstance(lw["name"], str) and bool(NAME_RE.match(lw["name"])))))
+                and lns_account_ok(lw.get("account"))
+                and (lw.get("name") in (None, "") or lns_name_ok(lw.get("name"))))
     except Exception:
         return False
 
 
-def lns_restore(lw):
-    """Puts the LNS name account from a backup in place (Android app only). A different wallet file that is
-    here already is kept beside it as storage.json.replaced-<time>. Returns True if anything changed."""
+def lns_short(account):
+    return account[:6] + "…" + account[-4:]
+
+
+def lns_restore(lw, replace=False):
+    """Puts the LNS name account from a backup in place (Android app only). Returns (outcome, message for the
+    person): "added" (none was here), "same", "replaced" (only with `replace`; the one that was here is kept
+    beside it as storage.json.replaced-<time>-<n>), "kept" (a different one is here and `replace` wasn't
+    asked: nothing changed), "busy" (a change is running), "unchecked" (the signer couldn't confirm the
+    backup's account is in its wallet file: nothing changed)."""
     if not EMBEDDED or not lns_backup_valid(lw):
-        return False
-    with lns_lock:
-        if lns_job["state"] == "running":
-            return False
-    lns_lockdown()
-    new = lw["storage"].encode("utf-8")
-    path = lns_storage()
-    old = None
-    if os.path.isfile(path):
-        with open(path, "rb") as f:
-            old = f.read()
-    if old == new and lns_state()["account"] == lw["account"]:
-        return False
-    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    files = [(path, new)]
-    if lw.get("names") is not None:
-        files.append((os.path.join(LNS_HOME, "names.json"), lw["names"].encode("utf-8")))
-    for p, data in files:
-        if os.path.isfile(p):                 # what was here stays beside it
-            with open(p, "rb") as f:
-                before = f.read()
-            if before != data:
-                fd = os.open(p + ".replaced-" + stamp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                with os.fdopen(fd, "wb") as f:
-                    f.write(before)
-        fd = os.open(p + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-        os.replace(p + ".tmp", p)
-    lns_state_save(account=lw["account"], name=lw.get("name") or "")
-    return True
+        return "unchecked", "The name account in this backup couldn't be checked, so it wasn't restored."
+    if not lns_change.acquire(blocking=False):
+        return "busy", "The name account wasn't restored: a change to it is running. Restore again when it has finished."
+    try:
+        with lns_lock:
+            if lns_job["state"] == "running":
+                return "busy", "The name account wasn't restored: a change to it is running. Restore again when it has finished."
+        lns_lockdown()
+        lns_repair()
+        new = lw["storage"].encode("utf-8")
+        path = lns_storage()
+        old = None
+        if os.path.isfile(path):
+            with open(path, "rb") as f:
+                old = f.read()
+        here = lns_state()["account"]
+        if old == new and here == lw["account"]:
+            return "same", "The name account in the backup is the one already on this phone."
+        if old is not None and old != new and not replace:
+            return "kept", ("This backup holds a different name account (%s) from the one on this phone (%s). The one on "
+                            "this phone was kept, and nothing about it changed. To use the backup's instead, restore again "
+                            "and tick \"Replace this phone's name account\"." % (lns_short(lw["account"]), lns_short(here or "unknown account")))
+        if not lns_available():
+            return "unchecked", "The name account in this backup couldn't be checked here, so it wasn't restored."
+        # the signer itself must find the backup's account in the backup's wallet file, before anything changes
+        tmp = tempfile.mkdtemp(prefix=".lns-check-", dir=DATA_DIR)
+        try:
+            os.chmod(tmp, 0o700)
+            lns_write(os.path.join(tmp, "storage.json"), new)
+            found = lns_accounts_in(tmp)
+        except Exception:
+            found = []
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        if lw["account"] not in found:
+            return "unchecked", "The name account written on this backup isn't in its wallet file, so it wasn't restored."
+        stamp = "%s-%s" % (time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()), secrets.token_hex(3))
+        files = [(path, new)]
+        if lw.get("names") is not None:
+            files.append((os.path.join(LNS_HOME, "names.json"), lw["names"].encode("utf-8")))
+        for p, data in files:
+            if os.path.isfile(p):                 # what was here stays beside it
+                with open(p, "rb") as f:
+                    before = f.read()
+                if before != data:
+                    fd = os.open(p + ".replaced-" + stamp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    with os.fdopen(fd, "wb") as f:
+                        f.write(before)
+            lns_write(p, data)
+        lns_state_save(account=lw["account"], name=lw.get("name") or "")
+        if old is None:
+            return "added", "The name account from the backup (%s) is on this phone now." % lns_short(lw["account"])
+        return "replaced", ("This phone now uses the name account from the backup (%s). The one it had (%s) is kept "
+                            "on this phone as a file, but it is no longer in new backups, and any name it holds can't be "
+                            "changed from this phone." % (lns_short(lw["account"]), lns_short(here or "unknown account")))
+    finally:
+        lns_change.release()
 
 
 def lns_forward(raw):
@@ -653,7 +823,8 @@ def lns_forward(raw):
     except Exception:
         return 400, {"error": "bad request"}
     calls = body if isinstance(body, list) else [body]
-    if not calls or len(calls) > 64 or not all(isinstance(c, dict) and c.get("method") in LNS_RPC_METHODS for c in calls):
+    if not calls or len(calls) > 64 or not all(isinstance(c, dict) and isinstance(c.get("method"), str)
+                                               and c["method"] in LNS_RPC_METHODS for c in calls):
         return 403, {"error": "That method isn't forwarded."}
     try:
         code, data = fetch_outside(NAMES_RPC_URL, body, cap=16 * 1048576, timeout=60)
@@ -2132,7 +2303,7 @@ def node_cmd(cfg, flag):
     return subprocess.run(cmd, cwd=os.path.dirname(cfg), capture_output=True, text=True, timeout=60)
 
 
-def restore_backup(doc, password):
+def restore_backup(doc, password, replace_lns=False):
     """(http status, reply, event detail). Puts the key file from a backup in place of the node's own,
     only after the node itself has checked it, and keeps the old one beside it."""
     if not isinstance(doc, dict) or doc.get("format") != BACKUP_FORMAT or doc.get("version") not in BACKUP_AADS \
@@ -2201,22 +2372,26 @@ def restore_backup(doc, password):
         current = sorted(k["key"] for k in parse_keys(show_config()))
     except Exception:
         current = []
-    # the phone's LNS name account, if the backup has one (Android app only)
-    lns_done = lns_restore(lns_w) if lns_w is not None else False
+    # the phone's LNS name account, if the backup has one (Android app only); a different one already here
+    # is replaced only when the person asked for that (replace_lns)
+    lns_out, lns_msg = lns_restore(lns_w, replace_lns) if lns_w is not None else (None, "")
+    lns_done = lns_out in ("added", "replaced")
+    lns_reply = {"lns_restored": lns_done, "lns": lns_out, "lns_message": lns_msg} if lns_out else {}
+    lns_why = ", lns " + lns_out if lns_out else ""
     if reported == current:
         before = (msg_key_load() or {}).get("secret")
         if msg_key and msg_key_restore(msg_key):
             n = chat_restore(chat, before != msg_key["secret"]) if chat and messaging_on() else 0
-            return 200, {"unchanged": True, "messaging_key_restored": True, "messages_restored": n, "lns_restored": lns_done,
-                         "message": "These are the wallet keys already in use. The messaging key from the backup is back in place."}, "same keys, messaging key"
+            return 200, dict(lns_reply, unchanged=True, messaging_key_restored=True, messages_restored=n,
+                             message="These are the wallet keys already in use. The messaging key from the backup is back in place."), "same keys, messaging key" + lns_why
         n = chat_restore(chat, False) if chat and messaging_on() else 0
         if n:
-            return 200, {"unchanged": True, "messages_restored": n, "lns_restored": lns_done,
-                         "message": "These are the keys this wallet already uses. Messages from the backup were added."}, "same keys, messages"
-        if lns_done:
-            return 200, {"unchanged": True, "lns_restored": True,
-                         "message": "These are the keys this wallet already uses. The LNS name account from the backup is back in place."}, "same keys, lns"
-        return 200, {"unchanged": True, "message": "These are the keys this wallet already uses. Nothing was changed."}, "same keys"
+            return 200, dict(lns_reply, unchanged=True, messages_restored=n,
+                             message="These are the keys this wallet already uses. Messages from the backup were added."), "same keys, messages" + lns_why
+        if lns_out and lns_out != "same":
+            return 200, dict(lns_reply, unchanged=True,
+                             message="These are the keys this wallet already uses."), "same keys" + lns_why
+        return 200, dict(lns_reply, unchanged=True, message="These are the keys this wallet already uses. Nothing was changed."), "same keys" + lns_why
     # keep the old key file beside the new one, then swap the new one in atomically
     if os.path.exists(live):
         old = live + ".replaced-" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
@@ -2235,7 +2410,7 @@ def restore_backup(doc, password):
             restarted = subprocess.run(shlex.split(NODE_RESTART_CMD), capture_output=True, timeout=90).returncode == 0
         except Exception:
             restarted = False
-    reply = {"ok": True, "restarted": restarted, "addresses": len(reported), "replaced": len(current), "lns_restored": lns_done}
+    reply = dict(lns_reply, ok=True, restarted=restarted, addresses=len(reported), replaced=len(current))
     before = (msg_key_load() or {}).get("secret")
     if msg_key and msg_key_restore(msg_key):
         reply["messaging_key_restored"] = True
@@ -2336,7 +2511,8 @@ def backup_export(password, history=True):
     try:
         fd = os.open(BACKUP_STATE_FILE + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
-            json.dump({"last": created, "messaging": bool(mk)}, f)          # whether it holds the messaging key
+            json.dump({"last": created, "messaging": bool(mk),                # whether it holds the messaging key
+                       "lns": lns_fingerprint() if lw else None}, f)         # and which state of the name account
         os.replace(BACKUP_STATE_FILE + ".tmp", BACKUP_STATE_FILE)
     except Exception:
         pass
@@ -2759,10 +2935,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if refused:
                 code, obj = refused
                 return self.reply(403 if code == 401 else code, obj)
-            code, obj, why = restore_backup(body.get("backup"), str(body.get("password", "")))
+            code, obj, why = restore_backup(body.get("backup"), str(body.get("password", "")),
+                                            body.get("replace_name_account") is True)
             if obj.get("ok"):
                 event("wallet restored", self, old_keys=obj["replaced"], new_keys=obj["addresses"],
-                      node_restarted="yes" if obj["restarted"] else "no")
+                      node_restarted="yes" if obj["restarted"] else "no", lns=obj.get("lns") or "none")
+            elif code == 200:
+                event("restore applied to the keys already in use", self, detail=why)
             else:
                 event("restore refused", self, reason=why)
             return self.reply(code, obj)
@@ -2948,6 +3127,11 @@ def main():
     in a thread, so it can also call native_unlock() in the same process."""
     if EMBEDDED:
         event("app start", port=PORT, version=APP_VERSION, embedded="android")
+        if os.path.isdir(LNS_HOME):
+            try:
+                lns_repair()                  # a change the app was stopped in the middle of
+            except Exception:
+                pass
     else:
         event("app start", port=PORT, version=APP_VERSION)
     threading.Thread(target=wallet_keys, daemon=True).start()

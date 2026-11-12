@@ -16,6 +16,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+# Third-party actions are pinned by commit (the tag each one had on 2026-11-12 is in the comment).
 defaults:
   run:
     shell: bash
@@ -30,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL /usr/local/.ghcup
@@ -68,11 +69,11 @@ jobs:
           echo "circuits $LBC_TAG, rapidsnark $RS_REV, circom $CIRCOM_TAG"
       - name: Cache circuits folder
         id: lbc
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: lbc-android
           key: names-lbc-android-${{ steps.v.outputs.lbc }}-${{ steps.v.outputs.ndk }}-api${{ env.ANDROID_API }}-${{ hashFiles('native/build-circuits.sh', 'lock-versions/Cargo.toml') }}
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         if: steps.lbc.outputs.cache-hit != 'true'
         with:
           path: ~/.cargo/bin/circom
@@ -80,7 +81,7 @@ jobs:
       - name: Circuits libraries for Android
         if: steps.lbc.outputs.cache-hit != 'true'
         run: WORK="$RUNNER_TEMP/lbc-work" native/build-circuits.sh lock-versions "$GITHUB_WORKSPACE/lbc-android"
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         if: steps.lbc.outputs.cache-hit != 'true'
         continue-on-error: true
         with:
@@ -93,7 +94,7 @@ jobs:
           "$TC/bin/aarch64-linux-android$ANDROID_API-clang" -O2 -fPIC -Wall -Werror -c names-cli/pcsc-stub.c -o pcsc-stub/pcsc-stub.o
           "$TC/bin/llvm-ar" rcs pcsc-stub/libpcscstub.a pcsc-stub/pcsc-stub.o
           "$TC/bin/llvm-nm" -g --defined-only pcsc-stub/libpcscstub.a
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: names
           key: names-android-${{ env.NAMES_REV }}
@@ -135,7 +136,7 @@ jobs:
             echo "built by $GITHUB_REPOSITORY run $GITHUB_RUN_ID from $GITHUB_SHA"; } > out/BUILD.txt
           (cd out && sha256sum names > SHA256SUMS)
           cat out/SHA256SUMS out/BUILD.txt; ls -la out
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: names-cli-android-arm64
           path: out/
@@ -148,7 +149,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Names source at the pinned commit
         run: |
           git init -q names && cd names
@@ -156,7 +157,7 @@ jobs:
           git checkout -q FETCH_HEAD
       - name: System libraries
         run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends libssl-dev pkg-config libpcsclite-dev >/dev/null
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: names
           key: names-linux-${{ env.NAMES_REV }}

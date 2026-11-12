@@ -155,6 +155,7 @@ check("the account and its balance show", d["account"] == FAKE.ACCOUNT and d["ba
 check("the balance was asked of the name service for that account",
       {"method": "getAccountBalance", "params": [FAKE.ACCOUNT]}.items() <= seen[-1].items(), seen[-1])
 phrase_nowhere("after making the account")
+check("right after making it, the page is asked to prompt for a backup", d["backup_needed"] is True, d)
 
 # ---- register ------------------------------------------------------------------------------------------------
 for bad in ("Bad Name", "-x", "a" * 33, "", "alice;rm"):
@@ -199,14 +200,39 @@ check("the page is offered both values now", d["values"] == {"blockchain": MAIN,
 check("unlinking the name", call("/api/wallet/lns/name", {"name": ""}, session=s)[1] == {"name": ""})
 call("/api/wallet/lns/register", {"name": "taken"}, session=s)
 d = wait_job(s)
-check("a refused registration says why, in one line", d["job"]["state"] == "failed" and d["job"]["error"] == "taken is already registered: held", d["job"])
+check("a refused registration says why, as the app's own text", d["job"]["state"] == "failed" and d["job"]["error"] == "taken is already registered", d["job"])
 check("and the name stays unset", d["name"] == "", d)
+call("/api/wallet/lns/register", {"name": "leaky"}, session=s)
+d = wait_job(s)
+check("an error that isn't a known one shows only the app's fixed text",
+      d["job"]["state"] == "failed" and d["job"]["error"] == server.LNS_ERROR_OTHER, d["job"])
 check("register slow starts", call("/api/wallet/lns/register", {"name": "slow"}, session=s)[0] == 200)
 check("while it runs, another change is refused", call("/api/wallet/lns/register", {"name": "slow2"}, session=s)[0] == 409)
 check("and linking a name too", call("/api/wallet/lns/name", {"name": "alice"}, session=s)[0] == 409)
-check("the running job shows", call("/api/wallet/lns", session=s)[1]["job"]["state"] == "running")
+check("and making an account", call("/api/wallet/lns/account", {}, session=s)[0] == 409)
+time.sleep(0.5)
+d = call("/api/wallet/lns", session=s)[1]
+check("the running job shows", d["job"]["state"] == "running", d["job"])
+check("a progress line carrying the forwarder's address shows as fixed text, without it",
+      d["job"]["progress"] == "the second step didn't land yet; trying again" and server.LNS_RPC_SECRET not in json.dumps(d), d["job"])
 d = wait_job(s)
 check("slow is registered", d["name"] == "slow" and d["job"]["state"] == "done", d)
+
+# ---- a job killed while the wallet file is rewritten: the snapshot puts it back -------------------------------------
+call("/api/wallet/lns/name", {"name": ""}, session=s)
+with open(os.path.join(server.LNS_HOME, "storage.json")) as f:
+    before_kill = f.read()
+call("/api/wallet/lns/register", {"name": "killed"}, session=s)
+d = wait_job(s)
+with open(os.path.join(server.LNS_HOME, "storage.json")) as f:
+    after_kill = f.read()
+check("a job killed mid-write leaves the wallet file as it was before the job", after_kill == before_kill, after_kill[:60])
+check("and says so", d["job"]["state"] == "failed" and "put back" in d["job"]["error"], d["job"])
+check("the snapshot is owner-only", mode(os.path.join(server.LNS_HOME, "storage.json.prev")) == 0o600)
+with open(os.path.join(server.LNS_HOME, "storage.json"), "w") as f:
+    f.write("{trunc")                                  # as if the app itself had been killed during a job
+check("a wallet file found broken later is put back too", server.lns_repair() == ["storage.json"]
+      and open(os.path.join(server.LNS_HOME, "storage.json")).read() == before_kill)
 check("linking a name held from elsewhere (after a transfer)",
       call("/api/wallet/lns/name", {"name": "android"}, session=s)[1] == {"name": "android"})
 call("/api/wallet/lns/text", {"entry": "blockchain"}, session=s)
@@ -231,6 +257,8 @@ def post_rpc(path, body, host=None):
 
 good = "/lez-rpc/" + server.LNS_RPC_SECRET
 ok_call = {"jsonrpc": "2.0", "id": 3, "method": "getLastBlockId", "params": []}
+check("a method that isn't a string: a clean 403", post_rpc(good, dict(ok_call, method=["getLastBlockId"]))[0] == 403
+      and post_rpc(good, dict(ok_call, method={"a": 1}))[0] == 403 and post_rpc(good, [ok_call, 5])[0] == 403)
 check("the forwarder passes a read for the signer", post_rpc(good, ok_call) == (200, {"jsonrpc": "2.0", "id": 3, "result": 7}))
 check("and a batch", post_rpc(good, [ok_call, dict(ok_call, id=4)]) == (200, [{"jsonrpc": "2.0", "id": 3, "result": 7}, {"jsonrpc": "2.0", "id": 4, "result": 7}]))
 check("without the secret: 404", post_rpc("/lez-rpc/" + "0" * 32, ok_call)[0] == 404 and post_rpc("/lez-rpc/", ok_call)[0] == 404)
@@ -245,6 +273,7 @@ server.NAMES_BIN = fake_names
 code, d = call("/api/wallet/backup", {"password": PASSWORD, "pin": PIN}, session=s)
 check("backup made", code == 200, (code, d))
 doc = d["backup"]
+check("after a backup no backup is asked for", call("/api/wallet/lns", session=s)[1]["backup_needed"] is False)
 check("the backup file has no wallet file or phrase in the clear", "lns" not in json.dumps({k: v for k, v in doc.items() if k != "ciphertext"})
       and FAKE.FAKE_PHRASE not in json.dumps(doc))
 kdf = doc["kdf"]
@@ -260,7 +289,8 @@ shutil.rmtree(server.LNS_HOME)
 os.remove(server.LNS_STATE_FILE)
 check("with the wallet gone the account is gone", call("/api/wallet/lns", session=s)[1]["account"] is None)
 code, d = call("/api/wallet/restore", {"backup": doc, "password": PASSWORD, "pin": PIN}, session=s)
-check("restore puts the name account back", code == 200 and d.get("lns_restored") is True, (code, d))
+check("restore puts the name account back, and says so", code == 200 and d.get("lns_restored") is True and d.get("lns") == "added"
+      and "is on this phone now" in d.get("lns_message", ""), (code, d))
 with open(os.path.join(server.LNS_HOME, "storage.json")) as f:
     check("the same wallet file", f.read() == stored)
 d = call("/api/wallet/lns", session=s)[1]
@@ -272,13 +302,67 @@ call("/api/wallet/lns/text", {"entry": "blockchain"}, session=s)
 d = wait_job(s)
 check("an entry can be set right after a restore onto a clean phone", d["job"]["state"] == "done"
       and calls()[-1]["args"] == ["set-text", "android", "blockchain", MAIN] and calls()[-1]["gas"] == 120000, (d["job"], calls()[-1]))
-with open(os.path.join(server.LNS_HOME, "storage.json"), "w") as f:
-    f.write('{"seed": "another wallet"}')
 code, d = call("/api/wallet/restore", {"backup": doc, "password": PASSWORD, "pin": PIN}, session=s)
+check("restoring the same name account again: same", code == 200 and d.get("lns") == "same" and d.get("lns_restored") is False, d)
+OTHER = "7Np41oeYWUBWLBaPF1zUkyBz9d7jEyhEtqGePQSRUmTy"
+other_wallet = json.dumps({"seed": "e" * 128, "public": {OTHER: "0" * 64}})
+with open(os.path.join(server.LNS_HOME, "storage.json"), "w") as f:
+    f.write(other_wallet)
+server.lns_state_save(account=OTHER, name="otherone")
+code, d = call("/api/wallet/restore", {"backup": doc, "password": PASSWORD, "pin": PIN}, session=s)
+check("a backup with a different name account doesn't replace the one here unasked", code == 200 and d.get("lns") == "kept"
+      and d.get("lns_restored") is False and "different name account" in d.get("lns_message", ""), d)
+check("and nothing about the one here changed", open(os.path.join(server.LNS_HOME, "storage.json")).read() == other_wallet
+      and call("/api/wallet/lns", session=s)[1]["account"] == OTHER
+      and not [f for f in os.listdir(server.LNS_HOME) if ".replaced-" in f])
+with open(os.path.join(data, "wallet-events.log")) as f:
+    check("the event log says what happened, not 'refused'", 'restore applied to the keys already in use detail="same keys, lns kept"' in f.read())
+code, d = call("/api/wallet/restore", {"backup": doc, "password": PASSWORD, "pin": PIN, "replace_name_account": True}, session=s)
 kept = [f for f in os.listdir(server.LNS_HOME) if f.startswith("storage.json.replaced-")]
-check("restoring over a different wallet file keeps that one beside it", code == 200 and d.get("lns_restored") is True and len(kept) == 1, (d, kept))
+check("asked to replace it: replaced, and the one that was here is kept beside it", code == 200 and d.get("lns") == "replaced"
+      and "no longer in new backups" in d.get("lns_message", "") and len(kept) == 1, (d, kept))
 with open(os.path.join(server.LNS_HOME, kept[0])) as f:
-    check("unchanged", f.read() == '{"seed": "another wallet"}')
+    check("unchanged", f.read() == other_wallet)
+check("the backup's account and name are in use", call("/api/wallet/lns", session=s)[1]["account"] == FAKE.ACCOUNT)
+for _ in range(2):                                     # two replacing restores within the same second: no clash
+    with open(os.path.join(server.LNS_HOME, "storage.json"), "w") as f:
+        f.write(other_wallet)
+    server.lns_state_save(account=OTHER)
+    code, d = call("/api/wallet/restore", {"backup": doc, "password": PASSWORD, "pin": PIN, "replace_name_account": True}, session=s)
+    check("a replacing restore answers (twice in a row)", code == 200 and d.get("lns") == "replaced", (code, d))
+
+
+def sealed_with(lns_wallet):
+    """`doc` with its name account part changed, encrypted again."""
+    inner = json.loads(json.dumps(content))
+    inner["lns_wallet"] = lns_wallet
+    out = json.loads(json.dumps(doc))
+    nonce = os.urandom(12)
+    out["cipher"]["nonce"] = base64.b64encode(nonce).decode()
+    out["ciphertext"] = base64.b64encode(server.aead_encrypt(server.backup_key(PASSWORD, base64.b64decode(kdf["salt"])), nonce,
+                                                             json.dumps(inner).encode(), server.BACKUP_AADS[doc["version"]])).decode()
+    return out
+
+
+lw0 = content["lns_wallet"]
+for label, change in (("a name ending in a newline", {"name": "android\n"}), ("an account ending in a newline", {"account": FAKE.ACCOUNT + "\n"})):
+    code, d = call("/api/wallet/restore", {"backup": sealed_with(dict(lw0, **change)), "password": PASSWORD, "pin": PIN}, session=s)
+    check("a backup with %s is refused as damaged" % label, code == 400 and "damaged" in d.get("error", ""), (code, d))
+shutil.rmtree(server.LNS_HOME)
+os.remove(server.LNS_STATE_FILE)
+code, d = call("/api/wallet/restore", {"backup": sealed_with(dict(lw0, account=OTHER)), "password": PASSWORD, "pin": PIN}, session=s)
+check("a backup whose account isn't in its own wallet file: not restored, and it says so", code == 200 and d.get("lns") == "unchecked"
+      and not os.path.exists(os.path.join(server.LNS_HOME, "storage.json")), d)
+code, d = call("/api/wallet/restore", {"backup": doc, "password": PASSWORD, "pin": PIN}, session=s)
+check("the good backup still puts it back", d.get("lns") == "added", d)
+call("/api/wallet/lns/name", {"name": ""}, session=s)
+call("/api/wallet/lns/register", {"name": "slow"}, session=s)
+code, d = call("/api/wallet/restore", {"backup": doc, "password": PASSWORD, "pin": PIN, "replace_name_account": True}, session=s)
+check("a restore while a change runs tells the person to restore again later", code == 200 and d.get("lns") == "busy"
+      and "Restore again" in d.get("lns_message", ""), d)
+wait_job(s)
+call("/api/wallet/lns/name", {"name": "fresh"}, session=s)
+check("after linking a name, a backup is asked for again", call("/api/wallet/lns", session=s)[1]["backup_needed"] is True)
 bad_doc = json.loads(json.dumps(doc))
 content["lns_wallet"] = {"storage": "not json", "account": FAKE.ACCOUNT}
 nonce = os.urandom(12)
@@ -305,6 +389,7 @@ with open(server.LNS_STATE_FILE, "w") as f:
 with open(os.path.join(data, "wallet-events.log")) as f:
     log = f.read()
 check("the event log records the account and the jobs", "lns account made" in log and "lns register done" in log
+      and "lns wallet file put back from its snapshot" in log
       and "lns register failed" in log and "lns text done" in log, log[-600:])
 check("and no secret path of the forwarder", server.LNS_RPC_SECRET not in log)
 os.remove(calls_file)                      # the fake signer's own record holds the forwarder's secret path; not the app's

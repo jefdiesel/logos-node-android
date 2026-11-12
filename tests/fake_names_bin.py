@@ -55,7 +55,12 @@ def main():
         sys.exit(0)
     if args[:3] == ["wallet", "account", "list"]:
         record()
-        print("/0 Public/%s" % ACCOUNT)
+        try:                                  # the public accounts in this wallet file, as the real one lists them
+            accounts = list(json.load(open(storage)).get("public") or {})
+        except Exception:
+            fail("the wallet file doesn't read")
+        for i, a in enumerate(accounts):
+            print("/%d Public/%s" % (i, a))
         sys.exit(0)
     if not os.path.exists(storage):
         fail("there is no wallet")       # the real one would make a new wallet and print its phrase here
@@ -69,8 +74,20 @@ def main():
             fail("gas limit %s, not 250000" % gas)
         if name == "taken":
             fail("taken is already registered\n\nCaused by:\n    held")
-        if name == "slow":
+        if name == "leaky":                   # an error that is none of the known ones, full of things never to show
+            fail("something odd happened at %s\n\nCaused by:\n    0: 1. Abandon, 2. Ability, 3. Able, 4. About, 5. Above, "
+                 "6. Absent,\n    1: 7. absorb 8. abstract 9. absurd 10. abuse 11. access 12. accident\n    2: seed %s"
+                 % (os.environ["LOGOS_NAMES_RPC"], "de" * 32))
+        if name == "slow":                    # a progress line with the forwarder's address in it, then a wait
+            print("the reveal did not land (error sending request for url (%s)); trying again (attempt 2 of 4)"
+                  % os.environ["LOGOS_NAMES_RPC"], flush=True)
             time.sleep(4)
+        w = json.load(open(storage))
+        w.setdefault("private", {})["receiving-" + name] = "1" * 64
+        if name == "killed":              # dies in the middle of rewriting the wallet file
+            open(storage, "w").write('{"seed": "trunc')
+            os._exit(9)
+        json.dump(w, open(storage, "w"))
         print("%s takes a deposit of 1000000, held for as long as you keep the name" % name)
         print("step 1 of 2: committing to %s" % name)
         print("could not size the gas (r0vm not found); using the wallet's limit of %d" % gas, file=sys.stderr)

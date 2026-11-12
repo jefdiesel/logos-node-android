@@ -93,17 +93,39 @@ pay the phone through the `blockchain` entry.
   - Wrapping the file with the Android Keystore is a follow-up, as it is for the messaging address.
 - **Made on the phone.** `names` makes the key on the phone, inside the app. It prints a recovery
   phrase once when it makes the wallet. The app reads only the account address from that output
-  and drops the rest: the phrase is never shown, stored elsewhere, logged or sent.
-- **In the encrypted backup: yes.**
+  and drops the rest: the phrase is never shown, stored elsewhere, logged or sent. So there is no
+  recovery phrase: **a backup is the only way back to this key.**
+- **In the encrypted backup: yes, from the backup made after the account exists.**
   - The backup the app already makes (Settings → Back up) now also carries the wallet file and
     `names.json`, inside the same encryption as the node's keys: a backup password through scrypt,
     then ChaCha20-Poly1305, and the PIN typed again to export.
-  - Restoring such a backup on a phone puts them back. A different wallet file that was already
-    there is kept beside it as `storage.json.replaced-<time>`.
+  - Backups made before the account existed don't have it. Registering adds a receiving account to
+    the wallet file and a commitment to `names.json`, so a backup from before registering is
+    incomplete too. The app remembers what the last backup held, and Your name says "Make a new
+    backup now" whenever the account, its files or its name have changed since.
   - The reason: the name belongs to whoever holds this key. Without it in the backup, a lost or
     wiped phone loses the name for good. That is the same reason names were kept transferable
     rather than soulbound.
   - Apart from the encrypted backup, the key never leaves the phone.
+- **Restoring.**
+  - With no name account on the phone, restoring puts the backup's back.
+  - Before anything changes, the signer reads the backup's wallet file in a temporary folder and
+    must find the account written on the backup in it.
+  - **When the phone already has a different name account, nothing is replaced unless the person
+    asks.** The reply and the page say which two accounts these are. Restoring again with "Replace
+    this phone's name account" ticked swaps them. The one that was there is then kept as
+    `storage.json.replaced-<time>-<random>`: it is still on the phone, but no longer in new backups,
+    and the page says so.
+  - A restore while a change to the name account is running leaves the name account alone and asks
+    for the restore to be run again.
+- **During a change.** `names` rewrites the wallet file in place (truncate, then write). Before
+  every change the app copies `storage.json` and `names.json` to `*.prev`, written atomically and
+  0600. After the change, when the app starts, and before a backup, a file that no longer reads as
+  JSON is put back from its copy, and the page says so.
+- **What is shown of the signer's output.** Only the account address, fixed progress texts and
+  fixed error texts. Each comes from an allowlist of the patterns `names` prints, and only digits
+  and names are carried over. Any other error shows as one fixed sentence. The forwarder's secret
+  path, keys and phrases can't reach a reply, the log or the page.
 
 ## Moving the name `android` to the phone's account
 
@@ -150,6 +172,9 @@ and the wallet is unlocked:
 - buttons to register a name, link one already held, point it at this wallet, and point it at the
   messaging address
 - what is happening now, and the last result
+- "Make a new backup now", with a button, whenever the last backup doesn't hold the account as it is
+- that the key is kept on the phone unencrypted, like the wallet's own keys, and that there is no
+  recovery phrase
 
 Every action needs an unlocked wallet, with the same checks as Send.
 
@@ -161,10 +186,11 @@ the signer exists (`NAMES_BIN`).
 
 | route | what |
 |---|---|
-| `GET /api/wallet/lns` | the account, its balance, the name, the running or last job |
+| `GET /api/wallet/lns` | the account, its balance, the name, the running or last job, and `backup_needed` |
 | `POST /api/wallet/lns/account` | make the account (once) |
 | `POST /api/wallet/lns/register` `{name}` | register a name to the account; runs in the background |
 | `POST /api/wallet/lns/name` `{name}` | link a name the account already holds (after a transfer) |
+| `POST /api/wallet/restore` `{…, replace_name_account}` | the existing restore; `replace_name_account: true` lets a backup's different name account replace this phone's. The reply has `lns` (`added`, `same`, `kept`, `replaced`, `busy` or `unchecked`) and `lns_message` |
 | `POST /api/wallet/lns/text` `{entry}` | set `blockchain` to this wallet's Main address or `msg` to this phone's messaging address |
 | `POST /lez-rpc/<secret>` | the forwarder for `names` only (see HTTPS); not for the page |
 
@@ -178,3 +204,6 @@ One job runs at a time, because the chain takes one transaction per signing acco
 - The 20-minute registration surviving the app going to the background. If the wallet process
   stops, starting the registration again resumes the saved commitment, for 24 hours.
 - Restoring a backup that carries the name account onto another phone.
+- Android's own device-to-device transfer: the app sets `allowBackup="false"`, which on some phones
+  doesn't stop a phone-to-phone move from copying the app's files, keys included. That was already
+  so for the node's and the messaging keys.
