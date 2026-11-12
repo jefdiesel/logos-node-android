@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- the node's own peer-to-peer traffic, the wallet server's requests (node API, name service),
          and the screens reading the node's API and the wallet page on 127.0.0.1 -->
@@ -13,6 +14,10 @@
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <!-- whether the network is metered: the messaging node runs only on unmetered networks unless allowed -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- the wallet page's Scan button only: the QR scanner asks for the camera when Scan is tapped, never
+         at start-up, and uses it only while the scanner screen is open -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application
         android:name=".LogosApp"
@@ -37,6 +42,19 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- the QR scanner for the page's Scan button (ZXing, on the phone): in the wallet's process,
+             portrait, QR codes only -->
+        <activity
+            android:name=".ScanActivity"
+            android:process=":wallet"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
+        <!-- the ZXing library's own scanner screen isn't used: not in the app at all -->
+        <activity
+            android:name="com.journeyapps.barcodescanner.CaptureActivity"
+            tools:node="remove" />
 
         <!-- the Node screen: start, stop, process state, log -->
         <activity

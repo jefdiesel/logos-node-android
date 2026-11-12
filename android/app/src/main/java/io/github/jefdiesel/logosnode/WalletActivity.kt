@@ -54,6 +54,51 @@ class WalletActivity : Activity() {
         toPage = { js -> main.post { if (FingerprintUnlock.isOwnPage(web.url)) web.evaluateJavascript(js, null) } },
     )
 
+    /** QR scan: the page's window.LogosAndroid.scanQr(), see QrScan. */
+    private var scanAnswer: ((QrScan.Result) -> Unit)? = null
+    private var cameraAnswer: ((Boolean?) -> Unit)? = null
+    private val qr = QrScan(
+        cameraAllowed = { checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED },
+        askCamera = { onAnswer -> askCamera(onAnswer) },
+        openScanner = { onResult ->
+            scanAnswer = onResult
+            startActivityForResult(Intent(this, ScanActivity::class.java), SCAN_QR)
+        },
+        pageUrl = { web.url },
+        toPage = { js -> web.evaluateJavascript(js, null) },
+    )
+
+    /**
+     * The camera question, only when the user tapped Scan: one line saying why, then Android's own question.
+     * Once Android stops asking (refused for good), no question at all: the page is told the camera is off.
+     */
+    private fun askCamera(onAnswer: (Boolean?) -> Unit) {
+        val prefs = getSharedPreferences("camera", MODE_PRIVATE)
+        if (prefs.getBoolean("asked", false) && !shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)) {
+            return onAnswer(false)
+        }
+        var answered = false
+        android.app.AlertDialog.Builder(this)
+            .setMessage("To scan a QR code the app needs the camera. It uses it only while the scanner is open.")
+            .setPositiveButton("Continue") { _, _ ->
+                answered = true
+                prefs.edit().putBoolean("asked", true).apply()
+                cameraAnswer = onAnswer
+                requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_REQUEST)
+            }
+            .setNegativeButton("Cancel", null)
+            .setOnDismissListener { if (!answered) onAnswer(null) }
+            .show()
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != CAMERA_REQUEST) return
+        val answer = cameraAnswer ?: return
+        cameraAnswer = null
+        answer(grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED)
+    }
+
     private fun python(function: String): String? = try {
         com.chaquo.python.Python.getInstance().getModule("logos_embed").callAttr(function)?.toString()
     } catch (e: Exception) {
@@ -452,6 +497,18 @@ class WalletActivity : Activity() {
             }
         }
 
+        /**
+         * The page's Scan button (web app 0.9.5): the QR scanner. The answer comes back as
+         * window.logosScanned(text) or window.logosScanFailed(message); see QrScan.
+         */
+        @JavascriptInterface
+        fun scanQr() {
+            main.post {
+                Log.i(TAG, "scanQr called; the wallet's own page: ${FingerprintUnlock.isOwnPage(web.url)}")
+                qr.request()
+            }
+        }
+
         /** Called by SAVE_HOOK when the page saves a file (the wallet backup). */
         @JavascriptInterface
         fun saveFile(name: String, dataUrl: String) {
@@ -476,6 +533,14 @@ class WalletActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         @Suppress("DEPRECATION") super.onActivityResult(requestCode, resultCode, data)
         when (requestCode) {
+            SCAN_QR -> {
+                val answer = scanAnswer ?: return
+                scanAnswer = null
+                val result = ScanActivity.result(resultCode, data)
+                // never the scanned text in the log: only what kind of answer it was
+                Log.i(TAG, "scan ended: ${result.javaClass.simpleName}")
+                answer(result)
+            }
             PICK_FILE -> {
                 fileChosen?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(resultCode, data))
                 fileChosen = null
@@ -566,6 +631,8 @@ class WalletActivity : Activity() {
         """.trimIndent()
         private const val PICK_FILE = 1
         private const val SAVE_FILE = 2
+        private const val SCAN_QR = 3
+        private const val CAMERA_REQUEST = 4
 
         /**
          * A WebView ignores the page's way of saving a file (a link to a Blob, clicked). This catches
