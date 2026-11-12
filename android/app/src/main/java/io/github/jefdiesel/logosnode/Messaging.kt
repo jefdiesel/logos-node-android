@@ -132,8 +132,9 @@ data class MessagingStatus(
 )
 
 object RunnerLines {
-    private val STATUS = Regex("""\[runner] status connection=(\S+) connected_peers=(\d+) rss_kb=(\d+)""")
-    private val BYTES = Regex("""\[runner] metric libp2p_network_bytes(?:_total)?\{[^}]*direction="(in|out)"[^}]*}\s+([0-9.eE+]+)""")
+    // Every bracket and brace escaped: Android's regex engine (ICU) rejects a bare ']' or '}' that Java accepts.
+    private val STATUS = Regex("""\[runner\] status connection=(\S+) connected_peers=(\d+) rss_kb=(\d+)""")
+    private val BYTES = Regex("""\[runner\] metric libp2p_network_bytes(?:_total)?\{[^\}]*direction="(in|out)"[^\}]*\}\s+([0-9.eE+]+)""")
 
     /** The status after `line`, or the same status if the line says nothing about it. */
     fun apply(status: MessagingStatus, line: String): MessagingStatus {
@@ -259,7 +260,15 @@ class MessagingSupervisor(
         if (worker?.isAlive == true) return
         stopRequested = false
         worker = thread(name = "messaging-supervisor", isDaemon = true) {
-            try { loop() } catch (e: Throwable) { setState("stopped: ${e.javaClass.simpleName}: ${e.message}") }
+            try {
+                loop()
+            } catch (e: Throwable) {
+                // never leave a runner behind that nothing watches or can stop
+                process?.let { p -> p.destroy(); if (!p.waitFor(MessagingSettings.STOP_GRACE_SECONDS, TimeUnit.SECONDS)) p.destroyForcibly() }
+                process = null
+                log("messaging: supervisor error: ${e.javaClass.simpleName}: ${e.message}")
+                setState("stopped: ${e.javaClass.simpleName}: ${e.message}")
+            }
         }
     }
 
