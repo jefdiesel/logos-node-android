@@ -54,15 +54,6 @@ def native_unlock():
 
 
 def native_fingerprint_reset():
-    """The phone's enrolled fingerprints changed: turn fingerprint unlock off, so only the PIN can turn it on
-    again. Uses server.native_fingerprint_reset() if the web app has it; otherwise does the same as the page's
-    "turn off" (the setting, saved, and an event line)."""
-    s = _server
-    if s is None:
-        return False
-    if hasattr(s, "native_fingerprint_reset"):
-        return bool(s.native_fingerprint_reset())
-    s.wallet_settings["native_fingerprint"] = False
-    s.settings_save()
-    s.event("fingerprint unlock turned off", reason="fingerprints changed on the phone", source="android")
-    return True
+    """The phone's enrolled fingerprints changed: server.native_fingerprint_reset() (web app 0.7.7) turns
+    fingerprint unlock off and locks the wallet, so only the PIN can turn it on again."""
+    return bool(_server.native_fingerprint_reset()) if _server is not None else False
