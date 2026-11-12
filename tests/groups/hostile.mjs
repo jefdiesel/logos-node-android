@@ -60,6 +60,8 @@ const adminCommit = async (net, A, all) => {
 };
 const heldBytes = (c, gid) => c.engine.data.groups[gid].held.reduce((n, x) => n + x.b.length, 0);
 
+export { trio, craft, frame, stateOf, adminCommit, code };
+
 export const HOSTILE = {
   async "hostile topic traffic: forged future frames and garbage"({ net, check }) {
     const { A, B, C, gid } = await trio(net);
@@ -108,7 +110,7 @@ export const HOSTILE = {
     // what's still held claims the next epoch; one resend answer from the admin settles it, then nothing more
     net.clock.offset += 3 * 60_000;
     await settle([A, B, C]);
-    check("one resend answer clears the forged messages", B.engine.data.groups[gid].held.length === 0 && (B.engine.stats()["forged-future"] ?? 0) > 0, JSON.stringify(B.engine.stats()));
+    check("nothing forged is left held (evicted, failed, or cleared by one resend answer)", B.engine.data.groups[gid].held.length === 0, JSON.stringify(B.engine.stats()));
     const asks = () => net.posted.filter((p) => p.from === B && p.topic === A.inbox).length;
     const n = asks();
     for (let k = 0; k < 5; k++) {
@@ -238,7 +240,7 @@ export const HOSTILE = {
     await settle([A, B, C]);
     const toA = (from, secret, kind, body) => sealControl({ to: A.msgKey, from, fromSecret: secret, kind, ts: net.now(), bytes: te.encode(JSON.stringify(body)) });
     const n0 = net.posted.length;
-    await A.engine.incoming(A.inbox, toA("carol", C.msgSecret, "resend-request", { gid, fromEpoch: "0" }));
+    await A.engine.incoming(A.inbox, toA("carol", C.msgSecret, "resend-request", { gid, fromEpoch: "0", n: "00112233445566778899aabbccddeeff" }));
     await A.engine.incoming(A.inbox, toA("carol", C.msgSecret, "rejoin-request", { gid, restore: true }));
     check("a removed member gets no resend and no re-add", !net.posted.slice(n0).some((p) => p.topic === C.inbox) && !A.group(gid).invited.includes("carol"));
     await A.engine.incoming(A.inbox, toA("bob", B.msgSecret, "rejoin-request", { gid }));
@@ -246,8 +248,8 @@ export const HOSTILE = {
     await A.engine.incoming(A.inbox, toA("bob", B.msgSecret, "rejoin-request", { gid, restore: true }));
     await A.engine.incoming(A.inbox, toA("bob", B.msgSecret, "rejoin-request", { gid, restore: true, again: 1 }));
     check("a restore rejoin is honoured once", A.group(gid).invited.includes("bob") && A.of("rejoin-request", (e) => e.member === "bob").length === 1);
-    await A.engine.incoming(A.inbox, toA("bob", B.msgSecret, "resend-request", { gid, fromEpoch: "0" }));
-    await A.engine.incoming(A.inbox, toA("bob", B.msgSecret, "resend-request", { gid, fromEpoch: "0", again: 1 }));
+    await A.engine.incoming(A.inbox, toA("bob", B.msgSecret, "resend-request", { gid, fromEpoch: "0", n: "00112233445566778899aabbccddeeff" }));
+    await A.engine.incoming(A.inbox, toA("bob", B.msgSecret, "resend-request", { gid, fromEpoch: "0", n: "ffeeddccbbaa99887766554433221100" }));
     check("resend answers are rate-limited per member", (A.engine.stats()["resend-rate-limited"] ?? 0) >= 1);
   },
 

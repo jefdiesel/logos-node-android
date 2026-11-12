@@ -33,6 +33,7 @@ export class Net {
     return {
       msgKey: async (name) => {
         if (this.resolverDown) throw new Error("chain unreachable");
+        if (this.poison?.has(name)) throw new Error("this name's record can't be read");
         return this.chain.get(name) ?? null;
       },
     };
@@ -140,6 +141,12 @@ export class Client {
       for (const i of r.failed) this.retry.push(items[i]);
     }
     return recs.length;
+  }
+  /** Reads what the node has without handing it to the engine (tests then feed items in the order they want). */
+  async fetch() {
+    const r = await fetch(this.base + "/messaging/v1/events/received");
+    const recs = r.ok ? await r.json() : [];
+    return recs.map((rec) => ({ topic: rec.message.contentTopic, bytes: unb64(rec.message.payload) }));
   }
   /** Re-subscribes everything (what server.py does when its node comes back: brings what it missed). */
   async resubscribe() {
