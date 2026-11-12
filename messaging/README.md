@@ -99,8 +99,11 @@ on 127.0.0.1 only.
 ## Tested on a device
 
 One phone, a Pixel 8 on Android 17, run from the adb shell as the `shell` user in
-`/data/local/tmp`, `logos.test`, v0.39.2, with the artifact of build run 43239037351 (checksums in
-its `SHA256SUMS`). `phone-test.sh` is the script for such a run.
+`/data/local/tmp`, `logos.test`, v0.39.2. The runs below used the libraries of build run
+43239037351 (`liblogosdelivery.so` sha256 `6ddfb7bb…`, `librln.so` `1a4f7aea…`, identical in later
+builds). The final runner of build run 43244009283 (sha256 `81eea7cb…`) was then run for one
+minute with `logos-test.json`: connected to 28 peers and stopped cleanly. `phone-test.sh` is the
+script for such a run.
 
 - `--version` printed `v0.39.2`.
 - The node started in under a second, was `Connected` within 20 seconds and kept 40 to 46 peers.
