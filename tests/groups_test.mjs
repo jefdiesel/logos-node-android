@@ -37,7 +37,7 @@ for (const f of ["mls.js", "mls-provider.js", "msg-v2.js", "groups.js"]) cpSync(
 // GROUPS_ENGINE=path: run the scenarios against another groups.js (e.g. an older commit's, to show a test fails there)
 if (process.env.GROUPS_ENGINE) cpSync(resolve(process.env.GROUPS_ENGINE), join(out, "app", "messages", "groups.js"));
 mkdirSync(join(out, "suite"), { recursive: true });
-for (const f of ["harness.mjs", "scenarios.mjs", "hostile.mjs", "hostile2.mjs", "index.html"]) cpSync(join(ROOT, "tests", "groups", f), join(out, "suite", f));
+for (const f of ["harness.mjs", "scenarios.mjs", "hostile.mjs", "hostile2.mjs", "review3.mjs", "index.html"]) cpSync(join(ROOT, "tests", "groups", f), join(out, "suite", f));
 writeFileSync(join(out, "package.json"), '{"type":"module"}\n');
 
 // 2. the fake network
