@@ -41,6 +41,23 @@ It is a debug build for testing, not something to publish.
 - **On first start**, the service runs the node's own `init-config`, which creates fresh keys. It
   then writes `user_config.yaml` in the same shape as `install.sh`: the four testnet initial peers,
   the API on `127.0.0.1:18180`, and log and state folders inside the app.
+- **What a restart costs.** Each start, the node first replays its saved blocks since the last
+  final block (LIB), at about 30 blocks a second on a Pixel 8. That is about 1,000 blocks, around
+  30 s, once the node has been Online. Then it goes Online, but only after
+  `cryptarchia.service.bootstrap.prolonged_bootstrap_period` has passed, which is 1 hour by default
+  and starts again from zero at every start. The wait is skipped only if the node was Online when
+  it stopped and was off for less than `offline_grace_period.grace_period`, which is 20 minutes by
+  default. The node saves its "was Online" mark at the switch and then every
+  `state_recording_interval`, 1 minute by default.
+
+  The app's config writer can set both:
+  - in code, through `PROLONGED_BOOTSTRAP_PERIOD` and `GRACE_PERIOD` in `NodeFiles.kt`, which are
+    null for now, so the node's defaults apply
+  - on one phone, through `files/node/bootstrap.txt`, with lines `prolonged_bootstrap_period=60s`
+    and `grace_period=24h`
+
+  Durations look like `60s`, `20m` or `24h`. A new APK always restarts the node, and
+  `adb install -r --dont-kill` doesn't change that, so batch installs.
 - **The wallet server**, `server.py`, runs in a separate process, `:wallet`, together with the
   wallet screen. Whatever happens there cannot take the node down. It listens on
   `127.0.0.1:18190`; the Linux Terminal route uses 8090, so both fit on one phone. The app sets

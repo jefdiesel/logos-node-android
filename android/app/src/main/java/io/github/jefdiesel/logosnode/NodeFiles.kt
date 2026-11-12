@@ -77,14 +77,46 @@ class NodeFiles(context: Context) {
                 "      prefix: node",
                 "state:",
                 "  base_folder: ${state.absolutePath}",
-            )
+            ) + bootstrapLines()
         config.writeText(lines.joinToString("\n", postfix = "\n"))
+    }
+
+    /** files/node/bootstrap.txt: this phone's own values for the two settings below, for testing them. */
+    val bootstrapOverrides = File(home, "bootstrap.txt")
+
+    /**
+     * cryptarchia.service.bootstrap: how long the node waits after starting before it goes Online
+     * (prolonged_bootstrap_period), and how long it may be off and still come back Online at once
+     * (offline_grace_period.grace_period). Values like 60s, 20m, 24h. From PROLONGED_BOOTSTRAP_PERIOD
+     * and GRACE_PERIOD, or from bootstrap.txt (lines `prolonged_bootstrap_period=60s`, `grace_period=24h`);
+     * where neither sets one, the node's own default applies (1 h and 20 min in node 0.3.4).
+     */
+    private fun bootstrapLines(): List<String> {
+        val override = try {
+            bootstrapOverrides.readLines().mapNotNull { line ->
+                val (k, v) = line.split('=', limit = 2).map { it.trim() }.takeIf { it.size == 2 } ?: return@mapNotNull null
+                if (DURATION.matches(v)) k to v else null
+            }.toMap()
+        } catch (_: Exception) {
+            emptyMap()
+        }
+        val pbp = override["prolonged_bootstrap_period"] ?: PROLONGED_BOOTSTRAP_PERIOD
+        val grace = override["grace_period"] ?: GRACE_PERIOD
+        if (pbp == null && grace == null) return emptyList()
+        return listOf("cryptarchia:", "  service:", "    bootstrap:") +
+            listOfNotNull(pbp?.let { "      prolonged_bootstrap_period: $it" }) +
+            (grace?.let { listOf("      offline_grace_period:", "        grace_period: $it") } ?: emptyList())
     }
 
     companion object {
         const val BINARY_NAME = "liblogosnode.so"
         const val LINK_NAME = "logos-blockchain-node"
         const val API_PORT = 18180
+
+        /** The app's defaults for the node's bootstrap wait and offline grace (null: the node's own). */
+        val PROLONGED_BOOTSTRAP_PERIOD: String? = null
+        val GRACE_PERIOD: String? = null
+        private val DURATION = Regex("^\\d{1,6}(s|m|h)$")
         val INITIAL_PEERS = listOf(
             "/ip4/65.109.51.37/udp/3000/quic-v1/p2p/12D3KooWFrouXfmrR4nsLMtE7wu15DoMJ6VtoUtHinREZCvbWHar",
             "/ip4/65.109.51.37/udp/3001/quic-v1/p2p/12D3KooWJRGau8M1rjT7R5e4YYsgdFhsMX35nRDtMwCDjxQkXAHz",

@@ -90,10 +90,19 @@ class NodeService : Service() {
         // ACTION_START, or a null intent when Android restarts this sticky service
         goForeground(if (intent == null) "Restarted by Android" else "Starting the node")
         if (intent == null) log.app("service restarted by Android")
+        if (stopping) {
+            // a Stop is still finishing: start again once it has, instead of being cut off by it
+            startAfterStop = true
+            log.app("start requested while stopping: starting again once stopped")
+            return START_STICKY
+        }
         stopRequested = false
         ensureSupervisor()
         return START_STICKY
     }
+
+    @Volatile private var stopping = false
+    @Volatile private var startAfterStop = false
 
     private fun ensureSupervisor() = synchronized(startLock) {
         if (stopRequested || supervisor?.isAlive == true) return@synchronized
@@ -264,6 +273,8 @@ class NodeService : Service() {
 
     private fun stopEverything() {
         log.app("stop requested")
+        if (stopping) return
+        stopping = true
         stopRequested = true
         setStatus("stopping")
         thread(name = "node-stop") {
@@ -271,6 +282,15 @@ class NodeService : Service() {
             supervisor?.interrupt()
             supervisor?.join(30_000)
             main.post {
+                stopping = false
+                if (startAfterStop) {                        // Start was pressed while this Stop ran
+                    startAfterStop = false
+                    stopRequested = false
+                    log.app("starting again, as requested during the stop")
+                    goForeground("Starting the node")
+                    ensureSupervisor()
+                    return@post
+                }
                 active = false
                 status = "stopped"
                 stopForeground(STOP_FOREGROUND_REMOVE)
