@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="app-version" content="__APP_VERSION__">
+<meta name="app-embedded" content="__APP_EMBEDDED__">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>Logos node</title>
@@ -201,7 +202,7 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
     </div>
   </section>
 
-  <footer>This page is served by the app on this device and talks only to it. The app talks to the node on this device, and reaches out to two places: the project's GitHub repository, to check for updates, and the LNS name service, when you look up a name. Testnet.</footer>
+  <footer id="footer-talk">This page is served by the app on this device and talks only to it. The app talks to the node on this device, and reaches out to two places: the project's GitHub repository, to check for updates, and the LNS name service, when you look up a name. Testnet.</footer>
   </div>
 
   <div id="page-settings" hidden>
@@ -227,7 +228,8 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
       </div>
       <button type="button" id="b-upd-check" style="width:100%;margin-top:12px">Check for updates</button>
       <p class="msg" id="m-upd-check" role="status"></p>
-      <p class="note">Updates come from the project's GitHub repository, github.com/jefdiesel/logos-node-android: its release branch, which only gets versions that passed every test. The app checks each file against the release list before using it. The node keeps running.</p>
+      <p class="note" id="upd-embedded" hidden>Updates come with a new version of the Android app.</p>
+      <p class="note" id="upd-src">Updates come from the project's GitHub repository, github.com/jefdiesel/logos-node-android: its release branch, which only gets versions that passed every test. The app checks each file against the release list before using it. The node keeps running.</p>
     </section>
 
     <section class="card" id="s-bk" aria-labelledby="h-s-bk">
@@ -296,6 +298,12 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
         <button type="button" id="b-fp-off">Turn off</button>
         <span id="fp-confirm" hidden>Turn off? <button type="button" id="b-fp-yes">Yes</button><button type="button" id="b-fp-no">Cancel</button></span>
       </div>
+      <div id="nfp-on-form" hidden>
+        <label for="nfp-pin">Your PIN, to turn it on</label>
+        <input id="nfp-pin" class="pin" type="text" inputmode="numeric" maxlength="12" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+        <p class="hint">Your PIN: 6 to 12 digits.</p>
+        <button type="button" id="b-nfp-on" style="width:100%;margin-top:12px" disabled>Turn on fingerprint unlock</button>
+      </div>
       <p class="note" id="fp-host" hidden>To turn it on, open this page as <b>http://localhost:8090</b>, not 127.0.0.1.</p>
       <p class="msg" id="m-fp" role="status"></p>
     </section>
@@ -312,7 +320,7 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
       <h2 id="h-s-about">About</h2>
       <p style="margin:0">Logos node web app, version <b id="about-version">-</b>.</p>
       <p class="note" id="about-upd" hidden></p>
-      <p class="note">This page is served by the app on this device and talks only to it. The app talks to the node on this device, and reaches out to two places: the project's GitHub repository, to check for updates, and the LNS name service, when you look up a name. Testnet.</p>
+      <p class="note" id="about-talk">This page is served by the app on this device and talks only to it. The app talks to the node on this device, and reaches out to two places: the project's GitHub repository, to check for updates, and the LNS name service, when you look up a name. Testnet.</p>
     </section>
   </div>
 
@@ -329,6 +337,17 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
+// inside the Android app (the server sets this): updates come with the app, fingerprint goes through the phone
+const EMBEDDED = ((document.querySelector('meta[name="app-embedded"]') || {}).content || "") === "android";
+const NATIVE = EMBEDDED && typeof window.LogosAndroid === "object" && window.LogosAndroid !== null;
+let nativeFp = false;
+if (EMBEDDED) {
+  const talk = "This page is served by the app on this device and talks only to it. The app talks to the node on this device, " +
+               "and reaches out to the LNS name service when you look up a name. Testnet.";
+  $("footer-talk").textContent = talk; $("about-talk").textContent = talk;
+  for (const id of ["upd", "b-upd-check", "m-upd-check", "upd-src"]) $(id).hidden = true;
+  $("upd-embedded").hidden = false;
+}
 const fmt = v => { try { return BigInt(v).toLocaleString("en-US"); } catch (e) { return String(v); } };
 const UNIT = "Logos";                       // the unit shown after every amount; amounts are the node's integers, unconverted
 const amt = v => fmt(v) + " " + UNIT;
@@ -400,7 +419,7 @@ function settingsUi() {
   const open = !$("v-open").hidden;
   for (const id of ["s-upd", "s-bk", "s-rs", "s-fp", "s-lock"]) $(id).hidden = !open;
   $("s-locked").hidden = open; aboutUpdate();
-  if (!open) { resetBackup(); resetRestore(); $("upd-pin").value = ""; pinButtons(); }
+  if (!open) { resetBackup(); resetRestore(); $("upd-pin").value = ""; $("nfp-pin").value = ""; pinButtons(); }
 }
 function openSettings(section, focusId) {
   $("page-main").hidden = true; $("page-settings").hidden = false; settingsUi();
@@ -426,8 +445,9 @@ function pinButtons() {
   $("b-upd").disabled = !pinOk($("upd-pin").value);
   $("b-bk").disabled = !pinOk($("bk-pin").value);
   $("b-rs").disabled = !pinOk($("rs-pin").value) || !$("rs-ok").checked || !rsDoc;
+  $("b-nfp-on").disabled = !pinOk($("nfp-pin").value);
 }
-for (const id of ["upd-pin", "bk-pin", "rs-pin"]) $(id).addEventListener("input", pinButtons);
+for (const id of ["upd-pin", "bk-pin", "rs-pin", "nfp-pin"]) $(id).addEventListener("input", pinButtons);
 
 // ---- node status ----
 // ---- where the node stands against the chain (the app works it out from the node on this device) ----
@@ -550,6 +570,7 @@ const unb64u = t => Uint8Array.from(atob(t.replace(/-/g, "+").replace(/_/g, "/")
 const canPasskey = () => location.hostname === "localhost" && !!window.PublicKeyCredential;
 let passkeys = 0;
 function fpUi() {
+  if (EMBEDDED) return nativeFpUi();
   const on = passkeys > 0;
   $("b-fp").hidden = !(on && canPasskey());
   $("n-fp-host").hidden = !(on && !canPasskey() && location.hostname === "127.0.0.1");
@@ -564,9 +585,38 @@ function fpUi() {
   const fpUpd = on && canPasskey();          // updates: the fingerprint first, the PIN as the alternative
   $("b-upd-fp").hidden = !fpUpd; $("l-upd-pin").textContent = fpUpd ? "Or your PIN" : "Your PIN";
 }
+// ---- inside the Android app: fingerprint unlock through the phone's own fingerprint check ----
+// The app's bridge (window.LogosAndroid) runs the check and opens the wallet in the app's own process,
+// then calls window.logosNativeUnlocked(token). Turning it on needs the PIN; there are no passkeys here.
+function nativeFpUi() {
+  const on = nativeFp, usable = on && NATIVE;
+  $("b-fp").hidden = !usable;
+  $("n-fp-host").hidden = true; $("fp-host").hidden = true; $("b-fp-set").hidden = true;
+  $("n-fp-first").hidden = !(NATIVE && !on);
+  $("l-pin").textContent = usable ? "Or your PIN" : "PIN";
+  $("l-pin").style.marginTop = usable ? "16px" : "0";
+  $("b-pin").className = usable ? "" : "primary"; $("b-pin").style.width = "100%"; $("b-pin").style.marginTop = "14px";
+  $("fp-off").hidden = on; $("nfp-on-form").hidden = on || !NATIVE;
+  $("fp-on").hidden = !on; $("b-fp-off").hidden = false; $("fp-confirm").hidden = true;
+  $("b-upd-fp").hidden = true; $("l-upd-pin").textContent = "Your PIN";
+}
+window.logosNativeUnlocked = token => {      // called by the Android app after its fingerprint check
+  if (typeof token !== "string" || !/^[0-9a-f]{64}$/.test(token)) return;
+  $("pin").value = ""; $("m-locked").textContent = ""; setToken(token); loadWallet();
+};
+window.logosNativeUnlockFailed = msg => {     // optional: the app can say why it didn't open
+  $("m-locked").textContent = msg || "Fingerprint wasn't confirmed. Use your PIN, or try again.";
+};
 function fpAskOff(ask) { $("b-fp-off").hidden = ask; $("fp-confirm").hidden = !ask; if (ask) $("b-fp-no").focus(); }
 async function fpOff() {
   const m = $("m-fp"); m.className = "msg"; m.textContent = "";
+  if (EMBEDDED) {
+    const r = await api("/api/wallet/native-fingerprint", { on: false });
+    if (r.status === 401) return lockedNow();
+    if (r.ok) { nativeFp = false; m.textContent = "Fingerprint unlock is off. The PIN still works."; }
+    else { m.className = "msg bad"; m.textContent = r.data.error || "Couldn't turn fingerprint unlock off."; }
+    return fpUi();
+  }
   const r = await api("/api/wallet/passkey/remove", {});
   if (r.ok) { passkeys = 0; m.textContent = "Fingerprint unlock is off. The PIN still works."; }
   else { m.className = "msg bad"; m.textContent = r.data.error || "Couldn't turn fingerprint unlock off."; }
@@ -613,7 +663,7 @@ async function fpOn() {
 async function loadWallet() {
   const r = await api("/api/wallet");
   if (!r.ok) { show("v-loading"); $("v-loading").textContent = r.data.error || "The wallet isn't available."; return; }
-  passkeys = r.data.passkeys || 0; namesProgram = r.data.names_program || null; fpUi();
+  passkeys = r.data.passkeys || 0; namesProgram = r.data.names_program || null; nativeFp = !!r.data.native_fingerprint; fpUi();
   if (r.data.autolock_minutes) $("al-min").value = String(r.data.autolock_minutes);
   const g = Number(r.data.leave_grace || 60); $("al-grace").textContent = g === 60 ? "a minute" : g + " seconds";
   if (!r.data.pin_set) return show("v-setup");
@@ -671,7 +721,20 @@ $("v-locked").addEventListener("submit", async e => {
   if (!r.ok) return void (m.textContent = r.data.error || "Couldn't unlock.");
   setToken(r.data.session); loadWallet();
 });
-$("b-fp").addEventListener("click", fpUnlock);
+$("b-fp").addEventListener("click", () => {
+  if (!EMBEDDED) return fpUnlock();
+  $("m-locked").textContent = "";
+  try { window.LogosAndroid.unlockWithFingerprint(); } catch (e) { $("m-locked").textContent = "Fingerprint unlock isn't available. Use your PIN."; }
+});
+$("b-nfp-on").addEventListener("click", async () => {
+  const m = $("m-fp"); m.className = "msg"; m.textContent = "";
+  if (!pinOk($("nfp-pin").value)) return;
+  const r = await api("/api/wallet/native-fingerprint", { on: true, pin: $("nfp-pin").value });
+  $("nfp-pin").value = ""; pinButtons();
+  if (r.status === 401) return lockedNow();
+  if (!r.ok) return void (m.className = "msg bad", m.textContent = r.data.error || "Couldn't turn fingerprint unlock on.");
+  nativeFp = true; m.className = "msg ok"; m.textContent = "Fingerprint unlock is on. Your PIN still works too."; fpUi();
+});
 $("b-fp-set").addEventListener("click", fpOn);
 $("b-fp-off").addEventListener("click", () => fpAskOff(true));
 $("b-fp-no").addEventListener("click", () => fpAskOff(false));

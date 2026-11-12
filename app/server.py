@@ -8,7 +8,12 @@ Python standard library only. Wallet calls need a PIN that is set on first use.
 import base64, calendar, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.7.5"       # set by tools/release.py, which also writes release.json
+APP_VERSION = "0.7.6"
+# APP_EMBEDDED=android: this app runs inside the Android app (embedded Python, page in a WebView).
+# Then it never updates or restarts itself (the Android app brings new versions), and fingerprint
+# unlock goes through the phone's own fingerprint check instead of a passkey. Unset: nothing changes.
+EMBEDDED = os.environ.get("APP_EMBEDDED", "") == "android"
+EMBEDDED_UPDATES = "Updates come with a new version of the Android app."       # set by tools/release.py, which also writes release.json
 HOME = os.path.expanduser("~")
 NODE_API = os.environ.get("NODE_API", "http://127.0.0.1:8080")
 NODE_BIN = os.environ.get("NODE_BIN", HOME + "/node/logos-blockchain-node")
@@ -323,6 +328,8 @@ def update_public():
 
 
 def update_loop():
+    if EMBEDDED:
+        return
     while True:
         update_check()
         time.sleep(UPDATE_EVERY)
@@ -330,6 +337,8 @@ def update_loop():
 
 def update_apply():
     """(http status, reply). On success the caller restarts this process."""
+    if EMBEDDED:
+        return 409, {"error": EMBEDDED_UPDATES}
     with update_lock:
         try:
             rel, raw = update_release()
@@ -375,7 +384,9 @@ def update_apply():
 
 def restart_soon():
     """Re-executes this app in place (same process id), after the reply has gone out. Works the same
-    under systemd and under Termux's start script; the node keeps running."""
+    under systemd and under Termux's start script; the node keeps running. Never inside the Android app."""
+    if EMBEDDED:
+        return
     def go():
         time.sleep(0.7)
         try:
@@ -565,11 +576,13 @@ def settings_load():
     try:
         with open(SETTINGS_FILE) as f:
             d = json.load(f)
-        if d.get("autolock_minutes") in AUTOLOCK_CHOICES:
-            return d
+        if d.get("autolock_minutes") not in AUTOLOCK_CHOICES:
+            d["autolock_minutes"] = 5
+        d["native_fingerprint"] = d.get("native_fingerprint") is True
+        return d
     except Exception:
         pass
-    return {"autolock_minutes": 5}
+    return {"autolock_minutes": 5, "native_fingerprint": False}
 
 
 wallet_settings = settings_load()
@@ -953,6 +966,25 @@ def last_backup():
         return None
 
 
+def restart_hint():
+    """What to tell the user when the app couldn't restart the node itself after a restore."""
+    if EMBEDDED:
+        return "The keys are in place. Restart the node from the app's Node screen."
+    return ("The keys are in place. Restart the node to use them: in Termux, press Ctrl-C where the node runs, "
+            "then start it again with ~/logos-node. In the Linux Terminal app: sudo systemctl restart logos-node.")
+
+
+def native_unlock():
+    """Inside the Android app only: opens the wallet after the phone's own fingerprint check, and returns
+    the session token (None if fingerprint unlock isn't on, no PIN is set, or not embedded). There is no
+    HTTP route to this on purpose: only code in the app's own process can call it, after the check."""
+    if not EMBEDDED or not wallet_settings.get("native_fingerprint") or not pin_is_set():
+        return None
+    token = session_new()
+    event("unlock by fingerprint ok", source="android")
+    return token
+
+
 def node_cmd(cfg, flag):
     cmd = [NODE_BIN] + (["--deployment", NODE_DEPLOYMENT] if NODE_DEPLOYMENT else []) + [flag, cfg]
     return subprocess.run(cmd, cwd=os.path.dirname(cfg), capture_output=True, text=True, timeout=60)
@@ -1040,8 +1072,7 @@ def restore_backup(doc, password):
             restarted = False
     reply = {"ok": True, "restarted": restarted, "addresses": len(reported), "replaced": len(current)}
     if not restarted:
-        reply["manual"] = ("The keys are in place. Restart the node to use them: in Termux, press Ctrl-C where the node runs, "
-                           "then start it again with ~/logos-node. In the Linux Terminal app: sudo systemctl restart logos-node.")
+        reply["manual"] = restart_hint()
     return 200, reply, "restored"
 
 
@@ -1322,7 +1353,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     USER_ACTIONS = {"/api/wallet/activity", "/api/wallet/send", "/api/wallet/backup", "/api/wallet/restore",
                     "/api/wallet/settings", "/api/wallet/passkey/options", "/api/wallet/passkey/register",
                     "/api/wallet/passkey/remove", "/api/update/check", "/api/update/passkey/challenge",
-                    "/api/update/apply", "/api/names/rpc"}
+                    "/api/update/apply", "/api/names/rpc", "/api/wallet/native-fingerprint"}
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
@@ -1336,6 +1367,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             try:
                 with open(os.path.join(APP_DIR, "index.html"), "rb") as f:
                     page = f.read().replace(b"__APP_VERSION__", APP_VERSION.encode())
+                page = page.replace(b"__APP_EMBEDDED__", b"android" if EMBEDDED else b"")
                 return self.reply(200, raw=page, ctype="text/html; charset=utf-8")
             except Exception:
                 return self.reply(500, {"error": "index.html is missing"})
@@ -1354,6 +1386,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             st = node_status()
             out = {"node": st, "sync": sync_status(st)} if st else {"node": None, "waiting": node_waiting()}
             out.update(version=APP_VERSION, update={"available": update_state["latest"]})
+            if EMBEDDED:
+                out["embedded"] = "android"
             return self.reply(200, out)
         if path in ("/cryptarchia/info", "/network/info"):       # read-only pass-through
             code, reply = node(path, timeout=5)
@@ -1361,9 +1395,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/api/wallet":
             with lock:
                 wait = max(0, int(fails["until"] - time.time()))
-            return self.reply(200, {"pin_set": pin_is_set(), "unlocked": self.authed(), "wait": wait,
-                                    "passkeys": len(passkeys_load()["keys"]), "names_program": NAMES_PROGRAM,
-                                    "autolock_minutes": wallet_settings["autolock_minutes"], "leave_grace": LEAVE_GRACE})
+            out = {"pin_set": pin_is_set(), "unlocked": self.authed(), "wait": wait,
+                   "passkeys": len(passkeys_load()["keys"]), "names_program": NAMES_PROGRAM,
+                   "autolock_minutes": wallet_settings["autolock_minutes"], "leave_grace": LEAVE_GRACE}
+            if EMBEDDED:
+                out.update(embedded="android", native_fingerprint=bool(wallet_settings.get("native_fingerprint")))
+            return self.reply(200, out)
         if path == "/api/wallet/accounts":
             if not self.authed():
                 return self.reply(401, {"error": "locked"})
@@ -1499,6 +1536,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
             settings_save()
             event("auto-lock changed", self, minutes=n)
             return self.reply(200, {"autolock_minutes": n})
+        if EMBEDDED and path.startswith("/api/update/"):
+            return self.reply(409, {"error": EMBEDDED_UPDATES})
+        if path == "/api/wallet/native-fingerprint":
+            # the phone's own fingerprint check, inside the Android app only
+            if not EMBEDDED:
+                return self.reply(404, {"error": "not found"})
+            if not self.authed():
+                return self.reply(401, {"error": "locked"})
+            on = body.get("on")
+            if not isinstance(on, bool):
+                return self.reply(400, {"error": "on must be true or false"})
+            if on:
+                refused = pin_attempt(self, str(body.get("pin", "")), "fingerprint unlock refused, wrong PIN")
+                if refused:
+                    code, obj = refused
+                    return self.reply(403 if code == 401 else code, obj)
+            wallet_settings["native_fingerprint"] = on
+            settings_save()
+            event("fingerprint unlock turned on" if on else "fingerprint unlock turned off", self, source="android")
+            return self.reply(200, {"native_fingerprint": on})
         if path == "/api/update/check":
             if not self.authed():
                 return self.reply(401, {"error": "locked"})
@@ -1552,10 +1609,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 
-if __name__ == "__main__":
-    event("app start", port=PORT, version=APP_VERSION)
+def main():
+    """Starts the app and serves until the process ends. The Android app imports this module and calls main()
+    in a thread, so it can also call native_unlock() in the same process."""
+    if EMBEDDED:
+        event("app start", port=PORT, version=APP_VERSION, embedded="android")
+    else:
+        event("app start", port=PORT, version=APP_VERSION)
     threading.Thread(target=wallet_keys, daemon=True).start()
     threading.Thread(target=history_loop, daemon=True).start()
-    threading.Thread(target=update_loop, daemon=True).start()
+    if not EMBEDDED:
+        threading.Thread(target=update_loop, daemon=True).start()
     threading.Thread(target=session_watch, daemon=True).start()
     http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+
+
+if __name__ == "__main__":
+    main()

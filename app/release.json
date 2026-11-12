@@ -1,6 +1,6 @@
 {
  "files": {
-  "index.html": "316d0ee8e4eaf3ababbc2e1aef190fcf85a69cf6e1704824c36d83c504d3f78f",
+  "index.html": "c8cbce48989455d88ecf72223eebef492b7c08bf0fecc7e02752873ff4613965",
   "names/LICENSE-APACHE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
   "names/LICENSE-MIT": "f6fb0855df1560d57cacae6ed5b6dfe65c0cfbe03beba374c0a2d490ce726bcd",
   "names/lookup.js": "e40e15b3dcf3b16da456c11f56368902031eab0a8a163bc4e542f6ea837f60bd",
@@ -12,7 +12,7 @@
   "names/noble-hashes/argon2.js": "f39753324bdf2f484150731d24b1d71236f26bf10bedd594f7d190fcdfdefdc9",
   "names/noble-hashes/blake2.js": "03f00237bcc0b4d822a80f7c0ac22e42632c48e246c3b6da584e6452186e32f0",
   "names/noble-hashes/utils.js": "037ad49adb78168b6b699598fd33f85f7877456b1d28b4d032e2a1a16807947c",
-  "server.py": "efde2db96131cf67582aac028fe1ffab189daa26e1c0965bfa392d588f54bc7a"
+  "server.py": "4980880171bf85ab0521c738f0e1919790a20a346ece1606b3016593aede7e78"
  },
- "version": "0.7.5"
+ "version": "0.7.6"
 }
