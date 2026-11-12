@@ -19,6 +19,7 @@ class NodeFiles(context: Context) {
     val output = File(home, "output.log")              // the node's stdout and stderr, plus app events
     val importStatus = File(home, "import-status.txt")  // the last snapshot import or go-back, for the screen
     val previousState = File(home, "state.previous")    // kept by an import (see Snapshot.kt)
+    val replayInfo = File(home, "replay-info.txt")      // how the last start replayed its stored blocks (ReplayInfo)
 
     /**
      * files/node/logos-blockchain-node, a link to the bundled binary. Started through it, the node's

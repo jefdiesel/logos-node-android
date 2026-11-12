@@ -17,32 +17,32 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Node binary from the latest successful native-build on main
+      - name: Node binary pinned in android/node.properties
         id: node
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          RUN=$(gh run list -R "$GITHUB_REPOSITORY" --workflow native-build.yml --branch main --status success \
-                --limit 1 --json databaseId --jq '.[0].databaseId // empty')
-          if [ -z "$RUN" ]; then echo "::error::no successful native-build run on main; build the node first"; exit 1; fi
-          echo "native-build run $RUN"
-          gh run download "$RUN" -R "$GITHUB_REPOSITORY" -p 'logos-blockchain-node-android-arm64-*' -D dl
-          DIR=$(ls -d dl/logos-blockchain-node-android-arm64-* | head -1)
-          [ -n "$DIR" ] || { echo "::error::run $RUN has no node artifact"; exit 1; }
-          (cd "$DIR" && sha256sum -c SHA256SUMS)
-          VERSION=${DIR##*-arm64-}
-          SHA=$(awk '$2 ~ /logos-blockchain-node$/ {print $1}' "$DIR/SHA256SUMS")
+          prop() { sed -n "s/^$1=//p" android/node.properties | tr -d '[:space:]'; }
+          VARIANT=$(prop variant); VERSION=$(prop version); RUN=$(prop run); SHA=$(prop "$VARIANT.sha256")
+          case "$VARIANT" in patched) NAME="logos-blockchain-node-android-arm64-$VERSION-patched" ;;
+                             unpatched) NAME="logos-blockchain-node-android-arm64-$VERSION" ;;
+                             *) echo "::error::variant must be patched or unpatched, not '$VARIANT'"; exit 1 ;; esac
+          [ -n "$SHA" ] && [ -n "$RUN" ] || { echo "::error::android/node.properties is incomplete"; exit 1; }
+          gh run download "$RUN" -R "$GITHUB_REPOSITORY" -n "$NAME" -D dl
+          [ "$(sha256sum dl/logos-blockchain-node | cut -d' ' -f1)" = "$SHA" ] \
+            || { echo "::error::$NAME from run $RUN doesn't match the pinned sha256"; exit 1; }
+          [ -f dl/PATCHES.txt ] && { echo "== PATCHES.txt"; cat dl/PATCHES.txt; }
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
-          cp "$DIR/logos-blockchain-node" android/app/src/main/jniLibs/arm64-v8a/liblogosnode.so
+          cp dl/logos-blockchain-node android/app/src/main/jniLibs/arm64-v8a/liblogosnode.so
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "variant=$VARIANT" >> "$GITHUB_OUTPUT"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-          echo "run=$RUN" >> "$GITHUB_OUTPUT"
-          echo "node $VERSION, sha256 $SHA, from native-build run $RUN"
+          echo "node $VERSION ($VARIANT), sha256 $SHA, from native-build run $RUN, artifact $NAME"
       - name: Messaging node files from the waku-build run of the pinned commit
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # the commit and the three files' sha256 are committed in android/ (messaging-commit.txt, messaging.sha256)
+          # the messaging files are pinned in android/ (messaging-run.txt, messaging.sha256)
           # pinned by run id (android/messaging-run.txt) and by each file's sha256 (android/messaging.sha256)
           RUN=$(tr -d '[:space:]' < android/messaging-run.txt)
           gh run download "$RUN" -R "$GITHUB_REPOSITORY" -p 'logos-delivery-android-arm64-*' -D wdl
@@ -72,7 +72,7 @@ jobs:
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-36" "build-tools;$BUILD_TOOLS" >/dev/null
           # unit tests first: the snapshot import's tar reader, RocksDB check and state swap
           gradle --no-daemon testDebugUnitTest assembleDebug \
-            -PnodeVersion=${{ steps.node.outputs.version }} -PnodeSha256=${{ steps.node.outputs.sha }}
+            -PnodeVersion=${{ steps.node.outputs.version }} -PnodeSha256=${{ steps.node.outputs.sha }} -PnodeVariant=${{ steps.node.outputs.variant }}
       - name: Check the APK
         run: |
           set -o pipefail
@@ -85,9 +85,10 @@ jobs:
           echo "== apkanalyzer"; "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" manifest print "$A" || true
           echo "== signature"; "$BT/apksigner" verify --print-certs "$A"
           fail() { echo "::error::$1"; exit 1; }
-          # the node, byte for byte, for arm64-v8a only
+          # the node, byte for byte as pinned in android/node.properties, for arm64-v8a only
           [ "$(unzip -p "$A" lib/arm64-v8a/liblogosnode.so | sha256sum | cut -d' ' -f1)" = "${{ steps.node.outputs.sha }}" ] \
-            || fail "lib/arm64-v8a/liblogosnode.so is missing or differs from the node artifact"
+            || fail "lib/arm64-v8a/liblogosnode.so is missing or differs from the pinned ${{ steps.node.outputs.variant }} node"
+          echo "bundled node: ${{ steps.node.outputs.version }}, ${{ steps.node.outputs.variant }}, sha256 ${{ steps.node.outputs.sha }}"
           ! unzip -l "$A" | grep ' lib/' | grep -v ' lib/arm64-v8a/' || fail "native libraries for another ABI in the APK"
           # the messaging node: the three files byte for byte as pinned in android/messaging.sha256
           while read -r sum name; do
@@ -113,9 +114,9 @@ jobs:
             grep -q "\"android.permission.$p\"" manifest.txt || fail "permission $p missing"
           done
           echo "all checks passed"
-          mkdir out && cp "$A" "out/logos-node-${{ steps.node.outputs.version }}-debug.apk"
+          mkdir out && cp "$A" "out/logos-node-${{ steps.node.outputs.version }}-${{ steps.node.outputs.variant }}-debug.apk"
           (cd out && sha256sum *.apk > SHA256SUMS && cat SHA256SUMS)
       - uses: actions/upload-artifact@v4
         with:
-          name: logos-node-app-debug-node${{ steps.node.outputs.version }}
+          name: logos-node-app-debug-node${{ steps.node.outputs.version }}-${{ steps.node.outputs.variant }}
           path: out/

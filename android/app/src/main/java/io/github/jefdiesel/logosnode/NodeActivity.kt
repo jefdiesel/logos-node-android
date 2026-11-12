@@ -193,7 +193,7 @@ class NodeActivity : Activity() {
         column.addView(
             text(
                 11f,
-                "Node binary: ${BuildConfig.NODE_VERSION}, sha256 ${BuildConfig.NODE_SHA256}\n" +
+                "Node binary: ${BuildConfig.NODE_VERSION} (${BuildConfig.NODE_VARIANT}), sha256 ${BuildConfig.NODE_SHA256}\n" +
                     "App ${BuildConfig.VERSION_NAME}, wallet ${BuildConfig.WEB_APP_VERSION}. Node API on " +
                     "127.0.0.1:${NodeFiles.API_PORT}, wallet on 127.0.0.1:${WalletServer.PORT}."
             )
@@ -210,7 +210,12 @@ class NodeActivity : Activity() {
             "Node process: running, " + pids.joinToString { "pid $it, ${NodeProcesses.rssMb(it) ?: "?"} MB" } +
                 " (service: ${NodeService.status})"
         }
-        val statusText = if (pids.isEmpty()) "" else nodeStatus()
+        val replay = ReplayInfo.summary(
+            try { files.replayInfo.readLines().filter { it.isNotBlank() } } catch (_: Exception) { emptyList() },
+            BuildConfig.NODE_VARIANT,
+        )
+        val statusText = (if (pids.isEmpty()) "" else nodeStatus()) +
+            (if (replay.isEmpty()) "" else "\n\nLast start:\n" + replay.joinToString("\n"))
         val walletText = WalletServer.describe(this)
         val logText = log.tail(40)
         val snapshotText = snapshotText()

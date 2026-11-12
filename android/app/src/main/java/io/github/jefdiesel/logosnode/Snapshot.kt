@@ -12,6 +12,13 @@ import java.nio.file.StandardCopyOption
 // `db/...`), as docs/start-from-a-synced-database.md describes. Plain Java/Kotlin only, so the
 // same code is unit-tested on a computer and runs in the app.
 
+/**
+ * The patched node's replay marker, next to its database (`state/db.replay-verified`): it records that
+ * this build verified the stored blocks in full, so later starts replay them fast. It must never come
+ * with a state from elsewhere, nor survive a swap (native/patches/README.md).
+ */
+const val REPLAY_MARKER = "db.replay-verified"
+
 /** Something about the snapshot or the swap that stops the import, in words for the screen. */
 class SnapshotError(message: String) : Exception(message)
 
@@ -75,7 +82,7 @@ class TarExtractor(
             val isDir = type == '5' || name.endsWith("/")
             val parts = name.trimEnd('/').split('/')
             val base = parts.last()
-            if (base.startsWith("._")) {                                     // macOS AppleDouble metadata
+            if (base.startsWith("._") || base == REPLAY_MARKER) {           // macOS metadata; another node's replay marker
                 skipped += name
                 skipData(counting, size)
                 continue
@@ -294,6 +301,7 @@ class StateSwap(private val home: File) {
         if (journal.exists()) {
             val (steps, done, complete) = readJournal()
             if (complete) {
+                dropReplayMarker()
                 discard.deleteRecursively()
                 journal.delete()
                 return "A snapshot swap had finished; its clean-up was completed."
@@ -302,6 +310,8 @@ class StateSwap(private val home: File) {
                 val (from, to) = steps[i]
                 move(to, from)
             }
+            // to be safe after an interrupted swap: one full replay on the next start
+            dropReplayMarker()
             journal.delete()
             importing.deleteRecursively()
             return "A snapshot swap was interrupted; the state was put back as it was."
@@ -331,9 +341,18 @@ class StateSwap(private val home: File) {
             journal.delete()
             throw SnapshotError("Couldn't move the state folders (${e.message}); the state was put back as it was.")
         }
+        // the state now in place was not verified by this node's build on this database: its first start
+        // replays every stored block in full (patched node, native/patches/README.md)
+        dropReplayMarker()
         writeJournal(steps, done, true)
         cleanup.forEach { it.deleteRecursively() }
         journal.delete()
+    }
+
+    /** Deletes state/db.replay-verified (and one inside db/, should a copy have brought one). */
+    fun dropReplayMarker() {
+        File(state, REPLAY_MARKER).delete()
+        File(state, "db/$REPLAY_MARKER").delete()
     }
 
     private fun move(from: File, to: File) {

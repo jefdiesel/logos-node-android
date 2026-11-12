@@ -224,6 +224,53 @@ class SnapshotTest {
         assertNull(StateSwap(h.dir).recover())
     }
 
+    // ---- the patched node's replay marker (state/db.replay-verified) never survives a swap ----
+
+    private fun marker(dir: File) = File(dir, REPLAY_MARKER)
+
+    @Test fun markerIsGoneAfterInstall() {
+        val h = home()
+        h.state("state", "current"); marker(File(h.dir, "state")).writeText("build\nidentity")
+        h.state("state.importing", "new"); marker(File(h.dir, "state.importing")).writeText("someone else's")
+        StateSwap(h.dir).install()
+        assertEquals("new", h.mark("state"))
+        assertFalse(marker(File(h.dir, "state")).exists())
+        h.untouched()
+    }
+
+    @Test fun markerIsGoneAfterGoBack() {
+        val h = home()
+        h.state("state", "snapshot"); h.state("state.previous", "before")
+        marker(File(h.dir, "state.previous")).writeText("verified long ago")
+        StateSwap(h.dir).revert()
+        assertEquals("before", h.mark("state"))
+        assertFalse(marker(File(h.dir, "state")).exists())
+    }
+
+    @Test fun markerIsGoneAfterRecoveryFromAKilledSwap() {
+        for (killAt in 0..2) {
+            val h = home()
+            h.state("state", "current"); marker(File(h.dir, "state")).writeText("m")
+            h.state("state.previous", "older"); h.state("state.importing", "new")
+            val swap = StateSwap(h.dir)
+            swap.beforeStep = { if (it == killAt) throw Killed() }
+            try { swap.install(); fail() } catch (_: Killed) {}
+            StateSwap(h.dir).recover()
+            assertEquals("current", h.mark("state"))
+            assertFalse("killed at $killAt", marker(File(h.dir, "state")).exists())
+        }
+    }
+
+    @Test fun aMarkerInsideASnapshotIsStripped() {
+        val tar = goodDb().entry("db/$REPLAY_MARKER", "x".toByteArray()).entry(REPLAY_MARKER, "y".toByteArray())
+            .entry("state/$REPLAY_MARKER", "z".toByteArray()).end()
+        val (dest, r) = extract(tar)
+        assertEquals(3, r.files)
+        assertEquals(3, r.skipped.size)
+        assertFalse(File(dest, "db/$REPLAY_MARKER").exists())
+        assertFalse(File(dest, REPLAY_MARKER).exists())
+    }
+
     // ---- the whole import ----
 
     @Test fun importEndToEnd() {

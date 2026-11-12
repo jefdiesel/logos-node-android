@@ -204,6 +204,37 @@ adb shell am start-foreground-service -n $P/.NodeService -a $P.START
 
 </details>
 
+## Patched node (fast restart)
+
+The app carries one of two builds of the blockchain node from the `native-build` workflow. Which
+one, and its sha256, is set in `node.properties` (`variant=patched` or `unpatched`, one line). CI
+checks the APK's copy byte for byte. The screen shows the variant under "Node binary".
+
+- **The patched node** applies `native/patches/` to the official 0.3.4 source;
+  `native/patches/README.md` is the full description. At each start it replays the stored blocks
+  after its last final block. When the replay marker `state/db.replay-verified` says this same
+  build already verified this same database in full, it skips the two zero-knowledge proof checks
+  for those blocks: about 15 s instead of 26 s per 1,000 blocks on a Pixel 8. Everything else is
+  still checked: decoding, signatures, parent links, and the full ledger transition.
+- **What fast mode trusts:** that nobody but this node wrote to its database since the marker was
+  written. Without a matching marker (first start, new build, other database) it replays in full,
+  as the official node does, then writes the marker.
+- **Imports and swaps never carry a marker over.** A snapshot import, going back to the previous
+  state, and recovery from an interrupted swap all delete the marker of the state put in place.
+  The snapshot reader also drops any `db.replay-verified` found inside a tar. So the first start
+  after any of them is a full replay.
+- **To force a full replay:**
+  - delete `files/node/state/db.replay-verified`, or
+  - in debug builds, start once with `adb shell am start-foreground-service -n
+    io.github.jefdiesel.logosnode/.NodeService -a io.github.jefdiesel.logosnode.START --ez
+    fullreplay true` (with the node stopped). That sets `LOGOS_REPLAY_VERIFY=full` for that one
+    start.
+- **What the Node screen shows** under "Last start", from the node's own log lines:
+  - the replay mode and the node's reason, for example "Restart check: fast (replay marker matches
+    this build and database)"
+  - the blocks replayed
+  - when the node was Following
+
 ## Messaging node (Logos Messaging / Waku), off by default
 
 The app also carries the Logos Messaging node, the official `liblogosdelivery` library with a

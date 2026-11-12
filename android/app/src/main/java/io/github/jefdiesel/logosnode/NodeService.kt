@@ -61,6 +61,8 @@ class NodeService : Service() {
 
     private fun messagingEnabled() = messagingPrefs(this).getBoolean("enabled", false)
 
+    private fun replayPrefs() = getSharedPreferences("replay", MODE_PRIVATE)
+
     private fun setUpMessaging() {
         if (messagingController != null) return
         val mf = MessagingFiles(File(filesDir, "waku"))
@@ -267,6 +269,9 @@ class NodeService : Service() {
             }
         }
         // ACTION_START, or a null intent when Android restarts this sticky service
+        if (BuildConfig.DEBUG && intent?.getBooleanExtra("fullreplay", false) == true) {
+            replayPrefs().edit().putBoolean("full_next", true).commit()     // the next node start replays in full
+        }
         goForeground(if (intent == null) "Restarted by Android" else "Starting the node")
         if (intent == null) log.app("service restarted by Android")
         if (stopping) {
@@ -563,14 +568,29 @@ class NodeService : Service() {
 
     private fun runNode(): Int {
         val launcher = files.launcher
-        log.app("starting ${launcher.path} (node ${BuildConfig.NODE_VERSION}, sha256 ${BuildConfig.NODE_SHA256})")
+        log.app("starting ${launcher.path} (node ${BuildConfig.NODE_VERSION}, ${BuildConfig.NODE_VARIANT}, sha256 ${BuildConfig.NODE_SHA256})")
+        // debug builds: a full replay for this one start, asked for from adb (--ez fullreplay true on START)
+        val forceFull = BuildConfig.DEBUG && replayPrefs().getBoolean("full_next", false)
+        if (forceFull) {
+            replayPrefs().edit().putBoolean("full_next", false).commit()
+            log.app("this start replays in full: LOGOS_REPLAY_VERIFY=full (asked for from adb)")
+        }
+        val started = System.currentTimeMillis()
+        try { files.replayInfo.delete() } catch (_: Exception) {}
         val p = synchronized(startLock) {
             if (hold || stopRequested) return -1                    // an import took the state meanwhile
-            processBuilder(listOf(launcher.path, files.config.name)).start().also { process = it }
+            processBuilder(listOf(launcher.path, files.config.name))
+                .apply { if (forceFull) environment()["LOGOS_REPLAY_VERIFY"] = "full" }
+                .start().also { process = it }
         }
         setStatus("node running")
         try {
-            p.inputStream.bufferedReader().forEachLine { log.node(it) }
+            p.inputStream.bufferedReader().forEachLine { line ->
+                log.node(line)
+                ReplayInfo.fromLine(line, System.currentTimeMillis() - started)?.let { note ->
+                    try { files.replayInfo.appendText(note + "\n") } catch (_: Exception) {}
+                }
+            }
         } catch (_: Exception) {
         }
         val code = p.waitFor()
