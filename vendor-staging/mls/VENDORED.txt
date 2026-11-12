@@ -7,8 +7,9 @@ and run `python3 tools/release.py write`. Their relative @noble imports already 
 mls.js            ts-mls 1.6.4 + @hpke/core 1.9.0 + @hpke/common 1.10.0 from the npm registry, bundled into one
                   ES module by tools/mls/build.mjs with esbuild 0.28.2. Exact versions and the sha512
                   integrity of every package are in tools/mls/package-lock.json; the header of mls.js repeats
-                  them. Not minified, no source map. 314,750 bytes, sha256
-                  b042d223c7246669b52662bc8eb72e35f735c498d12051526ed0486a5e213e65.
+                  them. Not minified, no source map. 315,618 bytes (58,247 gzipped), sha256
+                  79e9b35558bcf283b588608da1eb3a2478d075c9328e1db5812e8cf467c6197e.
+                  (Stage 1 was b042d223...; the groups engine added privateMessage.js to `internals`.)
                   - Exports the ts-mls public API (minus nobleCryptoProvider, which needs @noble/ciphers/aes.js,
                     not vendored), its error classes, `hpke` (four @hpke/core classes) and `internals` (the ts-mls
                     modules its test-vector tests use; for tests/mls/ only).
@@ -21,6 +22,8 @@ mls.js            ts-mls 1.6.4 + @hpke/core 1.9.0 + @hpke/common 1.10.0 from the
                     Miller; see ../../app/noble-curves/LICENSE) with no caller in the bundle.
 mls-provider.js   Ours. A ts-mls CryptoProvider for suite 1 that uses the app's vendored noble (sha2, hmac, hkdf,
                   ed25519) instead of WebCrypto, keeping WebCrypto only for AES-128-GCM and @hpke/core's HPKE.
+msg-v2.js         Ours. Sealed control messages, version 2 (0x02), beside version 1 on a name's inbox topic.
+groups.js         Ours. The group engine (no UI): createGroupEngine(), see its header and tests/groups_test.mjs.
 LICENSE-ts-mls    ts-mls's LICENSE (MIT, Luka Jacobowitz), from its npm package.
 LICENSE-hpke      @hpke/core's and @hpke/common's LICENSE files (MIT, Ajitomi Daisuke), from their npm packages.
 

@@ -4360,6 +4360,21 @@ __export(messageProtection_exports, {
 });
 
 // node_modules/ts-mls/dist/src/privateMessage.js
+var privateMessage_exports = {};
+__export(privateMessage_exports, {
+  decodePrivateContentAAD: () => decodePrivateContentAAD,
+  decodePrivateMessage: () => decodePrivateMessage,
+  decodePrivateMessageContent: () => decodePrivateMessageContent,
+  decryptSenderData: () => decryptSenderData,
+  encodePrivateContentAAD: () => encodePrivateContentAAD,
+  encodePrivateMessage: () => encodePrivateMessage,
+  encodePrivateMessageContent: () => encodePrivateMessageContent,
+  encryptSenderData: () => encryptSenderData,
+  privateContentAADEncoder: () => privateContentAADEncoder,
+  privateMessageContentEncoder: () => privateMessageContentEncoder,
+  privateMessageEncoder: () => privateMessageEncoder,
+  toAuthenticatedContent: () => toAuthenticatedContent
+});
 var privateMessageEncoder = contramapBufferEncoders([varLenDataEncoder, uint64Encoder, contentTypeEncoder, varLenDataEncoder, varLenDataEncoder, varLenDataEncoder], (msg) => [msg.groupId, msg.epoch, msg.contentType, msg.authenticatedData, msg.encryptedSenderData, msg.ciphertext]);
 var encodePrivateMessage = encode(privateMessageEncoder);
 var decodePrivateMessage = mapDecoders([decodeVarLenData, decodeUint64, decodeContentType, decodeVarLenData, decodeVarLenData, decodeVarLenData], (groupId, epoch, contentType, authenticatedData, encryptedSenderData, ciphertext) => ({
@@ -8279,6 +8294,8 @@ var internals = Object.freeze({
   "parentHash.js": parentHash_exports,
   "pathSecrets.js": pathSecrets_exports,
   "presharedkey.js": presharedkey_exports,
+  "privateMessage.js": privateMessage_exports,
+  // decryptSenderData: who sent an application message (groups.js)
   "privateKeyPath.js": privateKeyPath_exports,
   "processMessages.js": processMessages_exports,
   "proposal.js": proposal_exports,

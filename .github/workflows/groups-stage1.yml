@@ -5,7 +5,7 @@ name: groups-stage1
 # image has no browser) on the app WebView's origin http://127.0.0.1:18190.
 on:
   push:
-    paths: [vendor-staging/**, tools/mls/**, tests/mls/**, app/messages/**, app/noble-curves/**, .github/workflows/groups-stage1.yml]
+    paths: [vendor-staging/**, tools/mls/**, tests/mls/**, tests/groups/**, tests/groups_test.mjs, tests/fake_waku.py, app/messages/**, app/noble-curves/**, .github/workflows/groups-stage1.yml]
   workflow_dispatch:
 permissions:
   contents: read
@@ -56,3 +56,31 @@ jobs:
         run: |
           shopt -s nullglob
           for f in "$RUNNER_TEMP"/*.json; do echo "== $f"; cat "$f"; echo; done
+  groups-engine:
+    # The group engine (vendor-staging/mls/groups.js, not shipped) against tests/fake_waku.py: Node 20 on both
+    # runners, headless Chrome and Chromium on x64 (the arm64 image has no browser), on http://127.0.0.1:18190.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04-arm, ubuntu-24.04]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: The shipped app is unchanged (release.json still matches every app file)
+        run: python3 tools/release.py check
+      - name: The engine's bundle is what the pinned packages build
+        run: cd tools/mls && npm ci --ignore-scripts && node build.mjs --check
+      - name: Node 20
+        run: |
+          node --version
+          node tests/groups_test.mjs --json "$RUNNER_TEMP/groups-node.json"
+      - name: Headless Google Chrome on http://127.0.0.1:18190
+        if: matrix.runner == 'ubuntu-24.04'
+        run: node tests/groups_test.mjs --chromium --chrome "$(command -v google-chrome)" --json "$RUNNER_TEMP/groups-chrome.json"
+      - name: Headless Chromium on http://127.0.0.1:18190
+        if: matrix.runner == 'ubuntu-24.04'
+        run: node tests/groups_test.mjs --chromium --chrome "$(command -v chromium || command -v chromium-browser)" --json "$RUNNER_TEMP/groups-chromium.json"

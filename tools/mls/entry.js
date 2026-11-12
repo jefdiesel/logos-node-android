@@ -89,6 +89,7 @@ import * as paddingConfig from "ts-mls/paddingConfig.js";
 import * as parentHash from "ts-mls/parentHash.js";
 import * as pathSecrets from "ts-mls/pathSecrets.js";
 import * as presharedkey from "ts-mls/presharedkey.js";
+import * as privateMessage from "ts-mls/privateMessage.js";
 import * as privateKeyPath from "ts-mls/privateKeyPath.js";
 import * as processMessages from "ts-mls/processMessages.js";
 import * as proposal from "ts-mls/proposal.js";
@@ -137,6 +138,7 @@ export const internals = Object.freeze({
   "parentHash.js": parentHash,
   "pathSecrets.js": pathSecrets,
   "presharedkey.js": presharedkey,
+  "privateMessage.js": privateMessage, // decryptSenderData: who sent an application message (groups.js)
   "privateKeyPath.js": privateKeyPath,
   "processMessages.js": processMessages,
   "proposal.js": proposal,

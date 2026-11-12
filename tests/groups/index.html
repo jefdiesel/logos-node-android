@@ -1,0 +1,20 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Group engine scenarios</title>
+<pre id="log"></pre>
+<script type="module">
+  // Served by tests/groups_test.mjs --chromium on http://127.0.0.1:18190; posts its results back.
+  const el = document.getElementById("log");
+  const post = (path, body) => fetch(path, { method: "POST", body: typeof body === "string" ? body : JSON.stringify(body) });
+  const log = (line) => { el.textContent += line + "\n"; post("/log", line); };
+  const q = new URLSearchParams(location.search);
+  try {
+    const { runAll } = await import("./scenarios.mjs");
+    const r = await runAll({ nodeUrl: (i) => `/node/${i}`, ctlUrl: "/ctl", nodes: Number(q.get("nodes")), log, only: q.get("only")?.split(",") });
+    r.secureContext = isSecureContext;
+    r.origin = location.origin;
+    await post("/results", r);
+  } catch (e) {
+    await post("/results", { ok: false, error: `page error: ${e?.message} ${e?.stack}` });
+  }
+</script>
