@@ -494,7 +494,7 @@ rules, wire formats, the database format, the config file or the HTTP API.
  }
 --- /dev/null
 +++ b/services/chain/chain-service/src/replay.rs
-@@ -0,0 +1,464 @@
+@@ -0,0 +1,466 @@
 +//! Fast replay of the node's own stored blocks at startup.
 +//!
 +//! Added by the logos-node-android patch `0001-fast-replay-from-own-storage`.
@@ -762,7 +762,9 @@ rules, wire formats, the database format, the config file or the HTTP API.
 +
 +/// Installs the process-wide marker writer (once, after the startup replay).
 +pub fn install_marker_writer(writer: MarkerWriter) {
-+    let _ = MARKER_WRITER.set(writer);
++    if MARKER_WRITER.set(writer).is_err() {
++        warn!(target: LOG_TARGET, "replay marker writer already installed");
++    }
 +}
 +
 +/// Records the in-memory chain in the marker, if a writer is installed.
