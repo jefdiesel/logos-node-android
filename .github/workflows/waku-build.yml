@@ -15,8 +15,8 @@ permissions:
   contents: read
 env:
   WAKU_VERSION: ${{ inputs.waku_version || 'v0.39.2' }}
-  # upstream's Makefile default (ANDROID_TARGET) and upstream CI's NDK (r27c)
-  ANDROID_API: "30"
+  # Android API level (upstream builds 30; the app's minimum is 28) and upstream CI's NDK (r27c)
+  ANDROID_API: "28"
   NDK_VERSION: "27.2.12479018"
   # Extra Nim flags on top of upstream's android task are in messaging/nimflags (see the
   # README there); they go through upstream's own NIMFLAGS variable.
@@ -111,7 +111,7 @@ jobs:
           done
           mkdir pkg
           for f in out/*; do "$TC/bin/llvm-strip" -o "pkg/$(basename "$f")" "$f"; done
-          cp lib-out/VERSION messaging/logos-dev.json pkg/
+          cp lib-out/VERSION messaging/logos-test.json pkg/
           cp -r lib-out/include pkg/
           (cd pkg && sha256sum waku-runner *.so > SHA256SUMS && cat SHA256SUMS)
           du -ah pkg | sort -h | tail -20

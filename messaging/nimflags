@@ -1,2 +1,3 @@
 -d:chronicles_log_level=INFO -d:chronicles_sinks=textlines[stdout] -d:chronicles_colors:none
 -d:ffiGenBindings -d:targetLang=c -d:ffiOutputDir=generated -d:ffiSrcPath=../liblogosdelivery.nim
+-d:disable_rln
