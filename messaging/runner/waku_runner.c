@@ -352,7 +352,7 @@ int main(int argc, char **argv) {
     logf_("stopping");
     print_status(ctx, 1);
     if (topic) CALL_SYNC("unsubscribe", 10000, NULL, logosdelivery_ctx_unsubscribe(ctx, topic, on_reply, r));
-    CALL_SYNC("stop_node", 30000, NULL, logosdelivery_ctx_stop_node(ctx, on_reply, r));
+    CALL_SYNC("stop_node", 15000, NULL, logosdelivery_ctx_stop_node(ctx, on_reply, r));
     logosdelivery_ctx_destroy(ctx);
     logf_("stopped");
     free(config);

@@ -1,0 +1,11 @@
+{
+  "mode": "Core",
+  "preset": "logos.test",
+  "nat": "none",
+  "tcp-port": 60000,
+  "discv5-udp-port": 9000,
+  "rest": true,
+  "rest-address": "127.0.0.1",
+  "rest-port": 18645,
+  "local-storage-path": "/data/local/tmp/waku-native/data"
+}

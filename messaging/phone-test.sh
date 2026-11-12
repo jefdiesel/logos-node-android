@@ -17,13 +17,13 @@ sh_ "mkdir -p $DIR/data"
 "${A[@]}" push "$ART/waku-runner" "$ART/liblogosdelivery.so" "$ART/librln.so" "$DIR/" >/dev/null
 "${A[@]}" push "$CONF" "$DIR/config.json" >/dev/null
 sh_ "chmod 755 $DIR/waku-runner"
-sh_ "$DIR/waku-runner --version"
+sh_ "LD_LIBRARY_PATH=$DIR $DIR/waku-runner --version"
 sh_ "grep MemAvailable /proc/meminfo"
 
 ARGS="config.json --duration $SECS --status-every 30"
 [ -n "$TOPIC" ] && ARGS="$ARGS --topic $TOPIC --send-every 60"
 # started detached on the phone; output goes to run.log next to it
-sh_ "cd $DIR && (nohup ./waku-runner $ARGS > run.log 2>&1 &) ; sleep 1; pidof waku-runner"
+sh_ "cd $DIR && (LD_LIBRARY_PATH=$DIR nohup ./waku-runner $ARGS > run.log 2>&1 &) ; sleep 1; pidof waku-runner"
 
 END=$(( $(date +%s) + SECS + 60 ))
 while [ "$(date +%s)" -lt "$END" ]; do

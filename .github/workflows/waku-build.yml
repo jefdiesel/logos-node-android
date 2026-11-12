@@ -111,7 +111,7 @@ jobs:
           done
           mkdir pkg
           for f in out/*; do "$TC/bin/llvm-strip" -o "pkg/$(basename "$f")" "$f"; done
-          cp lib-out/VERSION messaging/logos-test.json pkg/
+          cp lib-out/VERSION messaging/logos-test.json messaging/logos-test-rest.json pkg/
           cp -r lib-out/include pkg/
           (cd pkg && sha256sum waku-runner *.so > SHA256SUMS && cat SHA256SUMS)
           du -ah pkg | sort -h | tail -20
