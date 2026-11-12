@@ -114,7 +114,7 @@ jobs:
           [ "$(unzip -p "$A" lib/arm64-v8a/libnames.so | sha256sum | cut -d' ' -f1)" = "${{ steps.names.outputs.sha }}" ] \
             || fail "lib/arm64-v8a/libnames.so is missing or differs from the pinned names build"
           # the wallet: the repository's own app/ files, unchanged, and Python to run them
-          for f in server.py index.html release.json names/names.js names/lookup.js messages/messages.js qr/qrcode.js; do
+          for f in server.py index.html release.json names/names.js names/lookup.js messages/messages.js qr/qrcode.js lns/lns.js; do
             [ "$(unzip -p "$A" "assets/webapp/$f" | sha256sum | cut -d' ' -f1)" = "$(sha256sum "app/$f" | cut -d' ' -f1)" ] \
               || fail "assets/webapp/$f is missing or differs from app/$f"
           done

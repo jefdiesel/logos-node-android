@@ -166,7 +166,9 @@ pay the phone through the `blockchain` entry.
 ## What the app shows
 
 Settings has a **Your name** section, shown only inside the Android app when the signer is bundled
-and the wallet is unlocked:
+and the wallet is unlocked. It is its own file, `app/lns/lns.js`, which fills one placeholder
+(`#lns-slot`) in Settings. The server adds its `<script>` tag to the page, and serves it, only in
+that case. It shows:
 - the name account and its balance
 - the LNS name, written bare (`android`)
 - buttons to register a name, link one already held, point it at this wallet, and point it at the

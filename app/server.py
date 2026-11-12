@@ -8,7 +8,7 @@ Python standard library only. Wallet calls need a PIN that is set on first use.
 import base64, calendar, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.9.8"
+APP_VERSION = "0.9.9"
 # APP_EMBEDDED=android: this app runs inside the Android app (embedded Python, page in a WebView).
 # Then it never updates or restarts itself (the Android app brings new versions), and fingerprint
 # unlock goes through the phone's own fingerprint check instead of a passkey. Unset: nothing changes.
@@ -2805,6 +2805,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 page = page.replace(b"__APP_EMBEDDED__", b"android" if EMBEDDED else b"")
                 if messaging_on():                # the Messages panel, only where a messaging node can run
                     page = page.replace(b"</body>", b'<script type="module" src="/messages/messages.js"></script>\n</body>', 1)
+                if lns_available():               # Your name, only in the Android app with the signer
+                    page = page.replace(b"</body>", b'<script src="/lns/lns.js"></script>\n</body>', 1)
                 return self.reply(200, raw=page, ctype="text/html; charset=utf-8")
             except Exception:
                 return self.reply(500, {"error": "index.html is missing"})
@@ -2822,6 +2824,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply(401, {"error": "locked"})
             code, obj = messaging_get(path, self.path)
             return self.reply(code, obj)
+        if path == "/lns/lns.js":
+            if not lns_available():
+                return self.reply(404, {"error": "not found"})
+            try:
+                with open(os.path.join(APP_DIR, "lns", "lns.js"), "rb") as f:
+                    return self.reply(200, raw=f.read(), ctype="text/javascript; charset=utf-8")
+            except Exception:
+                return self.reply(404, {"error": "not found"})
         m = NAMES_FILE_RE.match(path)
         if m:                               # the names resolver, served as files so the page can import it
             try:

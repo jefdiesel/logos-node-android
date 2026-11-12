@@ -119,7 +119,17 @@ check("locked: making the account is refused", call("/api/wallet/lns/account", {
 check("from another page: refused", call("/api/wallet/lns/account", {}, session=s, origin="http://evil.example")[0] == 403)
 check("with no Origin: refused", call("/api/wallet/lns/account", {}, session=s, origin=None)[0] == 403)
 check("under another Host name: refused", call("/api/wallet/lns", session=s, host="rebind.example:8099")[0] == 403)
+import urllib.request as _u  # noqa: E402
+page = lambda: _u.urlopen(W.BASE + "/", timeout=10).read().decode()
+check("with the signer the page loads Your name", '<script src="/lns/lns.js"></script>' in page())
+check("and /lns/lns.js is served", _u.urlopen(W.BASE + "/lns/lns.js", timeout=10).read().startswith(b"// Your name"))
 server.NAMES_BIN = ""
+check("without the signer the page doesn't load it", '<script src="/lns/lns.js">' not in page())
+try:
+    _u.urlopen(W.BASE + "/lns/lns.js", timeout=10)
+    check("without the signer /lns/lns.js is 404", False)
+except Exception as e:
+    check("without the signer /lns/lns.js is 404", getattr(e, "code", None) == 404)
 check("without the signer every route is 404", call("/api/wallet/lns", session=s)[0] == 404
       and all(call(p, {}, session=s)[0] == 404 for p in ("/api/wallet/lns/account", "/api/wallet/lns/register", "/api/wallet/lns/name", "/api/wallet/lns/text")))
 server.NAMES_BIN = fake_names

@@ -150,6 +150,8 @@ jobs:
           node-version: 22
       - name: Messages screen - empty states, chats, addresses, a key change, profiles, in a real browser
         run: CHROME="$(command -v google-chrome || command -v chromium)" node tests/chat_ui.mjs
+      - name: Your name (Android app only) in a real browser, with a stand-in signer
+        run: CHROME="$(command -v google-chrome || command -v chromium)" node tests/lns_ui.mjs
   wallet-send:
     # A real transfer through the web app, on a private one-node chain with the node's public test keys.
     runs-on: ubuntu-24.04-arm
