@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The wallet screen: cream behind everything (window, start-up), never a dark or black screen
+         while the wallet starts or recovers; the page paints its own background once it shows. -->
+    <style name="Theme.Logos.Wallet" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar">
+        <item name="android:windowBackground">@color/icon_cream</item>
+        <item name="android:colorBackground">@color/icon_cream</item>
+    </style>
+</resources>

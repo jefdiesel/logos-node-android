@@ -28,6 +28,7 @@
         <activity
             android:name=".WalletActivity"
             android:process=":wallet"
+            android:theme="@style/Theme.Logos.Wallet"
             android:exported="true"
             android:launchMode="singleTop"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden">

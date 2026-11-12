@@ -15,10 +15,16 @@ It is a debug build for testing, not something to publish.
 
 ## Screens
 
-- **Wallet**, which opens first: the web app's page in a WebView. It shows the node's status, and
-  the wallet with PIN, accounts, send, history, backup, restore, settings and LNS names. A bar at the
-  top has a **Node** button.
-- **Node**, reached with that button:
+- **Wallet**, which opens first: the web app's page in a WebView, using the full height below the
+  status bar. It shows the node's status, and the wallet with PIN, accounts, send, history, backup,
+  restore, settings, LNS names and Messages.
+  - **While the page starts, reloads or recovers,** a cream cover with the lambda shows what is
+    happening and has a **Node** button. The page is never black or blank: it reloads by itself
+    (after 1 s, growing to 10 s) when it fails to load, comes up empty, loses its renderer, or the
+    wallet stops answering. Back closes an open chat.
+- **Node**, reached from the **Node** row in the page's Settings. That row is web app 0.9.1 and
+  later, which calls `LogosAndroid.openNode()`. With an older web app, a **Node** button shows at the
+  top right instead. The Node screen has:
   - Start and Stop.
   - Whether the node process is running, and its memory.
   - The node's height, state, phase and peer count, read from its API.

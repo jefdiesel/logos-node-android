@@ -33,7 +33,9 @@ import kotlin.concurrent.thread
 
 /**
  * The app's main screen: the web app's own page (the wallet and the node's status), served by its
- * server.py inside this app on 127.0.0.1, in a WebView. A bar above it leads to the Node screen.
+ * server.py inside this app on 127.0.0.1, in a WebView, with a cream cover while it starts or recovers. The
+ * Node screen opens from the page's Settings (web app 0.9.1+, through LogosAndroid.openNode) or, for older
+ * web apps and whenever the page is covered, from a Node button.
  */
 class WalletActivity : Activity() {
 
@@ -82,70 +84,115 @@ class WalletActivity : Activity() {
         }
     }
 
+    // ---- the screen: the page, a cream loading cover over it, and the Node button (only when needed) ----
+
+    private lateinit var root: android.widget.FrameLayout
+    private lateinit var cover: LinearLayout
+    private lateinit var coverText: TextView
+    private lateinit var nodeButton: Button
+    private val cream by lazy { getColor(R.color.icon_cream) }
+    private val ink = Color.rgb(0x14, 0x13, 0x11)
+    private var retryMs = WalletPage.FIRST_RETRY_MS
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WalletServer.start(this)
-        val dark = getColor(R.color.page_dark)
-        val pad = (8 * resources.displayMetrics.density).toInt()
+        val dp = resources.displayMetrics.density
 
-        val bar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(dark)
-            setPadding(pad * 2, 0, pad, 0)
-            addView(TextView(this@WalletActivity).apply {
-                text = getString(R.string.app_name)
-                setTextColor(Color.WHITE)
-                textSize = 16f
-            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        root = android.widget.FrameLayout(this).apply { setBackgroundColor(cream) }
+        web = newWebView()
+        root.addView(web, android.widget.FrameLayout.LayoutParams(MATCH, MATCH))
+
+        // the loading cover: never a dark or blank screen while the wallet starts, reloads or recovers
+        coverText = TextView(this).apply {
+            setTextColor(ink); textSize = 16f; gravity = Gravity.CENTER
+            setPadding((24 * dp).toInt(), (16 * dp).toInt(), (24 * dp).toInt(), 0)
+        }
+        cover = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(cream)
+            isClickable = true                                   // the page under it can't be touched meanwhile
+            addView(android.widget.ImageView(this@WalletActivity).apply {
+                setImageResource(R.drawable.ic_launcher_foreground)
+            }, LinearLayout.LayoutParams((160 * dp).toInt(), (160 * dp).toInt()))
+            addView(coverText)
             addView(Button(this@WalletActivity).apply {
                 text = "Node"
-                setOnClickListener { startActivity(Intent(this@WalletActivity, NodeActivity::class.java)) }
-            })
+                setOnClickListener { openNodeScreen() }
+            }, LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = (24 * dp).toInt() })
         }
-        web = WebView(this).apply {
-            setBackgroundColor(dark)
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true          // the page keeps its session in sessionStorage
-            settings.allowFileAccess = false
-            settings.allowContentAccess = false
-            addJavascriptInterface(Bridge(), "LogosAndroid")
-            webViewClient = Client()
-            webChromeClient = Chrome()
+        root.addView(cover, android.widget.FrameLayout.LayoutParams(MATCH, MATCH))
+
+        // the old way to the Node screen, kept for web apps without a Node row in their Settings (before 0.9.1)
+        nodeButton = Button(this).apply {
+            text = "Node"
+            visibility = View.GONE
+            setOnClickListener { openNodeScreen() }
         }
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(dark)
-            addView(bar)
-            addView(web, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        }
-        Insets.pad(root)
+        root.addView(nodeButton, android.widget.FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.END))
+
+        Insets.pad(root)                                         // the page starts below the status bar
         setContentView(root)
+        setBars(cream)
 
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
+        showCover("Starting the wallet…")
         loadWhenReady()
+        debugFromIntent(intent)
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun newWebView() = WebView(this).apply {
+        setBackgroundColor(cream)                                // never a dark default behind the page
+        settings.javaScriptEnabled = true
+        settings.domStorageEnabled = true                        // the page keeps its session in sessionStorage
+        settings.allowFileAccess = false
+        settings.allowContentAccess = false
+        addJavascriptInterface(Bridge(), "LogosAndroid")
+        webViewClient = Client()
+        webChromeClient = Chrome()
+    }
+
+    private fun openNodeScreen() = startActivity(Intent(this, NodeActivity::class.java))
+
+    private fun showCover(text: String) {
+        coverText.text = text
+        cover.visibility = View.VISIBLE
+        setBars(cream)
+    }
+
+    private fun hideCover() {
+        cover.visibility = View.GONE
+    }
+
+    /** The window behind the page (status bar area) in `color`, with status bar icons that read on it. */
+    private fun setBars(color: Int) {
+        root.setBackgroundColor(color)
+        if (Build.VERSION.SDK_INT >= 30) {
+            val light = WalletPage.isLight(color)
+            window.insetsController?.setSystemBarsAppearance(
+                if (light) (android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS) else 0,
+                android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,
+            )
+        }
     }
 
     private var waiting = false
 
-    private fun message(html: String) = web.loadDataWithBaseURL(
-        null, "<body style='background:#11110f;color:#ddd;font:16px sans-serif;padding:24px'>$html</body>",
-        "text/html", "utf-8", null
-    )
-
     /**
-     * Shows a short wait, then the page as soon as the wallet server answers. If it doesn't, says
-     * why (from WalletServer.problem) and keeps trying; the node is not affected either way.
+     * Loads the page as soon as the wallet server answers, with the cover up meanwhile. If it doesn't
+     * answer, the cover says why (from WalletServer.problem) after 20 s and it keeps trying; the node is
+     * not affected either way.
      */
     private fun loadWhenReady() {
         if (waiting) return
         waiting = true
-        message("Starting the wallet&hellip;")
         thread(name = "wallet-wait") {
             var shown = false
             val started = System.currentTimeMillis()
@@ -153,9 +200,9 @@ class WalletActivity : Activity() {
                 val problem = WalletServer.problem
                 if (!shown && (problem != null || System.currentTimeMillis() - started > 20_000)) {
                     shown = true
-                    val why = android.text.Html.escapeHtml(problem ?: "It hasn't answered yet (${WalletServer.lastConnectError}).")
+                    val why = problem ?: "It hasn't answered yet (${WalletServer.lastConnectError})."
                     main.post {
-                        message("The wallet didn't start. $why<br><br>The node is not affected. This screen keeps trying; " +
+                        showCover("The wallet didn't start. $why\n\nThe node is not affected. This screen keeps trying; " +
                             "the full error is in the app's files/wallet/wallet-app.log.")
                     }
                 }
@@ -169,15 +216,72 @@ class WalletActivity : Activity() {
         }
     }
 
+    /** The page failed: cover up, say why, and load it again after a growing pause (1 s up to 10 s). */
+    private fun reloadSoon(reason: String) {
+        Log.w(TAG, "page: $reason; reloading in $retryMs ms")
+        showCover("$reason\nTrying again…")
+        main.removeCallbacks(retry)
+        main.postDelayed(retry, retryMs)
+        retryMs = WalletPage.nextRetry(retryMs)
+    }
+
+    private val retry = Runnable { loadWhenReady() }
+
+    /** The renderer died (or was killed): a new WebView, and the page again. */
+    private fun replaceWebView(reason: String) {
+        Log.w(TAG, "page renderer gone: $reason")
+        root.removeView(web)
+        try { web.destroy() } catch (_: Exception) {}
+        web = newWebView()
+        root.addView(web, 0, android.widget.FrameLayout.LayoutParams(MATCH, MATCH))
+        backCallback?.let { if (Build.VERSION.SDK_INT >= 33) onBackInvokedDispatcher.unregisterOnBackInvokedCallback(it) }
+        backCallback = null
+        reloadSoon("The page stopped ($reason).")
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        debugFromIntent(intent)
+    }
+
+    /** Debug builds, from adb: --ez probe true (structure check), --ez crashrenderer true (renderer-loss test). */
+    private fun debugFromIntent(intent: Intent?) {
+        if (!BuildConfig.DEBUG || intent == null) return
+        if (intent.getBooleanExtra("crashrenderer", false)) {
+            Log.w(TAG, "debug: crashing the page's renderer on purpose")
+            main.postDelayed({ web.loadUrl("chrome://crash") }, 2000)
+        }
+        if (intent.getBooleanExtra("probe", false) && FingerprintUnlock.isOwnPage(web.url)) {
+            main.postDelayed({ web.evaluateJavascript(PROBE) { Log.i(TAG, "probe: $it") } }, 1000)
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         web.onResume()       // the page sees itself visible again (its auto-lock listens for this)
         if (FingerprintUnlock.isOwnPage(web.url)) syncFingerprintKey()
+        main.removeCallbacks(watchdog)
+        main.postDelayed(watchdog, 10_000)
     }
 
     override fun onPause() {
         web.onPause()        // ... and hidden
+        main.removeCallbacks(watchdog)
         super.onPause()
+    }
+
+    /** While the screen shows: if the page is up but the wallet stopped answering, cover up and reload. */
+    private val watchdog: Runnable = object : Runnable {
+        override fun run() {
+            val shown = cover.visibility != View.VISIBLE && FingerprintUnlock.isOwnPage(web.url)
+            if (shown) {
+                io.execute {
+                    if (!WalletServer.listening()) main.post { reloadSoon("The wallet stopped answering.") }
+                }
+            }
+            main.postDelayed(this, 10_000)
+        }
     }
 
     /** Whether the page has its own step to go back to (e.g. an open chat), not the "Starting…" placeholder. */
@@ -219,13 +323,27 @@ class WalletActivity : Activity() {
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest) = !isOwnPage(request.url)
 
         override fun onPageFinished(view: WebView, url: String) {
-            if (!isOwnPage(Uri.parse(url))) return
+            if (view !== web || !isOwnPage(Uri.parse(url))) return
             view.evaluateJavascript(SAVE_HOOK, null)
             syncFingerprintKey()
-            if (BuildConfig.DEBUG && intent.getBooleanExtra("probe", false)) {
-                // debug builds started with --ez probe true: the page's structure, in logcat. Never the
-                // page's text (it may show balances, chats or keys): only yes/no facts and element states.
-                main.postDelayed({ view.evaluateJavascript(PROBE) { Log.i(TAG, "probe: $it") } }, 8000)
+            // the page is only taken as shown once it has content: then the cover goes, the window takes the
+            // page's background, and the old Node button shows only for web apps without a Node row in Settings
+            view.evaluateJavascript(PAGE_CHECK) { raw ->
+                if (view !== web) return@evaluateJavascript
+                val check = WalletPage.parseCheck(raw)
+                if (check == null || check.children == 0) {
+                    reloadSoon("The wallet page came up empty.")
+                    return@evaluateJavascript
+                }
+                retryMs = WalletPage.FIRST_RETRY_MS
+                hideCover()
+                WalletPage.parseCssColor(check.background)?.let { setBars(it) }
+                nodeButton.visibility = if (WalletPage.hasNodeRow(check.version)) View.GONE else View.VISIBLE
+                if (BuildConfig.DEBUG && intent.getBooleanExtra("probe", false)) {
+                    // debug builds started with --ez probe true: the page's structure, in logcat. Never the
+                    // page's text (it may show balances, chats or keys): only yes/no facts and element states.
+                    main.postDelayed({ view.evaluateJavascript(PROBE) { Log.i(TAG, "probe: $it") } }, 3000)
+                }
             }
         }
 
@@ -235,13 +353,31 @@ class WalletActivity : Activity() {
 
         override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
             Log.w(TAG, "page error ${error.errorCode} ${error.description} for ${request.url} (main frame: ${request.isForMainFrame})")
-            if (request.isForMainFrame) main.postDelayed({ loadWhenReady() }, 1000)
+            if (view === web && request.isForMainFrame) reloadSoon("The wallet page didn't load (${error.description}).")
+        }
+
+        override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, response: android.webkit.WebResourceResponse) {
+            if (view === web && request.isForMainFrame && response.statusCode >= 500) {
+                reloadSoon("The wallet answered with an error (${response.statusCode}).")
+            }
+        }
+
+        // the page's renderer crashed or was killed (e.g. with the wallet's process): never a dead screen
+        override fun onRenderProcessGone(view: WebView, detail: android.webkit.RenderProcessGoneDetail): Boolean {
+            if (view === web) main.post { replaceWebView(if (detail.didCrash()) "it crashed" else "Android stopped it") }
+            return true                                          // handled: the app goes on
         }
     }
 
     private inner class Chrome : WebChromeClient() {
         override fun onConsoleMessage(message: ConsoleMessage): Boolean {
-            Log.i(TAG, "page console ${message.messageLevel()}: ${message.message()} (${message.sourceId()}:${message.lineNumber()})")
+            // only the page's warnings and errors, and the debug probe's own lines: never ordinary page logging
+            val level = message.messageLevel()
+            if (level == ConsoleMessage.MessageLevel.ERROR || level == ConsoleMessage.MessageLevel.WARNING ||
+                message.message().startsWith("probe")
+            ) {
+                Log.i(TAG, "page console $level: ${message.message().take(300)} (${message.sourceId()}:${message.lineNumber()})")
+            }
             return true
         }
 
@@ -267,6 +403,12 @@ class WalletActivity : Activity() {
      * own page before doing anything (the WebView loads nothing else, but a call is checked anyway).
      */
     private inner class Bridge {
+        /** The Node row in the page's Settings (web app 0.9.1): opens the app's Node screen, nothing else. */
+        @JavascriptInterface
+        fun openNode() {
+            main.post { if (FingerprintUnlock.isOwnPage(web.url)) openNodeScreen() }
+        }
+
         /** The page's fingerprint button (web app 0.7.6). The answer comes back as logosNativeUnlocked/Failed. */
         @JavascriptInterface
         fun unlockWithFingerprint() {
@@ -324,6 +466,13 @@ class WalletActivity : Activity() {
 
     companion object {
         private const val TAG = "LogosWallet"
+        private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
+        private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
+
+        /** Whether the page has content, its web app version and its background: no page text. */
+        private const val PAGE_CHECK = "(function () { var m = document.querySelector('meta[name=\"app-version\"]');" +
+            " return JSON.stringify({ v: m ? m.content : '', n: document.body ? document.body.children.length : 0," +
+            " bg: document.body ? getComputedStyle(document.body).backgroundColor : '' }); })()"
 
         /**
          * Debug probe (--ez probe true): the page's structure as yes/no facts and element states, never its
