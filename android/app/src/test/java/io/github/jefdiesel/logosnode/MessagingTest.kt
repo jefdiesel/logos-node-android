@@ -133,7 +133,7 @@ class MessagingTest {
         val logs = mutableListOf<String>()
         val s = MessagingSupervisor(f, DataUsage(File(tmp.root, "u3.txt")),
             runner("echo \"config parse error: {\\\"nodekey\\\": \\\"$key\\\"}\"; " +
-                "echo '2026-11-12T15:00:00Z [runner] status connection=Connected connected_peers=3 rss_kb=1000'; sleep 30"),
+                "echo '2026-11-12T15:00:00Z [runner] status connection=Connected connected_peers=3 rss_kb=1000'; exec sleep 30"),
             log = { synchronized(logs) { logs += it } })
         s.start()
         waitFor("connected") { s.state.startsWith("connected") }
@@ -151,7 +151,7 @@ class MessagingTest {
     @Test fun capReachedWhileRunningStopsTheRunner() {
         val f = files()
         val s = MessagingSupervisor(f, DataUsage(File(tmp.root, "u4.txt")),
-            runner("echo '2026-11-12T15:00:00Z [runner] metric libp2p_network_bytes_total{direction=\"in\"} 2.5e9'; sleep 60"),
+            runner("echo '2026-11-12T15:00:00Z [runner] metric libp2p_network_bytes_total{direction=\"in\"} 2.5e9'; exec sleep 60"),
             log = {})
         s.start()
         waitFor("cap stop", 40) { s.state.contains("data cap") && !s.running }
