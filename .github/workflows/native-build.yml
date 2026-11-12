@@ -177,7 +177,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [upstream, patched]
+        # profile = patched + the bench-only timing patch in native/bench-patches (never shipped)
+        variant: [upstream, patched, profile]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
     steps:
@@ -185,10 +186,14 @@ jobs:
       - name: Node source
         run: git clone -q --depth 1 --branch "$NODE_VERSION" https://github.com/logos-blockchain/logos-blockchain.git node
       - name: Apply patches (fails if one does not apply cleanly)
-        if: matrix.variant == 'patched'
+        if: matrix.variant != 'upstream'
         run: |
           id=$(native/apply-patches.sh node | tail -1)
           echo "LOGOS_NODE_PATCHES_ID=$id" >> "$GITHUB_ENV"
+      - name: Apply the bench-only profiling patch
+        if: matrix.variant == 'profile'
+        run: |
+          for p in native/bench-patches/9*.patch; do git -C node apply --check -p1 "$GITHUB_WORKSPACE/$p" && git -C node apply -p1 "$GITHUB_WORKSPACE/$p"; echo "applied $p"; done
       - name: Tools
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq clang libclang-dev pkg-config libssl-dev >/dev/null
@@ -212,5 +217,5 @@ jobs:
           (cd out && sha256sum * > SHA256SUMS); cat out/SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
-          name: logos-blockchain-node-linux-arm64-${{ env.NODE_VERSION }}${{ matrix.variant == 'patched' && '-patched' || '' }}
+          name: logos-blockchain-node-linux-arm64-${{ env.NODE_VERSION }}${{ matrix.variant != 'upstream' && format('-{0}', matrix.variant) || '' }}
           path: out/
