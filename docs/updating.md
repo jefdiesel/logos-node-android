@@ -42,6 +42,16 @@ this: it keeps running and is never restarted by an update.
   verified" for someone you haven't written to yet; linking your name points to the Names app, with the
   terminal command folded away; people icons and every remaining button meet the size and contrast rules;
   the wallet says "accounts" instead of "keys".
+- 0.9.6: Messages settings no longer read as if your LNS name can't take coins: the messaging address is
+  for messages, coins go to your wallet address (Wallet, then Receive), and your LNS name can take both
+  once it is set up for each. With the balance hidden, the Received pop-up and Send's "not enough" error
+  no longer show amounts. On the keypad, Enter on a key reached with Tab presses that key, and after each
+  key screen readers are told how many digits are in. Settings > Node says it in plain words: blocks on
+  this device, nodes connected, new blocks a minute, and where the network is.
+- 0.9.7: QR codes: your wallet address on Receive, and your messaging address in Settings > Messages
+  (after Show). Inside the Android app, **Scan** in Send and in New chat fills in an address from a code;
+  a messaging address scanned in Send, or a wallet address scanned in New chat, is explained instead of
+  filled in. A "locked" answer to a request sent before an unlock no longer locks the new session.
 
 ## Going back to the previous version by hand
 
