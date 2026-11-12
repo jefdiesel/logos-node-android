@@ -172,15 +172,23 @@ for (const [t, txt] of [[yesterday - 600000, "Are you coming to the meetup tomor
 await waitFor("bob's messages show in the chat", `document.querySelector(".cv-in").innerText.includes("usual place")`);
 await js(`(() => { const t = document.querySelector(".cmp textarea"); t.value = "Yes! I'll bring the slides. Is there a projector?"; t.dispatchEvent(new Event("input")); document.querySelector(".cmp .go").click(); return true; })()`);
 await waitFor("my message shows on the right", `!!document.querySelector(".bub.out")`);
-await waitFor("and gets to Stored", `document.querySelector(".cv-in").innerText.includes("Stored")`, 15000);
+await waitFor("and gets its sent mark (one tick)", `!!document.querySelector(".cv-in [aria-label=Sent]")`, 15000);
 await bob.lookup("alice", true); await bob.sync();
 await until("bob gets it", async () => { await bob.sync(); return bob.messages("d:alice").some(m => m.dir === "in" && m.text.includes("projector")); });
 await bob.send("d:alice", "There is one, HDMI only.");
 await bob.send("d:alice", "Also: could you send me the address of that bakery you mentioned last week? I want to try their sourdough before the weekend, and I keep forgetting the name of the street it's on.");
 await waitFor("bob's replies arrive", `document.querySelector(".cv-in").innerText.includes("sourdough")`, 15000);
 check("day separators: Yesterday and Today", (await text(".cv-in")).includes("Yesterday") && (await text(".cv-in")).includes("Today"));
-check("the header says verified", (await text(".ov-top")).includes("verified"));
+check("a fine chat says nothing about verification (problems only)", !/verified/i.test(await text(".ov .ov-top")));
 await shot("chat");
+// a small phone with the keyboard up: 360 px wide, the composer above the keyboard
+await cdp("Emulation.setDeviceMetricsOverride", { width: 360, height: 420, deviceScaleFactor: 2, mobile: true });
+await js(`document.querySelector(".cmp textarea").focus(); document.querySelector(".cmp textarea").value = "On my way"; document.querySelector(".cmp textarea").dispatchEvent(new Event("input")); true`);
+await sleep(300);
+check("with the keyboard up the composer is still on screen", await js(`(() => { const r = document.querySelector(".cmp").getBoundingClientRect(); return r.bottom <= window.innerHeight + 1 && r.top > 0; })()`));
+await shot("chat-keyboard-360");
+await js(`document.querySelector(".cmp textarea").value = ""; document.querySelector(".cmp textarea").dispatchEvent(new Event("input")); document.activeElement.blur(); true`);
+await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
 await noOldHeader("a chat");
 // message details
 await js(`document.querySelector(".bub.out").click(); true`);
@@ -213,7 +221,7 @@ await click("#mg-new");
 const wallet = await js(`accts.length ? accts[0].key : ""`);
 if (wallet) {
   await js(`document.getElementById("mg-to").value = ${JSON.stringify(wallet)}; document.getElementById("mg-find").requestSubmit(); true`);
-  await waitFor("a wallet address is refused, plainly", `document.getElementById("mg-found").innerText.includes("That's a wallet address")`);
+  await waitFor("a wallet address is refused, plainly", `document.getElementById("mg-found").innerText.includes("looks like a wallet address")`);
 } else console.log("     (no wallet keys listed in this test app: the wallet-address check runs in tests/chat_test.mjs)");
 // typed as a person would paste it (insertText keeps the field's maxlength, which .value doesn't)
 await js(`(() => { const t = document.getElementById("mg-to"); t.value = ""; t.focus(); return true; })()`);
@@ -221,17 +229,19 @@ const pasted = "msg: " + hex(did.publicKey).slice(0, 30) + " " + hex(did.publicK
 await cdp("Input.insertText", { text: pasted });
 check("a pasted messaging address isn't cut off by the field", (await js(`document.getElementById("mg-to").value`)) === pasted);
 await js(`document.getElementById("mg-find").requestSubmit(); true`);
-await waitFor("an address (with spaces) is taken: address only", `document.getElementById("mg-found").innerText.includes("no name to verify")`);
+await waitFor("an address (with spaces) is taken: no LNS name, and it asks what to call them", `document.getElementById("mg-found").innerText.includes("No LNS name") && !!document.getElementById("mg-nick")`);
 check("it shows a short code, not the address", !(await text("#mg-found")).includes(hex(did.publicKey)));
+await js(`document.getElementById("mg-nick").focus(); true`);
+await cdp("Input.insertText", { text: "Flyer friend" });
 await shot("new-chat-by-address");
 await js(`[...document.querySelectorAll("#mg-found button")].find(b => b.textContent === "Start chat").click(); true`);
 await waitFor("the address chat opens", `!!document.querySelector(".ov .cmp")`);
 await js(`(() => { const t = document.querySelector(".cmp textarea"); t.value = "Hi! Got your address from the flyer."; t.dispatchEvent(new Event("input")); document.querySelector(".cmp .go").click(); return true; })()`);
-await waitFor("sent to the address", `document.querySelector(".cv-in").innerText.includes("Stored")`, 15000);
+await waitFor("sent to the address", `!!document.querySelector(".cv-in [aria-label=Sent]")`, 15000);
 await until("the nameless person gets it, from alice", async () => { await dchat.sync(); return dchat.messages("d:alice").length === 1 && dchat.trust(dchat.messages("d:alice")[0]) === "ok"; });
 await dchat.send("d:alice", "Thanks! I don't have an LNS name yet.");
 await waitFor("their reply shows in the same chat", `document.querySelector(".cv-in").innerText.includes("don't have an LNS name")`, 15000);
-check("the header says address only", (await text(".ov-top")).includes("address only"));
+check("the header says No LNS name, and uses the name given", (await text(".ov .ov-top")).includes("No LNS name") && (await text(".ov .ov-top")).includes("Flyer friend"), await text(".ov .ov-top"));
 await shot("chat-address");
 await click(".ov .who");
 await waitFor("the address profile", `!!document.getElementById("pv-note")`);
@@ -253,7 +263,7 @@ await waitFor("the bar has an unread count", `!document.querySelector("#nav .bad
 await shot("list");
 const C2 = MC.newKeyPair();
 await w.register("carol", { msg: hex(C2.publicKey) });
-const sealedNew = MC.sealMessage({ to: MC.fromHex(key.public), from: "carol", fromSecret: C2.secretKey, text: "New phone! This is my new key." });
+const sealedNew = MC.sealMessage({ to: MC.fromHex(key.public), from: "carol", fromSecret: C2.secretKey, text: "New phone, new address." });
 await w.control("inject/0", { topic: MC.inboxTopic(MC.fromHex(key.public)), payload: b64(sealedNew) });
 await js(`[...document.querySelectorAll("#mg-rows .crow")].find(r => r.innerText.includes("carol")).click(); true`);
 await waitFor("carol's address changed: the banner", `!!document.querySelector(".cv-ban:not([hidden])") && document.querySelector(".cv-ban").innerText.includes("address changed")`, 15000);
@@ -365,7 +375,7 @@ check("nothing behind the lock screen: no chats, names, balances", !/bob|hi erin
 await vis("hidden"); await sleep(2800); await vis("visible"); await sleep(400);
 check("coming back to the app later: it comes up again", await js(`window.__fp`) === 4);
 await js(`document.getElementById("pin").value = ${JSON.stringify(E.pin)}; document.getElementById("v-locked").requestSubmit(); true`);
-await waitFor("after unlocking: back in the same chat", `!document.getElementById("page-msg").hidden && !!document.querySelector(".ov .cmp") && document.querySelector(".ov-top").innerText.includes("bob")`, 15000);
+await waitFor("after unlocking: back in the same chat", `!document.getElementById("page-msg").hidden && !!document.querySelector(".ov .cmp") && document.querySelector(".ov .ov-top").innerText.includes("bob")`, 15000);
 await js(`history.back(); true`);
 await click("#nav-wallet");
 await js(`document.getElementById("b-lock").click(); true`);

@@ -30,6 +30,9 @@ const P = {      // icon paths (constants)
   stop: '<g fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4l8.5 15h-17z"/><path d="M12 10v4.2M12 17.1v.1"/></g>',
   sliders: '<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2.2"/><circle cx="9" cy="17" r="2.2"/></g>',
   close: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>',
+  clock: '<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><path d="M12 7.5V12l3 2"/></g>',
+  tick: '<path d="M5.5 12.5l4.2 4.2L18.5 8" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>',
+  warn: '<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4l8.5 15h-17z"/><path d="M12 10v4M12 17v.1"/></g>',
   gear: '<path fill="currentColor" d="M19.4 13a7.5 7.5 0 0 0 0-2l2-1.6a.5.5 0 0 0 .1-.6l-1.9-3.3a.5.5 0 0 0-.6-.2l-2.4 1a7.3 7.3 0 0 0-1.7-1l-.4-2.6a.5.5 0 0 0-.5-.4h-3.8a.5.5 0 0 0-.5.4l-.4 2.6a7.3 7.3 0 0 0-1.7 1l-2.4-1a.5.5 0 0 0-.6.2L2.5 8.8a.5.5 0 0 0 .1.6l2 1.6a7.5 7.5 0 0 0 0 2l-2 1.6a.5.5 0 0 0-.1.6l1.9 3.3c.1.2.4.3.6.2l2.4-1c.5.4 1.1.7 1.7 1l.4 2.6c0 .2.3.4.5.4h3.8c.2 0 .5-.2.5-.4l.4-2.6c.6-.3 1.2-.6 1.7-1l2.4 1c.2.1.5 0 .6-.2l1.9-3.3a.5.5 0 0 0-.1-.6zM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"/>',
 };
 const bridge = () => typeof window.LogosAndroid === "object" && window.LogosAndroid !== null && typeof window.LogosAndroid.openNode === "function";
@@ -41,6 +44,7 @@ const resolve = async name => (await namesLib()).resolveName(NAMES_RPC, namesPro
 // ---- look ----------------------------------------------------------------------------------------------
 document.head.append(el("style", { textContent: `
 body.has-nav main{padding-bottom:104px}
+body.kb #nav{display:none}body.kb.has-nav main{padding-bottom:24px}
 #nav{position:fixed;left:0;right:0;bottom:0;z-index:5;background:var(--card);border-top:1px solid var(--line);padding:6px 12px calc(6px + env(safe-area-inset-bottom))}
 #nav .in{display:flex;gap:8px;max-width:520px;margin:0 auto}
 #nav button{flex:1;position:relative;border:0;border-radius:12px;min-height:54px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-size:12.5px;font-weight:600;color:var(--dim);padding:4px}
@@ -75,7 +79,7 @@ body.has-nav main{padding-bottom:104px}
 .found{display:flex;gap:14px;align-items:center;margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
 .found b{display:block;font-size:18px}.found small{display:block;font-size:13.5px;color:var(--dim)}
 .cmd{display:block;font-family:var(--mono);font-size:13px;background:var(--field);border:1px solid var(--line);border-radius:10px;padding:10px;overflow-wrap:anywhere;margin-top:8px}
-.ov{position:fixed;left:0;right:0;top:0;height:var(--vvh,100dvh);z-index:20;background:var(--bg);display:flex;flex-direction:column}
+.ov,#mg-newv{position:fixed;left:0;right:0;top:0;height:var(--vvh,100dvh);z-index:20;background:var(--bg);display:flex;flex-direction:column}
 .ov-top{display:flex;align-items:center;gap:6px;padding:6px 8px;padding-top:calc(6px + env(safe-area-inset-top));background:var(--card);border-bottom:1px solid var(--line);min-height:62px;flex:none}
 .ov-top .back{width:44px;min-height:44px;padding:0;border:0;display:inline-flex;align-items:center;justify-content:center;flex:none}
 .who{flex:1;min-width:0;display:flex;align-items:center;gap:10px;border:0;background:none;padding:4px 6px;text-align:left;font-weight:400;min-height:48px;color:var(--ink)}
@@ -94,7 +98,8 @@ body.has-nav main{padding-bottom:104px}
 .meta{font-size:11.5px;color:var(--dim);margin:3px 4px 6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .meta.out{align-self:flex-end;justify-content:flex-end}.meta.in{align-self:flex-start}
 .meta .bad{color:var(--bad);font-weight:600}.meta .warn{color:var(--warn);font-weight:600}
-.meta button{min-height:26px;padding:0 9px;font-size:12px;font-weight:600;color:var(--bad);border-color:var(--bad);border-radius:999px}
+.meta button{min-height:44px;padding:0 14px;font-size:13px;font-weight:600;color:var(--bad);border-color:var(--bad);border-radius:999px}
+.meta.note-w{font-size:13px;color:var(--warn)}.meta .ic{color:var(--dim)}
 .cv-empty{margin:auto;text-align:center;color:var(--dim);font-size:14px;padding:30px 20px;max-width:320px}
 .cv-empty .av{margin:0 auto 12px}
 .cmp{flex:none;display:flex;align-items:flex-end;gap:8px;padding:8px 10px calc(8px + env(safe-area-inset-bottom));background:var(--card);border-top:1px solid var(--line)}
@@ -102,6 +107,7 @@ body.has-nav main{padding-bottom:104px}
 .cmp textarea{flex:1;min-width:0;font:inherit;font-size:16px;color:var(--ink);background:var(--field);border:1.5px solid var(--field-line);border-radius:22px;padding:10px 15px;resize:none;height:46px;max-height:150px;line-height:1.35}
 .cmp textarea:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
 .cmp .go{width:46px;height:46px;min-height:46px;border-radius:50%;padding:0;background:var(--accent);border-color:var(--accent);color:var(--accent-ink);display:inline-flex;align-items:center;justify-content:center;flex:none}
+.cmp .go:disabled{background:var(--field);border-color:var(--line);color:var(--dim);opacity:1}
 .cmp .count{font-size:11.5px;color:var(--dim);align-self:center}
 .cmp-note{flex:none;padding:14px 16px calc(14px + env(safe-area-inset-bottom));background:var(--card);border-top:1px solid var(--line);font-size:14px;color:var(--dim);text-align:center}
 .cmp-note button{margin-left:8px;min-height:34px;font-size:13px;padding:4px 12px}
@@ -129,9 +135,12 @@ body.has-nav main{padding-bottom:104px}
 .mtop h1{font-size:24px;margin:0;letter-spacing:-.02em}
 .mtop .acts{display:flex;gap:8px;align-items:center}
 .mtop .new{min-height:40px;padding:6px 14px 6px 10px;font-size:14px;display:inline-flex;align-items:center;gap:4px;color:var(--accent);border-color:var(--accent)}
-.mtop .ic-b{width:40px;min-height:40px;padding:0;display:inline-flex;align-items:center;justify-content:center}
-.mnode{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 2px 12px;font-size:14px;color:var(--warn)}
-.mnode button{min-height:34px;font-size:13px;padding:4px 12px;flex:none}
+.mtop .ic-b{width:44px;min-height:44px;padding:0;display:inline-flex;align-items:center;justify-content:center;border:0}
+.mtop .mnode{margin:2px 0 0;font-size:13px;color:var(--dim)}
+.rows{margin:0 -16px;padding:0 16px}
+.ov-title{font-size:16.5px}
+.mnode{display:flex;align-items:center;gap:10px}
+.mnode button{min-height:44px;font-size:13px;padding:4px 12px;flex:none}
 .hint-card{display:flex;gap:10px;align-items:flex-start;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 8px 12px 14px;margin:0 0 14px;font-size:14px}
 .hint-card p{margin:0;flex:1}.hint-card .lnk{border:0;background:none;padding:0;min-height:0;color:var(--accent);font-weight:600;font-size:14px}
 .hint-card .x{width:32px;min-height:32px;padding:0;border:0;display:inline-flex;align-items:center;justify-content:center;color:var(--dim);flex:none}
@@ -140,7 +149,10 @@ body.has-nav main{padding-bottom:104px}
 const vp = document.querySelector('meta[name="viewport"]');               // keep the composer above the keyboard
 if (vp && !/interactive-widget/.test(vp.content)) vp.content += ",interactive-widget=resizes-content";
 if (window.visualViewport) {
-  const fit = () => document.documentElement.style.setProperty("--vvh", Math.round(visualViewport.height) + "px");
+  const fit = () => {
+    document.documentElement.style.setProperty("--vvh", Math.round(visualViewport.height) + "px");
+    document.body.classList.toggle("kb", visualViewport.height < window.innerHeight * 0.78);    // a keyboard is up
+  };
   visualViewport.addEventListener("resize", fit); fit();
 }
 
@@ -176,43 +188,40 @@ window.openSettings = (...a) => {
 window.closeSettings = () => { pageCloseSettings(); nav.hidden = false; document.body.classList.add("has-nav"); setTab(tab); };
 
 // say where messages go, in the footer and in Settings > About
-const ABOUT_MESSAGES = " Messages go through the Logos Messaging node on this device to the Logos Messaging network, sealed so only the person they're for can read them.";
+const ABOUT_MESSAGES = " Messages go through the Logos Messaging node on this device to the Logos Messaging network, sealed so only the person they're for can read them. The names in your chats are checked with the name service in the background.";
 for (const id of ["footer-talk", "about-talk"]) if ($(id)) $(id).textContent = $(id).textContent.replace(/ Testnet\.$/, ABOUT_MESSAGES + " Testnet.");
 
 // ---- the screen ----------------------------------------------------------------------------------------
 page.innerHTML = `
   <section class="card hero" id="mg-nokey" hidden>
     <h2>Messages</h2>
-    <h3>Chat with anyone who has an LNS name</h3>
-    <p class="note" style="margin:0">Messages are sealed on this phone so only the person they're for can open them, and travel through the Logos Messaging network.</p>
+    <h3>Private messages, sealed on this phone.</h3>
+    <p class="note" style="margin:0">Only the person a message is for can open it. LNS names are names like alice.</p>
     <ul>
-      <li>This phone gets its own messaging address, kept with the wallet and locked by your PIN.</li>
-      <li>People reach you by your LNS name once you link it, or by your messaging address.</li>
-      <li>Your messaging address and your chats go into the wallet backup.</li>
+      <li>People can reach you by your LNS name or by a messaging address.</li>
+      <li>This phone gets its own messaging address. Only this app can use it, and only while it's unlocked.</li>
+      <li>Make a new backup after turning this on.</li>
     </ul>
     <button type="button" class="primary" id="mg-on">Turn on messages</button>
     <p class="msg bad" id="mg-on-m" role="alert"></p>
   </section>
   <div id="mg-home" hidden>
-    <div class="mtop"><h1 id="h-chats">Messages</h1><div class="acts"><button type="button" class="new" id="mg-new"></button><button type="button" class="ic-b" id="mg-me" aria-label="Settings" title="Settings"></button></div></div>
-    <div class="mnode" id="mg-node" role="status" hidden></div>
+    <div class="mtop"><div><h1 id="h-chats">Messages</h1><div class="mnode" id="mg-node" role="status" hidden></div></div><div class="acts"><button type="button" class="ic-b" id="mg-new" aria-label="New chat" title="New chat"></button><button type="button" class="ic-b" id="mg-me" aria-label="Settings" title="Settings"></button></div></div>
+    <p class="note" id="mg-loading" hidden>Loading chats…</p>
     <div class="hint-card" id="mg-hint" hidden></div>
-    <p class="msg warn" id="mg-store-warn" hidden style="margin:0 2px 12px">Saved chats from an earlier messaging address can't be opened on this one.</p>
-    <section class="card" aria-labelledby="h-chats">
-      <div id="mg-rows"></div>
-    </section>
+    <button type="button" class="notice" id="mg-bk" hidden>Your last backup doesn't include Messages. Make a new one.</button>
+    <p class="msg warn" id="mg-store-warn" hidden style="margin:0 2px 12px">Saved chats from an earlier messaging address can't be opened on this one. Restore the backup that has that address to read them.</p>
+    <div id="mg-rows" class="rows"></div>
   </div>
-  <div id="mg-newv" hidden>
-    <div class="backrow"><button type="button" class="mg-home"></button></div>
-    <section class="card" aria-labelledby="h-new">
-      <h2 id="h-new">New chat</h2>
+  <div id="mg-newv" role="dialog" aria-modal="true" aria-labelledby="h-new" hidden>
+    <div class="ov-top"><button type="button" class="back mg-home" aria-label="Back"></button><b id="h-new" class="ov-title">New chat</b></div>
+    <div class="pv-scroll"><div class="pv-in">
       <form id="mg-find" autocomplete="off">
         <label for="mg-to" style="margin-top:0">An LNS name or a messaging address</label>
-        <div class="pwrow"><input id="mg-to" class="mono" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="100" placeholder="alice, or msg:…" enterkeyhint="search"><button type="submit" id="mg-look">Look up</button></div>
-        <p class="hint">Names are looked up on the chain from this phone. A messaging address is what someone copies from their own Messages settings.</p>
+        <div class="pwrow"><input id="mg-to" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="100" placeholder="alice, or a messaging address" enterkeyhint="search"><button type="submit" id="mg-look">Look up</button></div>
       </form>
       <div id="mg-found"></div>
-    </section>
+    </div></div>
   </div>
 `;
 
@@ -237,8 +246,8 @@ msgSettings.innerHTML = `
   <p class="msg" id="mg-addr-m" role="status"></p>`;
 $("s-slot").append(msgSettings);
 const openMsgSettings = () => { openSettings("s-msg"); };
-for (const b of page.querySelectorAll(".mg-home")) { b.append(svg(P.back, 20), "Chats"); b.addEventListener("click", () => home()); }
-$("mg-new").append(svg(P.plus, 18), "New chat");
+for (const b of page.querySelectorAll(".mg-home")) { b.append(svg(P.back)); b.addEventListener("click", () => popOv()); }
+$("mg-new").append(svg(P.plus, 24));
 $("mg-me").append(svg(P.gear, 22));
 // room for "New group" next to New chat once groups exist; nothing is shown for it until then
 
@@ -250,7 +259,7 @@ const forget = () => {        // nothing of the chats stays in the page while it
   for (const id of ["mg-cmd", "mg-addr", "mg-check-m", "mg-name-m", "mg-addr-m"]) $(id).textContent = "";
   badge.hidden = true;
 };
-function home() { view = "home"; $("mg-newv").hidden = true; render(); }
+function home() { if (view === "new" && stack.length && stack[stack.length - 1].name === "new") popOv(); view = "home"; $("mg-newv").hidden = true; render(); }
 
 // everything goes when the wallet locks
 const pageShow = window.show;
@@ -295,8 +304,8 @@ function changed() { if (cv.id) renderConvo(); }       // a profile isn't redraw
 const nodeText = () => {
   if (!status) return "";
   const n = status.node;
-  if (n.starting && n.reachable !== false) return "The messaging node is starting.";
-  if (n.reachable === false) return "The messaging node is off. Messages you write wait until it's back.";
+  if (n.starting && n.reachable !== false) return "Connecting…";
+  if (n.reachable === false) return "Offline";
   return "";
 };
 function render() {
@@ -304,6 +313,8 @@ function render() {
   $("mg-nokey").hidden = !open || !status || !!status.key;
   const ready = open && !!chat && !!chat.ready;
   $("mg-home").hidden = !ready || view !== "home";
+  if (open && status && status.key && !ready) { $("mg-home").hidden = false; $("mg-loading").hidden = false; $("mg-rows").replaceChildren(); return; }
+  $("mg-loading").hidden = true;
   $("mg-newv").hidden = !ready || view !== "new";
   updateBadge();
   if (!ready) return;
@@ -315,7 +326,23 @@ function render() {
     nl.replaceChildren(el("span", { textContent: t }), fix);
   }
   $("mg-store-warn").hidden = !chat.storeUnreadable;
+  // a backup made before Messages was turned on has no messaging address or chats in it
+  const bk = status.backup || {};
+  $("mg-bk").hidden = !(bk.last && (bk.messaging === false || (bk.messaging == null && bk.key_created && bk.last < bk.key_created)));
+  renderBackupCopy();
   renderHint(); if (view === "home") renderList();
+}
+$("mg-bk").addEventListener("click", () => openSettings("s-bk", "bk-pw1"));
+// with Messages on, the backup and restore texts say what else is in the file
+const rsMsg = el("p", { className: "msg warn", id: "rs-msg", hidden: true, textContent:
+  "Restoring also replaces this phone's messaging address, profiles and notes with the ones in the file. If your LNS name points at this phone's messaging address now, messages to it stop arriving here." });
+if ($("rs-warn")) $("rs-warn").after(rsMsg);
+const BK_WHAT = $("bk-what") ? $("bk-what").textContent : "", BK_WHO = $("bk-who") ? $("bk-who").textContent : "";
+function renderBackupCopy() {
+  const on = !!(status && status.key);
+  if ($("bk-what")) $("bk-what").textContent = on ? "Saves this wallet's keys, your messaging address and your chats as an encrypted file. The file is locked with a backup password you choose here, not your PIN. Use a long one you won't forget." : BK_WHAT;
+  if ($("bk-who")) $("bk-who").textContent = on ? "Anyone with the file and its password controls this wallet, can read your chats and can send messages as you." : BK_WHO;
+  rsMsg.hidden = !on;
 }
 /** Once, while no LNS name is linked: a small hint that can be closed for good. */
 function renderHint() {
@@ -346,7 +373,7 @@ const iconOf = (pid, size, key) => isAddressId(pid)
 const dayKey = t => { const d = new Date(t); return d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate(); };
 function shortWhen(t) {
   const d = new Date(t), now = new Date();
-  if (dayKey(t) === dayKey(now)) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (dayKey(t) === dayKey(now)) return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   const y = new Date(now); y.setDate(now.getDate() - 1);
   if (dayKey(t) === dayKey(y)) return "Yesterday";
   if (now - d < 6 * 864e5) return d.toLocaleDateString([], { weekday: "short" });
@@ -398,7 +425,10 @@ function renderList() {
 }
 
 // ---- new chat ------------------------------------------------------------------------------------------
-function openNew() { view = "new"; render(); $("mg-found").replaceChildren(); $("mg-to").value = ""; $("mg-to").focus(); }
+function openNew() {
+  view = "new"; render(); $("mg-found").replaceChildren(); $("mg-to").value = ""; $("mg-to").focus();
+  pushOv("new", () => { view = "home"; $("mg-newv").hidden = true; render(); });
+}
 $("mg-new").addEventListener("click", openNew);
 $("mg-find").addEventListener("submit", async e => {
   e.preventDefault();
@@ -408,19 +438,24 @@ $("mg-find").addEventListener("submit", async e => {
   // a messaging address (not a wallet address)
   const walletKeys = (typeof accts !== "undefined" ? accts : []).map(x => x.key);
   const addr = parseAddress(typed, walletKeys);
-  if (addr && addr.wallet) return say("bad", "That's a wallet address. Ask them for their messaging address or LNS name.");
+  if (addr && addr.wallet) return say("bad", "That looks like a wallet address, not a messaging address. Ask them for their messaging address or LNS name.");
   if (addr && addr.bad) return say("bad", "That isn't a valid messaging address. Ask them to copy it again from their Messages settings.");
   if (addr) {
     if (addr.address === me.public) return say("bad", "That's your own messaging address.");
     const pid = "k:" + addr.address, open = chat.convo(chat.thread(pid));
     const lines = [el("div", { className: "found" }, iconOf(pid, 64),
-      el("div", {}, el("b", { textContent: chat.label(pid) }), el("small", { textContent: "Messaging address · no name to verify" })))];
+      el("div", {}, el("b", { textContent: (chat.profile(pid) || {}).nickname || "Unnamed contact" }), el("small", { textContent: "No LNS name" })))];
     if (!addr.sure) lines.push(el("p", { className: "msg warn", textContent: "Check this is their messaging address, not a wallet address: both are 64 characters. A messaging address copied from Messages starts with msg:." }));
-    lines.push(el("p", { className: "note", textContent: "Messages are sealed to this address. You'll see it as a short code until you give it a nickname in its profile." }));
+    const nick = el("input", { type: "text", id: "mg-nick", maxLength: 40, placeholder: "Unnamed contact", value: (chat.profile(pid) || {}).nickname || "" });
+    if (!open) lines.push(el("label", { htmlFor: "mg-nick", textContent: "What should we call them?" }), nick);
     const go = el("button", { type: "button", className: "primary", textContent: open ? "Open chat" : "Start chat" });
     go.addEventListener("click", async () => {
       go.disabled = true;
-      try { openConvo(await chat.startAddress(addr.address)); home(); }
+      try {
+        const id = await chat.startAddress(addr.address);
+        if (!open && nick.value.trim()) await chat.setProfile(pid, { nickname: nick.value.trim() });
+        openConvo(id, true);
+      }
       catch (err) { go.disabled = false; box.append(el("p", { className: "msg bad", textContent: err.message })); }
     });
     lines.push(go);
@@ -451,7 +486,7 @@ $("mg-find").addEventListener("submit", async e => {
     const mg = el("button", { type: "button", className: "primary", textContent: "Merge into " + name });
     mg.addEventListener("click", async () => {
       mg.disabled = true;
-      try { openConvo(await chat.mergeAddress(c.key, name)); home(); }
+      try { openConvo(await chat.mergeAddress(c.key, name), true); }
       catch (err) { mg.disabled = false; box.append(el("p", { className: "msg bad", textContent: err.message })); }
     });
     lines.push(el("p", { className: "msg ok", textContent: "You already chat with " + chat.label(merge) + ", and that is " + name + "'s messaging address. Merge that chat into " + name + "?" }), mg);
@@ -459,7 +494,7 @@ $("mg-find").addEventListener("submit", async e => {
     const go = el("button", { type: "button", className: "primary", textContent: chat.convo(convoIdOf(name)) ? "Open chat" : "Start chat" });
     go.addEventListener("click", async () => {
       go.disabled = true;
-      try { openConvo(await chat.startDirect(name)); home(); }
+      try { openConvo(await chat.startDirect(name), true); }
       catch (err) { go.disabled = false; box.append(el("p", { className: "msg bad", textContent: err.message })); }
     });
     lines.push(go);
@@ -525,6 +560,8 @@ $("mg-on").addEventListener("click", async () => {
 // ---- overlays: a conversation, a profile, a sheet; the phone's back button closes them --------------------
 const stack = [];
 function pushOv(name, close) { stack.push({ name, close }); history.pushState({ mg: name }, ""); }
+/** Replaces the top overlay (New chat) with another (the chat it started), in the same history step. */
+function swapOv(name, close) { const top = stack.pop(); if (top) top.close(); stack.push({ name, close }); history.replaceState({ mg: name }, ""); }
 function popOv(fromHistory = false) {
   const top = stack.pop(); if (!top) return;
   top.close();
@@ -536,7 +573,7 @@ function closeAll() { while (stack.length) popOv(); }
 
 // ---- a conversation --------------------------------------------------------------------------------------
 const cv = { id: null, node: null };
-function openConvo(id) {
+function openConvo(id, fromNew = false) {
   if (cv.id) popOv();
   cv.id = id;
   const back = el("button", { type: "button", className: "back", ariaLabel: "Back to chats" }, svg(P.back));
@@ -562,7 +599,8 @@ function openConvo(id) {
   go.addEventListener("click", sendNow);
   ta.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !matchMedia("(pointer:coarse)").matches) { e.preventDefault(); sendNow(); } });
   document.body.append(box);
-  pushOv("cv", () => { box.remove(); cv.id = null; cv.node = null; if (tab === "msg") render(); });
+  const closeCv = () => { box.remove(); cv.id = null; cv.node = null; if (tab === "msg") render(); };
+  if (fromNew && stack.length && stack[stack.length - 1].name === "new") swapOv("cv", closeCv); else pushOv("cv", closeCv);
   renderConvo(true); checkSend(true);
   if (!matchMedia("(pointer:coarse)").matches) ta.focus();
 }
@@ -588,7 +626,7 @@ async function checkSend(fresh) {
   const n = cv.node; n.blocker = why && why.code !== "offline" ? why : null;
   n.ban.hidden = true; n.note.hidden = true; n.cmp.hidden = false;
   if (why && why.code === "changed") {
-    const accept = el("button", { type: "button", className: "primary", textContent: "Accept the change" });
+    const accept = el("button", { type: "button", textContent: "Accept the change" });
     const look = el("button", { type: "button", textContent: "View profile" });
     accept.addEventListener("click", async () => { accept.disabled = true; try { await chat.acceptKey(why.name); } catch (e) {} checkSend(true); renderConvo(); });
     look.addEventListener("click", () => openProfile(why.name));
@@ -611,25 +649,22 @@ function renderWho() {
   const pid = c.kind === "direct" ? chat.peer(c) : null;
   const p = pid && chat.profile(pid), st = pid && chat.keyState(pid);
   let sub = c.members.length + " people", cls = "";
-  if (c.unverified) { sub = "Didn't come from " + (isAddressId(c.claimed) ? "the address it names" : c.claimed + "'s messaging address"); cls = "warn"; }
-  else if (pid && isAddressId(pid)) sub = (p && p.nickname ? shortFp(pid.slice(2)) + " · " : "") + "address only, no name to verify";
+  if (c.unverified) { sub = "Not verified"; cls = "warn"; }
+  else if (pid && isAddressId(pid)) sub = "No LNS name";
   else if (pid) {
-    if (st.changed) { sub = "messaging address changed"; cls = "warn"; }
-    else if (st.pinned && st.chain === st.pinned) { sub = (p && p.nickname ? pid + " · " : "") + "✓ verified"; cls = "ok"; }
-    else if (st.chain === null) { sub = pid + " · messages off"; cls = "warn"; }
-    else sub = p && p.nickname ? pid : "LNS name";
+    if (st.changed) { sub = "Address changed"; cls = "warn"; }
+    else if (st.chain === null) { sub = "Messages off"; cls = "warn"; }
+    else sub = p && p.nickname ? pid : "";
   }
   n.who.replaceChildren(convoIcon(c, 40),
     el("span", { className: "t" }, el("b", { textContent: chat.title(c) }), el("small", { className: cls, textContent: sub })));
 }
-const STATES = { queued: "Waiting to send", sending: "Sending…", propagated: "Sent", sent: "Stored", failed: "Not sent" };
+const STATES = { queued: "Waiting to send", sending: "Sending", propagated: "Sent", sent: "Sent", failed: "Not sent" };
 function sendState(m) {
   const s = m.sends.map(x => x.state);
   if (s.includes("failed")) return { text: "Not sent", bad: true };
-  if (s.every(x => x === "sent")) return { text: "✓✓ Stored", bad: false };
-  if (s.every(x => x === "sent" || x === "propagated")) return { text: "✓ Sent", bad: false };
-  if (s.includes("sending")) return { text: "Sending…", bad: false };
-  return { text: status && status.node.reachable === false ? "Waits for the messaging node" : "Waiting to send", bad: false };
+  if (s.every(x => x === "sent" || x === "propagated")) return { done: true, label: "Sent", bad: false };
+  return { wait: true, label: status && status.node.reachable === false ? "Sends when you're back online" : "Sending", bad: false };
 }
 function renderConvo(toBottom = false) {
   const n = cv.node; if (!n || !chat) return;
@@ -641,9 +676,7 @@ function renderConvo(toBottom = false) {
   const kids = [];
   if (!list.length) {
     const pid = c.kind === "direct" ? chat.peer(c) : null;
-    kids.push(el("div", { className: "cv-empty" }, pid ? iconOf(pid, 72) : null,
-      el("p", { style: "margin:0 0 6px;color:var(--ink);font-weight:600;font-size:16px", textContent: chat.title(c) }),
-      el("p", { style: "margin:0", textContent: "Messages are sealed on this phone so only " + (pid ? chat.label(pid) : "the people in this chat") + " can open them. Say hello." })));
+    kids.push(el("div", { className: "cv-empty" }, el("p", { style: "margin:0", textContent: "Say hello. Only " + (pid ? chat.label(pid) : "the people in this chat") + " can read this." })));
   }
   let lastDay = null, prev = null;
   list.forEach((m, i) => {
@@ -658,17 +691,18 @@ function renderConvo(toBottom = false) {
     kids.push(bub);
     if (m.dir === "in" && trust !== "ok" && trust !== "address") {
       const who = chat.label(m.sender);
-      kids.push(el("div", { className: "meta in" }, el("span", { className: "warn", textContent:
-        trust === "unverified" ? "⚠ Not verified: this didn't come from " + who + "'s messaging address" :
-        trust === "old" ? "Sent from " + who + "'s earlier messaging address" : "Sent from " + who + "'s new messaging address, not accepted yet" })));
+      kids.push(el("div", { className: "meta in note-w" }, svg(P.warn, 16), el("span", { textContent:
+        trust === "unverified" ? "Not verified: this didn't come from " + who + "'s messaging address" :
+        trust === "old" ? "From " + who + "'s earlier messaging address" : "From " + who + "'s new messaging address, not accepted yet" })));
     }
     const st = m.dir === "out" ? sendState(m) : null;
-    if (endRun || (st && st.text !== "✓✓ Stored" && st.text !== "✓ Sent")) {
-      const meta = el("div", { className: "meta " + m.dir }, el("span", { textContent: new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }));
+    if (endRun || (st && !st.done)) {
+      const meta = el("div", { className: "meta " + m.dir }, el("span", { textContent: new Date(m.ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) }));
       if (st) {
-        meta.append(el("span", { className: st.bad ? "bad" : "", textContent: st.text }));
+        if (st.bad) meta.append(el("span", { className: "bad", textContent: st.text }));
+        else { const ic = svg(st.done ? P.tick : P.clock, 15); ic.setAttribute("role", "img"); ic.setAttribute("aria-label", st.label); ic.title = st.label; meta.append(ic); }
         if (st.bad && m.sends.some(x => x.state === "failed" && x.resend)) { const r = el("button", { type: "button", textContent: "Retry" }); r.addEventListener("click", async () => { r.disabled = true; await chat.retry(m.n); renderConvo(); }); meta.append(r); }
-        else if (st.bad) meta.append(el("span", { textContent: "(restored from a backup; it can't be sent again)" }));
+        else if (st.bad) meta.append(el("span", { textContent: "Restored from a backup; it can't be sent again." }));
       }
       kids.push(meta);
     }
@@ -715,7 +749,7 @@ function details(m) {
     const rows = [];
     const row = (k, v, cls) => rows.push(el("div", {}, el("dt", { textContent: k }), el("dd", { className: cls || "", textContent: v })));
     if (m.dir === "out") {
-      row("Sent", fullWhen(m.ts));
+      row("Written", fullWhen(m.ts));
       m.to.forEach((t, i) => {
         const x = m.sends[i] || {};
         row("To " + chat.label(t.name || "k:" + t.key), (STATES[x.state] || x.state) + (x.error ? ": " + x.error : ""));
@@ -725,15 +759,15 @@ function details(m) {
       row("From", who);
       row("Written", fullWhen(m.ts));
       row("Arrived", fullWhen(m.received) + (m.source === "history" ? " (caught up later)" : ""));
-      row("Checked", trust === "ok" ? "✓ " + who + "'s messaging address" : trust === "address" ? "Messaging address only, no name" : trust === "old" ? who + "'s earlier address" : trust === "new-key" ? who + "'s new address (not accepted)" : "⚠ not " + who + "'s address");
-      row("Sent from", shortFp(m.senderKey), "hash");
+      if (trust !== "ok" && trust !== "address") row("Checked", trust === "old" ? "From " + who + "'s earlier address" : trust === "new-key" ? "From " + who + "'s new address, not accepted" : "Not verified");
     }
     const copy = el("button", { type: "button", textContent: "Copy text" });
     copy.addEventListener("click", async () => { try { await navigator.clipboard.writeText(m.text); copy.textContent = "Copied"; } catch (e) { copy.textContent = "Can't copy"; } });
-    const del = el("button", { type: "button", className: "danger", textContent: "Delete from this phone" });
+    const del = el("button", { type: "button", className: "danger", textContent: "Delete" });
     del.style.marginTop = "0";
     del.addEventListener("click", async () => { close(); await chat.deleteMessage(m); renderConvo(); });
-    const help = m.dir === "out" ? "Sent: it reached other nodes of the network. Stored: a Store node keeps it until " + (m.to.length === 1 ? chat.label(m.to[0].name || "k:" + m.to[0].key) + " comes" : "they come") + " online. Deleting removes it from this phone only."
+    const to1 = m.dir === "out" && m.to.length === 1 ? chat.label(m.to[0].name || "k:" + m.to[0].key) : "they";
+    const help = m.dir === "out" ? "Sent. The network holds it so " + to1 + " gets it next time they're online. This app can't tell when " + to1 + " reads it. Deleting removes it from this phone only."
                                  : "Deleting removes it from this phone only.";
     card.append(el("h2", { textContent: m.dir === "out" ? "Your message" : "Message from " + chat.label(m.sender) }),
       el("div", { className: "quote", textContent: m.text }), el("dl", {}, ...rows), el("p", { className: "note", textContent: help }),
@@ -761,20 +795,20 @@ function renderProfile() {
   const pid = pv.name, n = pv.node; if (!pid || !n) return;
   const addr = isAddressId(pid), label = chat.label(pid);
   const p = chat.profile(pid) || chat.newProfile(pid, null), c = chat.chainOf(pid), st = chat.keyState(pid);
-  let state = ["", "Checking the chain…"];
-  if (addr) state = ["", "Address only, no name to verify"];
+  let state = ["", ""];
+  if (addr) state = ["", "No LNS name"];
   else if (c) {
     if (!c.registered) state = ["bad", "Not a registered name"];
-    else if (st.changed) state = ["warn", "Messaging address changed: not accepted yet"];
-    else if (!c.key) state = ["warn", "Messages turned off"];
-    else if (st.pinned && st.pinned === c.key) state = ["ok", "✓ Verified"];
-    else state = ["warn", "Unverified"];
+    else if (st.changed) state = ["warn", "Address changed"];
+    else if (!c.key) state = ["warn", "Messages off"];
+    else if (!(st.pinned && st.pinned === c.key)) state = ["warn", "Not verified"];
   }
   const head = el("div", { className: "pv-head" }, iconOf(pid, 96),
     el("h3", { textContent: label }),
     !addr && p.nickname ? el("p", { textContent: pid }) : null,
+    addr ? el("p", { className: "fp", textContent: shortFp(pid.slice(2)) }) : null,
     c && c.display && c.display !== pid ? el("p", { textContent: c.display }) : null,
-    el("span", { className: "state " + state[0], textContent: state[1] }));
+    state[1] ? el("span", { className: "state " + state[0], textContent: state[1] }) : null);
   const parts = [head];
   if (st.changed) {
     const acc = el("button", { type: "button", className: "primary", textContent: "Accept the change" });
@@ -789,10 +823,12 @@ function renderProfile() {
     const b = el("button", { type: "button", className: "sw", role: "switch", ariaLabel: text });
     b.setAttribute("aria-checked", String(on));
     b.addEventListener("click", act);
-    return el("div", { className: "tg" }, el("span", {}, text, el("small", { textContent: sub })), b);
+    const row = el("div", { className: "tg" }, el("span", {}, text, el("small", { textContent: sub })), b);
+    row.addEventListener("click", e => { if (e.target !== b) b.click(); });            // the whole row toggles
+    return row;
   };
   parts.push(el("section", { className: "card" },
-    sw(p.muted, "Mute", "No unread count in the bar.", async () => { await chat.setProfile(pid, { muted: !p.muted }); renderProfile(); }),
+    sw(p.muted, "Mute", "No unread count.", async () => { await chat.setProfile(pid, { muted: !p.muted }); renderProfile(); }),
     sw(p.blocked, "Block", "Their messages are hidden and you can't write to them.", () => {
       if (p.blocked) return chat.setProfile(pid, { blocked: false }).then(() => { renderProfile(); if (cv.id) { checkSend(false); renderConvo(); } });
       confirmSheet("Block " + label + "?", "Messages from " + label + " are hidden from now on, and you can't write to them until you unblock.", "Block", true,
@@ -831,16 +867,16 @@ function profileNotes(name, p) {
     clearTimeout(timer);
     const cur = chat.profile(name) || {};
     if (nick.value.trim() === (cur.nickname || "") && note.value === (cur.note || "")) return;
-    try { await chat.setProfile(name, { nickname: nick.value.trim(), note: note.value }); saved.textContent = "Saved on this phone"; }
+    try { await chat.setProfile(name, { nickname: nick.value.trim(), note: note.value }); saved.textContent = "Saved"; }
     catch (e) { saved.textContent = ""; if (e.status === 401) lockedNow(); }
     if (cv.id) renderWho();
   };
   nick.addEventListener("change", save); note.addEventListener("blur", save);
   note.addEventListener("input", () => { saved.textContent = ""; clearTimeout(timer); timer = setTimeout(save, 1200); });
-  const mine = el("section", { className: "card" }, el("h2", { textContent: "Only on this phone" }),
+  const mine = el("section", { className: "card" }, el("h2", { textContent: "Nickname and note" }),
     el("label", { htmlFor: "pv-nick", textContent: "Nickname", style: "margin-top:0" }), nick,
     el("label", { htmlFor: "pv-note", textContent: "Private note" }), note, saved,
-    el("p", { className: "hint", textContent: "Never sent to anyone. Kept encrypted on this phone and in your backup." }));
+    el("p", { className: "hint", textContent: "Only you see this. Never sent." }));
   return mine;
 }
 

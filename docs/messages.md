@@ -69,9 +69,10 @@ The app's event log records "message sent" and nothing about the message, the pe
 ## Delivery
 
 The app sends through its own queue: one post to the messaging node at a time, a second apart, and it follows
-each one: **Sending…**, **Sent** (it reached other nodes), **Stored** (a Store node holds it until the
-recipient is online), or **Not sent** with **Retry**. A message written while the messaging node is off waits
-and goes when it's back. Message details (tap a message) show the state for each recipient.
+each one. Under your message a clock means it's waiting or on its way, one tick means the network has it, and
+**Not sent** comes with **Retry**. The network holds a sent message so the other person gets it the next time
+they're online; the app can't tell when they read it. A message written while you're offline waits and goes
+when you're back. Message details (tap a message) show the state for each recipient.
 
 ## Limits
 

@@ -199,7 +199,7 @@ const fid = "k:" + hex(F.id.publicKey);
 await until("alice gets it in a chat with the address", async () => { await a.sync(); return a.messages(fid).length === 1; });
 m = a.messages(fid)[0];
 check("from the address, proven, not verified by any name", m.sender === fid && a.trust(m) === "address" && a.convo(fid).members[0].key === hex(F.id.publicKey) && a.convo(fid).members[0].name === null);
-check("its title is a short code", a.title(a.convo(fid)) === hex(F.id.publicKey).slice(0, 6) + "…" + hex(F.id.publicKey).slice(-4));
+check("it is never titled with hex: Unnamed contact until it gets a nickname", a.title(a.convo(fid)) === "Unnamed contact");
 await a.send(fid, "hi address");
 await until("the reply reaches the nameless app", async () => { await f.sync(); return f.messages("d:alice").some(x => x.text === "hi address" && f.trust(x) === "ok"); });
 if (process.env.NAMES_MSG_CRYPTO) {
@@ -216,6 +216,10 @@ check("and the pretender gets no chat of its own", !a.convo("k:" + hex(pretender
 await a.setProfile(fid, { nickname: "Flyer person", note: "met at the market" });
 check("an address chat takes a nickname", a.title(a.convo(fid)) === "Flyer person");
 // later the address turns out to be a name's
+// a backup made before Messages was turned on: the page can tell (the nudge to make a new one)
+writeFileSync(join(F.data, "wallet-backup.json"), JSON.stringify({ last: "2026-01-01T00:00:00Z" }));
+{ const b = (await F.call("/api/messages/status")).d.backup;
+  check("an older backup without the Messages flag is older than the messaging key", b.last === "2026-01-01T00:00:00Z" && b.messaging == null && b.key_created > b.last, b); }
 // a name typed in but not linked is never used as the sender: not someone else's, not one's own yet
 await F.call("/api/messages/name", { name: "bob" }); f.me.name = "bob";
 await f.send("d:alice", "typed bob as my name");
@@ -303,6 +307,7 @@ await until("the filler arrives", async () => (await A.call("/api/messages/statu
 r = await A.call("/api/wallet/backup", { password: "alice backup password", pin: A.pin });
 check("the backup has the chats", r.code === 200 && r.d.backup.version === 2, r.code);
 const full = r.d.backup;
+check("the app remembers that this backup holds Messages", (await A.call("/api/messages/status")).d.backup.messaging === true);
 r = await A.call("/api/wallet/backup", { password: "alice backup password", pin: A.pin, history: false });
 const small = r.d.backup;
 check("without history it is smaller", JSON.stringify(small).length < JSON.stringify(full).length && JSON.stringify(full).length > 65536 && JSON.stringify(small).length < 65536, [JSON.stringify(small).length, JSON.stringify(full).length]);
