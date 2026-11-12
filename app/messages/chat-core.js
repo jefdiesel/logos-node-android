@@ -115,6 +115,7 @@ export class Chat {
     this.unread = new Set();
     this.inAfter = 0; this.outAfter = 0; this.outSince = 0;
     this.chain = new Map();                // name -> { registered, key, avatar, color, display, at }
+    this.failed = new Map();               // name -> when reading it from the chain last failed
   }
   emptyStore() { return { v: STORE_VERSION, profiles: {}, convos: {}, aliases: {} }; }
   /** What goes in `from` on the wire: my LNS name once its msg entry is this phone's address (read on chain),
@@ -302,13 +303,19 @@ export class Chat {
     this.unread = unread;
     // read the chain for names whose message came from an address not pinned for them, to tell a new
     // address from a stranger; then chats for people who wrote first (only if the message is theirs)
-    const unknown = [...new Set(fresh.filter(m => !isAddressId(m.sender) && !(this.profile(m.sender) || { keys: [] }).keys.some(k => k.key === m.senderKey)).map(m => m.sender))];
-    for (const pid of unknown) { try { await this.lookup(pid); } catch (e) {} }
-    const newcomers = [...new Set(fresh.filter(m => m.kind === "direct" && this.trust(m) !== "unverified" && !this.convo(this.thread(m.convo))).map(m => m.sender))];
+    // (over every message, not only new ones: a name the chain couldn't be asked about is tried again later)
+    const all = [...this.inbox.values()].filter(Boolean);
+    const unknown = [...new Set(all.filter(m => !isAddressId(m.sender) && !this.chainOf(m.sender)
+      && !(this.profile(m.sender) || { keys: [] }).keys.some(k => k.key === m.senderKey)).map(m => m.sender))];
+    for (const pid of unknown) {
+      if (Date.now() - (this.failed.get(pid) || 0) < 30000) continue;
+      try { await this.lookup(pid); this.failed.delete(pid); } catch (e) { this.failed.set(pid, Date.now()); }
+    }
+    const newcomers = [...new Set(all.filter(m => m.kind === "direct" && this.trust(m) !== "unverified" && !this.convo(this.thread(m.convo))).map(m => m.sender))];
     if (newcomers.length) {
       await this.mutate(s => {
         for (const pid of newcomers) {
-          const first = fresh.find(m => m.sender === pid && this.trust(m) !== "unverified");
+          const first = all.find(m => m.sender === pid && this.trust(m) !== "unverified");
           const c = this.chainOf(pid);
           const id = convoIdOf(pid);
           if (s.convos[id]) continue;

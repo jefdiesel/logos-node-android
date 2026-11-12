@@ -235,6 +235,23 @@ await until("frank's named message lands in the same chat, verified", async () =
 let mergeErr = null; try { await a.mergeAddress(hex(MC.newKeyPair().publicKey), "frank"); } catch (e) { mergeErr = e; }
 check("an address that isn't the name's can't be merged into it", mergeErr !== null);
 
+// ---- the name service is out when a new person writes: no lasting "Not verified" ----
+{
+  const real = a.resolveRaw;
+  a.resolveRaw = async () => { throw new Error("name service unreachable"); };
+  const G = await app(w, 8130, w.NODES[4]);
+  await person(w, G, "gina", "343434");
+  const g = await chatOf(w, G);
+  await g.startDirect("alice"); await g.send("d:alice", "hello from gina");
+  const gx = "x:" + hex(G.id.publicKey);
+  await until("while the name service is out, gina's message waits as not verified", async () => { await a.sync(); return a.messages(gx).length === 1; });
+  a.resolveRaw = real; a.failed.clear();
+  await a.sync();
+  check("once it answers, the message moves to a chat with gina, verified, and the not-verified row is gone",
+    a.messages("d:gina").length === 1 && a.trust(a.messages("d:gina")[0]) === "ok" && !a.conversations().some(c => c.convo.id === gx) && a.pinned("gina") === hex(G.id.publicKey));
+  G.proc.kill();
+}
+
 // ---- 7. blocking ----
 const c = await chatOf(w, C);
 await c.startDirect("alice"); await c.send("d:alice", "real carol here");

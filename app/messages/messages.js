@@ -430,7 +430,10 @@ function renderList() {
     return row;
   }));
   // chats whose names haven't been read from the chain yet: read them, for pictures and key checks
-  for (const c of list) for (const m of c.convo.members) if (m.name && !chat.chainOf(m.name)) chat.lookup(m.name).then(() => { if (view === "home" && !cv.id) renderList(); }).catch(() => {});
+  const again = () => { if (view === "home" && !cv.id) render(); };
+  for (const c of list) for (const m of c.convo.members) if (m.name && !chat.chainOf(m.name)) chat.lookup(m.name).then(again).catch(() => {});
+  // a "Not verified" row may only be one the name service couldn't be asked about yet
+  for (const c of list) if (c.convo.unverified && !isAddressId(c.convo.claimed) && !chat.chainOf(c.convo.claimed)) chat.lookup(c.convo.claimed).then(() => chat.sync()).then(again).catch(() => {});
 }
 
 // ---- new chat ------------------------------------------------------------------------------------------
