@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- the node's own peer-to-peer traffic, and the screen reading the node's API on 127.0.0.1 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- keeps the CPU awake while the node runs, so it keeps up with its peers with the screen off -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <application
+        android:allowBackup="false"
+        android:icon="@android:drawable/sym_def_app_icon"
+        android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- specialUse: a peer-to-peer node has to keep running with no time limit, which none of the
+             other foreground service types allow (dataSync, for one, is capped at 6 hours a day). -->
+        <!-- exported only to holders of DUMP, which the adb shell has and ordinary apps cannot get, so
+             the node can be started and stopped from adb ("am start-foreground-service", see README) -->
+        <service
+            android:name=".NodeService"
+            android:exported="true"
+            android:permission="android.permission.DUMP"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Runs a Logos blockchain node, a peer-to-peer process that must stay connected to its peers while the user wants it running" />
+        </service>
+    </application>
+</manifest>

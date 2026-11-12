@@ -1,0 +1,7 @@
+.gradle/
+.kotlin/
+build/
+app/build/
+local.properties
+# the node binary is copied in at build time (from the native-build artifact), never committed
+app/src/main/jniLibs/
