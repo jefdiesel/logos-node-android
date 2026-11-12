@@ -64,6 +64,7 @@ const waitFor = async (name, expr, ms = 10000) => {
 // the old header's words must never show again, on any screen
 const noOldHeader = async (where) => {
   check(`${where}: no "Logos node" or "running on this device"`, !/logos node|running on this device/i.test(await js(`document.body.innerText`)));
+  check(`${where}: the page title is Logos Names`, (await js(`document.title`)) === "Logos Names" && !/logos node/i.test(await js(`document.title`)));
   await bigTargets(where);
 };
 // every control on screen is at least 44 x 44 px; exceptions: message bubbles (the text itself), a link inside

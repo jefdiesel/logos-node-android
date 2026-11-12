@@ -2528,7 +2528,7 @@ def backup_export(password, history=True):
 # ---- home-screen app: manifest and icon -----------------------------------------------------
 
 MANIFEST = json.dumps({
-    "name": "Logos node", "short_name": "Logos node", "start_url": "/", "scope": "/", "display": "standalone",
+    "name": "Logos Names", "short_name": "Logos Names", "start_url": "/", "scope": "/", "display": "standalone",
     "background_color": "#11110f", "theme_color": "#11110f",
     "icons": [{"src": "/lambda-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
               {"src": "/lambda-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},

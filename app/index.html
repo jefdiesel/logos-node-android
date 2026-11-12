@@ -6,7 +6,7 @@
 <meta name="app-embedded" content="__APP_EMBEDDED__">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>Logos node</title>
+<title>Logos Names</title>
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/lambda-192.png">
 <link rel="apple-touch-icon" href="/lambda-192.png">
@@ -901,8 +901,8 @@ async function fpOn() {
   if (!o.ok) return void (m.className = "msg bad", m.textContent = o.data.error || "Couldn't start fingerprint setup.");
   let cred;
   try {
-    cred = await navigator.credentials.create({ publicKey: { rp: { id: o.data.rpId, name: "Logos node" },
-      user: { id: unb64u(o.data.userId), name: "wallet", displayName: "Logos node wallet" }, challenge: unb64u(o.data.challenge),
+    cred = await navigator.credentials.create({ publicKey: { rp: { id: o.data.rpId, name: "Logos Names" },
+      user: { id: unb64u(o.data.userId), name: "wallet", displayName: "Logos Names wallet" }, challenge: unb64u(o.data.challenge),
       pubKeyCredParams: [{ type: "public-key", alg: -7 }], timeout: 60000, attestation: "none",
       authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "required", residentKey: "discouraged" },
       excludeCredentials: o.data.exclude.map(id => ({ type: "public-key", id: unb64u(id) })) } });
