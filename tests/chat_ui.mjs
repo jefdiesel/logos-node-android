@@ -28,10 +28,12 @@ A.pin = "111222"; A.session = (await A.call("/api/wallet/setup", { pin: A.pin })
 const port = 9333, prof = mkdtempSync(join(tmpdir(), "chrome-"));
 const chrome = spawn(CHROME, ["--headless=new", `--remote-debugging-port=${port}`, `--user-data-dir=${prof}`, "--no-first-run",
   "--no-default-browser-check", "--disable-gpu", "--hide-scrollbars", "--force-device-scale-factor=2",
-  ...(process.env.CI ? ["--no-sandbox"] : []), "about:blank"], { stdio: "ignore" });   // CI: Ubuntu 24.04 blocks the sandbox's user namespaces
+  ...(process.env.CI ? ["--no-sandbox"] : []), "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });   // CI: Ubuntu 24.04 blocks the sandbox's user namespaces
 procs.push(chrome);
+let chromeErr = ""; chrome.stderr.on("data", d => { chromeErr = (chromeErr + d).slice(-3000); });
 let target;
-for (let i = 0; i < 100 && !target; i++) { try { target = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find(t => t.type === "page"); } catch {} if (!target) await sleep(100); }
+for (let i = 0; i < 600 && !target; i++) { try { target = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find(t => t.type === "page"); } catch {} if (!target) await sleep(100); }
+if (!target) { console.error("Chrome didn't start (60 s): " + CHROME + "\n" + chromeErr); stopAll(); process.exit(1); }
 const ws = new WebSocket(target.webSocketDebuggerUrl);
 await new Promise((ok) => ws.addEventListener("open", ok));
 let seq = 0; const waiting = new Map(), errors = [];
