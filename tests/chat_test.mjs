@@ -307,9 +307,9 @@ if (process.env.OLD_APP) {
 } else console.log("     (OLD_APP not set: the 0.8.1 restore check is skipped)");
 
 // ---- 11. the page: CSP and what's served ----
-const head = await fetch(A.base + "/");
+const head = await fetch(A.base + "/"); await head.text();      // read every body: Node 20's fetch trips on unread ones
 check("the page may show inline (data:) pictures, nothing remote", head.headers.get("content-security-policy").includes("img-src 'self' data:;"));
-for (const f of ["messages.js", "chat-core.js", "icon.js", "identity.js"]) check(`the module ${f} is served`, (await fetch(A.base + "/messages/" + f)).ok);
+for (const f of ["messages.js", "chat-core.js", "icon.js", "identity.js"]) { const res = await fetch(A.base + "/messages/" + f); await res.text(); check(`the module ${f} is served`, res.ok); }
 const log = readFileSync(join(A.data, "wallet-events.log"), "utf8");
 check("the event log has no text, names or counts of messages", !/hi bob|sourdough|bob|carol|Bobby/.test(log.split("\n").filter(l => l.includes("message")).join("\n")) && log.includes(" message sent "), log.slice(-300));
 stopAll();

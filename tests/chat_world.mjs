@@ -66,7 +66,7 @@ export async function world(base, nodes) {
       shards.set(await N.recordAddress(PROGRAM, d.id), Array.from(rec));
     },
     resolve: (name) => N.resolveName(`http://127.0.0.1:${SEQ}`, PROGRAM, name),
-    control: (what, body = {}) => fetch(`http://127.0.0.1:${CTL}/${what}`, { method: "POST", body: JSON.stringify(body) }),
+    control: async (what, body = {}) => (await fetch(`http://127.0.0.1:${CTL}/${what}`, { method: "POST", body: JSON.stringify(body) })).text(),
     ctlGet: async (what) => (await fetch(`http://127.0.0.1:${CTL}/${what}`)).json(),
   };
   return w;
@@ -94,7 +94,7 @@ export async function app(w, port, node, extra = {}, data = null, serverPy = joi
   const p = spawn("python3", [serverPy], { env, stdio: "ignore" });
   procs.push(p);
   const base = `http://127.0.0.1:${port}`;
-  for (let i = 0; i < 100; i++) { try { if ((await fetch(base + "/api/wallet")).ok) break; } catch {} await sleep(100); }
+  for (let i = 0; i < 100; i++) { try { const r = await fetch(base + "/api/wallet"); await r.text(); if (r.ok) break; } catch {} await sleep(100); }
   const a = { base, data, proc: p, port, node, session: null, extra, serverPy };
   a.call = async (path, body, session = a.session) => {
     const headers = {};
