@@ -1,0 +1,172 @@
+name: names-build
+# Builds the LNS command line, `names`, for Android arm64 (aarch64-linux-android, API 28) with the
+# NDK, from the names project's own source at a pinned commit, unmodified. The Android app runs it as
+# a child process to make and sign public LNS transactions with a key that stays on the phone (see
+# android/NAMES.md). The result is a workflow artifact with its sha256; it is not published anywhere.
+#
+# What differs from a desktop build, and why:
+# - The LEZ wallet links PC/SC for hardware Keycards. Android has no PC/SC, so a stub library
+#   (names-cli/pcsc-stub.c) answers "no smart card service" to every call. It is linked statically.
+# - The LEZ crates pull in the Logos node's witness-generator libraries and RocksDB. They are built
+#   for Android the same way the node is (native/build-circuits.sh), at the circuits and rapidsnark
+#   versions the names project's Cargo.lock pins.
+on:
+  push:
+    paths: ['names-cli/**', .github/workflows/names-build.yml, tests/lns_real_cli.py]
+  workflow_dispatch:
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+env:
+  # logos-names main at 2026-11-02 (README: security update from the open-review report). Its CLI
+  # targets LEZ v0.3.1 and registry 38jEfVV1RCyMzu1FGbYcCn5FqxCxKyY58VgzjruAh2gq, the public testnet.
+  NAMES_REV: 27029987a81e703c88876d967c04a25f4c841681
+  ANDROID_API: "28"
+  NDK_VERSION: "30.0.16248370"
+jobs:
+  android-arm64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL /usr/local/.ghcup
+          df -h /
+      - name: Names source at the pinned commit
+        run: |
+          git init -q names && cd names
+          git fetch -q --depth 1 https://github.com/jefdiesel/logos-names.git "$NAMES_REV"
+          git checkout -q FETCH_HEAD
+          [ "$(git rev-parse HEAD)" = "$NAMES_REV" ] || { echo "::error::wrong commit"; exit 1; }
+          git log -1 --format='names %H %cd %s'
+      - name: Versions from the names Cargo.lock
+        id: v
+        run: |
+          # build-circuits.sh reads the circuits tag and the rapidsnark rev from a node Cargo.toml; give it
+          # one with exactly the two lines it reads, taken from what names locks.
+          LBC_TAG=$(grep -m1 -oE 'logos-blockchain-circuits\.git\?tag=[^#"]+' names/Cargo.lock | sed 's/.*tag=//')
+          RS_REV=$(grep -m1 -oE 'logos-blockchain-rust-rapidsnark\.git\?rev=[0-9a-f]+' names/Cargo.lock | sed 's/.*rev=//')
+          [ -n "$LBC_TAG" ] && [ -n "$RS_REV" ] || { echo "::error::circuits tag or rapidsnark rev not found in Cargo.lock"; exit 1; }
+          mkdir -p lock-versions
+          printf 'lbc-pol-sys = { git = "https://github.com/logos-blockchain/logos-blockchain-circuits.git", tag = "%s" }\n' "$LBC_TAG" > lock-versions/Cargo.toml
+          printf 'rust-rapidsnark = { git = "https://github.com/logos-blockchain/logos-blockchain-rust-rapidsnark.git", rev = "%s" }\n' "$RS_REV" >> lock-versions/Cargo.toml
+          cat lock-versions/Cargo.toml
+          sudo apt-get update -qq && sudo apt-get install -y -qq nlohmann-json3-dev m4 unzip >/dev/null
+          NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
+          if [ ! -f "$NDK/source.properties" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" >/dev/null
+          fi
+          printf 'ANDROID_NDK_HOME=%s\nANDROID_NDK_ROOT=%s\n' "$NDK" "$NDK" >> "$GITHUB_ENV"
+          curl -fsSL -o "$RUNNER_TEMP/lbc-ci.yml" "https://raw.githubusercontent.com/logos-blockchain/logos-blockchain-circuits/$LBC_TAG/.github/workflows/ci.yml"
+          CIRCOM_TAG=$(grep -m1 'CIRCOM_TAG:' "$RUNNER_TEMP/lbc-ci.yml" | awk '{print $2}')
+          echo "lbc=$LBC_TAG" >> "$GITHUB_OUTPUT"
+          echo "circom=$CIRCOM_TAG" >> "$GITHUB_OUTPUT"
+          echo "ndk=$(basename "$NDK")" >> "$GITHUB_OUTPUT"
+          echo "circuits $LBC_TAG, rapidsnark $RS_REV, circom $CIRCOM_TAG"
+      - name: Cache circuits folder
+        id: lbc
+        uses: actions/cache/restore@v4
+        with:
+          path: lbc-android
+          key: names-lbc-android-${{ steps.v.outputs.lbc }}-${{ steps.v.outputs.ndk }}-api${{ env.ANDROID_API }}-${{ hashFiles('native/build-circuits.sh', 'lock-versions/Cargo.toml') }}
+      - uses: actions/cache@v4
+        if: steps.lbc.outputs.cache-hit != 'true'
+        with:
+          path: ~/.cargo/bin/circom
+          key: circom-bin-${{ steps.v.outputs.circom }}
+      - name: Circuits libraries for Android
+        if: steps.lbc.outputs.cache-hit != 'true'
+        run: WORK="$RUNNER_TEMP/lbc-work" native/build-circuits.sh lock-versions "$GITHUB_WORKSPACE/lbc-android"
+      - uses: actions/cache/save@v4
+        if: steps.lbc.outputs.cache-hit != 'true'
+        continue-on-error: true
+        with:
+          path: lbc-android
+          key: ${{ steps.lbc.outputs.cache-primary-key }}
+      - name: PC/SC stand-in
+        run: |
+          TC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+          mkdir -p pcsc-stub
+          "$TC/bin/aarch64-linux-android$ANDROID_API-clang" -O2 -fPIC -Wall -Werror -c names-cli/pcsc-stub.c -o pcsc-stub/pcsc-stub.o
+          "$TC/bin/llvm-ar" rcs pcsc-stub/libpcscstub.a pcsc-stub/pcsc-stub.o
+          "$TC/bin/llvm-nm" -g --defined-only pcsc-stub/libpcscstub.a
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: names
+          key: names-android-${{ env.NAMES_REV }}
+          cache-on-failure: true
+      - name: Build names for Android
+        working-directory: names
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add aarch64-linux-android
+          rustc -V; cargo -V
+          TC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+          T=aarch64-linux-android; CLANG="$TC/bin/$T$ANDROID_API-clang"
+          export CC_aarch64_linux_android="$CLANG" CXX_aarch64_linux_android="$CLANG++"
+          export AR_aarch64_linux_android="$TC/bin/llvm-ar" RANLIB_aarch64_linux_android="$TC/bin/llvm-ranlib"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CLANG"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_AR="$TC/bin/llvm-ar"
+          export CXXSTDLIB_aarch64_linux_android=c++
+          export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--target=$T$ANDROID_API --sysroot=$TC/sysroot"
+          export LBC_ROOT_DIR="$GITHUB_WORKSPACE/lbc-android"
+          export PCSC_LIB_DIR="$GITHUB_WORKSPACE/pcsc-stub" PCSC_LIB_NAME=static=pcscstub
+          # the CLI never builds the registry guest; only names_cli and its libraries
+          export RISC0_SKIP_BUILD=1
+          cargo build --locked --release --target $T -p names_cli
+          df -h /
+      - name: Describe and package the result
+        run: |
+          TC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+          B=names/target/aarch64-linux-android/release/names
+          file "$B"; ls -la "$B"
+          mkdir out && cp "$B" out/names && "$TC/bin/llvm-strip" out/names
+          "$TC/bin/llvm-readelf" -d out/names | tee "$RUNNER_TEMP/dynamic.txt" | grep -E "NEEDED|RUNPATH|RPATH" || true
+          # only the system's own libraries: nothing else would exist on the phone
+          bad=$(grep NEEDED "$RUNNER_TEMP/dynamic.txt" | grep -vE '\[(libc|libm|libdl|liblog)\.so\]' || true)
+          [ -z "$bad" ] || { echo "::error::unexpected shared libraries: $bad"; exit 1; }
+          if "$TC/bin/llvm-nm" -D --undefined-only out/names | grep -q SCard; then
+            echo "::error::PC/SC symbols are still undefined"; exit 1
+          fi
+          { echo "names (jefdiesel/logos-names $NAMES_REV) for aarch64-linux-android API $ANDROID_API, NDK $NDK_VERSION"
+            echo "built by $GITHUB_REPOSITORY run $GITHUB_RUN_ID from $GITHUB_SHA"; } > out/BUILD.txt
+          (cd out && sha256sum names > SHA256SUMS)
+          cat out/SHA256SUMS out/BUILD.txt; ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: names-cli-android-arm64
+          path: out/
+
+  # The same pinned names, built for Linux x86_64, run by the app's own server.py against its forwarder and
+  # the public LEZ testnet (tests/lns_real_cli.py). Nothing is spent: the new account holds nothing and
+  # `names register` stops before its first transaction. This checks the parts the Android build can't be
+  # run for in CI: the account address read from the real output, the real RPC client through the forwarder.
+  linux-forwarder:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Names source at the pinned commit
+        run: |
+          git init -q names && cd names
+          git fetch -q --depth 1 https://github.com/jefdiesel/logos-names.git "$NAMES_REV"
+          git checkout -q FETCH_HEAD
+      - name: System libraries
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends libssl-dev pkg-config libpcsclite-dev >/dev/null
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: names
+          key: names-linux-${{ env.NAMES_REV }}
+          cache-on-failure: true
+      - name: Build names for Linux
+        working-directory: names
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          RISC0_SKIP_BUILD=1 cargo build --locked --release -p names_cli
+      - name: The real names through the app's forwarder (no r0vm on this machine, as on a phone)
+        run: |
+          ! command -v r0vm
+          NAMES_BIN="$GITHUB_WORKSPACE/names/target/release/names" python3 tests/lns_real_cli.py

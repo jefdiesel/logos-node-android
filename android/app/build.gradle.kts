@@ -69,6 +69,8 @@ android {
             keepDebugSymbols += "**/liblogosnode.so"
             // the messaging node's runner and libraries too (checked by sha256 in CI)
             keepDebugSymbols += listOf("**/libwakurunner.so", "**/liblogosdelivery.so", "**/librln.so")
+            // the LNS signer, `names` (android/NAMES.md), as built by names-build
+            keepDebugSymbols += "**/libnames.so"
         }
     }
 

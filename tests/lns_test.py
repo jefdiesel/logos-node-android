@@ -1,0 +1,316 @@
+#!/usr/bin/env python3
+"""The phone's own LNS name (android/NAMES.md): the /api/wallet/lns routes, the sequencer forwarder for the
+signer, and the name account in the encrypted backup, with a stand-in signer (tests/fake_names_bin.py) and a
+stand-in sequencer. No node, no chain.
+
+  python3 tests/lns_test.py
+
+Runs the app the way the Android app does (APP_EMBEDDED=android, server.py imported, main() in a thread) on
+127.0.0.1:8099. The fake signer prints a recovery phrase when it makes the wallet, and noise with that phrase
+in every registration: the test checks it reaches no reply, no log and no file other than the wallet's own.
+"""
+import base64, http.server, json, os, shutil, stat, sys, tempfile, threading, time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import wallet_test as W  # noqa: E402
+import fake_names_bin as FAKE  # noqa: E402  (only its constants; importing it runs nothing with no args)
+
+call, check = W.call, W.check
+PIN, PASSWORD = "357911", "a long backup password"
+MAIN = "a1" * 32
+W.BASE = "http://127.0.0.1:8099"
+
+# ---- a stand-in sequencer: answers the methods the signer and the app use, and remembers what it saw -----
+seen = []
+
+
+class Seq(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        answer = lambda c: {"jsonrpc": "2.0", "id": c.get("id"),
+                            "result": {"getAccountBalance": 4200000, "getLastBlockId": 7, "sendTransaction": "cd" * 32}.get(c.get("method"))}
+        seen.extend(body if isinstance(body, list) else [body])
+        data = json.dumps([answer(c) for c in body] if isinstance(body, list) else answer(body)).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *a):
+        pass
+
+
+seq = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Seq)
+threading.Thread(target=seq.serve_forever, daemon=True).start()
+
+# ---- the app, as the Android app runs it, with a node config the fake node reads keys from ---------------
+data = tempfile.mkdtemp()
+node = tempfile.mkdtemp()
+with open(os.path.join(node, "user_config.yaml"), "w") as f:
+    f.write("kms:\n  keystore: keystore.yaml\n")
+with open(os.path.join(node, "keystore.yaml"), "w") as f:
+    f.write("public_keys:\n  LeaderFunding: %s\n  SdpFunding: %s\nsecret_keys:\n  LeaderFunding: %s\n" % (MAIN, "b2" * 32, "c3" * 32))
+bins = tempfile.mkdtemp()
+fake_node = os.path.join(bins, "fake_node_bin.py")
+fake_names = os.path.join(bins, "libnames.so")          # named as the app ships it
+shutil.copy(os.path.join(HERE, "fake_node_bin.py"), fake_node)
+shutil.copy(os.path.join(HERE, "fake_names_bin.py"), fake_names)
+os.chmod(fake_node, 0o755)
+os.chmod(fake_names, 0o755)
+os.environ.update(APP_EMBEDDED="android", APP_PORT="8099", APP_DATA=data, NODE_BIN=fake_node,
+                  NODE_CFG=os.path.join(node, "user_config.yaml"), UPDATE_URL="", NODE_RESTART_CMD="",
+                  NAMES_BIN=fake_names, NAMES_RPC_URL="http://127.0.0.1:%d/" % seq.server_address[1])
+sys.path.insert(0, os.path.join(HERE, "..", "app"))
+import server  # noqa: E402
+
+threading.Thread(target=server.main, daemon=True).start()
+for _ in range(80):
+    try:
+        if call("/api/wallet")[0] == 200:
+            break
+    except Exception:
+        pass
+    time.sleep(0.1)
+calls_file = os.path.join(data, "fake-names-calls.jsonl")
+for _ in range(50):                          # the node's keys, read once at start through the fake node
+    with server.lock:
+        server.keys_cache["at"] = 0.0
+    if server.wallet_keys():
+        break
+    time.sleep(0.1)
+
+
+def calls():
+    try:
+        return [json.loads(l) for l in open(calls_file)]
+    except FileNotFoundError:
+        return []
+
+
+def wait_job(s, tries=150):
+    for _ in range(tries):
+        code, d = call("/api/wallet/lns", session=s)
+        if d.get("job", {}).get("state") != "running":
+            return d
+        time.sleep(0.1)
+    check("the job finishes", False, d)
+
+
+def phrase_nowhere(where):
+    """The recovery phrase is in no file of the app's data except the wallet's own storage.json."""
+    for top, _, files in os.walk(data):
+        for name in files:
+            p = os.path.join(top, name)
+            if p == os.path.join(server.LNS_HOME, "storage.json"):
+                continue
+            with open(p, "rb") as f:
+                if b"abandon ability" in f.read():
+                    check("%s: no recovery phrase in %s" % (where, os.path.relpath(p, data)), False)
+    check("%s: the recovery phrase is in no file but the wallet's own" % where, True)
+
+
+s = call("/api/wallet/setup", {"pin": PIN})[1]["session"]
+
+# ---- who may call ------------------------------------------------------------------------------------------
+check("locked: GET /api/wallet/lns is refused", call("/api/wallet/lns")[0] == 401)
+check("locked: making the account is refused", call("/api/wallet/lns/account", {})[0] == 401)
+check("from another page: refused", call("/api/wallet/lns/account", {}, session=s, origin="http://evil.example")[0] == 403)
+check("with no Origin: refused", call("/api/wallet/lns/account", {}, session=s, origin=None)[0] == 403)
+check("under another Host name: refused", call("/api/wallet/lns", session=s, host="rebind.example:8099")[0] == 403)
+server.NAMES_BIN = ""
+check("without the signer every route is 404", call("/api/wallet/lns", session=s)[0] == 404
+      and all(call(p, {}, session=s)[0] == 404 for p in ("/api/wallet/lns/account", "/api/wallet/lns/register", "/api/wallet/lns/name", "/api/wallet/lns/text")))
+server.NAMES_BIN = fake_names
+server.EMBEDDED = False
+check("outside the Android app every route is 404", call("/api/wallet/lns", session=s)[0] == 404
+      and call("/api/wallet/lns/account", {}, session=s)[0] == 404)
+server.EMBEDDED = True
+
+code, d = call("/api/wallet/lns", session=s)
+check("no account yet", code == 200 and d["account"] is None and d["name"] == "" and d["job"]["state"] == "idle", d)
+check("it offers this wallet's Main address for blockchain", d["values"]["blockchain"] == MAIN, d)
+check("and no messaging address while messages are off", d["values"]["msg"] is None, d)
+check("register before the account: refused", call("/api/wallet/lns/register", {"name": "alice"}, session=s)[0] == 409)
+check("an entry before the account: refused", call("/api/wallet/lns/text", {"entry": "blockchain"}, session=s)[0] == 409)
+
+# ---- the account ---------------------------------------------------------------------------------------------
+code, d = call("/api/wallet/lns/account", {}, session=s)
+check("the account is made", code == 200 and d.get("account") == FAKE.ACCOUNT, (code, d))
+check("the reply holds only the address", set(d) == {"account"}, d)
+check("the signer was run as `names wallet account new public`", calls()[-1]["args"] == ["wallet", "account", "new", "public"])
+env = calls()[-1]
+check("with the app's wallet folder, the forwarder and the registry, and nothing else of the app's environment",
+      set(server.lns_env()) == {"PATH", "HOME", "TMPDIR", "LEE_WALLET_HOME_DIR", "LOGOS_NAMES_RPC", "LOGOS_NAMES_PROGRAM", "NO_COLOR", "RUST_BACKTRACE"}
+      and set(server.lns_env()) <= set(env["env"]) and not {"APP_DATA", "APP_PORT", "NAMES_BIN", "NODE_BIN", "NAMES_RPC_URL"} & set(env["env"])
+      and env["rpc"] == "http://127.0.0.1:8099/lez-rpc/" + server.LNS_RPC_SECRET and env["program"] == server.NAMES_PROGRAM, env)
+mode = lambda p: stat.S_IMODE(os.stat(p).st_mode)
+check("the wallet folder is 0700", mode(server.LNS_HOME) == 0o700, oct(mode(server.LNS_HOME)))
+check("its files are 0600", all(mode(os.path.join(server.LNS_HOME, f)) == 0o600 for f in os.listdir(server.LNS_HOME) if os.path.isfile(os.path.join(server.LNS_HOME, f))),
+      {f: oct(mode(os.path.join(server.LNS_HOME, f))) for f in os.listdir(server.LNS_HOME)})
+check("a second account is refused", call("/api/wallet/lns/account", {}, session=s)[0] == 409)
+code, d = call("/api/wallet/lns", session=s)
+check("the account and its balance show", d["account"] == FAKE.ACCOUNT and d["balance"] == "4200000", d)
+check("the balance was asked of the name service for that account",
+      {"method": "getAccountBalance", "params": [FAKE.ACCOUNT]}.items() <= seen[-1].items(), seen[-1])
+phrase_nowhere("after making the account")
+
+# ---- register ------------------------------------------------------------------------------------------------
+for bad in ("Bad Name", "-x", "a" * 33, "", "alice;rm"):
+    check("register refuses %r" % bad, call("/api/wallet/lns/register", {"name": bad}, session=s)[0] == 400)
+seen.clear()
+code, d = call("/api/wallet/lns/register", {"name": "Alice"}, session=s)
+check("register starts", code == 200 and d == {"started": "register"}, (code, d))
+d = wait_job(s)
+check("register finished", d["job"]["state"] == "done" and d["job"]["kind"] == "register" and d["name"] == "alice", d)
+c = calls()[-1]
+check("as `names register alice --owner Public/<account> --term 1y --wait`",
+      c["args"] == ["register", "alice", "--owner", "Public/" + FAKE.ACCOUNT, "--term", "1y", "--wait"], c)
+check("with the register gas limit written first", c["gas"] == 250000, c)
+check("its calls reached the sequencer through the forwarder",
+      [b["method"] for b in seen if b["method"] != "getAccountBalance"] == ["getLastBlockId", "sendTransaction", "sendTransaction"], seen)
+check("only a known progress line is shown", d["job"]["progress"] == "alice is registered", d["job"])
+check("nothing of the noise is in the reply", FAKE.FAKE_PHRASE not in json.dumps(d) and "Private/" not in json.dumps(d))
+check("a second name is refused", call("/api/wallet/lns/register", {"name": "bob"}, session=s)[0] == 409)
+
+# ---- entries ---------------------------------------------------------------------------------------------------
+for bad in ({"entry": "avatar"}, {"entry": "BLOCKCHAIN"}, {}, {"entry": ["msg"]}):
+    check("an entry other than blockchain/msg is refused (%s)" % bad, call("/api/wallet/lns/text", bad, session=s)[0] == 400)
+code, d = call("/api/wallet/lns/text", {"entry": "blockchain", "value": "ff" * 32}, session=s)
+check("blockchain starts", code == 200, (code, d))
+d = wait_job(s)
+c = calls()[-1]
+check("as `names set-text alice blockchain <this wallet's Main>`, whatever value the page sent",
+      c["args"] == ["set-text", "alice", "blockchain", MAIN], c)
+check("with the entry gas limit", c["gas"] == 120000 and d["job"]["state"] == "done" and d["job"]["entry"] == "blockchain", (c, d))
+code, d = call("/api/wallet/lns/text", {"entry": "msg"}, session=s)
+check("msg without a messaging address: refused", code == 409 and "messages" in d["error"], (code, d))
+secret = "11" * 32
+public = server.x25519(bytes.fromhex(secret), (9).to_bytes(32, "little")).hex()
+server.msg_key_save({"secret": secret, "public": public, "name": "", "version": 1, "groups": False}, quiet=True)
+code, d = call("/api/wallet/lns/text", {"entry": "msg"}, session=s)
+d = wait_job(s)
+check("msg is set to this phone's messaging address",
+      calls()[-1]["args"] == ["set-text", "alice", "msg", public] and d["job"]["state"] == "done", (calls()[-1], d))
+check("the page is offered both values now", d["values"] == {"blockchain": MAIN, "msg": public}, d["values"])
+
+# ---- failures and one job at a time ------------------------------------------------------------------------------
+check("unlinking the name", call("/api/wallet/lns/name", {"name": ""}, session=s)[1] == {"name": ""})
+call("/api/wallet/lns/register", {"name": "taken"}, session=s)
+d = wait_job(s)
+check("a refused registration says why, in one line", d["job"]["state"] == "failed" and d["job"]["error"] == "taken is already registered: held", d["job"])
+check("and the name stays unset", d["name"] == "", d)
+check("register slow starts", call("/api/wallet/lns/register", {"name": "slow"}, session=s)[0] == 200)
+check("while it runs, another change is refused", call("/api/wallet/lns/register", {"name": "slow2"}, session=s)[0] == 409)
+check("and linking a name too", call("/api/wallet/lns/name", {"name": "alice"}, session=s)[0] == 409)
+check("the running job shows", call("/api/wallet/lns", session=s)[1]["job"]["state"] == "running")
+d = wait_job(s)
+check("slow is registered", d["name"] == "slow" and d["job"]["state"] == "done", d)
+check("linking a name held from elsewhere (after a transfer)",
+      call("/api/wallet/lns/name", {"name": "android"}, session=s)[1] == {"name": "android"})
+call("/api/wallet/lns/text", {"entry": "blockchain"}, session=s)
+wait_job(s)
+check("entries then go to that name", calls()[-1]["args"] == ["set-text", "android", "blockchain", MAIN], calls()[-1])
+
+# ---- the forwarder ---------------------------------------------------------------------------------------------
+import urllib.request, urllib.error  # noqa: E402
+
+
+def post_rpc(path, body, host=None):
+    req = urllib.request.Request(W.BASE + path, data=json.dumps(body).encode(), method="POST",
+                                 headers={"Content-Type": "application/json"})
+    if host:
+        req.add_header("Host", host)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read() or b"{}")
+
+
+good = "/lez-rpc/" + server.LNS_RPC_SECRET
+ok_call = {"jsonrpc": "2.0", "id": 3, "method": "getLastBlockId", "params": []}
+check("the forwarder passes a read for the signer", post_rpc(good, ok_call) == (200, {"jsonrpc": "2.0", "id": 3, "result": 7}))
+check("and a batch", post_rpc(good, [ok_call, dict(ok_call, id=4)]) == (200, [{"jsonrpc": "2.0", "id": 3, "result": 7}, {"jsonrpc": "2.0", "id": 4, "result": 7}]))
+check("without the secret: 404", post_rpc("/lez-rpc/" + "0" * 32, ok_call)[0] == 404 and post_rpc("/lez-rpc/", ok_call)[0] == 404)
+check("under another Host name: 404", post_rpc(good, ok_call, host="rebind.example:8099")[0] == 404)
+check("a method it doesn't pass: 403", post_rpc(good, dict(ok_call, method="requeueCrossZoneDeadLetter"))[0] == 403)
+check("a batch with one such method: 403", post_rpc(good, [ok_call, dict(ok_call, method="getCrossZoneDeadLetters")])[0] == 403)
+server.NAMES_BIN = ""
+check("without the signer the forwarder is 404", post_rpc(good, ok_call)[0] == 404)
+server.NAMES_BIN = fake_names
+
+# ---- the encrypted backup carries the name account, and restore puts it back ------------------------------------
+code, d = call("/api/wallet/backup", {"password": PASSWORD, "pin": PIN}, session=s)
+check("backup made", code == 200, (code, d))
+doc = d["backup"]
+check("the backup file has no wallet file or phrase in the clear", "lns" not in json.dumps({k: v for k, v in doc.items() if k != "ciphertext"})
+      and FAKE.FAKE_PHRASE not in json.dumps(doc))
+kdf = doc["kdf"]
+plain = server.aead_decrypt(server.backup_key(PASSWORD, base64.b64decode(kdf["salt"]), {k: kdf[k] for k in ("n", "r", "p", "dklen")}),
+                            base64.b64decode(doc["cipher"]["nonce"]), base64.b64decode(doc["ciphertext"]), server.BACKUP_AADS[doc["version"]])
+content = json.loads(plain)
+with open(os.path.join(server.LNS_HOME, "storage.json")) as f:
+    stored = f.read()
+lw = content.get("lns_wallet") or {}
+check("inside it: the wallet file, names.json slot, account and name", lw.get("storage") == stored and lw.get("account") == FAKE.ACCOUNT
+      and lw.get("name") == "android" and "names" in lw, lw.keys())
+shutil.rmtree(server.LNS_HOME)
+os.remove(server.LNS_STATE_FILE)
+check("with the wallet gone the account is gone", call("/api/wallet/lns", session=s)[1]["account"] is None)
+code, d = call("/api/wallet/restore", {"backup": doc, "password": PASSWORD, "pin": PIN}, session=s)
+check("restore puts the name account back", code == 200 and d.get("lns_restored") is True, (code, d))
+with open(os.path.join(server.LNS_HOME, "storage.json")) as f:
+    check("the same wallet file", f.read() == stored)
+d = call("/api/wallet/lns", session=s)[1]
+check("the same account and name", d["account"] == FAKE.ACCOUNT and d["name"] == "android", d)
+check("restored files are 0600 in a 0700 folder", mode(server.LNS_HOME) == 0o700
+      and all(mode(os.path.join(server.LNS_HOME, f)) == 0o600 for f in os.listdir(server.LNS_HOME) if os.path.isfile(os.path.join(server.LNS_HOME, f))))
+check("the restored wallet has no config yet (a backup doesn't carry it)", not os.path.exists(os.path.join(server.LNS_HOME, "wallet_config.json")))
+call("/api/wallet/lns/text", {"entry": "blockchain"}, session=s)
+d = wait_job(s)
+check("an entry can be set right after a restore onto a clean phone", d["job"]["state"] == "done"
+      and calls()[-1]["args"] == ["set-text", "android", "blockchain", MAIN] and calls()[-1]["gas"] == 120000, (d["job"], calls()[-1]))
+with open(os.path.join(server.LNS_HOME, "storage.json"), "w") as f:
+    f.write('{"seed": "another wallet"}')
+code, d = call("/api/wallet/restore", {"backup": doc, "password": PASSWORD, "pin": PIN}, session=s)
+kept = [f for f in os.listdir(server.LNS_HOME) if f.startswith("storage.json.replaced-")]
+check("restoring over a different wallet file keeps that one beside it", code == 200 and d.get("lns_restored") is True and len(kept) == 1, (d, kept))
+with open(os.path.join(server.LNS_HOME, kept[0])) as f:
+    check("unchanged", f.read() == '{"seed": "another wallet"}')
+bad_doc = json.loads(json.dumps(doc))
+content["lns_wallet"] = {"storage": "not json", "account": FAKE.ACCOUNT}
+nonce = os.urandom(12)
+bad_doc["cipher"]["nonce"] = base64.b64encode(nonce).decode()
+bad_doc["ciphertext"] = base64.b64encode(server.aead_encrypt(
+    server.backup_key(PASSWORD, base64.b64decode(kdf["salt"])), nonce, json.dumps(content).encode(), server.BACKUP_AADS[doc["version"]])).decode()
+code, d = call("/api/wallet/restore", {"backup": bad_doc, "password": PASSWORD, "pin": PIN}, session=s)
+check("a backup with a damaged name account is refused as a whole", code == 400 and "damaged" in d.get("error", ""), (code, d))
+
+state_before = open(server.LNS_STATE_FILE).read()
+with open(server.LNS_STATE_FILE, "w") as f:
+    json.dump({"name": "android"}, f)                  # a wallet file but no account recorded (a failed creation)
+code, d = call("/api/wallet/backup", {"password": PASSWORD, "pin": PIN}, session=s)
+kdf2 = d["backup"]["kdf"]
+inner = json.loads(server.aead_decrypt(server.backup_key(PASSWORD, base64.b64decode(kdf2["salt"])), base64.b64decode(d["backup"]["cipher"]["nonce"]),
+                                       base64.b64decode(d["backup"]["ciphertext"]), server.BACKUP_AADS[d["backup"]["version"]]))
+check("a name account restore would refuse is left out of the backup", code == 200 and "lns_wallet" not in inner, inner.keys())
+code, r = call("/api/wallet/restore", {"backup": d["backup"], "password": PASSWORD, "pin": PIN}, session=s)
+check("and that backup still restores", code == 200, (code, r))
+with open(server.LNS_STATE_FILE, "w") as f:
+    f.write(state_before)
+
+# ---- logs ------------------------------------------------------------------------------------------------------------
+with open(os.path.join(data, "wallet-events.log")) as f:
+    log = f.read()
+check("the event log records the account and the jobs", "lns account made" in log and "lns register done" in log
+      and "lns register failed" in log and "lns text done" in log, log[-600:])
+check("and no secret path of the forwarder", server.LNS_RPC_SECRET not in log)
+os.remove(calls_file)                      # the fake signer's own record holds the forwarder's secret path; not the app's
+phrase_nowhere("at the end")
+
+# ---- locking stops it ----------------------------------------------------------------------------------------------
+call("/api/wallet/lock", {}, session=s)
+check("after Lock, entries are refused", call("/api/wallet/lns/text", {"entry": "blockchain"}, session=s)[0] == 401)
+print("all checks passed")

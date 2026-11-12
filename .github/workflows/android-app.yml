@@ -59,6 +59,20 @@ jobs:
               cp "$W/$name" "$J/"                           # the libraries keep their names: they are loaded by name
             fi
           done < android/messaging.sha256
+      - name: LNS signer pinned in android/names.properties
+        id: names
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prop() { sed -n "s/^$1=//p" android/names.properties | tr -d '[:space:]'; }
+          RUN=$(prop run); SHA=$(prop sha256)
+          [ -n "$RUN" ] && [ -n "$SHA" ] || { echo "::error::android/names.properties is incomplete"; exit 1; }
+          gh run download "$RUN" -R "$GITHUB_REPOSITORY" -n names-cli-android-arm64 -D ndl
+          [ "$(sha256sum ndl/names | cut -d' ' -f1)" = "$SHA" ] \
+            || { echo "::error::names from run $RUN doesn't match the pinned sha256"; exit 1; }
+          cat ndl/BUILD.txt
+          cp ndl/names android/app/src/main/jniLibs/arm64-v8a/libnames.so   # Android installs only lib*.so files
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -96,6 +110,9 @@ jobs:
             [ "$(unzip -p "$A" "lib/arm64-v8a/$in_apk" | sha256sum | cut -d' ' -f1)" = "$sum" ] \
               || fail "lib/arm64-v8a/$in_apk is missing or differs from the pinned $name"
           done < android/messaging.sha256
+          # the LNS signer, byte for byte as pinned in android/names.properties
+          [ "$(unzip -p "$A" lib/arm64-v8a/libnames.so | sha256sum | cut -d' ' -f1)" = "${{ steps.names.outputs.sha }}" ] \
+            || fail "lib/arm64-v8a/libnames.so is missing or differs from the pinned names build"
           # the wallet: the repository's own app/ files, unchanged, and Python to run them
           for f in server.py index.html release.json names/names.js names/lookup.js messages/messages.js qr/qrcode.js; do
             [ "$(unzip -p "$A" "assets/webapp/$f" | sha256sum | cut -d' ' -f1)" = "$(sha256sum "app/$f" | cut -d' ' -f1)" ] \

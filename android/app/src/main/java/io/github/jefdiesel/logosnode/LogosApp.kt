@@ -72,6 +72,8 @@ object WalletServer {
                         // the web app's Android mode (0.7.6): no self-update or restart, the app's
                         // fingerprint check instead of passkeys, and the page's texts for the app
                         "APP_EMBEDDED" to "android",
+                        // the LNS signer (android/NAMES.md); server.py offers "Your name" only if it exists
+                        "NAMES_BIN" to File(app.applicationInfo.nativeLibraryDir, "libnames.so").path,
                     )
                 ).toString()
                 Python.getInstance().getModule("logos_embed").callAttr("start", web.path, env)
