@@ -237,7 +237,7 @@ msgSettings.innerHTML = `
     </details>
   </details>
   <h3>Your messaging address</h3>
-  <p class="note" style="margin-top:0">Anyone can write to this phone at this address, with or without an LNS name. It isn't a wallet address: coins can't be sent to it.</p>
+  <p class="note" style="margin-top:0">Anyone can write to this phone at this address, with or without an LNS name. This address is for messages. Coins go to your wallet address (Wallet → Receive). Your LNS name can take both: coins once it has a wallet address set, messages once it's linked to this phone.</p>
   <code class="cmd" id="mg-addr" hidden></code>
   <div class="row"><button type="button" id="mg-addr-show" aria-controls="mg-addr" aria-expanded="false">Show</button><button type="button" id="mg-addr-copy">Copy</button></div>
   <p class="msg" id="mg-addr-m" role="status"></p>`;

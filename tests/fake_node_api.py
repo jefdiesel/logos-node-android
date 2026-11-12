@@ -5,12 +5,15 @@
 
 Answers /cryptarchia/info, /network/info and /wallet/<key>/balance (every key holds 12,500, in two notes).
 POST /mode/online or /mode/syncing switches the state the node reports. POST /balance/<n> sets what every key
-holds, and POST /balance/<key>/<n> what one key holds (for the balance-size checks).
+holds (and drops what /receive added), and POST /balance/<key>/<n> what one key holds (for the balance-size checks).
+POST /receive/<key>/<n> adds a new note of n to that key, on top of what it holds: the app records that as coins
+received.
 """
 import http.server, json, re, sys
 
 mode = {"state": sys.argv[2] if len(sys.argv) > 2 else "online"}
 balances = {"*": 12500}
+received = {}                                  # key -> {note id: amount} added by /receive
 
 
 class H(http.server.BaseHTTPRequestHandler):
@@ -29,7 +32,9 @@ class H(http.server.BaseHTTPRequestHandler):
         m = re.match(r"^/wallet/([0-9a-f]{64})/balance$", self.path)
         if m:
             b = balances.get(m.group(1), balances["*"])
-            return self.out(200, {"balance": b, "notes": {"n1": 10000, "n2": 2500} if b == 12500 else {"n1": b}})
+            notes = {"n1": 10000, "n2": 2500} if b == 12500 else {"n1": b}
+            notes.update(received.get(m.group(1), {}))
+            return self.out(200, {"balance": sum(notes.values()), "notes": notes})
         return self.out(404, {"code": 404, "message": "not here"})
 
     def do_POST(self):
@@ -40,8 +45,13 @@ class H(http.server.BaseHTTPRequestHandler):
         m = re.match(r"^/balance/(?:([0-9a-f]{64})/)?([0-9]+)$", self.path)
         if m:
             if m.group(1) is None:
-                balances.clear()
+                balances.clear(); received.clear()
             balances[m.group(1) or "*"] = int(m.group(2))
+            return self.out(200, {})
+        m = re.match(r"^/receive/([0-9a-f]{64})/([0-9]+)$", self.path)
+        if m:
+            got = received.setdefault(m.group(1), {})
+            got["r%d" % (sum(len(v) for v in received.values()) + 1)] = int(m.group(2))
             return self.out(200, {})
         return self.out(404, {"code": 404})
 

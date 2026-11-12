@@ -155,7 +155,8 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
       </div>
       <div id="lk-pad" hidden>
         <p class="lk-title" id="l-pin">Enter PIN</p>
-        <div class="dots" id="pin-dots" role="status" aria-label="No digits entered"></div>
+        <div class="dots" id="pin-dots" aria-hidden="true"></div>
+        <p class="vh" id="pin-count" aria-live="polite" aria-atomic="true">No digits entered</p>
         <div class="keypad" id="keypad" role="group" aria-label="PIN keypad"></div>
         <button class="primary" type="submit" id="b-pin" disabled>Unlock</button>
       </div>
@@ -193,7 +194,7 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
       <button type="button" class="notice" id="n-bk" hidden>No backup yet. If this device is wiped, the coins are lost.</button>
       <button type="button" class="notice" id="n-upd" hidden></button>
       <div id="p-recv" class="panel" hidden>
-        <p class="note" style="margin-top:6px">Your address. Copy it and send it to whoever pays you.</p>
+        <p class="note" style="margin-top:6px">Your wallet address, for coins. Copy it and send it to whoever pays you. People can also pay your LNS name, if it has this address set.</p>
         <div id="accts"></div>
         <details id="more" hidden><summary>Other accounts in this wallet</summary><div id="accts-more"></div></details>
       </div>
@@ -257,12 +258,12 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
     <section class="card" id="s-nodec" aria-labelledby="h-node">
       <h2 id="h-node">Node</h2>
       <div class="big" id="height">-</div>
-      <div class="sub" id="nodeline">block height</div>
+      <div class="sub" id="nodeline">blocks on this device</div>
       <p class="syncline" id="syncline" role="status"></p>
       <div class="grid">
         <div><span>State</span><b id="state">-</b></div>
-        <div><span>Peers</span><b id="peers">-</b></div>
-        <div><span>Blocks / min</span><b id="rate">-</b></div>
+        <div><span>Nodes connected</span><b id="peers">-</b></div>
+        <div><span>New blocks a minute</span><b id="rate">-</b></div>
       </div>
       <button type="button" id="b-open-node" style="width:100%;margin-top:14px" hidden>Open node</button>
     </section>
@@ -415,7 +416,7 @@ const MASK = "••••••";
 let balHidden = false;
 try { balHidden = localStorage.getItem("balance-hidden") === "1"; } catch (e) {}
 const amt = v => fmt(v) + " " + UNIT;
-const amtH = v => balHidden ? MASK : amt(v);           // the home screen's amounts (balance, Receive, Activity)
+const amtH = v => balHidden ? MASK : amt(v);           // amounts the eye hides (balance, Receive, Activity, the Received pop-up)
 const EYE = { on: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>',
   off: '<path d="M2.5 12S6 5.5 12 5.5c1.6 0 3 .4 4.3 1.1M21.5 12s-3.5 6.5-9.5 6.5c-1.6 0-3-.4-4.3-1.1"/><path d="M9.9 14.1a3 3 0 0 1 4.2-4.2M4 20 20 4"/>' };
 function eyeUi() {
@@ -483,7 +484,8 @@ function lockUi() {
   const fpKey = $("k-fp"); if (fpKey) fpKey.style.visibility = !fpUsable() || fpUp ? "hidden" : "";    // keeps its cell
   const d = $("pin-dots"); d.replaceChildren(...Array.from(pinBuf, () => document.createElement("span")));
   d.classList.toggle("empty", !pinBuf.length);
-  d.setAttribute("aria-label", pinBuf.length ? pinBuf.length + " digit" + (pinBuf.length === 1 ? "" : "s") + " entered" : "No digits entered");
+  // screen readers hear only how many digits are in, never which (the dots themselves are hidden from them)
+  $("pin-count").textContent = pinBuf.length ? pinBuf.length + " digit" + (pinBuf.length === 1 ? "" : "s") + " entered" : "No digits entered";
   $("b-pin").disabled = pinBusy || !pinOk(pinBuf);
   for (const b of $("keypad").querySelectorAll("button")) b.disabled = pinBusy;
 }
@@ -509,12 +511,12 @@ function pinKey(k) {
   }));
 }
 $("b-enter-pin").addEventListener("click", () => { lockMode = "pad"; fpUp = false; lockUi(); });
-// a physical keyboard works too: digits, Backspace, Enter
+// a physical keyboard works too: digits, Backspace, Enter (Enter on a keypad key reached by Tab presses that key)
 addEventListener("keydown", e => {
   if ($("lock").hidden || e.ctrlKey || e.metaKey || e.altKey) return;
   if (/^\d$/.test(e.key)) { e.preventDefault(); pinKey(e.key); }
   else if (e.key === "Backspace") { e.preventDefault(); pinKey("del"); }
-  else if (e.key === "Enter" && lockMode === "pad") { e.preventDefault(); $("v-locked").requestSubmit(); }
+  else if (e.key === "Enter" && lockMode === "pad" && !(e.target instanceof Element && e.target.closest("#keypad"))) { e.preventDefault(); $("v-locked").requestSubmit(); }
 });
 function lockAppeared() {
   fpPrompted = false; fpUp = false; pinBuf = ""; pinBusy = false;
@@ -609,10 +611,10 @@ function syncText(n, sy) {
   if (!sy) { const on = n.state === "Online"; return { pill: on ? "online" : "syncing", cls: on ? "ok" : "warn", line: "" }; }
   if (sy.stage === "uptodate") return { pill: "up to date", cls: "ok", line: "Up to date. The latest block arrived " + ago(sy.tip_age_s) + " ago." };
   if (sy.stage === "waiting") return { pill: "waiting", cls: "warn",
-    line: "Caught up with the chain. The node is still in its waiting period after starting, so sending stays off until it is online. The latest block arrived " + ago(sy.tip_age_s) + " ago." };
+    line: "Caught up with the network. The node is still in its waiting period after starting, so sending stays off until it is online. The latest block arrived " + ago(sy.tip_age_s) + " ago." };
   let line;
   if (sy.chain_height) {
-    line = "Chain is at about block " + nfmt(sy.chain_height) + ". This node is at " + nfmt(n.height) + ", " + nfmt(sy.behind_blocks) + " blocks behind.";
+    line = "The network is at about block " + nfmt(sy.chain_height) + ". This device is at block " + nfmt(n.height) + ", " + nfmt(sy.behind_blocks) + " blocks behind.";
     const gain = (rateNow || 0) - (sy.spacing_s ? 60 / sy.spacing_s : 0);     // blocks a minute it closes the gap by
     line += gain > 0 ? " Catching up at " + nfmt(Math.round(rateNow)) + " blocks a minute: about " + ago(sy.behind_blocks / gain * 60) + " left (an estimate)."
                      : " Catching up; the speed shows after a little while.";
@@ -641,7 +643,7 @@ async function tickStatus() {
     pill.textContent = sy.pill;
     $("syncline").textContent = sy.line; $("syncline").className = "syncline " + sy.cls;
     $("height").textContent = Number(n.height).toLocaleString("en-US");
-    $("nodeline").textContent = "block height";
+    $("nodeline").textContent = "blocks on this device";
     $("state").textContent = n.state || "-";
     $("peers").textContent = n.peers == null ? "-" : n.peers;
     const now = Date.now();
@@ -1017,7 +1019,7 @@ $("f-send").addEventListener("submit", async e => {
   const from = $("from").value || (accts[0] && accts[0].key), acct = accts.find(a => a.key === from);
   if (!acct) return void (m.textContent = "The wallet has no account to send from yet.");
   if (!/^\d+$/.test(raw) || BigInt(raw) <= 0n) return void (m.textContent = "The amount must be a whole number above zero.");
-  if (acct.balance != null && BigInt(raw) > BigInt(acct.balance)) return void (m.textContent = acct.label + " holds " + amt(acct.balance) + ", less than " + amt(raw) + ".");
+  if (acct.balance != null && BigInt(raw) > BigInt(acct.balance)) return void (m.textContent = acct.label + " holds " + (balHidden ? "" : amt(acct.balance) + ", ") + "less than " + amt(raw) + ".");
   let lib;
   try { lib = await namesLib(); } catch (err) { lib = null; }
   const typed = $("to").value;
@@ -1109,10 +1111,10 @@ async function checkReceipts() {
   if (!list.length) return;
   popItems = popItems.concat(list);
   const one = popItems.length === 1, h = $("pop-h");
-  h.textContent = one ? "Received " + amt(popItems[0].amount) : away ? "While you were away" : "Received " + popItems.length + " payments";
+  h.textContent = one ? "Received " + amtH(popItems[0].amount) : away ? "While you were away" : "Received " + popItems.length + " payments";
   $("pop-list").replaceChildren(...popItems.map(e => {
     const d = document.createElement("div"); d.className = "hrow";
-    if (!one) { const top = document.createElement("div"); top.className = "top"; top.append(span("Received", "kind"), span("+" + amt(e.amount), "amt in")); d.append(top); }
+    if (!one) { const top = document.createElement("div"); top.className = "top"; top.append(span("Received", "kind"), span("+" + amtH(e.amount), "amt in")); d.append(top); }
     const sub = document.createElement("div"); sub.className = "sub"; sub.append(span("on " + e.label + " (" + short(e.key) + ")"), span(when(e.time)));
     d.append(sub); return d;
   }));

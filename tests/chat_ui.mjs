@@ -20,7 +20,7 @@ const w = await world(18570, 5);
 const NODE_PORT = 18596;
 procs.push(spawn("python3", [join(here, "fake_node_api.py"), String(NODE_PORT), "syncing"], { stdio: "ignore" }));
 const nodeMode = async (m) => (await fetch(`http://127.0.0.1:${NODE_PORT}/mode/${m}`, { method: "POST" })).text();
-const A = await app(w, 8111, w.NODES[0], { NODE_API: `http://127.0.0.1:${NODE_PORT}` }), B = await app(w, 8112, w.NODES[1]), C = await app(w, 8113, w.NODES[2]);
+const A = await app(w, 8111, w.NODES[0], { NODE_API: `http://127.0.0.1:${NODE_PORT}`, HISTORY_POLL: "1" }), B = await app(w, 8112, w.NODES[1]), C = await app(w, 8113, w.NODES[2]);
 await person(w, B, "bob", "222333"); await person(w, C, "carol", "333444");
 A.pin = "111222"; A.session = (await A.call("/api/wallet/setup", { pin: A.pin })).d.session;
 
@@ -124,6 +124,14 @@ await pressKey("Enter");
 await waitFor("a wrong PIN: cleared, with the app's message", `document.querySelectorAll("#pin-dots span").length === 0 && document.getElementById("m-locked").textContent.length > 0`);
 check("the wrong PIN went nowhere in the page", await js(`!(() => { const c = document.documentElement.cloneNode(true); c.querySelectorAll("script").forEach(x => x.remove()); return c.outerHTML; })().includes("975318")`));
 await shot("locked-wrong-pin");
+// a keypad key reached with Tab: Enter presses that key (a real key event, not a script's), it doesn't submit
+await js(`[...document.querySelectorAll("#keypad button")].find(b => b.textContent === "5").focus(); true`);
+for (const type of ["keyDown", "keyUp"]) await cdp("Input.dispatchKeyEvent", { type, key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, ...(type === "keyDown" ? { text: "\r" } : {}) });
+await sleep(200);
+check("Enter on a focused keypad key enters that digit and doesn't submit", await js(`document.querySelectorAll("#pin-dots span").length === 1 && document.getElementById("m-locked").textContent === "" && document.activeElement.textContent === "5"`));
+check("screen readers hear the count, not the digits", await js(`document.getElementById("pin-count").textContent === "1 digit entered" && document.getElementById("pin-count").getAttribute("aria-live") === "polite" && document.getElementById("pin-dots").getAttribute("aria-hidden") === "true" && !document.getElementById("pin-count").textContent.includes("5")`));
+await pressKey("Backspace");
+check("and Backspace takes it out again", await js(`document.querySelectorAll("#pin-dots span").length === 0 && document.getElementById("pin-count").textContent === "No digits entered"`));
 await unlock();
 check("the bar shows Wallet and Messages", (await text("#nav")).includes("Wallet") && (await text("#nav")).includes("Messages"));
 // the wallet home: the header is the λ, Wallet, the node's icon and the gear; then the balance, Send and Receive
@@ -172,6 +180,47 @@ await shot("wallet-home-hidden");
 await bigTargets("the wallet home");
 await click("#b-eye");
 await waitFor("shown again", `/75,000/.test(document.getElementById("bal-total").textContent) && document.getElementById("b-eye").getAttribute("aria-label") === "Hide balance" && localStorage.getItem("balance-hidden") === null`);
+// the eye hides amounts everywhere the balance could show: the Received pop-up and Send's "not enough" error.
+// Each is checked shown first, so "no amount" can't pass just because nothing showed.
+const popDone = async () => { if (await js(`!document.getElementById("pop").hidden`)) await click("#pop-ok"); };
+const settle = async () => { await sleep(2500); await js(`checkReceipts().then(() => true)`); await popDone(); };    // the history polls every second
+await settle();         // receipts left from the balance-size checks (notes that came back) are taken and closed
+const receive = async (...ns) => {
+  for (const n of ns) await fetch(`http://127.0.0.1:${NODE_PORT}/receive/${key0}/${n}`, { method: "POST" });
+  await waitFor(`the app records ${ns.join(" and ")} received`, `api("/api/wallet/history?limit=20").then(r => ${JSON.stringify(ns.map(String))}.every(n => r.data.entries.some(e => e.kind === "received" && e.amount === n)))`, 15000);
+  await waitFor("the Received pop-up shows", `checkReceipts().then(() => !document.getElementById("pop").hidden && document.querySelectorAll("#pop-list .hrow").length === ${ns.length})`, 15000);
+  // the heading and the amount column only: the short account address under each could hold any digits
+  return js(`[document.getElementById("pop-h").textContent, ...[...document.querySelectorAll("#pop-list .amt")].map(e => e.textContent)].join(" | ")`);
+};
+let pop = await receive(777);
+check("shown: the Received pop-up has the amount", pop === "Received 777 Logos", pop);
+await popDone();
+pop = await receive(801, 802);
+check("shown: two payments, each with its amount", pop === "Received 2 payments | +801 Logos | +802 Logos" || pop === "Received 2 payments | +802 Logos | +801 Logos", pop);
+await popDone();
+await click("#b-eye");
+await waitFor("hidden again", `document.getElementById("bal-total").textContent === "••••••"`);
+pop = await receive(888);
+check("hidden: the Received pop-up says it came, without the amount", pop === "Received ••••••", pop);
+await popDone();
+pop = await receive(901, 902);
+check("hidden: two payments, no amounts", pop === "Received 2 payments | +•••••• | +••••••", pop);
+await popDone();
+// Send more than the account holds: the error says how much it holds only while amounts show
+const tooMuch = async () => {
+  await js(`openPanel("send"); document.getElementById("to").value = "alice"; document.getElementById("amount").value = "999999999999"; document.getElementById("f-send").requestSubmit(); true`);
+  await waitFor("Send refuses more than the account holds", `/less than 999,999,999,999 Logos/.test(document.getElementById("m-send").textContent)`);
+  const m = await text("#m-send"); await js(`document.getElementById("m-send").textContent = ""; openPanel(null); true`); return m;
+};
+let sendErr = await tooMuch();
+check("hidden: Send's error leaves out what the account holds", /^\S.* holds less than 999,999,999,999 Logos\.$/.test(sendErr) && !/[0-9],[0-9]{3} Logos, less/.test(sendErr), sendErr);
+await click("#b-eye");
+await waitFor("shown once more", `/[0-9] Logos|[0-9]Logos/.test(document.getElementById("bal-total").textContent) && localStorage.getItem("balance-hidden") === null`);
+sendErr = await tooMuch();
+check("shown: Send's error says what the account holds", / holds [0-9,]+ Logos, less than 999,999,999,999 Logos\.$/.test(sendErr), sendErr);
+await js(`document.getElementById("to").value = ""; document.getElementById("amount").value = ""; true`);
+await setBal(null, 12500); await settle(); await js(`loadAccounts(); true`);
+await waitFor("back to the usual balance, received notes gone", `/75,000/.test(document.getElementById("bal-total").textContent)`);
 await noOldHeader("the wallet home");
 await click("#t-recv");
 await waitFor("Receive shows the address with Copy", `!document.getElementById("p-recv").hidden && document.getElementById("p-recv").innerText.includes("Copy address")`);
@@ -186,7 +235,7 @@ await js(`document.getElementById("to").blur(); true`);
 await waitFor("and comes back after", `getComputedStyle(document.getElementById("nav")).display !== "none"`);
 await click("#t-send");
 await click("#node-ic");
-await waitFor("the node icon opens Settings > Node", `!document.getElementById("page-settings").hidden && document.getElementById("s-nodec").innerText.includes("Peers")`);
+await waitFor("the node icon opens Settings > Node", `!document.getElementById("page-settings").hidden && document.getElementById("s-nodec").innerText.includes("Nodes connected")`);
 await js(`document.getElementById("s-nodec").scrollIntoView(); true`);
 await shot("settings-node");
 await noOldHeader("Settings");
