@@ -9,8 +9,8 @@ app and its page are exactly as before.
 - **Messages** in the bar at the bottom of the page. It locks with the wallet: the same PIN or fingerprint
   opens both, and auto-lock closes both.
 - **Turn on messages** makes this phone's messaging identity. Nothing key-like is shown on the everyday
-  screens. Settings (the gear) has a Messages section: your name and whether it's linked to this phone,
-  the folded step that links it, and your messaging address (Show / Copy).
+  screens. Settings (the gear) has a Messages page, the same one the gear on Messages opens: your name and
+  whether it's linked to this phone, the folded step that links it, and your messaging address (Show / Copy).
 - The Messages screen has its own top: the title, **+** (New chat) and the gear; no node header there. Under
   the title, one small grey line only when the messaging node isn't fine: "Connecting…" or "Offline"
   (inside the Android app with a button to open the node). The Wallet / Messages bar steps aside while a
@@ -111,8 +111,9 @@ in `img/messages/`: `locked`, `locked-android`, `home-no-name`, `my-messaging-ad
 `new-chat-by-address`, `list`, `chat`, `chat-address`, `profile`, `profile-address`, `key-changed`,
 `message-details`, `locked-wrong-pin`, `locked-android-cancelled`, `locked-android-keypad`,
 `wallet-home-big-balance`, `wallet-home-hidden`, `turn-on`, `empty-list`, `messages-home`, `wallet-home`, `wallet-home-starting`,
-`wallet-receive`, `wallet-send`, `settings-node`, `settings`,
-`settings-android` (with the Android bridge), and `wallet-header-sync` / `wallet-header-ok` (the page's
+`wallet-receive`, `wallet-send`, `settings` (the list of groups), `settings-node`, `settings-messages`,
+`settings-security`, `settings-updates`, `settings-backup`, `settings-restore`, `settings-about`,
+`settings-android` (Settings > Node with the Android bridge), and `wallet-header-sync` / `wallet-header-ok` (the page's
 status words set by hand, to show the icons; the test has no running node).
 
 <img src="img/messages/list-light.png" width="240" alt="The chat list"> <img src="img/messages/chat-light.png" width="240" alt="A chat"> <img src="img/messages/profile-dark.png" width="240" alt="A profile with a note, in dark mode">

@@ -8,7 +8,7 @@ Python standard library only. Wallet calls need a PIN that is set on first use.
 import base64, calendar, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.9.7"
+APP_VERSION = "0.9.8"
 # APP_EMBEDDED=android: this app runs inside the Android app (embedded Python, page in a WebView).
 # Then it never updates or restarts itself (the Android app brings new versions), and fingerprint
 # unlock goes through the phone's own fingerprint check instead of a passkey. Unset: nothing changes.
