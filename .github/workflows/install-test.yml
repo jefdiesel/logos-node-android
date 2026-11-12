@@ -20,7 +20,7 @@ jobs:
       - name: The web app page answers
         # the app was (re)started a moment ago: give it a few seconds to open its port
         run: |
-          curl -fsS --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:8090/ | grep -q "<title>Logos node</title>"
+          curl -fsS --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:8090/ | grep -q "<title>Logos Names</title>"
           curl -fsS http://127.0.0.1:8090/names/names.js | grep -q "27029987a81e703c88876d967c04a25f4c841681"
           curl -fsS http://127.0.0.1:8090/names/noble-hashes/argon2.js | grep -q "argon2id"
       - name: Node joins the testnet and syncs blocks
@@ -213,7 +213,7 @@ jobs:
               H=$(curl -fsS -m 5 http://127.0.0.1:8090/cryptarchia/info | grep -oE "\"height\":[0-9]+" | grep -oE "[0-9]+" || true)
               echo "height: ${H:-no answer yet}"
               if [ -n "$H" ] && [ "$H" -gt 100 ]; then
-                curl -fsS http://127.0.0.1:8090/ | grep -q "<title>Logos node</title>" && echo "web app page ok" &&
+                curl -fsS http://127.0.0.1:8090/ | grep -q "<title>Logos Names</title>" && echo "web app page ok" &&
                 curl -fsS http://127.0.0.1:8090/names/lookup.js | grep -q lookupName && echo "names files ok" && exit 0
               fi
               sleep 10
