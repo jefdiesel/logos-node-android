@@ -105,6 +105,8 @@ button.notice::after{content:" \203A";font-weight:700}
 .pop-card h2{font-size:20px;margin:0 0 6px}
 .pop-card .hrow .sub{font-size:13px}
 [hidden]{display:none!important}
+.qr-wrap{display:flex;justify-content:center;margin:12px 0 4px}.qr-wrap:empty{display:none}
+.qr{background:#fff;padding:10px;border-radius:12px;line-height:0;border:1px solid var(--line)}.qr svg{display:block;width:224px;height:224px}
 body.is-locked main > :not(#lock),body.is-locked #nav{display:none!important}
 #lock{min-height:calc(100dvh - 68px);display:flex;flex-direction:column;justify-content:center;max-width:360px;margin:0 auto;padding:12px 0}
 #lock .lock-mark{width:84px;height:84px;margin:0 auto 14px;border-radius:50%;background:var(--card);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;color:var(--ink)}
@@ -194,7 +196,8 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
       <button type="button" class="notice" id="n-bk" hidden>No backup yet. If this device is wiped, the coins are lost.</button>
       <button type="button" class="notice" id="n-upd" hidden></button>
       <div id="p-recv" class="panel" hidden>
-        <p class="note" style="margin-top:6px">Your wallet address, for coins. Copy it and send it to whoever pays you. People can also pay your LNS name, if it has this address set.</p>
+        <p class="note" style="margin-top:6px">Your wallet address, for coins. Let them scan the code, or copy the address and send it to whoever pays you. People can also pay your LNS name, if it has this address set.</p>
+        <div class="qr-wrap" id="recv-qr"></div>
         <div id="accts"></div>
         <details id="more" hidden><summary>Other accounts in this wallet</summary><div id="accts-more"></div></details>
       </div>
@@ -203,7 +206,8 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
         <label for="from" id="l-from">From</label>
         <select id="from"></select>
         <label for="to">To: an address or a name</label>
-        <input id="to" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="70" required>
+        <div class="pwrow"><input id="to" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="70" required><button type="button" id="b-scan" hidden>Scan</button></div>
+        <p class="msg" id="m-scan" role="status" hidden></p>
         <p class="hint">Names are checked again right before sending.</p>
         <label for="amount" id="l-amount">Amount, in Logos</label>
         <input id="amount" type="text" inputmode="numeric" maxlength="24" required>
@@ -432,16 +436,19 @@ $("b-eye").addEventListener("click", () => {
 });
 $("l-amount").textContent = "Amount, in " + UNIT;
 const short = k => k.slice(0, 10) + "…" + k.slice(-8);
+let scanHandler = null;   // where a scan started from the Android app's scanner goes (see startScan)
 let token = null, nodeState = null, nodeInfo = null, nodeWaiting = null, prev = null, accts = [], pending = null, txTimer = null;
 try { token = sessionStorage.getItem("session"); } catch (e) {}
 
 async function api(path, body) {
-  const opt = { headers: {}, cache: "no-store" };
+  const opt = { headers: {}, cache: "no-store" }, sent = token;
   if (token) opt.headers["X-Session"] = token;
   if (body !== undefined) { opt.method = "POST"; opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
   try {
     const r = await fetch(path, opt);
     let data = null; try { data = await r.json(); } catch (e) {}
+    // a "locked" answer to a request made with an older session (before an unlock) must not lock the new one
+    if (r.status === 401 && sent !== token) return { ok: false, status: 0, data: { error: "Try again." } };
     return { ok: r.ok, status: r.status, data: data || {} };
   } catch (e) { return { ok: false, status: 0, data: { error: "The app on this device isn't answering." } }; }
 }
@@ -451,6 +458,7 @@ function openPanel(which) {   // "send", "recv" or null: one open at a time; a s
     const on = which === name; $(p).hidden = !on; $(t).setAttribute("aria-expanded", String(on));
   }
   if (which === "hist") { loadHistory(); $("p-hist").scrollIntoView({ block: "start" }); }
+  if (which === "recv") drawRecvQr();
 }
 $("t-send").addEventListener("click", () => openPanel($("p-send").hidden ? "send" : null));
 $("t-recv").addEventListener("click", () => openPanel($("p-recv").hidden ? "recv" : null));
@@ -461,7 +469,8 @@ function show(view) {
   $("lock").hidden = view !== "v-locked"; document.body.classList.toggle("is-locked", view === "v-locked");
   if (view !== "v-open") {   // nothing about amounts stays on a locked page
     afterUnlock = true; popItems = []; $("pop").hidden = true;
-    for (const id of ["hist", "accts", "accts-more", "from", "pop-list"]) $(id).replaceChildren();
+    for (const id of ["hist", "accts", "accts-more", "from", "pop-list", "recv-qr", "m-scan"]) $(id).replaceChildren();
+    $("m-scan").hidden = true; scanHandler = null;   // a scan answered after a lock fills nothing
     $("bal-total").replaceChildren(phSpan());
     for (const id of ["r-amount", "r-to", "r-from", "r-name", "s-hash"]) $(id).textContent = "";
     openPanel(null);
@@ -653,6 +662,70 @@ async function tickStatus() {
   syncNote();
   if (r.ok) updateUi(r.data.version, (r.data.update || {}).available);
 }
+
+// ---- QR codes: drawn here (the vendored encoder in /qr/qrcode.js); scanned by the Android app, where it can ----
+// Codes this app makes and reads: a wallet address is its 64 hex characters as they are; a messaging address
+// is "msg:" and its 64 hex characters. A scan only fills the box it was started from, and only with the kind
+// of address that box takes; it never sends anything. Scanned text is untrusted: only those two shapes pass.
+let qrLib = null;
+async function qrSvg(text) {
+  qrLib = qrLib || (await import("/qr/qrcode.js")).default;
+  const q = qrLib(0, "M"); q.addData(text); q.make();
+  const n = q.getModuleCount(), NS = "http://www.w3.org/2000/svg";
+  let d = "";
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (q.isDark(r, c)) d += "M" + c + "," + r + "h1v1h-1z";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "-4 -4 " + (n + 8) + " " + (n + 8)); svg.setAttribute("role", "img"); svg.setAttribute("aria-label", "QR code of this address");
+  svg.setAttribute("shape-rendering", "crispEdges");
+  const bg = document.createElementNS(NS, "rect"); bg.setAttribute("x", "-4"); bg.setAttribute("y", "-4"); bg.setAttribute("width", n + 8); bg.setAttribute("height", n + 8); bg.setAttribute("fill", "#fff");
+  const path = document.createElementNS(NS, "path"); path.setAttribute("d", d); path.setAttribute("fill", "#000");
+  svg.append(bg, path);
+  const box = document.createElement("div"); box.className = "qr"; box.dataset.text = text; box.append(svg);
+  return box;
+}
+function drawRecvQr() {   // Receive: the first account's wallet address, as it is (64 hex)
+  const key = accts[0] && String(accts[0].key || "").toLowerCase(), wrap = $("recv-qr");
+  if ($("p-recv").hidden || !/^[0-9a-f]{64}$/.test(key || "")) return;
+  const cur = wrap.firstElementChild;
+  if (!cur || cur.dataset.text !== key) qrSvg(key).then(q => { if (!$("p-recv").hidden) wrap.replaceChildren(q); }).catch(() => wrap.replaceChildren());
+}
+const SCAN = typeof window.LogosAndroid === "object" && window.LogosAndroid !== null && typeof window.LogosAndroid.scanQr === "function";
+/** Opens the Android app's scanner; the result goes to `handler` ({ ok(text), fail(msg) }) and nowhere else. */
+function startScan(handler) {
+  if (!SCAN) return false;
+  scanHandler = handler;
+  try { window.LogosAndroid.scanQr(); return true; } catch (e) { scanHandler = null; return false; }
+}
+window.logosScanned = text => { const h = scanHandler; scanHandler = null; if (h) h.ok(typeof text === "string" ? text : ""); };
+window.logosScanFailed = msg => { const h = scanHandler; scanHandler = null; if (h) h.fail(typeof msg === "string" && msg ? msg.slice(0, 200) : "The scan didn't work. Try again, or type it in."); };
+const SCAN_BAD = "That code isn't a wallet address or a messaging address.";
+/** What a scanned code holds: { kind: "wallet" | "msg", value: 64 hex } or { error }. */
+function parseScan(text) {
+  if (typeof text !== "string" || text.length > 200) return { error: SCAN_BAD };
+  const t = text.trim().toLowerCase();
+  let m;
+  if ((m = /^msg:([0-9a-f]{64})$/.exec(t))) return { kind: "msg", value: m[1] };
+  if (/^[0-9a-f]{64}$/.test(t)) return { kind: "wallet", value: t };
+  return { error: SCAN_BAD };
+}
+$("b-scan").hidden = !SCAN;
+$("b-scan").addEventListener("click", () => {
+  const m = $("m-scan"); m.hidden = true; m.replaceChildren();
+  const say = (cls, ...kids) => { m.className = "msg " + cls; m.replaceChildren(...kids); m.hidden = false; };
+  const started = startScan({
+    ok: text => {
+      const p = parseScan(text);
+      if (p.error) return say("bad", p.error);
+      if (p.kind === "msg") {
+        const go = window.logosOpenNewChat ? Object.assign(document.createElement("button"), { type: "button", className: "small", textContent: "Open New chat" }) : null;
+        if (go) go.addEventListener("click", () => window.logosOpenNewChat("msg:" + p.value));
+        return say("bad", "That's a messaging address, for messages. Coins can't be sent to it. Ask them for their wallet address, or write to them in New chat. ", ...(go ? [go] : []));
+      }
+      $("to").value = p.value; $("to").focus();                       // only fills the box; Review checks it as typed
+    },
+    fail: msg => say("bad", msg) });
+  if (!started) say("bad", "The scanner didn't open. Type or paste the address instead.");
+});
 
 // ---- the node's state as one icon: syncing, up to date, or stopped; the words stay in #pill for the label ----
 const ST_ICONS = {
@@ -885,6 +958,7 @@ async function loadAccounts() {
   for (const a of main) { const o = document.createElement("option"); o.value = a.key; o.textContent = a.label + (a.balance == null ? "" : " (" + amtH(a.balance) + ")"); sel.append(o); }
   if (keep) sel.value = keep;
   const one = main.length <= 1; sel.hidden = one; $("l-from").hidden = one;
+  drawRecvQr();
 }
 
 $("v-setup").addEventListener("submit", async e => {

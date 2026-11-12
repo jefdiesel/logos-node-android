@@ -8,7 +8,7 @@ Python standard library only. Wallet calls need a PIN that is set on first use.
 import base64, calendar, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.9.6"
+APP_VERSION = "0.9.7"
 # APP_EMBEDDED=android: this app runs inside the Android app (embedded Python, page in a WebView).
 # Then it never updates or restarts itself (the Android app brings new versions), and fingerprint
 # unlock goes through the phone's own fingerprint check instead of a passkey. Unset: nothing changes.
@@ -269,6 +269,7 @@ NAME_RE = re.compile(r"^(?!-)[a-z0-9-]{1,32}(?<!-)$")
 NAMES_DIR = os.path.join(APP_DIR, "names")
 MESSAGES_FILE_RE = re.compile(r"^/((?:messages/(?:noble-(?:ciphers|hashes)/)?|noble-curves/(?:abstract/)?)[A-Za-z0-9_][A-Za-z0-9_.-]*\.js)$")
 NAMES_FILE_RE = re.compile(r"^/names/((?:noble-hashes/)?[A-Za-z0-9_][A-Za-z0-9_.-]*\.js)$")
+QR_FILE = "/qr/qrcode.js"                 # the QR code drawer (vendored, see app/qr/VENDORED.txt)
 
 
 def names_rpc(body):
@@ -2263,6 +2264,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if m:                               # the names resolver, served as files so the page can import it
             try:
                 with open(os.path.join(NAMES_DIR, m.group(1)), "rb") as f:
+                    return self.reply(200, raw=f.read(), ctype="text/javascript; charset=utf-8")
+            except Exception:
+                return self.reply(404, {"error": "not found"})
+        if path == QR_FILE:
+            try:
+                with open(os.path.join(APP_DIR, "qr", "qrcode.js"), "rb") as f:
                     return self.reply(200, raw=f.read(), ctype="text/javascript; charset=utf-8")
             except Exception:
                 return self.reply(404, {"error": "not found"})

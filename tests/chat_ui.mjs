@@ -9,8 +9,11 @@ import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { inflateSync } from "node:zlib";
+import { createRequire } from "node:module";
 import { world, app, person, chatOf, check, until, sleep, procs, stopAll, MC, ID, hex, b64, here } from "./chat_world.mjs";
 
+const jsQR = createRequire(import.meta.url)("./vendor/jsQR.js");   // test only: reads the QR codes back off the screen
 const CHROME = process.env.CHROME || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const SHOTS = process.env.SHOTS || "";
 if (SHOTS) mkdirSync(SHOTS, { recursive: true });
@@ -84,6 +87,38 @@ async function shot(name) {
     writeFileSync(join(SHOTS, `${String(++shotN).padStart(2, "0")}-${name}-${scheme}.png`), Buffer.from(r.result.data, "base64"));
   }
   await cdp("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "light" }] });
+}
+// A PNG screenshot as RGBA pixels (8-bit RGB or RGBA, not interlaced: what Chrome writes)
+function pngPixels(buf) {
+  let p = 8, w = 0, h = 0, type = 0; const idat = [];
+  while (p < buf.length) {
+    const len = buf.readUInt32BE(p), kind = buf.toString("latin1", p + 4, p + 8), body = buf.subarray(p + 8, p + 8 + len);
+    if (kind === "IHDR") { w = body.readUInt32BE(0); h = body.readUInt32BE(4); type = body[9]; if (body[8] !== 8 || body[12] !== 0 || (type !== 2 && type !== 6)) throw new Error("unexpected PNG format"); }
+    else if (kind === "IDAT") idat.push(body);
+    p += 12 + len;
+  }
+  const bpp = type === 6 ? 4 : 3, stride = w * bpp, raw = inflateSync(Buffer.concat(idat)), out = new Uint8ClampedArray(w * h * 4);
+  let prev = new Uint8Array(stride);
+  for (let y = 0; y < h; y++) {
+    const f = raw[y * (stride + 1)], line = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1)), cur = new Uint8Array(stride);
+    for (let i = 0; i < stride; i++) {
+      const a = i >= bpp ? cur[i - bpp] : 0, b = prev[i], c = i >= bpp ? prev[i - bpp] : 0;
+      const pa = Math.abs(b - c), pb = Math.abs(a - c), pc = Math.abs(a + b - 2 * c);
+      cur[i] = (line[i] + [0, a, b, (a + b) >> 1, pa <= pb && pa <= pc ? a : pb <= pc ? b : c][f]) & 255;
+    }
+    for (let x = 0; x < w; x++) { const o = (y * w + x) * 4; out[o] = cur[x * bpp]; out[o + 1] = cur[x * bpp + 1]; out[o + 2] = cur[x * bpp + 2]; out[o + 3] = 255; }
+    prev = cur;
+  }
+  return { data: out, width: w, height: h };
+}
+// what the QR code in `sel` says, read off a screenshot of the screen as shown (null: none readable)
+async function qrOnScreen(sel) {
+  await js(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) throw new Error("no ${sel}"); e.scrollIntoView({ block: "center" }); return true; })()`);
+  await sleep(200);
+  if (!await seen(sel)) return null;
+  const img = pngPixels(Buffer.from((await cdp("Page.captureScreenshot", { format: "png" })).result.data, "base64"));
+  const code = jsQR(img.data, img.width, img.height, { inversionAttempts: "dontInvert" });
+  return code ? code.data : null;
 }
 async function load() {
   await cdp("Page.navigate", { url: A.base + "/" });
@@ -224,6 +259,10 @@ await waitFor("back to the usual balance, received notes gone", `/75,000/.test(d
 await noOldHeader("the wallet home");
 await click("#t-recv");
 await waitFor("Receive shows the address with Copy", `!document.getElementById("p-recv").hidden && document.getElementById("p-recv").innerText.includes("Copy address")`);
+await waitFor("and its QR code", `!!document.querySelector("#recv-qr .qr svg path")`);
+check("the QR code on Receive reads as the wallet address, exactly (64 hex, nothing added)", await qrOnScreen("#recv-qr .qr") === key0, { read: await qrOnScreen("#recv-qr .qr"), key0 });
+check("the QR code holds no amount", !/[0-9],[0-9]|Logos/.test(await qrOnScreen("#recv-qr .qr") || ""));
+check("no Scan button without the Android app's scanner", await js(`document.getElementById("b-scan").hidden`));
 await shot("wallet-receive");
 await click("#t-send");
 await waitFor("Send", `!document.getElementById("p-send").hidden && !document.getElementById("b-review").disabled`);
@@ -262,6 +301,8 @@ check("no address or key shows in Settings", !/[0-9a-f]{20,}/.test(await js(`doc
 await shot("settings");
 await click("#mg-addr-show");
 check("Show reveals the shareable address", (await text("#mg-addr")).startsWith("msg:" + key.public));
+await waitFor("and its QR code", `!!document.querySelector("#mg-addr-qr .qr svg path")`);
+check("the QR code in Messages settings reads as msg: and the messaging address, exactly", await qrOnScreen("#mg-addr-qr .qr") === "msg:" + key.public, { read: await qrOnScreen("#mg-addr-qr .qr") });
 await js(`document.getElementById("mg-addr").scrollIntoView({ block: "center" }); true`);
 await shot("my-messaging-address");
 await click("#mg-addr-show");
@@ -355,6 +396,7 @@ const did = ID.newIdentity();
 await D.call("/api/messages/key", { seed: hex(did.seed), secret: hex(did.secretKey), public: hex(did.publicKey) });
 const dchat = await chatOf(w, D);
 await click("#mg-new");
+check("no Scan in New chat without the Android app's scanner", await js(`document.getElementById("mg-scan").hidden`));
 const wallet = await js(`accts.length ? accts[0].key : ""`);
 if (wallet) {
   await js(`document.getElementById("mg-to").value = ${JSON.stringify(wallet)}; document.getElementById("mg-find").requestSubmit(); true`);
@@ -482,7 +524,7 @@ check("fingerprint unlock is on for the Android app", r0.code === 200, r0);
 await E.call("/api/wallet/lock", {});
 const erinBob = await chatOf(w, B);
 await erinBob.lookup("erin", true); await erinBob.startDirect("erin"); await erinBob.send("d:erin", "hi erin");
-await cdp("Page.addScriptToEvaluateOnNewDocument", { source: "window.__fp = 0; window.LogosAndroid = { unlockWithFingerprint() { window.__fp++; }, openNode() {} };" });
+await cdp("Page.addScriptToEvaluateOnNewDocument", { source: "window.__fp = 0; window.__scans = 0; window.LogosAndroid = { unlockWithFingerprint() { window.__fp++; }, openNode() {}, scanQr() { window.__scans++; } };" });
 await cdp("Page.navigate", { url: E.base + "/" });
 await waitFor("the lock screen", `!!document.getElementById("lock") && !document.getElementById("lock").hidden`);
 await sleep(600);
@@ -528,6 +570,78 @@ await waitFor("locked by hand", `!document.getElementById("lock").hidden`);
 await sleep(600);
 check("after the user's own Lock, no prompt by itself", await js(`window.__fp`) === 4);
 check("both options are there", await js(`!document.getElementById("b-fp").hidden && !document.getElementById("b-enter-pin").hidden`));
+// ---- Scan, with the Android app's scanner (the stand-in bridge): a scan only fills the box it came from ----
+await click("#b-enter-pin");
+await enterPin(E.pin, "unlocking to scan");
+await waitFor("unlocked again", `!document.getElementById("v-open").hidden`);
+await click("#nav-wallet"); await click("#t-send");
+check("Send has Scan inside the Android app", await js(`!document.getElementById("b-scan").hidden`));
+await bigTargets("Send with Scan");
+const someHex = hex(MC.newKeyPair().publicKey), otherHex = hex(MC.newKeyPair().publicKey);
+const toIs = () => js(`document.getElementById("to").value`);
+const scanMsg = () => text("#m-scan");
+await click("#b-scan");
+check("Scan asks the app's scanner", await js(`window.__scans`) === 1);
+await js(`window.logosScanned(${JSON.stringify(someHex)}); true`);
+check("a scanned wallet address fills To, and nothing is sent", await toIs() === someHex && await js(`document.getElementById("m-scan").hidden && document.getElementById("v-review").hidden && document.getElementById("v-sent").hidden`));
+await click("#b-scan"); await js(`window.logosScanned(${JSON.stringify(" " + otherHex.toUpperCase() + "\n")}); true`);
+check("in capitals, with spaces around: still a wallet address, filled in small letters", await toIs() === otherHex);
+await click("#b-scan"); await js(`window.logosScanned("msg:" + ${JSON.stringify(someHex)}); true`);
+check("a messaging address scanned in Send is not filled in, and says why", await toIs() === otherHex && (await scanMsg()).includes("That's a messaging address") && (await scanMsg()).includes("Coins can't be sent to it"));
+await bigTargets("Send, a messaging address scanned");
+await shot("send-scanned-messaging-address");
+await click("#m-scan button");
+await waitFor("Open New chat: New chat with that messaging address, looked up", `!document.getElementById("page-msg").hidden && document.getElementById("mg-to").value === ${JSON.stringify("msg:" + someHex)} && document.getElementById("mg-found").innerText.includes("No LNS name")`, 15000);
+await js(`history.back(); true`);
+await click("#nav-wallet");
+if (await js(`document.getElementById("p-send").hidden`)) await click("#t-send");
+check("back in Send, To as it was", await toIs() === otherHex);
+const bad = ["javascript:alert(1)", "https://example.com/" + someHex, "msg:" + someHex.slice(1), someHex + "0", "logos:" + someHex, "msg:" + someHex + "x",
+  "<img src=x onerror=window.__pwned=1>", "x".repeat(5000), someHex.slice(0, 32) + " " + someHex.slice(32), "\u0000" + someHex, "alice"];
+for (const t of bad) {
+  await click("#b-scan"); await js(`window.logosScanned(${JSON.stringify(t)}); true`);
+  check(`refused in Send: ${JSON.stringify(t.slice(0, 40))}`, await toIs() === otherHex && (await scanMsg()) === "That code isn't a wallet address or a messaging address.");
+}
+await click("#b-scan"); await js(`window.logosScanned({ toString() { return ${JSON.stringify(someHex)}; } }); true`);
+check("refused in Send: something that isn't text", await toIs() === otherHex && (await scanMsg()).includes("isn't a wallet address"));
+check("nothing scanned ran or was added to the page", await js(`!window.__pwned && !document.querySelector("#m-scan img, #m-scan script") && location.pathname === "/"`));
+await click("#b-scan"); await vis("hidden"); await sleep(3000); await vis("visible"); await sleep(300);   // the scanner covers the page a while
+await js(`window.logosScanned(${JSON.stringify(someHex)}); true`);
+check("the page was hidden behind the scanner for a few seconds: the scan still fills To", await toIs() === someHex && await js(`document.getElementById("lock").hidden`));
+await js(`document.getElementById("to").value = ${JSON.stringify(otherHex)}; true`);
+await click("#b-scan"); await js(`window.logosScanFailed("The camera is off for this app. Allow it in the phone's settings to scan."); true`);
+check("a scan that didn't work says why", (await scanMsg()).includes("The camera is off for this app") && await toIs() === otherHex);
+await js(`window.logosScanned(${JSON.stringify(someHex)}); true`);
+check("an answer with no scan open goes nowhere", await toIs() === otherHex);
+await click("#b-scan");
+await js(`document.getElementById("b-lock").click(); true`);
+await waitFor("locked while the scanner was open", `!document.getElementById("lock").hidden`);
+await js(`window.logosScanned(${JSON.stringify(someHex)}); true`);
+await click("#b-enter-pin");
+await enterPin(E.pin, "unlocking after a scan was open");
+await waitFor("unlocked", `!document.getElementById("v-open").hidden`);
+await click("#nav-wallet"); await click("#t-send");
+check("a scan answered while locked fills nothing", await toIs() !== someHex);
+await click("#nav-msg");
+await waitFor("Messages", `!document.getElementById("mg-home").hidden`, 15000);
+await click("#mg-new");
+check("New chat has Scan inside the Android app", await js(`!document.getElementById("mg-scan").hidden`));
+await bigTargets("New chat with Scan");
+await click("#mg-scan");
+await js(`window.logosScanned(${JSON.stringify(someHex)}); true`);
+check("a wallet address scanned in New chat is not filled in, and says why", await js(`document.getElementById("mg-to").value`) === "" && (await text("#mg-found")).includes("That's a wallet address"));
+for (const t of bad) {
+  await click("#mg-scan"); await js(`window.logosScanned(${JSON.stringify(t)}); true`);
+  check(`refused in New chat: ${JSON.stringify(t.slice(0, 40))}`, await js(`document.getElementById("mg-to").value`) === "" && (await text("#mg-found")) === "That code isn't a wallet address or a messaging address.");
+}
+await click("#mg-scan"); await js(`window.logosScanFailed("The scan didn't work. Try again, or type it in."); true`);
+check("a scan that didn't work says so in New chat", (await text("#mg-found")).includes("The scan didn't work"));
+await click("#mg-scan"); await js(`window.logosScanned("MSG:" + ${JSON.stringify(someHex.toUpperCase())}); true`);
+await waitFor("a scanned messaging address is filled in and looked up like a typed one", `document.getElementById("mg-to").value === ${JSON.stringify("msg:" + someHex)} && document.getElementById("mg-found").innerText.includes("No LNS name")`, 15000);
+check("and nothing is started until asked: Start chat is offered", await js(`[...document.querySelectorAll("#mg-found button")].some(b => /Start chat/.test(b.textContent))`));
+check("nothing scanned ran", await js(`!window.__pwned`));
+await shot("new-chat-scanned");
+await js(`history.back(); true`);
 ws.close(); stopAll();
 console.log("all checks passed" + (SHOTS ? ` (screenshots in ${SHOTS})` : ""));
 process.exit(0);

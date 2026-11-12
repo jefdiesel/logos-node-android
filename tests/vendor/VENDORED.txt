@@ -1,0 +1,5 @@
+Test only (never shipped to phones; not in app/). jsQR.js is dist/jsQR.js from the npm package jsqr 1.4.0
+(Cosmo Wolfe, Apache-2.0 licence, see jsQR-LICENSE), unchanged. Downloaded from
+https://registry.npmjs.org/jsqr/-/jsqr-1.4.0.tgz and checked against the registry's integrity
+sha512-dxLob7q65Xg2DvstYkRpkYtmKm2sPJ9oFhrhmudT1dZvNFFTlroai3AWSpLey/w5vMcLBXRgOJsbXpdN9HzU/A==
+tests/chat_ui.mjs uses it to read the page's QR codes back off screenshots.

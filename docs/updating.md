@@ -48,6 +48,10 @@ this: it keeps running and is never restarted by an update.
   no longer show amounts. On the keypad, Enter on a key reached with Tab presses that key, and after each
   key screen readers are told how many digits are in. Settings > Node says it in plain words: blocks on
   this device, nodes connected, new blocks a minute, and where the network is.
+- 0.9.7: QR codes: your wallet address on Receive, and your messaging address in Settings > Messages
+  (after Show). Inside the Android app, **Scan** in Send and in New chat fills in an address from a code;
+  a messaging address scanned in Send, or a wallet address scanned in New chat, is explained instead of
+  filled in. A "locked" answer to a request sent before an unlock no longer locks the new session.
 
 ## Going back to the previous version by hand
 
