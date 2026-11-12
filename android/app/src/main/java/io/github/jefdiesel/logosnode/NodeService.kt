@@ -440,7 +440,7 @@ class NodeService : Service() {
         )
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentTitle("Logos node")
+            .setContentTitle("Logos Names")
             .setContentText(text)
             .setOngoing(true)
             .setContentIntent(open)
