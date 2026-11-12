@@ -142,13 +142,17 @@ for (const [label, extra, port] of [["without WAKU_API", { WAKU_API: null }, 809
   c.session = (await call(c, "/api/wallet/setup", { pin: "192837" })).d.session;
   for (const [path, body] of [["/api/messages/status"], ["/api/messages/key"], ["/api/messages/inbox"], ["/api/messages/send", { topic: "x", payload: "" }],
                               ["/api/messages/key", { secret: "", public: "" }], ["/messages/messages.js"], ["/messages/msg-crypto.js"],
-                              ["/noble-curves/ed25519.js"]]) {
+                              ["/noble-curves/ed25519.js"], ["/api/messages/outbox"], ["/api/messages/store"], ["/api/messages/outbox", { copy: "", sends: [] }],
+                              ["/api/messages/store", { rev: 0, blob: "" }], ["/api/messages/inbox/read", { ids: [] }], ["/messages/chat-core.js"]]) {
     const r = await call(c, path, body);
     check(`${label}, ${path} doesn't exist`, r.code === 404, r);
   }
   const st = await call(c, "/api/status");
   check(`${label}, /api/status has nothing new`, !JSON.stringify(st.d).includes("messag"), st.d);
-  const page = Buffer.from(await (await fetch(c.base + "/")).arrayBuffer());
+  const res = await fetch(c.base + "/");
+  check(`${label}, the page's CSP is unchanged (no data: pictures)`, res.headers.get("content-security-policy") ===
+    "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'");
+  const page = Buffer.from(await res.arrayBuffer());
   const want = Buffer.from(indexFile.toString("utf8").replace("__APP_VERSION__", JSON.parse(readFileSync(join(ROOT, "app", "release.json"))).version).replace("__APP_EMBEDDED__", ""));
   check(`${label}, the page served is the page file, with only its version filled in`, page.equals(want));
   const bk = await call(c, "/api/wallet/backup", { password: "correct horse battery", pin: "192837" });
@@ -252,7 +256,7 @@ check("and opens it, verified as mini", got && got.text === "hello alice, from t
 const noKey = spawn(process.execPath, [join(ROOT, "tools", "msg-peer.mjs"), "send", "--to", "carol", "--from-name", "mini", "x", ...peerArgs], { stdio: ["ignore", "ignore", "pipe"] });
 let noKeyErr = ""; noKey.stderr.on("data", (d) => (noKeyErr += d));
 const noKeyCode = await new Promise((ok) => noKey.on("exit", ok));
-check("msg-peer send to a name without a msg entry says so", noKeyCode === 1 && noKeyErr.includes("carol has no messaging key"), noKeyErr);
+check("msg-peer send to a name without a msg entry says so", noKeyCode === 1 && noKeyErr.includes("carol has no messaging address"), noKeyErr);
 const peerSubs = await subsOf(2);
 check("msg-peer send let go of alice's topic afterwards, and listen kept its own", !peerSubs.includes(MC.inboxTopic(A.key.publicKey)) && peerSubs.includes(MC.inboxTopic(unhex(peerPub))), peerSubs);
 await control("restart/2");

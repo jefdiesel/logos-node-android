@@ -8,7 +8,7 @@ Python standard library only. Wallet calls need a PIN that is set on first use.
 import base64, calendar, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.8.1"
+APP_VERSION = "0.9.0"
 # APP_EMBEDDED=android: this app runs inside the Android app (embedded Python, page in a WebView).
 # Then it never updates or restarts itself (the Android app brings new versions), and fingerprint
 # unlock goes through the phone's own fingerprint check instead of a passkey. Unset: nothing changes.
@@ -1069,7 +1069,16 @@ def set_waku_api(url):
     return True
 MSG_KEY_FILE = os.path.join(DATA_DIR, "wallet-msgkey.json")
 INBOX_FILE = os.path.join(DATA_DIR, "wallet-inbox.json")
-INBOX_MAX, SEEN_MAX, PAYLOAD_MAX = 500, 4000, 16384      # messages kept, hashes remembered, bytes per message
+INBOX_MAX, SEEN_MAX, PAYLOAD_MAX = 2000, 8000, 16384    # messages kept, hashes remembered, bytes per message
+# The chat history the page keeps, all of it sealed or encrypted by the page under a key made from the messaging
+# key: this code stores and returns opaque blobs and never decrypts them.
+OUTBOX_FILE = os.path.join(DATA_DIR, "wallet-outbox.json")     # my sent messages: the page's encrypted copy, and
+OUTBOX_MAX, COPY_MAX, SENDS_MAX = 2000, 24576, 16              # the sealed payload per recipient until it's sent
+STORE_FILE = os.path.join(DATA_DIR, "wallet-chat.json")         # profiles, notes, conversations: one encrypted blob
+STORE_MAX = 262144
+SEND_GAP = float(os.environ.get("MESSAGING_SEND_GAP_SECONDS", "1"))     # between two posts to the node
+SEND_WAIT = float(os.environ.get("MESSAGING_SEND_WAIT_SECONDS", "150"))  # for a send's last event
+HISTORY_BACKUP_MAX = 1048576                                    # message history in a backup, newest first
 MSG_POLL = float(os.environ.get("MESSAGING_POLL_SECONDS", "3"))
 MSG_HEALTH_EVERY = float(os.environ.get("MESSAGING_HEALTH_SECONDS", "10"))
 MSG_UNSUB_AFTER = float(os.environ.get("MESSAGING_UNSUBSCRIBE_SECONDS", "180"))
@@ -1103,38 +1112,76 @@ def x25519(k, u):
     return (x2 * pow(z2, p - 2, p) % p).to_bytes(32, "little")
 
 
+# The messaging key record (wallet-msgkey.json, 0600, beside the node's own key file):
+#   version 2 (from 0.9.0): {"version": 2, "seed", "secret", "public", "name", "created"}. `seed` is an Ed25519
+#     seed; the X25519 key pair used for messages is derived from it (secret = the clamped first half of
+#     SHA-512(seed), public = the Montgomery form of the Ed25519 public key), so the same seed can sign for
+#     groups later while `public` stays the key published as the name's `msg` entry.
+#   version 1 (0.8.x): {"secret", "public", "name", "created"}, an X25519 pair only. It keeps working for
+#     messages between two names; it is marked {"version": 1, "groups": false} because groups will need a new
+#     key, which only the user can decide to make (it changes the name's msg entry).
+# msg_key_load / msg_key_save are the one place this file is read and written.
+def montgomery_secret(seed):
+    h = bytearray(hashlib.sha512(seed).digest()[:32])
+    h[0] &= 248; h[31] &= 127; h[31] |= 64
+    return bytes(h)
+
+
 def msg_key_valid(d):
-    return (isinstance(d, dict) and isinstance(d.get("secret"), str) and isinstance(d.get("public"), str)
+    if not (isinstance(d, dict) and isinstance(d.get("secret"), str) and isinstance(d.get("public"), str)
             and HEX32_RE.match(d["secret"]) and HEX32_RE.match(d["public"])
             and x25519(bytes.fromhex(d["secret"]), (9).to_bytes(32, "little")).hex() == d["public"]
-            and (d.get("name") in (None, "") or NAME_RE.match(str(d.get("name")))))
+            and (d.get("name") in (None, "") or NAME_RE.match(str(d.get("name"))))):
+        return False
+    if d.get("seed") is not None:             # the X25519 secret must be the one this seed gives
+        return isinstance(d["seed"], str) and bool(HEX32_RE.match(d["seed"])) \
+            and montgomery_secret(bytes.fromhex(d["seed"])).hex() == d["secret"]
+    return True
+
+
+def msg_key_record(d, name, created):
+    """The record to store for a valid key d (from the page, or a backup)."""
+    rec = {"secret": d["secret"], "public": d["public"], "name": name or "", "created": created}
+    if d.get("seed"):
+        rec.update(version=2, seed=d["seed"])
+    else:
+        rec.update(version=1, groups=False)
+    return rec
 
 
 def msg_key_load():
     try:
         with open(MSG_KEY_FILE) as f:
             d = json.load(f)
-        return d if msg_key_valid(d) else None
     except Exception:
         return None
+    if not msg_key_valid(d):
+        return None
+    if "version" not in d:                     # a key made by 0.8.x: say once in the file that groups need a new one
+        d.update(version=1, groups=False)
+        try:
+            msg_key_save(d, quiet=True)
+        except Exception:
+            pass
+    return d
 
 
-def msg_key_save(d):
+def msg_key_save(d, quiet=False):
     fd = os.open(MSG_KEY_FILE + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         json.dump(d, f)
     os.replace(MSG_KEY_FILE + ".tmp", MSG_KEY_FILE)
-    with msg_lock:
-        msg_state["subscribed"] = None            # the inbox topic may have changed: subscribe again
+    if not quiet:
+        with msg_lock:
+            msg_state["subscribed"] = None        # the inbox topic may have changed: subscribe again
 
 
 def msg_key_restore(d):
     """Puts a messaging key from a backup in place; True if it changed anything."""
     cur = msg_key_load() or {}
-    new = {k: d[k] for k in ("secret", "public", "name") if d.get(k)}
-    if cur.get("secret") == new["secret"] and cur.get("name") == new.get("name"):
+    if cur.get("secret") == d["secret"] and cur.get("name") == (d.get("name") or "") and (cur.get("seed") or not d.get("seed")):
         return False
-    msg_key_save(dict(new, created=cur.get("created") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())))
+    msg_key_save(msg_key_record(d, d.get("name"), cur.get("created") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())))
     event("messaging key restored from a backup")
     return True
 
@@ -1171,9 +1218,12 @@ def inbox_save():
 
 
 def messaging_inbox_count():
-    """How many sealed messages wait in the inbox (for a notification without content). No HTTP route."""
+    """How many incoming messages are unread (for a notification without content). No HTTP route.
+    The page marks messages read when they are shown (POST /api/messages/inbox/read). This code can't open
+    a message, so it can't tell a muted or blocked sender apart: those count until the page has been open
+    once after they came (it marks them read then)."""
     with msg_lock:
-        return len(inbox["items"]) if messaging_on() else 0
+        return sum(1 for i in inbox["items"] if not i.get("read")) if messaging_on() else 0
 
 
 def waku(method, path, body=None, timeout=6):
@@ -1299,22 +1349,147 @@ def messaging_round():
             inbox["seen"].extend(sorted(ids))
             inbox["items"].append({"n": inbox["next"], "payload": base64.b64encode(payload).decode(),
                                    "source": r.get("source") if r.get("source") in ("live", "history") else None,
-                                   "received": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+                                   "received": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "read": False})
             inbox["next"] += 1
             changed = True
         if changed:
             inbox_save()
 
 
+def _json_load(path, check, empty):
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        if check(d):
+            return d
+    except Exception:
+        pass
+    return empty()
+
+
+def _json_save(path, d):
+    fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(d, f)
+    os.replace(path + ".tmp", path)
+
+
+def outbox_load():
+    return _json_load(OUTBOX_FILE, lambda d: isinstance(d.get("items"), list) and isinstance(d.get("next"), int),
+                      lambda: {"version": 1, "items": [], "next": 1, "rev": 0})
+
+
+outbox = {"version": 1, "items": [], "next": 1, "rev": 0}
+outbox_wake = threading.Event()
+if _waku["feature"]:
+    outbox.update(outbox_load())
+
+
+def outbox_save():
+    """Writes the outbox; the caller holds msg_lock."""
+    outbox["items"] = outbox["items"][-OUTBOX_MAX:]
+    _json_save(OUTBOX_FILE, outbox)
+
+
+def outbox_touch(item):
+    """A send of `item` changed: the page asks for items changed since a revision. The caller holds msg_lock."""
+    outbox["rev"] = outbox.get("rev", 0) + 1
+    item["v"] = outbox["rev"]
+
+
+def outbox_view(item):
+    """An outbox item as the page sees it: its encrypted copy and each send's state, without the payloads."""
+    return {"n": item["n"], "copy": item["copy"], "at": item["at"], "v": item.get("v", 0),
+            "sends": [{"state": x["state"], "error": x.get("error", ""), "at": x.get("at")} for x in item["sends"]]}
+
+
+def outbox_round():
+    """One step of the sender: posts at most one queued send, and reads the events of the ones in flight.
+    Returns how long to wait before the next step."""
+    now = time.time()
+    with msg_lock:
+        flying = [(i, x) for i in outbox["items"] for x in i["sends"]
+                  if x["state"] in ("sending", "propagated") and not x.get("done") and x.get("rid")]
+        queued = next(((i, x) for i in outbox["items"] for x in i["sends"] if x["state"] == "queued"), None)
+        ready = msg_state.get("configured") and msg_state["reachable"] is not False and not msg_state.get("starting")
+        gap_ok = now - outbox.get("posted", 0) >= SEND_GAP
+    changed = False
+    for item, x in flying:
+        if now - x.get("polled", 0) < 2:
+            continue
+        x["polled"] = now
+        code, st = waku("GET", "/messaging/v1/events/send/" + x["rid"], timeout=6)
+        kinds = [str(e.get("kind")) for e in (st.get("events") or []) if isinstance(e, dict)] if code == 200 and isinstance(st, dict) else []
+        with msg_lock:
+            if "sent" in kinds:
+                x.update(state="sent", at=now, payload=None)
+            elif "error" in kinds:
+                err = next((str(e.get("error") or "") for e in st["events"] if isinstance(e, dict) and e.get("kind") == "error"), "")
+                x.update(state="failed", at=now, error=(err or "the network didn't take it")[:200])
+            elif "propagated" in kinds and x["state"] == "sending":
+                x.update(state="propagated", at=now)
+            elif now - x.get("posted", now) > SEND_WAIT:
+                # no last event: a node without reliability stops at propagated, and one that restarted forgot it
+                if x["state"] == "propagated":
+                    x.update(done=True, payload=None)
+                else:
+                    x.update(state="failed", at=now, error="no answer from the messaging network")
+            else:
+                continue
+            outbox_touch(item)
+            changed = True
+    if queued and ready and gap_ok:
+        item, x = queued
+        code, reply = waku("POST", "/messaging/v1/messages", {"payload": x["payload"], "contentTopic": x["topic"], "ephemeral": False}, timeout=10)
+        with msg_lock:
+            outbox["posted"] = time.time()
+            if code == 200 and isinstance(reply, dict) and isinstance(reply.get("requestId"), str):
+                x.update(state="sending", rid=reply["requestId"][:128], posted=time.time(), polled=time.time(), tries=x.get("tries", 0) + 1, error="")
+                sent_topics[x["topic"]] = time.time()
+                outbox_touch(item)
+                changed = True
+            elif code in (0, 404, 429, 503):
+                pass                                   # the node is off, starting or busy: it stays queued
+            else:
+                x.update(state="failed", at=time.time(), error="the messaging node refused it (HTTP %d)" % code)
+                outbox_touch(item)
+                changed = True
+    if changed:
+        with msg_lock:
+            outbox_save()
+    with msg_lock:
+        more = any(x["state"] == "queued" for i in outbox["items"] for x in i["sends"])
+        busy = any(x["state"] in ("sending",) or (x["state"] == "propagated" and not x.get("done"))
+                   for i in outbox["items"] for x in i["sends"])
+    return SEND_GAP if more else (1.0 if busy else 5.0)
+
+
+def outbox_loop():
+    while True:
+        try:
+            wait = outbox_round()
+        except Exception:
+            wait = 5.0
+        outbox_wake.wait(wait)
+        outbox_wake.clear()
+
+
+def store_load():
+    return _json_load(STORE_FILE, lambda d: isinstance(d.get("rev"), int), lambda: {"rev": 0, "blob": None})
+
+
 def messaging_start():
-    """Loads the inbox and starts the messaging loop, once."""
+    """Loads the inbox and starts the messaging loop and the sender, once."""
     with msg_lock:
         if _waku["thread"]:
             return
         _waku["thread"] = True
         if not inbox["items"] and not inbox["seen"]:
             inbox.update(inbox_load())
+        if not outbox["items"]:
+            outbox.update(outbox_load())
     threading.Thread(target=messaging_loop, daemon=True).start()
+    threading.Thread(target=outbox_loop, daemon=True).start()
 
 
 def messaging_loop():
@@ -1330,10 +1505,98 @@ def messaging_loop():
         time.sleep(min(MSG_POLL, 0.5) if starting and msg_state["reachable"] is not False else MSG_POLL)
 
 
+def _ints(v):
+    return {n for n in (v if isinstance(v, list) else []) if isinstance(n, int) and not isinstance(n, bool)}
+
+
+def _b64_ok(v, limit):
+    """Whether v is base64 of 1..limit bytes."""
+    if not isinstance(v, str) or not v or len(v) > (limit + 2) // 3 * 4:
+        return False
+    try:
+        return 0 < len(base64.b64decode(v, validate=True)) <= limit
+    except Exception:
+        return False
+
+
 def messaging_post(path, body, req):
     """The /api/messages/* POST routes: (http status, reply)."""
+    if path == "/api/messages/outbox":
+        # a message from this device: the page's encrypted copy for its history, and the sealed payload for each
+        # recipient's inbox topic. The sender posts them one at a time and follows each one's events.
+        copy, sends = body.get("copy"), body.get("sends")
+        if not _b64_ok(copy, COPY_MAX):
+            return 400, {"error": "The message copy is missing or too long."}
+        if not isinstance(sends, list) or not 1 <= len(sends) <= SENDS_MAX:
+            return 400, {"error": "A message goes to 1 to %d recipients." % SENDS_MAX}
+        out = []
+        for x in sends:
+            topic = str((x or {}).get("topic", "")) if isinstance(x, dict) else ""
+            if not MSG_TOPIC_RE.match(topic):
+                return 400, {"error": "That isn't a names inbox topic."}
+            if not _b64_ok(x.get("payload"), PAYLOAD_MAX):
+                return 413, {"error": "That message is too long."}
+            out.append({"topic": topic, "payload": x["payload"], "state": "queued", "error": "", "at": None, "tries": 0})
+        with msg_lock:
+            item = {"n": outbox["next"], "copy": copy, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "sends": out}
+            outbox["next"] += 1
+            outbox["items"].append(item)
+            outbox_touch(item)
+            outbox_save()
+        outbox_wake.set()
+        event("message sent", req)
+        return 200, {"n": item["n"]}
+    if path == "/api/messages/outbox/retry":
+        with msg_lock:
+            item = next((i for i in outbox["items"] if i["n"] == body.get("n") and not isinstance(body.get("n"), bool)), None)
+            if not item:
+                return 404, {"error": "That message isn't in the outbox any more."}
+            again = 0
+            for x in item["sends"]:
+                if x["state"] == "failed" and x.get("payload"):
+                    x.update(state="queued", error="", rid=None, at=None)
+                    again += 1
+            if again:
+                outbox_touch(item)
+                outbox_save()
+        outbox_wake.set()
+        return 200, {"queued": again}
+    if path == "/api/messages/outbox/delete":
+        ns = _ints(body.get("ids"))
+        with msg_lock:
+            before = len(outbox["items"])
+            outbox["items"] = [i for i in outbox["items"] if i["n"] not in ns]
+            removed = before - len(outbox["items"])
+            if removed:
+                outbox_save()
+        return 200, {"removed": removed}
+    if path == "/api/messages/inbox/read":
+        ns = _ints(body.get("ids"))
+        with msg_lock:
+            marked = 0
+            for i in inbox["items"]:
+                if i["n"] in ns and not i.get("read"):
+                    i["read"] = True
+                    marked += 1
+            if marked:
+                inbox_save()
+        return 200, {"marked": marked}
+    if path == "/api/messages/store":
+        # one encrypted blob (profiles, notes, conversations), replaced as a whole; rev stops two pages
+        # overwriting each other's changes
+        blob, rev = body.get("blob"), body.get("rev")
+        if not _b64_ok(blob, STORE_MAX):
+            return 413, {"error": "The saved chats are too large."}
+        with msg_lock:
+            cur = store_load()
+            if rev != cur["rev"] or isinstance(rev, bool):
+                return 409, {"error": "Changed elsewhere; load it again.", "rev": cur["rev"]}
+            _json_save(STORE_FILE, {"rev": cur["rev"] + 1, "blob": blob})
+            return 200, {"rev": cur["rev"] + 1}
     if path == "/api/messages/key":
         d = {"secret": str(body.get("secret", "")).lower(), "public": str(body.get("public", "")).lower()}
+        if body.get("seed") is not None:
+            d["seed"] = str(body["seed"]).lower()
         if not msg_key_valid(d):
             return 400, {"error": "That isn't a messaging key pair (the public key must belong to the secret key)."}
         cur = msg_key_load()
@@ -1347,8 +1610,7 @@ def messaging_post(path, body, req):
                 return (403 if code == 401 else code), obj
         if cur and cur["secret"] == d["secret"]:
             return 200, {"public": d["public"], "topic": inbox_topic(d["public"])}
-        d.update(name=(cur or {}).get("name", ""), created=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
-        msg_key_save(d)
+        msg_key_save(msg_key_record(d, (cur or {}).get("name", ""), time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())))
         event("messaging key replaced" if cur else "messaging key set", req)
         return 200, {"public": d["public"], "topic": inbox_topic(d["public"])}
     if path == "/api/messages/name":
@@ -1403,22 +1665,37 @@ def messaging_get(path, query):
         key = msg_key_load()
         with msg_lock:
             st = dict(msg_state)
-            count = len(inbox["items"])
+            count = sum(1 for i in inbox["items"] if not i.get("read"))
         return 200, {"node": {"configured": st.get("configured", bool(waku_api())), "reachable": st["reachable"],
                               "starting": bool(st.get("starting")),
                               "health": st["health"], "connection": st["connection"],
                               "checked_s_ago": round(time.time() - st["checked"]) if st["checked"] else None},
                      "key": key["public"] if key else None, "name": (key or {}).get("name", ""),
                      "topic": inbox_topic(key["public"]) if key else None, "subscribed": bool(key and st["subscribed"]),
-                     "inbox": count, "missed": st["missed"]}
+                     "inbox": count, "unread": count, "missed": st["missed"]}
     if path == "/api/messages/key":
         key = msg_key_load()
         if not key:
             return 404, {"error": "This device has no messaging key yet."}
-        return 200, {"secret": key["secret"], "public": key["public"], "name": key.get("name", "")}
+        return 200, {"secret": key["secret"], "public": key["public"], "name": key.get("name", ""),
+                     "seed": key.get("seed"), "version": key.get("version", 1), "groups": bool(key.get("seed"))}
+    q = urllib.parse.parse_qs(urllib.parse.urlsplit(query).query)
+    num = lambda k: int(q[k][0]) if q.get(k) and re.match(r"^\d{1,12}$", q[k][0]) else 0
     if path == "/api/messages/inbox":
+        after = num("after")                       # only what came after this number
         with msg_lock:
-            return 200, {"items": [dict(i) for i in inbox["items"]]}
+            return 200, {"items": [dict(i) for i in inbox["items"] if i["n"] > after], "next": inbox["next"],
+                         "unread": [i["n"] for i in inbox["items"] if not i.get("read")]}
+    if path == "/api/messages/outbox":
+        after, since = num("after"), num("since")  # new items in full; older ones only when a send changed
+        with msg_lock:
+            return 200, {"items": [outbox_view(i) for i in outbox["items"] if i["n"] > after],
+                         "changed": [{"n": i["n"], "v": i.get("v", 0), "sends": outbox_view(i)["sends"]}
+                                     for i in outbox["items"] if i["n"] <= after and i.get("v", 0) > since],
+                         "rev": outbox.get("rev", 0), "next": outbox["next"]}
+    if path == "/api/messages/store":
+        with msg_lock:
+            return 200, store_load()
     m = re.match(r"^/api/messages/send/([A-Za-z0-9_.:-]{1,128})$", path)
     if m:
         code, st = waku("GET", "/messaging/v1/events/send/" + m.group(1), timeout=6)
@@ -1486,6 +1763,7 @@ def restore_backup(doc, password):
         msg_key = content.get("messaging_key") if doc["version"] >= 2 else None
         if msg_key is not None and not msg_key_valid(msg_key):
             raise ValueError
+        chat = content.get("chat") if msg_key else None
     except Exception:
         return 400, {"error": "This backup file is damaged. Nothing was changed."}, "format"
     live, _ = keystore_location()
@@ -1522,9 +1800,15 @@ def restore_backup(doc, password):
     except Exception:
         current = []
     if reported == current:
+        before = (msg_key_load() or {}).get("secret")
         if msg_key and msg_key_restore(msg_key):
-            return 200, {"unchanged": True, "messaging_key_restored": True,
+            n = chat_restore(chat, before != msg_key["secret"]) if chat and messaging_on() else 0
+            return 200, {"unchanged": True, "messaging_key_restored": True, "messages_restored": n,
                          "message": "These are the wallet keys already in use. The messaging key from the backup is back in place."}, "same keys, messaging key"
+        n = chat_restore(chat, False) if chat and messaging_on() else 0
+        if n:
+            return 200, {"unchanged": True, "messages_restored": n,
+                         "message": "These are the keys this wallet already uses. Messages from the backup were added."}, "same keys, messages"
         return 200, {"unchanged": True, "message": "These are the keys this wallet already uses. Nothing was changed."}, "same keys"
     # keep the old key file beside the new one, then swap the new one in atomically
     if os.path.exists(live):
@@ -1545,14 +1829,79 @@ def restore_backup(doc, password):
         except Exception:
             restarted = False
     reply = {"ok": True, "restarted": restarted, "addresses": len(reported), "replaced": len(current)}
+    before = (msg_key_load() or {}).get("secret")
     if msg_key and msg_key_restore(msg_key):
         reply["messaging_key_restored"] = True
+    if chat and messaging_on():
+        reply["messages_restored"] = chat_restore(chat, before != msg_key["secret"])
     if not restarted:
         reply["manual"] = restart_hint()
     return 200, reply, "restored"
 
 
-def backup_export(password):
+def chat_backup(history):
+    """The chats for a backup: the encrypted profiles blob, and (with `history`) the sealed incoming messages
+    and encrypted sent copies, newest first up to HISTORY_BACKUP_MAX. None when there is nothing."""
+    with msg_lock:
+        store = store_load().get("blob")
+        ins = [{"payload": i["payload"], "received": i.get("received"), "read": bool(i.get("read"))} for i in inbox["items"]]
+        outs = [{"copy": i["copy"], "at": i["at"], "states": [x["state"] for x in i["sends"]]} for i in outbox["items"]]
+    chat = {"store": store, "inbox": [], "outbox": [], "truncated": False}
+    if history:
+        size = 0
+        rows = sorted([("i", r.get("received") or "", r) for r in ins] + [("o", r["at"] or "", r) for r in outs],
+                      key=lambda t: t[1], reverse=True)
+        for kind, _, r in rows:
+            size += len(json.dumps(r))
+            if size > HISTORY_BACKUP_MAX:
+                chat["truncated"] = True
+                break
+            chat["inbox" if kind == "i" else "outbox"].append(r)
+        chat["inbox"].reverse(); chat["outbox"].reverse()
+    return chat if (store or chat["inbox"] or chat["outbox"]) else None
+
+
+def chat_restore(chat, replace_store):
+    """Puts the chats from a backup back: messages are added to what is here (each once), and the profiles
+    blob replaces this one's when `replace_store` (a different messaging key, or none here yet) or when there
+    is none here. Returns how many messages came back."""
+    if not isinstance(chat, dict):
+        return 0
+    added = 0
+    with msg_lock:
+        have = {i["payload"] for i in inbox["items"]}
+        for r in chat.get("inbox") or []:
+            if isinstance(r, dict) and _b64_ok(r.get("payload"), PAYLOAD_MAX) and r["payload"] not in have:
+                have.add(r["payload"])
+                inbox["items"].append({"n": inbox["next"], "payload": r["payload"], "source": "backup",
+                                       "received": str(r.get("received") or "")[:32], "read": bool(r.get("read", True))})
+                inbox["seen"].append("p:" + hashlib.sha256(base64.b64decode(r["payload"])).hexdigest())
+                inbox["next"] += 1
+                added += 1
+        inbox["items"].sort(key=lambda i: i.get("received") or "")
+        inbox_save()
+        have = {i["copy"] for i in outbox["items"]}
+        for r in chat.get("outbox") or []:
+            if isinstance(r, dict) and _b64_ok(r.get("copy"), COPY_MAX) and r["copy"] not in have:
+                have.add(r["copy"])
+                states = [st if st in ("sent", "propagated", "failed") else "failed" for st in (r.get("states") or ["sent"])][:SENDS_MAX]
+                item = {"n": outbox["next"], "copy": r["copy"], "at": str(r.get("at") or "")[:32],
+                        "sends": [{"topic": "", "payload": None, "state": st, "error": "", "at": None, "done": True} for st in states]}
+                outbox["next"] += 1
+                outbox["items"].append(item)
+                outbox_touch(item)
+                added += 1
+        outbox["items"].sort(key=lambda i: i.get("at") or "")
+        outbox_save()
+        blob = chat.get("store")
+        if _b64_ok(blob, STORE_MAX):
+            cur = store_load()
+            if replace_store or not cur.get("blob"):
+                _json_save(STORE_FILE, {"rev": cur["rev"] + 1, "blob": blob})
+    return added
+
+
+def backup_export(password, history=True):
     """(http status, reply, keystore source). The reply holds only the encrypted backup or an error without key material."""
     path, source = keystore_location()
     if not os.path.isfile(path):
@@ -1566,8 +1915,11 @@ def backup_export(password):
     content, version = {"keystore.yaml": text}, BACKUP_VERSION
     mk = msg_key_load()
     if mk:                                    # the messaging key goes along: version 2
-        content["messaging_key"] = {k: mk[k] for k in ("secret", "public", "name") if mk.get(k)}
+        content["messaging_key"] = {k: mk[k] for k in ("secret", "public", "name", "seed", "version") if mk.get(k)}
         version = 2
+        chat = chat_backup(history) if messaging_on() else None
+        if chat:                              # an app before 0.9 ignores it and restores the keys
+            content["chat"] = chat
     sealed = aead_encrypt(backup_key(password, salt), nonce, json.dumps(content).encode(), BACKUP_AADS[version])
     b64 = lambda b: base64.b64encode(b).decode()
     created = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -1817,10 +2169,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
         if ctype.startswith("text/html"):
+            # with messages, a name's avatar (an inline data: picture, as the Names SPEC has them) can show
+            img = "img-src 'self' data:" if messaging_on() else "img-src 'self'"
             self.send_header("Content-Security-Policy",
-                             "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'")
+                             "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; %s; manifest-src 'self'; base-uri 'none'; form-action 'none'" % img)
         self.end_headers()
         self.wfile.write(data)
+
+    def body_limit(self):
+        # a backup with message history, and the saved chats, are larger than anything else
+        path = self.path.split("?", 1)[0]
+        if messaging_on() and path in ("/api/wallet/restore", "/api/messages/store"):
+            return 4 * 1048576 if path == "/api/wallet/restore" else STORE_MAX * 2
+        return 65536
 
     def host_ok(self):
         # refuse requests that reached us under another name (DNS rebinding)
@@ -1835,7 +2196,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "/api/wallet/settings", "/api/wallet/passkey/options", "/api/wallet/passkey/register",
                     "/api/wallet/passkey/remove", "/api/update/check", "/api/update/passkey/challenge",
                     "/api/update/apply", "/api/names/rpc", "/api/wallet/native-fingerprint",
-                    "/api/messages/key", "/api/messages/name", "/api/messages/send", "/api/messages/inbox/delete"}
+                    "/api/messages/key", "/api/messages/name", "/api/messages/send", "/api/messages/inbox/delete",
+                    "/api/messages/outbox", "/api/messages/outbox/retry", "/api/messages/outbox/delete",
+                    "/api/messages/store"}
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
@@ -1923,7 +2286,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.reply(415, {"error": "send JSON"})
         try:
             n = int(self.headers.get("Content-Length", "0"))
-            body = json.loads(self.rfile.read(n) or b"{}") if 0 <= n <= 65536 else None
+            body = json.loads(self.rfile.read(n) or b"{}") if 0 <= n <= self.body_limit() else None
         except Exception:
             body = None
         if not isinstance(body, dict):
@@ -1971,7 +2334,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if refused:
                 code, obj = refused
                 return self.reply(403 if code == 401 else code, obj)      # 401 means "locked" to the page
-            code, obj, source = backup_export(password)
+            code, obj, source = backup_export(password, body.get("history", True) is not False)
             if code == 200:
                 event("backup exported", self, keystore_from=source)
             return self.reply(code, obj)

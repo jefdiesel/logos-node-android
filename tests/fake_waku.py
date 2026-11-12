@@ -12,8 +12,8 @@ to a topic reaches every running node subscribed to it ("live"); a node that sub
 back, gets what it missed ("history"). The control port: POST /down/<i>, /up/<i>, /restart/<i> (seq and
 subscriptions start again), /init/<i> (a restart, then /messaging answers 404 "not available while
 initializing" for {"seconds"}, default 3), /dup/<i> (deliver the last record again), /inject/<i> with
-{"topic", "payload"} (deliver anything); GET /sent (count of messages on the network) and GET /subs/<i>
-(a node's subscriptions). As on a real node, a send subscribes the sender to the topic, so it gets its own
+{"topic", "payload"} (deliver anything); GET /sent (count of messages on the network), GET /subs/<i>
+(a node's subscriptions) and GET /posts/<i> (when each message was posted to a node, and its topic). As on a real node, a send subscribes the sender to the topic, so it gets its own
 message back.
 """
 import base64, hashlib, http.server, json, re, sys, threading, time
@@ -31,6 +31,7 @@ class Node:
     def reset(self):
         self.subs, self.received, self.seq, self.delivered, self.sends, self.last = set(), [], 0, set(), {}, None
         self.init_until = 0.0
+        self.posts = []                   # when each POST /messaging/v1/messages came, and to which topic
 
     def deliver(self, msg, source):
         if msg["hash"] in self.delivered:
@@ -115,6 +116,7 @@ class Node:
                         except Exception:
                             return self.out(400, text="bad message")
                         ts = time.time_ns()
+                        node.posts.append([time.time(), body["contentTopic"]])
                         h = "0x" + hashlib.sha256(body["contentTopic"].encode() + raw + str(ts).encode()).hexdigest()
                         msg = {"hash": h, "topic": body["contentTopic"], "payload": base64.b64encode(raw).decode(), "ts": ts}
                         network.append(msg)
@@ -144,8 +146,9 @@ class Node:
 
 class Control(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        m = re.match(r"^/subs/(\d+)$", self.path)
-        b = json.dumps(sorted(nodes[int(m.group(1))].subs) if m else {"sent": len(network)}).encode()
+        m = re.match(r"^/(subs|posts)/(\d+)$", self.path)
+        node = nodes[int(m.group(2))] if m else None
+        b = json.dumps((sorted(node.subs) if m.group(1) == "subs" else node.posts) if m else {"sent": len(network)}).encode()
         self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
 
     def do_POST(self):

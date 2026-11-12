@@ -110,9 +110,9 @@ jobs:
         run: python3 tests/autolock_test.py
       - name: Inside the Android app (APP_EMBEDDED=android) and unchanged without it
         run: python3 tests/embedded_test.py
-      - name: Apps already on phones (0.7.7 and 0.8.0, as released) update themselves to this release
+      - name: Apps already on phones (0.7.7, 0.8.0 and 0.8.1, as released) update themselves to this release
         run: |
-          for rel in 0.7.7:152b0cb7fb692bc6bcb11a0808ae3cd3879aa51a 0.8.0:dfd0c0fda1541c438102991ba2e9ecac969192f1; do
+          for rel in 0.7.7:152b0cb7fb692bc6bcb11a0808ae3cd3879aa51a 0.8.0:dfd0c0fda1541c438102991ba2e9ecac969192f1 0.8.1:5dbcfdf3dc52d9f487a2bf5be2ff389a224f78ee; do
             OLD="$RUNNER_TEMP/app-${rel%%:*}"; base=https://raw.githubusercontent.com/jefdiesel/logos-node-android/${rel#*:}/app
             mkdir -p "$OLD" && curl -fsSL -o "$OLD/release.json" "$base/release.json"
             for f in $(python3 -c "import json,sys; print(' '.join(json.load(open(sys.argv[1]))['files']))" "$OLD/release.json"); do
@@ -130,6 +130,24 @@ jobs:
           NAMES_MSG_CRYPTO="$RUNNER_TEMP/names-msg-crypto.js" node tests/messaging_test.mjs
       - name: The messaging node switched on and off while the app runs (Android)
         run: python3 tests/messaging_switch_test.py
+      - name: Chats - identity, 1:1 both ways, history, key change, addresses, profiles and notes through backup and restore (also into 0.8.1), paced sending
+        run: |
+          OLD="$RUNNER_TEMP/app-0.8.1-restore"; base=https://raw.githubusercontent.com/jefdiesel/logos-node-android/5dbcfdf3dc52d9f487a2bf5be2ff389a224f78ee/app
+          mkdir -p "$OLD" && curl -fsSL -o "$OLD/release.json" "$base/release.json"
+          for f in $(python3 -c "import json,sys; print(' '.join(json.load(open(sys.argv[1]))['files']))" "$OLD/release.json"); do
+            mkdir -p "$OLD/$(dirname "$f")" && curl -fsSL -o "$OLD/$f" "$base/$f"
+          done
+          NAMES_MSG_CRYPTO="$RUNNER_TEMP/names-msg-crypto.js" OLD_APP="$OLD" node tests/chat_test.mjs
+  chat-ui:
+    # The Messages screen in headless Chrome at phone width (x64 runner: Chrome has no Linux arm64 build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Messages screen - empty states, chats, addresses, a key change, profiles, in a real browser
+        run: CHROME="$(command -v google-chrome || command -v chromium)" node tests/chat_ui.mjs
   wallet-send:
     # A real transfer through the web app, on a private one-node chain with the node's public test keys.
     runs-on: ubuntu-24.04-arm
@@ -197,7 +215,7 @@ jobs:
   promote:
     # Phones update from the `release` branch. It moves to a commit only after every job above passed
     # on main, so a release reaches devices only once it is tested. This job alone may write.
-    needs: [fresh-install, wallet-send, termux, app-update]
+    needs: [fresh-install, wallet-send, termux, app-update, chat-ui]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

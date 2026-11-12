@@ -1,232 +1,836 @@
-// Messages: end-to-end encrypted messages between LNS names, in the names project's format
-// (msg-crypto.js beside this file). The server includes this module only when a Logos Messaging
-// node runs on this device (WAKU_API). It uses the page's own helpers ($, api, token, show,
-// openPanel, the names forwarder), so it runs after the page's main script.
+// Messages: chats between LNS names, end-to-end encrypted in the names project's format (msg-crypto.js).
+// The server includes this module only when a Logos Messaging node can run on this device (WAKU_API, or the
+// Android app). It adds a Wallet / Messages bar to the page and a Messages screen; the model is in
+// chat-core.js (the tests run it too). It uses the page's own helpers ($, api, token, show, lockedNow,
+// openSettings, closeSettings, the names forwarder), so it runs after the page's main script.
 //
-// The page makes this device's X25519 key pair; the server keeps it for unlocked pages only and
-// puts it in the wallet backup. Sealing and opening happen here: the server only ever sees the
-// sealed bytes and the recipient's inbox topic.
+// The page makes this device's messaging identity; the server keeps it for unlocked pages only and puts it
+// in the wallet backup. Sealing, opening and the encryption of what is kept happen here: the server only
+// stores sealed or encrypted bytes. Everything locks with the wallet.
 
-import { newKeyPair, sealMessage, openMessage, isVerified, parseMsgKey, inboxTopic, toHex, fromHex, MAX_TEXT }
-  from "./msg-crypto.js";
+import { Chat, convoIdOf, isAddressId, parseAddress, shortFp, shareable, MAX_TEXT } from "./chat-core.js";
+import { icon } from "./icon.js";
+import { newIdentity } from "./identity.js";
+import { toHex, fromHex } from "./msg-crypto.js";
 
-const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids); return e; };
-const b64 = bytes => btoa(String.fromCharCode(...bytes));
-const unb64 = text => Uint8Array.from(atob(text), c => c.charCodeAt(0));
+const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids.filter(k => k != null && k !== false)); return e; };
+const svg = (path, size = 24, extra = "") => { const s = document.createElement("span"); s.className = "ic";
+  s.innerHTML = `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true" focusable="false" ${extra}>${path}</svg>`; return s; };
+const P = {      // icon paths (constants)
+  back: '<path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>',
+  send: '<path d="M5 12h12M12 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>',
+  chat: '<path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.2 3.2c-.5.4-1.3 0-1.3-.6V17.0A2.5 2.5 0 0 1 4 14.5z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/>',
+  lambda: '<path d="M8.6 5.1l7.9 13.8M12.1 10.9L7 18.9M6.9 5.6L8.6 5.1" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>',
+  plus: '<path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>',
+  mute: '<path d="M6 9h3l4-4v14l-4-4H6zM16.5 9.5l4 4M20.5 9.5l-4 4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>',
+  lock: '<rect x="5" y="10.5" width="14" height="9.5" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5" fill="none" stroke="currentColor" stroke-width="1.9"/>',
+  chev: '<path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>',
+};
 let names = null;
 const namesLib = async () => names || (names = await import("/names/names.js"));
+const resolve = async name => (await namesLib()).resolveName(NAMES_RPC, namesProgram, name);
 
-// ---- the panel, next to Send and History ----
-const style = el("style", { textContent: `
-#p-msg textarea{width:100%;font:inherit;color:var(--ink);background:var(--field);border:1.5px solid var(--field-line);border-radius:10px;padding:12px;min-height:96px;resize:vertical}
-#p-msg textarea:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
-#p-msg .cmd{display:block;font-family:var(--mono);font-size:13px;background:var(--field);border:1px solid var(--line);border-radius:10px;padding:10px;overflow-wrap:anywhere;margin-top:8px}
-#p-msg .mrow{padding:10px 0;border-top:1px solid var(--line)}#p-msg .mrow:first-child{border-top:0}
-#p-msg .mrow .who{font-weight:600}#p-msg .mrow .who.unv{color:var(--warn)}
-#p-msg .mrow .text{margin-top:4px;white-space:pre-wrap;overflow-wrap:anywhere}
-#p-msg .mrow .sub{font-size:13px;color:var(--dim);margin-top:4px;display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center}
-#p-msg .mrow .sub button{min-height:28px;padding:2px 8px;font-size:12px;font-weight:500}
-#p-msg details{border-top:0;margin-top:4px;padding-top:6px}
-#p-msg h3{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin:18px 0 8px}` });
-document.head.append(style);
+// ---- look ----------------------------------------------------------------------------------------------
+document.head.append(el("style", { textContent: `
+body.has-nav main{padding-bottom:104px}
+#nav{position:fixed;left:0;right:0;bottom:0;z-index:5;background:var(--card);border-top:1px solid var(--line);padding:6px 12px calc(6px + env(safe-area-inset-bottom))}
+#nav .in{display:flex;gap:8px;max-width:520px;margin:0 auto}
+#nav button{flex:1;position:relative;border:0;border-radius:12px;min-height:54px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-size:12.5px;font-weight:600;color:var(--dim);padding:4px}
+#nav button[aria-current="page"]{color:var(--ink);background:var(--field)}
+#nav .badge{position:absolute;top:4px;left:calc(50% + 6px)}
+.ic{display:inline-flex}.ic svg{display:block}
+.badge{min-width:20px;height:20px;padding:0 6px;border-radius:999px;background:var(--accent);color:var(--accent-ink);font-size:12px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;font-variant-numeric:tabular-nums;line-height:1}
+.badge.quiet{background:var(--line);color:var(--dim)}
+.av{display:inline-block;border-radius:50%;overflow:hidden;flex:none;background:var(--line)}
+.av img,.av svg{display:block;width:100%;height:100%;object-fit:cover}
+#page-msg h2.top{margin:0}
+.me{display:flex;gap:12px;align-items:center;width:100%;text-align:left;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin:0 0 14px;font-weight:400;min-height:64px}
+.me .t{flex:1;min-width:0}.me b{display:block;font-size:16px}.me small{display:block;font-size:13px;color:var(--dim)}
+.me small.ok{color:var(--ok)}.me small.warn{color:var(--warn)}.me .ic{color:var(--dim)}
+.me.todo{border-color:var(--warn)}
+.chats-top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:-2px 0 6px}
+.chats-top button{min-height:38px;padding:6px 14px 6px 10px;font-size:14px;display:inline-flex;align-items:center;gap:4px;color:var(--accent);border-color:var(--accent)}
+.crow{display:flex;gap:12px;align-items:center;width:100%;text-align:left;border:0;border-radius:10px;background:none;padding:0;font-weight:400;min-height:68px;color:var(--ink)}
+.crow:active{background:var(--field)}
+.crow .cb{flex:1;min-width:0;align-self:stretch;display:flex;flex-direction:column;justify-content:center;gap:2px;border-top:1px solid var(--line);padding:10px 0}
+.crow:first-child .cb{border-top:0}
+.cl{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.cn{font-weight:600;font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ct{font-size:12.5px;color:var(--dim);flex:none;display:inline-flex;align-items:center;gap:4px}.ct.new{color:var(--accent);font-weight:600}
+.cp{font-size:14px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}.cp.warn{color:var(--warn)}
+.empty{text-align:center;padding:22px 8px 8px}
+.empty .art{width:84px;height:84px;margin:0 auto;border-radius:50%;background:var(--field);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;color:var(--ink)}
+.empty h3{font-size:18px;margin:14px 0 4px;letter-spacing:-.01em}.empty p{color:var(--dim);font-size:14px;margin:0 auto 4px;max-width:300px}
+.empty button{width:auto;padding-left:22px;padding-right:22px}
+.hero h3{font-size:21px;margin:14px 0 6px;letter-spacing:-.015em}.hero ul{margin:10px 0 0;padding-left:20px;color:var(--dim);font-size:14px}.hero li{margin:4px 0}
+.backrow{display:flex;align-items:center;gap:6px;margin:0 2px 12px}.backrow button{min-height:40px;padding:6px 12px 6px 6px;display:inline-flex;align-items:center;gap:2px}
+.found{display:flex;gap:14px;align-items:center;margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
+.found b{display:block;font-size:18px}.found small{display:block;font-size:13.5px;color:var(--dim)}
+.cmd{display:block;font-family:var(--mono);font-size:13px;background:var(--field);border:1px solid var(--line);border-radius:10px;padding:10px;overflow-wrap:anywhere;margin-top:8px}
+.ov{position:fixed;left:0;right:0;top:0;height:var(--vvh,100dvh);z-index:20;background:var(--bg);display:flex;flex-direction:column}
+.ov-top{display:flex;align-items:center;gap:6px;padding:6px 8px;padding-top:calc(6px + env(safe-area-inset-top));background:var(--card);border-bottom:1px solid var(--line);min-height:62px;flex:none}
+.ov-top .back{width:44px;min-height:44px;padding:0;border:0;display:inline-flex;align-items:center;justify-content:center;flex:none}
+.who{flex:1;min-width:0;display:flex;align-items:center;gap:10px;border:0;background:none;padding:4px 6px;text-align:left;font-weight:400;min-height:48px;color:var(--ink)}
+.who .t{min-width:0}.who b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:16.5px}
+.who small{display:block;font-size:12.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.who small.ok{color:var(--ok)}.who small.warn{color:var(--warn)}
+.cv-ban{flex:none;margin:10px 12px 0;padding:12px 14px;border:1px solid var(--warn);border-radius:12px;background:var(--card);font-size:14px}
+.cv-ban p{margin:0}.cv-ban .row{margin-top:10px}.cv-ban button{min-height:40px;font-size:14px}
+.cv-scroll{flex:1;overflow-y:auto;padding:6px 12px 10px;overscroll-behavior:contain}
+.cv-in{max-width:640px;margin:0 auto;display:flex;flex-direction:column;min-height:100%;justify-content:flex-end}
+.day{align-self:center;font-size:12px;font-weight:600;color:var(--dim);background:var(--card);border:1px solid var(--line);border-radius:999px;padding:3px 11px;margin:14px 0 6px}
+.bub{max-width:82%;padding:8px 12px;border-radius:18px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:15.5px;line-height:1.4;margin-top:3px;text-align:left;font-weight:400;min-height:0;cursor:pointer;user-select:text;-webkit-user-select:text}
+.bub.in{align-self:flex-start;background:var(--card);border:1px solid var(--line);color:var(--ink);border-bottom-left-radius:6px}
+.bub.out{align-self:flex-end;background:var(--ink);border:1px solid var(--ink);color:var(--bg);border-bottom-right-radius:6px}
+.bub.unv{border:1.5px dashed var(--warn)}
+.bub.cont.in{border-top-left-radius:6px}.bub.cont.out{border-top-right-radius:6px}
+.meta{font-size:11.5px;color:var(--dim);margin:3px 4px 6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.meta.out{align-self:flex-end;justify-content:flex-end}.meta.in{align-self:flex-start}
+.meta .bad{color:var(--bad);font-weight:600}.meta .warn{color:var(--warn);font-weight:600}
+.meta button{min-height:26px;padding:0 9px;font-size:12px;font-weight:600;color:var(--bad);border-color:var(--bad);border-radius:999px}
+.cv-empty{margin:auto;text-align:center;color:var(--dim);font-size:14px;padding:30px 20px;max-width:320px}
+.cv-empty .av{margin:0 auto 12px}
+.cmp{flex:none;display:flex;align-items:flex-end;gap:8px;padding:8px 10px calc(8px + env(safe-area-inset-bottom));background:var(--card);border-top:1px solid var(--line)}
+.cmp .wrap{flex:1;max-width:640px;margin:0 auto;display:flex;align-items:flex-end;gap:8px}
+.cmp textarea{flex:1;min-width:0;font:inherit;font-size:16px;color:var(--ink);background:var(--field);border:1.5px solid var(--field-line);border-radius:22px;padding:10px 15px;resize:none;height:46px;max-height:150px;line-height:1.35}
+.cmp textarea:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
+.cmp .go{width:46px;height:46px;min-height:46px;border-radius:50%;padding:0;background:var(--accent);border-color:var(--accent);color:var(--accent-ink);display:inline-flex;align-items:center;justify-content:center;flex:none}
+.cmp .count{font-size:11.5px;color:var(--dim);align-self:center}
+.cmp-note{flex:none;padding:14px 16px calc(14px + env(safe-area-inset-bottom));background:var(--card);border-top:1px solid var(--line);font-size:14px;color:var(--dim);text-align:center}
+.cmp-note button{margin-left:8px;min-height:34px;font-size:13px;padding:4px 12px}
+.pv-scroll{flex:1;overflow-y:auto;padding:16px 16px 40px}.pv-in{max-width:520px;margin:0 auto}
+.pv-head{text-align:center;padding:6px 0 18px}.pv-head .av{margin:0 auto}
+.pv-head h3{font-size:24px;margin:12px 0 2px;letter-spacing:-.02em;overflow-wrap:anywhere}.pv-head p{margin:2px 0 0;color:var(--dim);font-size:14px}
+.pv-head .state{display:inline-block;margin-top:8px;font-size:13px;font-weight:600;padding:3px 10px;border-radius:999px;border:1px solid var(--line)}
+.state.ok{color:var(--ok)}.state.warn{color:var(--warn)}.state.bad{color:var(--bad)}
+.fp{font-family:var(--mono);font-size:13px;color:var(--dim);overflow-wrap:anywhere}
+#page-msg textarea,.ov textarea.note-f{width:100%;font:inherit;color:var(--ink);background:var(--field);border:1.5px solid var(--field-line);border-radius:10px;padding:12px;min-height:110px;resize:vertical}
+.ov textarea.note-f:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
+.tg{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line)}.tg:first-child{border-top:0;padding-top:0}
+.tg span{flex:1}.tg small{display:block;color:var(--dim);font-size:13px}
+.sw{width:52px;min-height:32px;height:32px;border-radius:999px;padding:0;border:1.5px solid var(--field-line);background:var(--field);position:relative;flex:none}
+.sw::after{content:"";position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:var(--dim);transition:left .15s}
+.sw[aria-checked="true"]{background:var(--accent);border-color:var(--accent)}.sw[aria-checked="true"]::after{left:25px;background:var(--accent-ink)}
+.danger{color:var(--bad);border-color:var(--bad);width:100%;margin-top:10px}
+.saved{font-size:12.5px;color:var(--ok);min-height:18px;margin-top:4px}
+.sheet-bg{position:fixed;inset:0;z-index:30;background:rgba(0,0,0,.45);display:flex;align-items:flex-end;justify-content:center}
+.sheet{background:var(--card);color:var(--ink);width:100%;max-width:560px;border-radius:18px 18px 0 0;padding:20px 16px calc(18px + env(safe-area-inset-bottom));border:1px solid var(--line);max-height:85vh;overflow:auto}
+.sheet h2{color:var(--ink);font-size:18px;text-transform:none;letter-spacing:-.01em;margin:0 0 4px}
+.sheet .quote{margin:10px 0 4px;padding:10px 12px;border-left:3px solid var(--line);color:var(--dim);font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:7.5em;overflow:hidden}
+.sheet dl div{padding:8px 0}.sheet .row button{min-height:44px}
+@media (prefers-reduced-motion:reduce){.sw::after{transition:none}}
+` }));
+const vp = document.querySelector('meta[name="viewport"]');               // keep the composer above the keyboard
+if (vp && !/interactive-widget/.test(vp.content)) vp.content += ",interactive-widget=resizes-content";
+if (window.visualViewport) {
+  const fit = () => document.documentElement.style.setProperty("--vvh", Math.round(visualViewport.height) + "px");
+  visualViewport.addEventListener("resize", fit); fit();
+}
 
-const tab = el("button", { type: "button", id: "t-msg", className: "tab", textContent: "Messages" });
-tab.setAttribute("aria-expanded", "false"); tab.setAttribute("aria-controls", "p-msg");
-$("t-hist").after(tab);
-const panel = el("div", { id: "p-msg", className: "panel", hidden: true });
-panel.innerHTML = `
-  <p class="msg warn" id="mg-off" hidden>The messaging node is off, so messages can't be sent or received right now. The app starts it again by itself.</p>
-  <div id="mg-nokey" hidden>
-    <p class="note">Messages to and from LNS names, end-to-end encrypted. This phone gets its own messaging key, kept with the wallet and locked by your PIN.</p>
-    <button type="button" class="primary" id="mg-on">Turn on messages</button>
-  </div>
-  <div id="mg-ready" hidden>
-    <details id="mg-setup"><summary id="mg-who">This device: not set up yet</summary>
-      <label for="mg-me">Your LNS name</label>
-      <input id="mg-me" class="mono" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="40">
-      <p class="note">Messages reach this phone once your name's <b>msg</b> entry is this device's key. Your name's holder key is on your computer, so run this there:</p>
-      <code class="cmd" id="mg-cmd"></code>
-      <div class="row"><button type="button" id="mg-copy">Copy command</button><button type="button" id="mg-check">Check</button></div>
-      <p class="msg" id="mg-check-m" role="status"></p>
-      <p class="note">This device's messaging key: <code class="hash" id="mg-key"></code></p>
-    </details>
-    <h3>Write</h3>
-    <form id="mg-form" autocomplete="off">
-      <label for="mg-to">To (an LNS name)</label>
-      <input id="mg-to" class="mono" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="40">
-      <label for="mg-text">Message</label>
-      <textarea id="mg-text" maxlength="${MAX_TEXT}"></textarea>
-      <button type="submit" class="primary" id="mg-send">Send</button>
-      <p class="msg" id="mg-send-m" role="status"></p>
-    </form>
-    <h3>Inbox</h3>
-    <div id="mg-inbox"><p class="note">Loading…</p></div>
-  </div>`;
-$("p-hist").after(panel);
+// ---- the bar: Wallet / Messages ----------------------------------------------------------------------
+const badge = el("span", { className: "badge", hidden: true });
+const navWallet = el("button", { type: "button", id: "nav-wallet" }, svg(P.lambda), "Wallet");
+const navMsg = el("button", { type: "button", id: "nav-msg" }, svg(P.chat), "Messages", badge);
+const nav = el("nav", { id: "nav", ariaLabel: "Screens" }, el("div", { className: "in" }, navWallet, navMsg));
+document.body.append(nav); document.body.classList.add("has-nav");
+const page = el("div", { id: "page-msg", hidden: true });
+$("page-main").after(page);
+let tab = "wallet";
+function setTab(t) {
+  tab = t;
+  $("page-main").hidden = t !== "wallet"; page.hidden = t !== "msg"; $("page-settings").hidden = true;
+  navWallet.removeAttribute("aria-current"); navMsg.removeAttribute("aria-current");
+  (t === "wallet" ? navWallet : navMsg).setAttribute("aria-current", "page");
+  window.scrollTo(0, 0);
+  if (t === "msg") { home(); refresh(); }
+}
+navWallet.addEventListener("click", () => setTab("wallet"));
+navMsg.addEventListener("click", () => setTab("msg"));
+setTab("wallet");
+// Settings is its own view; going back returns to the screen it came from
+const pageOpenSettings = window.openSettings, pageCloseSettings = window.closeSettings;
+window.openSettings = (...a) => { pageOpenSettings(...a); page.hidden = true; nav.hidden = true; document.body.classList.remove("has-nav"); };
+window.closeSettings = () => { pageCloseSettings(); nav.hidden = false; document.body.classList.add("has-nav"); setTab(tab); };
 
 // say where messages go, in the footer and in Settings > About
 const ABOUT_MESSAGES = " Messages go through the Logos Messaging node on this device to the Logos Messaging network, sealed so only the person they're for can read them.";
 for (const id of ["footer-talk", "about-talk"]) if ($(id)) $(id).textContent = $(id).textContent.replace(/ Testnet\.$/, ABOUT_MESSAGES + " Testnet.");
 
-// one panel open at a time, together with Send and History
-const pageOpen = window.openPanel;
-window.openPanel = which => {
-  pageOpen(which === "msg" ? null : which);
-  const on = which === "msg";
-  panel.hidden = !on; tab.setAttribute("aria-expanded", String(on));
-  if (on) refresh();
-};
-tab.addEventListener("click", () => window.openPanel(panel.hidden ? "msg" : null));
+// ---- the screen ----------------------------------------------------------------------------------------
+page.innerHTML = `
+  <section class="card" id="mg-locked" hidden>
+    <div class="empty" style="padding-top:8px">
+      <div class="art" id="mg-locked-art"></div>
+      <h3>Messages are locked</h3>
+      <p>They lock with the wallet. Unlock with your PIN or fingerprint to read and write.</p>
+      <button type="button" class="primary" id="mg-unlock">Unlock</button>
+    </div>
+  </section>
+  <section class="card hero" id="mg-nokey" hidden>
+    <h2>Messages</h2>
+    <h3>Chat with anyone who has an LNS name</h3>
+    <p class="note" style="margin:0">Messages are sealed on this phone so only the person they're for can open them, and travel through the Logos Messaging network.</p>
+    <ul>
+      <li>This phone gets its own messaging key, kept with the wallet and locked by your PIN.</li>
+      <li>People reach you at your LNS name once its <b>msg</b> entry is this key.</li>
+      <li>The key and your chats go into the wallet backup.</li>
+    </ul>
+    <button type="button" class="primary" id="mg-on">Turn on messages</button>
+    <p class="msg bad" id="mg-on-m" role="alert"></p>
+  </section>
+  <div id="mg-home" hidden>
+    <p class="msg warn" id="mg-node" role="status" hidden style="margin:0 2px 12px"></p>
+    <button type="button" class="me" id="mg-me"></button>
+    <p class="msg warn" id="mg-store-warn" hidden style="margin:0 2px 12px">Saved chats from an earlier messaging key can't be opened with this one.</p>
+    <section class="card" aria-labelledby="h-chats">
+      <div class="chats-top"><h2 class="top" id="h-chats">Chats</h2><button type="button" id="mg-new"></button></div>
+      <div id="mg-rows"></div>
+    </section>
+  </div>
+  <div id="mg-newv" hidden>
+    <div class="backrow"><button type="button" class="mg-home"></button></div>
+    <section class="card" aria-labelledby="h-new">
+      <h2 id="h-new">New chat</h2>
+      <form id="mg-find" autocomplete="off">
+        <label for="mg-to" style="margin-top:0">An LNS name or a messaging address</label>
+        <div class="pwrow"><input id="mg-to" class="mono" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="40" placeholder="alice, or msg:…" enterkeyhint="search"><button type="submit" id="mg-look">Look up</button></div>
+        <p class="hint">Names are looked up on the chain from this phone. A messaging address is what someone copies from their own Messages settings.</p>
+      </form>
+      <div id="mg-found"></div>
+    </section>
+  </div>
+  <div id="mg-mev" hidden>
+    <div class="backrow"><button type="button" class="mg-home"></button></div>
+    <section class="card" aria-labelledby="h-mine">
+      <h2 id="h-mine">Your LNS name</h2>
+      <p class="msg" id="mg-check-m" role="status" style="margin-top:0"></p>
+      <label for="mg-name">Your name</label>
+      <div class="pwrow"><input id="mg-name" class="mono" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="40" placeholder="yourname"><button type="button" id="mg-name-save">Save</button></div>
+      <p class="msg" id="mg-name-m" role="status"></p>
+      <p class="hint">Without a name you can still write and get messages: people use your messaging address instead, and see your messages as from that address.</p>
+      <details id="mg-link"><summary>Link your LNS name to this phone</summary>
+        <p class="note">Messages to your name come to this phone once the name's <b>msg</b> entry is this phone's messaging address. The name's holder key is on your computer, so run this there:</p>
+        <code class="cmd" id="mg-cmd"></code>
+        <div class="row"><button type="button" id="mg-copy">Copy command</button><button type="button" id="mg-check">Check again</button></div>
+      </details>
+    </section>
+    <section class="card" aria-labelledby="h-addr">
+      <h2 id="h-addr">My messaging address</h2>
+      <p class="note" style="margin-top:0">Anyone can write to this phone at this address, with or without an LNS name. It isn't a wallet address: coins can't be sent to it.</p>
+      <code class="cmd" id="mg-addr" hidden></code>
+      <div class="row"><button type="button" id="mg-addr-show" aria-controls="mg-addr" aria-expanded="false">Show</button><button type="button" id="mg-addr-copy">Copy</button></div>
+      <p class="msg" id="mg-addr-m" role="status"></p>
+    </section>
+  </div>`;
+for (const b of page.querySelectorAll(".mg-home")) { b.append(svg(P.back, 20), "Chats"); b.addEventListener("click", () => home()); }
+$("mg-new").append(svg(P.plus, 18), "New chat");
+$("mg-locked-art").append(svg(P.lock, 34));
+// room for "New group" next to New chat once groups exist; nothing is shown for it until then
 
-// forget the key and what was read when the wallet locks
-let mine = null;                    // { secret: Uint8Array, public: hex, name }
+let chat = null, me = null, status = null, view = "home", loading = null;
+const forget = () => { chat = null; me = null; loading = null; closeAll(); $("mg-rows").replaceChildren(); $("mg-found").replaceChildren(); $("mg-to").value = ""; badge.hidden = true; };
+function home() { view = "home"; for (const [id, v] of [["mg-newv", "new"], ["mg-mev", "me"]]) $(id).hidden = true; render(); }
+
+// everything goes when the wallet locks
 const pageShow = window.show;
-window.show = view => {
-  pageShow(view);
-  if (view !== "v-open") { mine = null; $("mg-inbox").replaceChildren(); $("mg-text").value = ""; }
+window.show = v => {
+  pageShow(v);
+  if (v !== "v-open") forget();
+  else if (wantMsg) { wantMsg = false; setTab("msg"); return; }     // unlocked from the Messages screen: back there
+  if (tab === "msg") render();
 };
+$("mg-unlock").addEventListener("click", () => { wantMsg = true; setTab("wallet"); const f = $("b-fp").hidden ? $("pin") : $("b-fp"); f && f.focus(); });
+let wantMsg = false;
 
-// ---- status, key and setup ----
+const unlocked = () => !$("v-open").hidden && token;
+function locked401(r) { if (r && r.status === 401) { lockedNow(); return true; } return false; }
+
+/** Loads status, the key and the chats; quick when they're loaded already. */
 async function refresh() {
+  if (!unlocked()) return render();
   const r = await api("/api/messages/status");
-  if (r.status === 401) return lockedNow();
-  if (!r.ok) return;
-  const starting = r.data.node.starting && r.data.node.reachable !== false;
-  $("mg-off").hidden = r.data.node.reachable !== false && !starting;
-  $("mg-off").textContent = starting ? "The messaging node is starting. Messages come in once it's ready."
-    : "The messaging node is off, so messages can't be sent or received right now. The app starts it again by itself.";
-  if (!r.data.key) { $("mg-nokey").hidden = false; $("mg-ready").hidden = true; return; }
-  if (!mine || mine.public !== r.data.key) {
+  if (locked401(r) || !r.ok) return render();
+  status = r.data;
+  if (status.key && (!me || me.public !== status.key)) {
     const k = await api("/api/messages/key");
-    if (k.status === 401) return lockedNow();
-    if (!k.ok) return;
-    mine = { secret: fromHex(k.data.secret), public: k.data.public, name: k.data.name || "" };
-    $("mg-me").value = mine.name;
+    if (locked401(k) || !k.ok) return;
+    me = { secret: fromHex(k.data.secret), public: k.data.public, name: k.data.name || "", groups: k.data.groups };
+    chat = new Chat({ me, api, resolve });
+    const c = chat;
+    loading = chat.loadStore().then(() => chat.sync()).then(() => { c.ready = true; })
+      .catch(e => { if (e.status === 401) lockedNow(); else c.ready = true; });
   }
-  $("mg-nokey").hidden = true; $("mg-ready").hidden = false;
-  renderSetup(); loadInbox();
+  if (!status.key) { me = null; chat = null; }
+  if (loading) { await loading; loading = null; }
+  else if (chat) { try { if (await chat.sync()) changed(); } catch (e) { if (e.status === 401) return lockedNow(); } }
+  render();
 }
-function renderSetup() {
-  $("mg-key").textContent = mine.public;
-  $("mg-cmd").textContent = `names set-text ${mine.name || "<yourname>"} msg ${mine.public}`;
-  $("mg-who").textContent = mine.name ? "This device: " + mine.name : "This device: not set up yet";
-  if (!mine.name) $("mg-setup").open = true;
+function changed() { if (cv.id) renderConvo(); }       // a profile isn't redrawn under someone typing a note
+
+// ---- home: the chat list -------------------------------------------------------------------------------
+const nodeText = () => {
+  if (!status) return "";
+  const n = status.node;
+  if (n.starting && n.reachable !== false) return "The messaging node is starting. Messages come in once it's ready.";
+  if (n.reachable === false) return "The messaging node is off, so messages can't be sent or received right now. Messages you write wait and go out when it's back.";
+  return "";
+};
+function render() {
+  const open = unlocked();
+  $("mg-locked").hidden = open;
+  $("mg-nokey").hidden = !open || !status || !!status.key;
+  const ready = open && !!chat && !!chat.ready;
+  $("mg-home").hidden = !ready || view !== "home";
+  $("mg-newv").hidden = !ready || view !== "new";
+  $("mg-mev").hidden = !ready || view !== "me";
+  updateBadge();
+  if (!ready) return;
+  const t = nodeText(); $("mg-node").hidden = !t; $("mg-node").textContent = t;
+  $("mg-store-warn").hidden = !chat.storeUnreadable;
+  renderMe(); if (view === "home") renderList();
 }
-$("mg-on").addEventListener("click", async () => {
-  const kp = newKeyPair();
-  const r = await api("/api/messages/key", { secret: toHex(kp.secretKey), public: toHex(kp.publicKey) });
-  if (r.status === 401) return lockedNow();
-  if (r.ok) refresh();
+function updateBadge() {
+  const n = chat && unlocked() ? chat.unreadTotal() : 0;
+  badge.hidden = !n; badge.textContent = n > 99 ? "99+" : String(n);
+  navMsg.setAttribute("aria-label", n ? `Messages, ${n} unread` : "Messages");
+}
+async function renderMe() {
+  const b = $("mg-me");
+  let title = me.name || "No LNS name linked", line, cls = "";
+  if (!me.name) { line = "People can write to your messaging address"; }
+  else {
+    const c = chat.chainOf(me.name);
+    if (!c) { line = "Checking your name…"; chat.lookup(me.name).then(() => { if (view === "home") renderMe(); }).catch(() => {}); }
+    else if (c.key === me.public) { line = "✓ People reach you at " + me.name; cls = "ok"; }
+    else if (!c.registered) { line = me.name + " isn't a registered name"; cls = "warn"; }
+    else { line = "Link it to this phone so replies reach you"; cls = "warn"; }
+  }
+  b.className = "me" + (cls === "warn" ? " todo" : "");
+  b.replaceChildren(icon(me.name || "", { key: me.public, size: 40, letters: me.name ? null : "#", ...(me.name ? cardOf(me.name) : {}) }),
+    el("span", { className: "t" }, el("b", { textContent: title }), el("small", { className: cls, textContent: line })), svg(P.chev, 18));
+  b.setAttribute("aria-label", "Messages settings: " + title + ". " + line);
+}
+$("mg-me").addEventListener("click", () => { view = "me"; render(); openMe(); });
+const cardOf = pid => { const c = chat && !isAddressId(pid) && chat.chainOf(pid); return c ? { avatar: c.avatar, color: c.color } : {}; };
+/** A person's icon: generated from the name (or address) and the pinned key, or the name's own picture. */
+const iconOf = (pid, size, key) => isAddressId(pid)
+  ? icon("", { key: pid.slice(2), size, letters: ((chat.profile(pid) || {}).nickname || "#").slice(0, 1).toUpperCase() })
+  : icon(pid, { key: key ?? (chat.pinned(pid) || ""), size, ...cardOf(pid) });
+
+const dayKey = t => { const d = new Date(t); return d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate(); };
+function shortWhen(t) {
+  const d = new Date(t), now = new Date();
+  if (dayKey(t) === dayKey(now)) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const y = new Date(now); y.setDate(now.getDate() - 1);
+  if (dayKey(t) === dayKey(y)) return "Yesterday";
+  if (now - d < 6 * 864e5) return d.toLocaleDateString([], { weekday: "short" });
+  return d.toLocaleDateString([], { day: "numeric", month: "short", ...(d.getFullYear() !== now.getFullYear() ? { year: "numeric" } : {}) });
+}
+function preview(c) {
+  const m = c.last;
+  if (!m) return { text: "No messages yet", warn: false };
+  const t = m.text.replace(/\s+/g, " ");
+  if (m.dir === "out") {
+    const st = sendState(m);
+    return { text: (st.bad ? "Not sent: " : "You: ") + t, warn: st.bad };
+  }
+  const trust = chat.trust(m);
+  if (trust === "unverified") return { text: "⚠ Not verified: " + t, warn: true };
+  if (c.convo.kind !== "direct") return { text: chat.label(m.sender) + ": " + t, warn: false };
+  return { text: t, warn: false };
+}
+function renderList() {
+  const list = chat.conversations();
+  const box = $("mg-rows");
+  if (!list.length) {
+    const go = el("button", { type: "button", className: "primary", textContent: "Start a chat" });
+    go.addEventListener("click", openNew);
+    box.replaceChildren(el("div", { className: "empty" }, el("div", { className: "art" }, svg(P.chat, 36)),
+      el("h3", { textContent: "No chats yet" }),
+      el("p", { textContent: "Write to anyone by LNS name or messaging address. When someone writes to " + (me.name || "you") + ", the chat shows up here." }), go));
+    return;
+  }
+  box.replaceChildren(...list.map(c => {
+    const pv = preview(c), id = c.convo.id;
+    const time = el("span", { className: "ct" + (c.unread && !c.muted ? " new" : "") }, c.muted ? svg(P.mute, 14) : null, c.last ? shortWhen(c.last.ts) : "");
+    const count = c.unread ? el("span", { className: "badge" + (c.muted ? " quiet" : ""), textContent: c.unread > 99 ? "99+" : String(c.unread) }) : null;
+    const row = el("button", { type: "button", className: "crow" },
+      c.convo.kind === "direct" ? iconOf(chat.peer(c.convo), 48) : icon(c.title, { key: id, size: 48 }),
+      el("span", { className: "cb" },
+        el("span", { className: "cl" }, el("span", { className: "cn", textContent: c.title }), time),
+        el("span", { className: "cl" }, el("span", { className: "cp" + (pv.warn ? " warn" : ""), textContent: c.blocked ? "Blocked" : pv.text }), count)));
+    row.setAttribute("aria-label", `${c.title}${c.unread ? `, ${c.unread} unread` : ""}`);
+    row.addEventListener("click", () => openConvo(id));
+    return row;
+  }));
+  // chats whose names haven't been read from the chain yet: read them, for pictures and key checks
+  for (const c of list) for (const m of c.convo.members) if (m.name && !chat.chainOf(m.name)) chat.lookup(m.name).then(() => { if (view === "home" && !cv.id) renderList(); }).catch(() => {});
+}
+
+// ---- new chat ------------------------------------------------------------------------------------------
+function openNew() { view = "new"; render(); $("mg-found").replaceChildren(); $("mg-to").value = ""; $("mg-to").focus(); }
+$("mg-new").addEventListener("click", openNew);
+$("mg-find").addEventListener("submit", async e => {
+  e.preventDefault();
+  const lib = await namesLib(), box = $("mg-found");
+  const say = (cls, text) => box.replaceChildren(el("p", { className: "msg " + cls, textContent: text }));
+  const typed = $("mg-to").value;
+  // a messaging address (not a wallet address)
+  const walletKeys = (typeof accts !== "undefined" ? accts : []).map(x => x.key);
+  const addr = parseAddress(typed, walletKeys);
+  if (addr && addr.wallet) return say("bad", "That's a wallet address. Ask them for their messaging address or LNS name.");
+  if (addr && addr.bad) return say("bad", "That isn't a valid messaging address. Ask them to copy it again from their Messages settings.");
+  if (addr) {
+    if (addr.address === me.public) return say("bad", "That's your own messaging address.");
+    const pid = "k:" + addr.address, open = chat.convo(chat.thread(pid));
+    const lines = [el("div", { className: "found" }, iconOf(pid, 64),
+      el("div", {}, el("b", { textContent: chat.label(pid) }), el("small", { textContent: "Messaging address · no name to verify" })))];
+    if (!addr.sure) lines.push(el("p", { className: "msg warn", textContent: "Check this is their messaging address, not a wallet address: both are 64 characters. A messaging address copied from Messages starts with msg:." }));
+    lines.push(el("p", { className: "note", textContent: "Messages are sealed to this address. You'll see it as a short code until you give it a nickname in its profile." }));
+    const go = el("button", { type: "button", className: "primary", textContent: open ? "Open chat" : "Start chat" });
+    go.addEventListener("click", async () => {
+      go.disabled = true;
+      try { openConvo(await chat.startAddress(addr.address)); home(); }
+      catch (err) { go.disabled = false; box.append(el("p", { className: "msg bad", textContent: err.message })); }
+    });
+    lines.push(go);
+    return box.replaceChildren(...lines);
+  }
+  // an LNS name
+  const name = lib.normalizeName(typed);
+  if (!name) return say("bad", "Type an LNS name, like alice, or paste a messaging address.");
+  if (!lib.isValidName(name)) return say("bad", name + " isn't an LNS name (1 to 32 letters a-z, digits and inner hyphens) or a messaging address.");
+  $("mg-look").disabled = true; say("", "Looking up " + name + "… this takes a few seconds.");
+  let c;
+  try { c = await chat.lookup(name, true); }
+  catch (err) { return say("bad", "Couldn't reach the name service. Try again."); }
+  finally { $("mg-look").disabled = false; }
+  if (!c.registered) return say("bad", name + " isn't a registered name.");
+  const lines = [];
+  let state;
+  if (!c.key) state = name + " hasn't turned on messages.";
+  else if (name === me.name) state = "This is you: a chat with yourself, for notes.";
+  else state = c.display ? c.display + " · messages on" : "Messages on";
+  lines.push(el("div", { className: "found" }, iconOf(name, 64, c.key || ""), el("div", {}, el("b", { textContent: name }), el("small", { textContent: state }))));
+  if (c.lapsed) lines.push(el("p", { className: "msg warn", textContent: name + "'s registration has lapsed; it may change hands." }));
+  const known = chat.pinned(name);
+  if (known && c.key && known !== c.key) lines.push(el("p", { className: "msg warn", textContent: name + "'s messaging address changed since you last talked. The chat will ask you to accept it." }));
+  if (!c.key) lines.push(el("p", { className: "note", textContent: "They can turn messages on in the Names app or in the Logos node app. Until then you can write to them only if they give you their messaging address." }));
+  const merge = c.key && chat.addressChatFor(c.key);
+  if (merge) {
+    const mg = el("button", { type: "button", className: "primary", textContent: "Merge into " + name });
+    mg.addEventListener("click", async () => {
+      mg.disabled = true;
+      try { openConvo(await chat.mergeAddress(c.key, name)); home(); }
+      catch (err) { mg.disabled = false; box.append(el("p", { className: "msg bad", textContent: err.message })); }
+    });
+    lines.push(el("p", { className: "msg ok", textContent: "You already chat with " + chat.label(merge) + ", and that is " + name + "'s messaging address. Merge that chat into " + name + "?" }), mg);
+  } else if (c.key) {
+    const go = el("button", { type: "button", className: "primary", textContent: chat.convo(convoIdOf(name)) ? "Open chat" : "Start chat" });
+    go.addEventListener("click", async () => {
+      go.disabled = true;
+      try { openConvo(await chat.startDirect(name)); home(); }
+      catch (err) { go.disabled = false; box.append(el("p", { className: "msg bad", textContent: err.message })); }
+    });
+    lines.push(go);
+  }
+  box.replaceChildren(...lines);
 });
-$("mg-me").addEventListener("change", async () => {
-  const lib = await namesLib();
-  const name = lib.normalizeName($("mg-me").value);
+
+// ---- your messaging: name and setup ---------------------------------------------------------------------
+function openMe() {
+  $("mg-name").value = me.name; $("mg-name-m").textContent = ""; $("mg-addr-m").textContent = "";
+  $("mg-cmd").textContent = `names set-text ${me.name || "<yourname>"} msg ${me.public}`;
+  $("mg-addr").textContent = shareable(me.public); $("mg-addr").hidden = true;
+  $("mg-addr-show").textContent = "Show"; $("mg-addr-show").setAttribute("aria-expanded", "false");
+  checkMine(false);
+}
+async function checkMine(fresh) {
   const m = $("mg-check-m"); m.className = "msg"; m.textContent = "";
+  if (!me.name) { m.textContent = "No LNS name linked."; $("mg-link").open = false; return; }
+  m.textContent = "Checking " + me.name + "…";
+  let c;
+  try { c = await chat.lookup(me.name, fresh); } catch (e) { return void (m.className = "msg bad", m.textContent = "Couldn't reach the name service."); }
+  if (!c.registered) return void (m.className = "msg bad", m.textContent = me.name + " isn't a registered name.");
+  if (c.key === me.public) { m.className = "msg ok"; m.textContent = "✓ Messages to " + me.name + " come to this phone."; $("mg-link").open = false; return; }
+  m.className = "msg warn";
+  m.textContent = c.key ? me.name + "'s messages go to another phone or app. Link it to this phone to get them here."
+                        : me.name + " isn't linked to messages yet. Link it so replies to your name reach this phone.";
+}
+$("mg-addr-show").addEventListener("click", () => {
+  const show = $("mg-addr").hidden;
+  $("mg-addr").hidden = !show; $("mg-addr-show").textContent = show ? "Hide" : "Show"; $("mg-addr-show").setAttribute("aria-expanded", String(show));
+});
+$("mg-addr-copy").addEventListener("click", async () => {
+  const m = $("mg-addr-m");
+  try { await navigator.clipboard.writeText(shareable(me.public)); m.className = "msg ok"; m.textContent = "Copied. Send it to whoever should be able to write to you."; }
+  catch (e) { $("mg-addr").hidden = false; m.className = "msg"; m.textContent = "Couldn't copy: select it above."; }
+});
+$("mg-name-save").addEventListener("click", async () => {
+  const lib = await namesLib(), m = $("mg-name-m");
+  const name = lib.normalizeName($("mg-name").value);
+  m.className = "msg"; m.textContent = "";
   if (name && !lib.isValidName(name)) return void (m.className = "msg bad", m.textContent = "That isn't an LNS name.");
   const r = await api("/api/messages/name", { name });
-  if (r.status === 401) return lockedNow();
-  if (r.ok) { mine.name = name; $("mg-me").value = name; renderSetup(); }
+  if (locked401(r)) return;
+  if (!r.ok) return void (m.className = "msg bad", m.textContent = r.data.error || "Couldn't save it.");
+  me.name = name; openMe();
+  m.className = "msg ok"; m.textContent = name ? "Saved." : "";
+  checkMine(true);
 });
 $("mg-copy").addEventListener("click", async () => {
   try { await navigator.clipboard.writeText($("mg-cmd").textContent); $("mg-copy").textContent = "Copied"; }
   catch (e) { $("mg-copy").textContent = "Select it above"; }
   setTimeout(() => { $("mg-copy").textContent = "Copy command"; }, 2000);
 });
-
-// a name's `msg` entry: { registered, key (hex or null) }, kept a minute
-const keyCache = new Map();
-async function msgKeyOf(name, fresh = false) {
-  const hit = keyCache.get(name);
-  if (hit && !fresh && Date.now() - hit.at < 60000) return hit;
-  const lib = await namesLib();
-  const found = await lib.resolveName(NAMES_RPC, namesProgram, name);
-  const out = { registered: found !== null, lapsed: !!(found && found.lapsed), at: Date.now(),
-                key: found && found.texts && parseMsgKey(found.texts.msg) ? toHex(parseMsgKey(found.texts.msg)) : null };
-  keyCache.set(name, out);
-  return out;
-}
-$("mg-check").addEventListener("click", async () => {
-  const m = $("mg-check-m"); m.className = "msg"; m.textContent = "";
-  if (!mine.name) return void (m.className = "msg bad", m.textContent = "Enter your LNS name first.");
-  m.textContent = "Checking " + mine.name + "… this takes a few seconds.";
-  let k;
-  try { k = await msgKeyOf(mine.name, true); } catch (e) { return void (m.className = "msg bad", m.textContent = "Couldn't reach the name service."); }
-  if (!k.registered) return void (m.className = "msg bad", m.textContent = mine.name + " isn't a registered name.");
-  if (k.key === mine.public) return void (m.className = "msg ok", m.textContent = "✓ Messages to " + mine.name + " come to this device.");
-  m.className = "msg bad";
-  m.textContent = k.key ? "Not yet: " + mine.name + "'s messages go to another key (another device). Run the command above to move them here."
-                        : "Not yet: run the command above. You can send now, but replies can't reach you until it's done.";
+$("mg-check").addEventListener("click", () => checkMine(true));
+$("mg-on").addEventListener("click", async () => {
+  const id = newIdentity();
+  const r = await api("/api/messages/key", { seed: toHex(id.seed), secret: toHex(id.secretKey), public: toHex(id.publicKey) });
+  if (locked401(r)) return;
+  if (!r.ok) return void ($("mg-on-m").textContent = r.data.error || "Couldn't turn messages on.");
+  await refresh(); home();
 });
 
-// ---- write ----
-$("mg-form").addEventListener("submit", async e => {
-  e.preventDefault();
-  const m = $("mg-send-m"); m.className = "msg bad"; m.textContent = "";
-  const lib = await namesLib();
-  const to = lib.normalizeName($("mg-to").value), text = $("mg-text").value;
-  if (!lib.isValidName(to)) return void (m.textContent = "Enter an LNS name, like alice.");
-  if (!mine.name) return void (m.textContent = "Enter your LNS name under \"This device\" first, so the message says who it's from.");
-  if (!text.trim()) return void (m.textContent = "Write a message first.");
-  $("mg-send").disabled = true; m.className = "msg"; m.textContent = "Looking up " + to + "…";
+// ---- overlays: a conversation, a profile, a sheet; the phone's back button closes them --------------------
+const stack = [];
+function pushOv(name, close) { stack.push({ name, close }); history.pushState({ mg: name }, ""); }
+function popOv(fromHistory = false) {
+  const top = stack.pop(); if (!top) return;
+  top.close();
+  if (!fromHistory) { ignorePop++; history.back(); }
+}
+let ignorePop = 0;
+addEventListener("popstate", () => { if (ignorePop) { ignorePop--; return; } if (stack.length) popOv(true); });
+function closeAll() { while (stack.length) popOv(); }
+
+// ---- a conversation --------------------------------------------------------------------------------------
+const cv = { id: null, node: null };
+function openConvo(id) {
+  if (cv.id) popOv();
+  cv.id = id;
+  const back = el("button", { type: "button", className: "back", ariaLabel: "Back to chats" }, svg(P.back));
+  back.addEventListener("click", () => popOv());
+  const who = el("button", { type: "button", className: "who" });
+  who.addEventListener("click", () => { const c = chat.convo(cv.id); if (c && c.kind === "direct") openProfile(chat.peer(c)); });
+  const ban = el("div", { className: "cv-ban", hidden: true });
+  const inner = el("div", { className: "cv-in" });
+  const scroll = el("div", { className: "cv-scroll" }, inner);
+  const ta = el("textarea", { rows: 1, maxLength: MAX_TEXT, placeholder: "Message", ariaLabel: "Message" });
+  ta.setAttribute("enterkeyhint", "send");
+  const go = el("button", { type: "button", className: "go", ariaLabel: "Send", disabled: true }, svg(P.send, 22));
+  const count = el("span", { className: "count", hidden: true });
+  const cmp = el("form", { className: "cmp" }, el("div", { className: "wrap" }, ta, count, go));
+  const note = el("div", { className: "cmp-note", hidden: true });
+  const box = el("div", { className: "ov", role: "dialog", ariaModal: "true" }, el("div", { className: "ov-top" }, back, who), ban, scroll, cmp, note);
+  cv.node = { box, who, ban, inner, scroll, ta, go, cmp, note, count, blocker: null };
+  const grow = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight + 3, 150) + "px";
+    go.disabled = !ta.value.trim() || !!cv.node.blocker; const left = MAX_TEXT - ta.value.length;
+    count.hidden = left > 200; count.textContent = String(left); };
+  ta.addEventListener("input", grow);
+  cmp.addEventListener("submit", e => { e.preventDefault(); sendNow(); });
+  go.addEventListener("click", sendNow);
+  ta.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !matchMedia("(pointer:coarse)").matches) { e.preventDefault(); sendNow(); } });
+  document.body.append(box);
+  pushOv("cv", () => { box.remove(); cv.id = null; cv.node = null; if (tab === "msg") render(); });
+  renderConvo(true); checkSend(true);
+  if (!matchMedia("(pointer:coarse)").matches) ta.focus();
+}
+async function sendNow() {
+  const n = cv.node; if (!n) return;
+  const text = n.ta.value;
+  if (!text.trim() || n.blocker) return;
+  n.go.disabled = true;
   try {
-    let k;
-    try { k = await msgKeyOf(to, true); } catch (err) { return void (m.className = "msg bad", m.textContent = "Couldn't reach the name service. Try again."); }
-    if (!k.registered) return void (m.className = "msg bad", m.textContent = to + " isn't a registered name.");
-    if (!k.key) return void (m.className = "msg bad", m.textContent = to + " has no messaging key (no msg entry), so they can't get messages yet.");
-    const sealed = sealMessage({ to: fromHex(k.key), from: mine.name, fromSecret: mine.secret, text });
-    const r = await api("/api/messages/send", { topic: inboxTopic(fromHex(k.key)), payload: b64(sealed) });
-    if (r.status === 401) return lockedNow();
-    if (!r.ok) return void (m.className = "msg bad", m.textContent = r.data.error || "The message wasn't sent.");
-    $("mg-text").value = ""; m.textContent = "Sending to " + to + "…";
-    for (let i = 0; i < 40; i++) {
-      await new Promise(ok => setTimeout(ok, 2000));
-      const s = await api("/api/messages/send/" + encodeURIComponent(r.data.requestId));
-      if (!s.ok) continue;
-      if (s.data.events.includes("sent")) return void (m.className = "msg ok", m.textContent = "Sent to " + to + ": a Store node holds it for them.");
-      if (s.data.events.includes("error")) return void (m.className = "msg bad", m.textContent = "Not sent: " + (s.data.error || "the network didn't take it") + ".");
-      if (s.data.events.includes("propagated")) { m.className = "msg ok"; m.textContent = "Sent to " + to + ": it reached the network."; }
+    await chat.send(cv.id, text);
+    n.ta.value = ""; n.ta.style.height = ""; n.count.hidden = true;
+    renderConvo(true);
+  } catch (e) {
+    if (e.status === 401) return lockedNow();
+    if (e.code) checkSend(false); else sheetNote("Not sent", e.message || "The message wasn't sent.");
+  } finally { if (cv.node) cv.node.go.disabled = !cv.node.ta.value.trim() || !!cv.node.blocker; }
+}
+/** Whether this chat can send now: a banner or a note instead of the composer when it can't. */
+async function checkSend(fresh) {
+  const id = cv.id; if (!id) return;
+  const why = await chat.sendBlocker(id, fresh).catch(() => ({ code: "offline", text: "Couldn't reach the name service." }));
+  if (cv.id !== id || !cv.node) return;
+  const n = cv.node; n.blocker = why && why.code !== "offline" ? why : null;
+  n.ban.hidden = true; n.note.hidden = true; n.cmp.hidden = false;
+  if (why && why.code === "changed") {
+    const accept = el("button", { type: "button", className: "primary", textContent: "Accept the change" });
+    const look = el("button", { type: "button", textContent: "View profile" });
+    accept.addEventListener("click", async () => { accept.disabled = true; try { await chat.acceptKey(why.name); } catch (e) {} checkSend(true); renderConvo(); });
+    look.addEventListener("click", () => openProfile(why.name));
+    n.ban.replaceChildren(el("p", {}, el("b", { textContent: why.name + "'s messaging address changed." }),
+      " That happens when they set up a new phone, or when someone else took over the name. Check with " + why.name + " another way if you can. Until you accept it, nothing is sent to the new address, and messages from it are marked."),
+      el("div", { className: "row" }, look, accept));
+    n.ban.hidden = false; n.cmp.hidden = true;
+  } else if (why && why.code === "blocked") {
+    const un = el("button", { type: "button", textContent: "Unblock" });
+    un.addEventListener("click", async () => { await chat.setProfile(why.name, { blocked: false }); checkSend(false); renderConvo(); });
+    n.note.replaceChildren(why.text, un); n.note.hidden = false; n.cmp.hidden = true;
+  } else if (why && why.code !== "offline") {
+    n.note.replaceChildren(why.text + " Messages can't be sent to them now."); n.note.hidden = false; n.cmp.hidden = true;
+  }
+  n.go.disabled = !n.ta.value.trim() || !!n.blocker;
+  renderWho();
+}
+function renderWho() {
+  const c = chat.convo(cv.id), n = cv.node; if (!c || !n) return;
+  const pid = c.kind === "direct" ? chat.peer(c) : null;
+  const p = pid && chat.profile(pid), st = pid && chat.keyState(pid);
+  let sub = c.members.length + " people", cls = "";
+  if (pid && isAddressId(pid)) sub = (p && p.nickname ? shortFp(pid.slice(2)) + " · " : "") + "address only, no name to verify";
+  else if (pid) {
+    if (st.changed) { sub = "messaging address changed"; cls = "warn"; }
+    else if (st.pinned && st.chain === st.pinned) { sub = (p && p.nickname ? pid + " · " : "") + "✓ verified"; cls = "ok"; }
+    else if (st.chain === null) { sub = pid + " · messages off"; cls = "warn"; }
+    else sub = p && p.nickname ? pid : "LNS name";
+  }
+  n.who.replaceChildren(pid ? iconOf(pid, 40) : icon(c.title, { key: c.id, size: 40 }),
+    el("span", { className: "t" }, el("b", { textContent: chat.title(c) }), el("small", { className: cls, textContent: sub })));
+}
+const STATES = { queued: "Waiting to send", sending: "Sending…", propagated: "Sent", sent: "Stored", failed: "Not sent" };
+function sendState(m) {
+  const s = m.sends.map(x => x.state);
+  if (s.includes("failed")) return { text: "Not sent", bad: true };
+  if (s.every(x => x === "sent")) return { text: "✓✓ Stored", bad: false };
+  if (s.every(x => x === "sent" || x === "propagated")) return { text: "✓ Sent", bad: false };
+  if (s.includes("sending")) return { text: "Sending…", bad: false };
+  return { text: status && status.node.reachable === false ? "Waits for the messaging node" : "Waiting to send", bad: false };
+}
+function renderConvo(toBottom = false) {
+  const n = cv.node; if (!n || !chat) return;
+  const c = chat.convo(cv.id);
+  if (!c) return popOv();
+  renderWho();
+  const near = toBottom || n.scroll.scrollHeight - n.scroll.scrollTop - n.scroll.clientHeight < 80;
+  const list = chat.messages(cv.id);
+  const kids = [];
+  if (!list.length) {
+    const pid = c.kind === "direct" ? chat.peer(c) : null;
+    kids.push(el("div", { className: "cv-empty" }, pid ? iconOf(pid, 72) : null,
+      el("p", { style: "margin:0 0 6px;color:var(--ink);font-weight:600;font-size:16px", textContent: chat.title(c) }),
+      el("p", { style: "margin:0", textContent: "Messages are sealed on this phone so only " + (pid ? chat.label(pid) : "the people in this chat") + " can open them. Say hello." })));
+  }
+  let lastDay = null, prev = null;
+  list.forEach((m, i) => {
+    const d = dayKey(m.ts);
+    if (d !== lastDay) { kids.push(el("div", { className: "day", textContent: dayLabel(m.ts) })); lastDay = d; prev = null; }
+    const next = list[i + 1];
+    const cont = prev && prev.dir === m.dir && prev.sender === m.sender && m.ts - prev.ts < 300000;
+    const endRun = !next || next.dir !== m.dir || next.sender !== m.sender || next.ts - m.ts >= 300000 || dayKey(next.ts) !== d;
+    const trust = chat.trust(m);
+    const bub = el("button", { type: "button", className: `bub ${m.dir}${cont ? " cont" : ""}${trust === "unverified" ? " unv" : ""}`, textContent: m.text });
+    bub.addEventListener("click", () => details(m));
+    kids.push(bub);
+    if (m.dir === "in" && trust !== "ok" && trust !== "address") {
+      const who = chat.label(m.sender);
+      kids.push(el("div", { className: "meta in" }, el("span", { className: "warn", textContent:
+        trust === "unverified" ? "⚠ Not verified: this didn't come from " + who + "'s messaging address" :
+        trust === "old" ? "Sent from " + who + "'s earlier messaging address" : "Sent from " + who + "'s new messaging address, not accepted yet" })));
     }
-  } finally { $("mg-send").disabled = false; }
-});
+    const st = m.dir === "out" ? sendState(m) : null;
+    if (endRun || (st && st.text !== "✓✓ Stored" && st.text !== "✓ Sent")) {
+      const meta = el("div", { className: "meta " + m.dir }, el("span", { textContent: new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }));
+      if (st) {
+        meta.append(el("span", { className: st.bad ? "bad" : "", textContent: st.text }));
+        if (st.bad) { const r = el("button", { type: "button", textContent: "Retry" }); r.addEventListener("click", async () => { r.disabled = true; await chat.retry(m.n); renderConvo(); }); meta.append(r); }
+      }
+      kids.push(meta);
+    }
+    prev = m;
+  });
+  n.inner.replaceChildren(...kids);
+  if (near) n.scroll.scrollTop = n.scroll.scrollHeight;
+  const unread = list.some(m => m.dir === "in" && chat.unread.has(m.n));
+  if (unread && document.visibilityState === "visible") chat.markRead(cv.id).then(updateBadge);
+}
+function dayLabel(t) {
+  const now = new Date(), y = new Date(now); y.setDate(now.getDate() - 1);
+  if (dayKey(t) === dayKey(now)) return "Today";
+  if (dayKey(t) === dayKey(y)) return "Yesterday";
+  const d = new Date(t);
+  return d.toLocaleDateString([], { weekday: "long", day: "numeric", month: "long", ...(d.getFullYear() !== now.getFullYear() ? { year: "numeric" } : {}) });
+}
+const fullWhen = t => new Date(t).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
 
-// ---- inbox: open here, check the sender against the chain ----
-const opened = new Map();          // inbox number -> opened message (or null when it doesn't open)
-async function loadInbox() {
-  if (!mine) return;
-  const r = await api("/api/messages/inbox");
-  if (r.status === 401) return lockedNow();
-  if (!r.ok) return;
-  const rows = [], ids = new Set();
-  let unreadable = 0;
-  for (const item of r.data.items) {
-    if (!opened.has(item.n)) opened.set(item.n, openMessage(mine.secret, unb64(item.payload)));
-    const msg = opened.get(item.n);
-    if (!msg) { unreadable++; continue; }
-    if (ids.has(msg.id)) continue;                      // the same message twice
-    ids.add(msg.id);
-    rows.push({ item, msg });
-  }
-  rows.sort((a, b) => b.msg.ts - a.msg.ts);
-  const box = $("mg-inbox");
-  if (!rows.length) {
-    box.replaceChildren(el("p", { className: "note", textContent: unreadable ? "No messages this key can open." : "No messages yet." }));
-    return;
-  }
-  box.replaceChildren(...rows.map(({ item, msg }) => {
-    const who = el("span", { className: "who unv", textContent: "checking " + msg.from + "…" });
-    const del = el("button", { type: "button", textContent: "Delete" });
-    del.addEventListener("click", async () => { await api("/api/messages/inbox/delete", { ids: [item.n] }); opened.delete(item.n); loadInbox(); });
-    const reply = el("button", { type: "button", textContent: "Reply" });
-    reply.addEventListener("click", () => { $("mg-to").value = msg.from; $("mg-text").focus(); });
-    verify(msg).then(ok => { who.textContent = ok ? "✓ " + msg.from : "unverified: claims to be " + msg.from; who.className = ok ? "who" : "who unv"; });
-    return el("div", { className: "mrow" }, who, el("div", { className: "text", textContent: msg.text }),
-              el("div", { className: "sub" }, el("span", { textContent: when(msg.ts) }), reply, del));
-  }));
+// ---- a sheet from the bottom: message details, confirmations ------------------------------------------
+function sheet(build) {
+  const card = el("div", { className: "sheet", role: "dialog", ariaModal: "true" });
+  const bg = el("div", { className: "sheet-bg" }, card);
+  bg.addEventListener("click", e => { if (e.target === bg) popOv(); });
+  build(card, () => popOv());
+  document.body.append(bg);
+  pushOv("sheet", () => bg.remove());
+  const f = card.querySelector("button"); f && f.focus();
 }
-async function verify(msg) {
-  try {
-    if (isVerified(msg, (await msgKeyOf(msg.from)).key)) return true;
-    return isVerified(msg, (await msgKeyOf(msg.from, true)).key);   // a cached key may be an older device's
-  } catch (e) { return false; }
+function sheetNote(title, text) {
+  sheet((card, close) => { const ok = el("button", { type: "button", className: "primary", textContent: "OK" }); ok.addEventListener("click", close);
+    card.append(el("h2", { textContent: title }), el("p", { className: "note", textContent: text }), ok); });
 }
-setInterval(() => { if (!panel.hidden && !$("v-open").hidden) refresh(); }, 15000);
+function confirmSheet(title, text, yes, danger, act) {
+  sheet((card, close) => {
+    const no = el("button", { type: "button", textContent: "Cancel" }), go = el("button", { type: "button", className: danger ? "danger" : "primary", textContent: yes });
+    go.style.marginTop = "0"; no.addEventListener("click", close);
+    go.addEventListener("click", async () => { go.disabled = true; close(); await act(); });
+    card.append(el("h2", { textContent: title }), el("p", { className: "note", textContent: text }), el("div", { className: "row" }, no, go));
+  });
+}
+function details(m) {
+  sheet((card, close) => {
+    const rows = [];
+    const row = (k, v, cls) => rows.push(el("div", {}, el("dt", { textContent: k }), el("dd", { className: cls || "", textContent: v })));
+    if (m.dir === "out") {
+      row("Sent", fullWhen(m.ts));
+      m.to.forEach((t, i) => {
+        const x = m.sends[i] || {};
+        row("To " + chat.label(t.name || "k:" + t.key), (STATES[x.state] || x.state) + (x.error ? ": " + x.error : ""));
+      });
+    } else {
+      const trust = chat.trust(m), who = chat.label(m.sender);
+      row("From", who);
+      row("Written", fullWhen(m.ts));
+      row("Arrived", fullWhen(m.received) + (m.source === "history" ? " (caught up later)" : ""));
+      row("Checked", trust === "ok" ? "✓ " + who + "'s messaging address" : trust === "address" ? "Messaging address only, no name" : trust === "old" ? who + "'s earlier address" : trust === "new-key" ? who + "'s new address (not accepted)" : "⚠ not " + who + "'s address");
+      row("Sent from", shortFp(m.senderKey), "hash");
+    }
+    const copy = el("button", { type: "button", textContent: "Copy text" });
+    copy.addEventListener("click", async () => { try { await navigator.clipboard.writeText(m.text); copy.textContent = "Copied"; } catch (e) { copy.textContent = "Can't copy"; } });
+    const del = el("button", { type: "button", className: "danger", textContent: "Delete from this phone" });
+    del.style.marginTop = "0";
+    del.addEventListener("click", async () => { close(); await chat.deleteMessage(m); renderConvo(); });
+    const help = m.dir === "out" ? "Sent: it reached other nodes of the network. Stored: a Store node keeps it until " + (m.to.length === 1 ? chat.label(m.to[0].name || "k:" + m.to[0].key) + " comes" : "they come") + " online. Deleting removes it from this phone only."
+                                 : "Deleting removes it from this phone only.";
+    card.append(el("h2", { textContent: m.dir === "out" ? "Your message" : "Message from " + chat.label(m.sender) }),
+      el("div", { className: "quote", textContent: m.text }), el("dl", {}, ...rows), el("p", { className: "note", textContent: help }),
+      el("div", { className: "row" }, copy, del));
+  });
+}
+
+// ---- a profile -----------------------------------------------------------------------------------------
+const pv = { name: null, node: null };
+function openProfile(name) {
+  if (pv.name) popOv();
+  pv.name = name;
+  const back = el("button", { type: "button", className: "back", ariaLabel: "Back" }, svg(P.back));
+  back.addEventListener("click", () => popOv());
+  const inner = el("div", { className: "pv-in" });
+  const box = el("div", { className: "ov", role: "dialog", ariaModal: "true" },
+    el("div", { className: "ov-top" }, back, el("b", { style: "font-size:16.5px", textContent: "Profile" })), el("div", { className: "pv-scroll" }, inner));
+  pv.node = { box, inner };
+  document.body.append(box);
+  pushOv("pv", () => { box.remove(); pv.name = null; pv.node = null; });
+  renderProfile();
+  if (!isAddressId(name)) chat.lookup(name, true).then(() => { if (pv.name === name) renderProfile(); if (cv.id) { renderWho(); } }).catch(() => {});
+}
+function renderProfile() {
+  const pid = pv.name, n = pv.node; if (!pid || !n) return;
+  const addr = isAddressId(pid), label = chat.label(pid);
+  const p = chat.profile(pid) || chat.newProfile(pid, null), c = chat.chainOf(pid), st = chat.keyState(pid);
+  let state = ["", "Checking the chain…"];
+  if (addr) state = ["", "Address only, no name to verify"];
+  else if (c) {
+    if (!c.registered) state = ["bad", "Not a registered name"];
+    else if (st.changed) state = ["warn", "Messaging address changed: not accepted yet"];
+    else if (!c.key) state = ["warn", "Messages turned off"];
+    else if (st.pinned && st.pinned === c.key) state = ["ok", "✓ Verified"];
+    else state = ["warn", "Unverified"];
+  }
+  const head = el("div", { className: "pv-head" }, iconOf(pid, 96),
+    el("h3", { textContent: label }),
+    !addr && p.nickname ? el("p", { textContent: pid }) : null,
+    c && c.display && c.display !== pid ? el("p", { textContent: c.display }) : null,
+    el("span", { className: "state " + state[0], textContent: state[1] }));
+  const parts = [head];
+  if (st.changed) {
+    const acc = el("button", { type: "button", className: "primary", textContent: "Accept the change" });
+    acc.addEventListener("click", async () => { acc.disabled = true; await chat.acceptKey(pid).catch(() => {}); renderProfile(); if (cv.id) checkSend(true); });
+    parts.push(el("section", { className: "card" }, el("p", { className: "msg warn", style: "margin:0", textContent: pid + "'s messaging address changed. That happens with a new phone, or when someone else took over the name. Check with them another way if you can." }), acc));
+  }
+  // nickname and note: on this phone only; made once per profile view, so a redraw never touches typing
+  if (!n.mine) n.mine = profileNotes(pid, p);
+  parts.push(n.mine);
+  // mute, block
+  const sw = (on, text, sub, act) => {
+    const b = el("button", { type: "button", className: "sw", role: "switch", ariaLabel: text });
+    b.setAttribute("aria-checked", String(on));
+    b.addEventListener("click", act);
+    return el("div", { className: "tg" }, el("span", {}, text, el("small", { textContent: sub })), b);
+  };
+  parts.push(el("section", { className: "card" },
+    sw(p.muted, "Mute", "No unread count in the bar.", async () => { await chat.setProfile(pid, { muted: !p.muted }); renderProfile(); }),
+    sw(p.blocked, "Block", "Their messages are hidden and you can't write to them.", () => {
+      if (p.blocked) return chat.setProfile(pid, { blocked: false }).then(() => { renderProfile(); if (cv.id) { checkSend(false); renderConvo(); } });
+      confirmSheet("Block " + label + "?", "Messages from " + label + " are hidden from now on, and you can't write to them until you unblock.", "Block", true,
+        async () => { await chat.setProfile(pid, { blocked: true }); renderProfile(); if (cv.id) { checkSend(false); renderConvo(); } });
+    })));
+  // details: the messaging address, short unless asked for
+  const full = el("code", { className: "cmd", hidden: true, textContent: shareable(st.pinned || "") });
+  const reveal = el("button", { type: "button", className: "small", textContent: "Show full address" });
+  reveal.addEventListener("click", () => { full.hidden = !full.hidden; reveal.textContent = full.hidden ? "Show full address" : "Hide"; });
+  const det = el("details", { className: "card", style: "padding:14px 16px" }, el("summary", { textContent: "Details" }),
+    el("dl", { style: "margin-top:8px" },
+      el("div", {}, el("dt", { textContent: "Messaging address" }), el("dd", { className: "fp", textContent: st.pinned ? shortFp(st.pinned) : "none yet" })),
+      st.changed ? el("div", {}, el("dt", { textContent: "New one on the chain" }), el("dd", { className: "fp", textContent: shortFp(st.chain) })) : null),
+    st.pinned ? reveal : null, full,
+    el("p", { className: "note", textContent: addr
+      ? "Messages from this address prove they hold it; there's no name to check it against. Compare the short code with them if it matters."
+      : "Kept from your first contact. If " + pid + "'s msg entry ever changes, the chat asks you to accept the change before anything is sent to it." }));
+  parts.push(det);
+  const delChat = el("button", { type: "button", className: "danger", textContent: "Delete chat" });
+  delChat.addEventListener("click", () => confirmSheet("Delete the chat with " + label + "?", "Its messages are removed from this phone. The profile and note stay.", "Delete chat", true,
+    async () => { await chat.deleteConversation(convoIdOf(pid), false); closeAll(); render(); }));
+  const delAll = el("button", { type: "button", className: "danger", textContent: "Delete chat and profile" });
+  delAll.addEventListener("click", () => confirmSheet("Delete " + label + "?", "The chat, the nickname and your note are removed from this phone.", "Delete", true,
+    async () => { await chat.deleteConversation(convoIdOf(pid), true); closeAll(); render(); }));
+  if (!chat.convo(convoIdOf(pid))) delChat.hidden = true;
+  parts.push(delChat, delAll);
+  n.inner.replaceChildren(...parts);
+}
+function profileNotes(name, p) {
+  const nick = el("input", { type: "text", maxLength: 40, value: p.nickname || "", placeholder: isAddressId(name) ? "A name for this address" : name, id: "pv-nick" });
+  nick.setAttribute("autocapitalize", "words");
+  const note = el("textarea", { className: "note-f", maxLength: 4000, value: p.note || "", placeholder: "Anything you want to remember about " + chat.label(name) + ".", id: "pv-note" });
+  const saved = el("p", { className: "saved", role: "status" });
+  let timer = null;
+  const save = async () => {
+    clearTimeout(timer);
+    const cur = chat.profile(name) || {};
+    if (nick.value.trim() === (cur.nickname || "") && note.value === (cur.note || "")) return;
+    try { await chat.setProfile(name, { nickname: nick.value.trim(), note: note.value }); saved.textContent = "Saved on this phone"; }
+    catch (e) { saved.textContent = ""; if (e.status === 401) lockedNow(); }
+    if (cv.id) renderWho();
+  };
+  nick.addEventListener("change", save); note.addEventListener("blur", save);
+  note.addEventListener("input", () => { saved.textContent = ""; clearTimeout(timer); timer = setTimeout(save, 1200); });
+  const mine = el("section", { className: "card" }, el("h2", { textContent: "Only on this phone" }),
+    el("label", { htmlFor: "pv-nick", textContent: "Nickname", style: "margin-top:0" }), nick,
+    el("label", { htmlFor: "pv-note", textContent: "Private note" }), note, saved,
+    el("p", { className: "hint", textContent: "Never sent to anyone. Kept encrypted on this phone and in your backup." }));
+  return mine;
+}
+
+// ---- the backup: message history goes along unless unticked --------------------------------------------
+const hist = el("label", { style: "display:flex;gap:10px;align-items:flex-start;color:var(--ink);font-size:14px;margin-top:14px" },
+  el("input", { type: "checkbox", id: "bk-hist", checked: true, style: "width:auto;min-height:0;margin-top:3px" }),
+  el("span", {}, "Include message history ", el("span", { className: "hint", style: "display:block;margin:2px 0 0", textContent: "Up to 1 MB, newest first. Profiles and notes always go in. A large backup can't be restored by app versions before 0.9." })));
+if ($("bk-pin")) $("bk-pin").previousElementSibling.before(hist);
+const pageFetch2 = window.fetch;
+window.fetch = (url, opt = {}) => {
+  if (String(url) === "/api/wallet/backup" && opt.body && !$("bk-hist").checked) {
+    try { opt = { ...opt, body: JSON.stringify({ ...JSON.parse(opt.body), history: false }) }; } catch (e) {}
+  }
+  return pageFetch2(url, opt);
+};
+
+// ---- keep it current --------------------------------------------------------------------------------------
+let tick = 0;
+setInterval(() => {                 // every 4 s on the Messages screen, every 16 s on the wallet (for the badge)
+  if (!unlocked() || document.visibilityState !== "visible") return;
+  if (tab === "msg" || cv.id || ++tick % 4 === 0) refresh().then(() => { if (cv.id && cv.node) checkSendLater(); });
+}, 4000);
+let lastCheck = 0;
+function checkSendLater() { if (Date.now() - lastCheck > 60000) { lastCheck = Date.now(); checkSend(false); } }
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && cv.id) renderConvo(); });
+refresh();

@@ -42,7 +42,11 @@ puts the new one in place and restarts the node:
 
 If the backup holds a messaging key (version 2, made with messages turned on), restoring puts that key
 back too, so your name's published `msg` entry keeps reaching this device without a new
-`names set-text`. Your PIN, fingerprint unlock and the app's event log stay as they are. The history starts tracking the
+`names set-text`. From 0.9.0 it also brings back your chats: profiles, nicknames and private notes always,
+and the message history if the backup was made with **Include message history** ticked (up to 1 MB,
+newest first). Restored messages are added to what the phone already has, each once; restored sent
+messages are never sent again. App versions before 0.9.0 restore the keys from a 0.9 backup and leave the
+chats out, but only if the file is under 64 KiB, so for an older app make the backup without history. Your PIN, fingerprint unlock and the app's event log stay as they are. The history starts tracking the
 restored keys from that moment. If the file holds the keys already in use, nothing changes.
 
 ## Restoring by hand
@@ -110,6 +114,21 @@ The file is JSON:
 The key is scrypt of the password's UTF-8 bytes, exactly as typed, with the parameters above. The
 associated data is the ASCII text `logos-node-wallet-backup v1` (or `v2`). The decrypted text is a JSON object
 `{"keystore.yaml": "<the file's text>"}`. In version 2 it also has
-`"messaging_key": {"secret": "<64 hex>", "public": "<64 hex>", "name": "<your LNS name>"}`: this device's
-X25519 key for messages between LNS names (the key a name's `msg` entry points at). The app writes
-version 2 only when messages are turned on; otherwise the file is exactly version 1. It restores both.
+`"messaging_key": {"version": 2, "seed": "<64 hex>", "secret": "<64 hex>", "public": "<64 hex>", "name": "<your LNS name>"}`:
+this device's messaging identity. `seed` is an Ed25519 seed (from 0.9.0); `secret` and `public` are the
+X25519 key pair made from it (the public key is the "messaging address", the value a name's `msg` entry
+holds). A key made before 0.9.0 has no `seed` and no `version`. The app writes version 2 only when
+messages are turned on; otherwise the file is exactly version 1. It restores both.
+
+From 0.9.0 a version 2 backup can also hold `"chat": {"store", "inbox", "outbox", "truncated"}`:
+`store` is the profiles, notes and conversations as the app keeps them, encrypted under a key made from
+the messaging secret (HKDF-SHA256, info `logos-node/chat/v1/store`, XChaCha20-Poly1305: base64 of a 24-byte
+nonce and the ciphertext, associated data `logos-node/chat/v1/store`); `inbox` is incoming messages as they
+came off the network (sealed to the messaging key, in the Names message format); `outbox` is sent messages
+as encrypted copies (the same key, associated data `logos-node/chat/v1/copy`). So the history in a backup
+opens only with the messaging key that is in the same backup.
+
+**How safe the chats are on the phone.** The messaging key is stored on the phone like the node's own keys
+(a file only the app can read). The chats are encrypted with a key made from it, so they are unreadable
+without it, and the app shows them only to an unlocked page; but anyone who can read the app's files can
+read the key file too. The app's own code never decrypts them: that happens in the page.

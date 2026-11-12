@@ -5,6 +5,8 @@
 //
 //   node tools/msg-peer.mjs keygen                                 makes a key file (0600), prints the public key
 //   node tools/msg-peer.mjs send --to android --from-name mini "hello"
+//   node tools/msg-peer.mjs send --to msg:<messaging address> "hello"    to an address; without --from-name
+//                                                                  the message is from this key's address
 //   node tools/msg-peer.mjs listen                                 prints messages to this key as they arrive
 //
 // Options (all commands):
@@ -27,6 +29,8 @@ for (const d of ["messages", "noble-curves", "names"]) cpSync(join(APP, d), join
 writeFileSync(join(copy, "package.json"), '{"type":"module"}');
 const MC = await import(pathToFileURL(join(copy, "messages", "msg-crypto.js")));
 const N = await import(pathToFileURL(join(copy, "names", "names.js")));
+const ID = await import(pathToFileURL(join(copy, "messages", "identity.js")));
+const CORE = await import(pathToFileURL(join(copy, "messages", "chat-core.js")));
 
 const args = process.argv.slice(2);
 const opt = (name, fallback) => { const i = args.indexOf(name); if (i < 0) return fallback; const v = args[i + 1]; args.splice(i, 2); return v; };
@@ -45,6 +49,7 @@ function loadKey() {
   const k = JSON.parse(readFileSync(KEY, "utf8"));
   const secret = MC.fromHex(k.secret);
   if (MC.toHex(MC.publicKeyOf(secret)) !== k.public) die(`${KEY} is damaged`);
+  if (k.seed && MC.toHex(ID.identityFromSeed(MC.fromHex(k.seed)).secretKey) !== k.secret) die(`${KEY} is damaged`);
   return { secret, public: k.public };
 }
 async function node(method, path, body) {
@@ -73,22 +78,31 @@ async function verified(msg) {
 
 if (cmd === "keygen") {
   if (existsSync(KEY)) die(`${KEY} exists already; use --key for another file`);
-  const kp = MC.newKeyPair();
+  const kp = ID.newIdentity();                 // an Ed25519 seed, and the X25519 pair derived from it
   const fd = openSync(KEY, "wx", 0o600);
-  writeSync(fd, JSON.stringify({ secret: MC.toHex(kp.secretKey), public: MC.toHex(kp.publicKey) }));
+  writeSync(fd, JSON.stringify({ version: 2, seed: MC.toHex(kp.seed), secret: MC.toHex(kp.secretKey), public: MC.toHex(kp.publicKey) }));
   closeSync(fd);
   console.log(MC.toHex(kp.publicKey));
   console.error(`wrote ${KEY} (keep it private). Inbox topic: ${MC.inboxTopic(kp.publicKey)}`);
   console.error(`turn messages on for your name with:  names set-text <name> msg ${MC.toHex(kp.publicKey)}`);
 } else if (cmd === "send") {
   const text = rest.join(" ");
-  if (!TO || !FROM || !text) die('usage: send --to <name> --from-name <your name> "text"');
-  const to = N.normalizeName(TO), from = N.normalizeName(FROM);
-  if (!N.isValidName(to) || !N.isValidName(from)) die("--to and --from-name must be LNS names, like alice");
+  if (!TO || !text) die('usage: send --to <name or msg:address> [--from-name <your name>] "text"');
   const me = loadKey();
-  const k = await msgKeyOf(to).catch((e) => die(e.message));
-  if (!k.registered) die(`${to} isn't a registered name`);
-  if (!k.key) die(`${to} has no messaging key (no msg entry), so it can't get messages yet`);
+  const from = FROM ? N.normalizeName(FROM) : CORE.nameless(me.public);         // no name: from this key's address
+  if (!N.isValidName(from)) die("--from-name must be an LNS name, like alice");
+  const addr = CORE.parseAddress(TO);
+  if (addr && addr.wallet) die("that's a wallet address; ask for their messaging address or LNS name");
+  if (addr && addr.bad) die("that isn't a valid messaging address");
+  let k, to;
+  if (addr) { k = { key: addr.address }; to = CORE.shortFp(addr.address); }
+  else {
+    to = N.normalizeName(TO);
+    if (!N.isValidName(to)) die("--to must be an LNS name, like alice, or a messaging address (msg:<64 hex>)");
+    k = await msgKeyOf(to).catch((e) => die(e.message));
+    if (!k.registered) die(`${to} isn't a registered name`);
+    if (!k.key) die(`${to} has no messaging address (no msg entry), so it can't get messages yet`);
+  }
   const sealed = MC.sealMessage({ to: MC.fromHex(k.key), from, fromSecret: me.secret, text });
   const topic = MC.inboxTopic(MC.fromHex(k.key));
   // the send subscribes this node to the recipient's topic: let go of it afterwards unless it was there before
@@ -142,8 +156,10 @@ if (cmd === "keygen") {
         seen.add(rec.messageHash);
         const msg = MC.openMessage(me.secret, new Uint8Array(Buffer.from(rec.message.payload, "base64")));
         if (!msg) { console.log(`[${new Date().toISOString()}] a message this key can't open`); continue; }
-        const ok = await verified(msg);
-        console.log(`[${new Date(msg.ts).toISOString()}] ${ok ? "✓ " + msg.from : "unverified: claims to be " + msg.from}${rec.source === "history" ? " (from history)" : ""}: ${msg.text}`);
+        const nameless = msg.from === CORE.nameless(msg.fromKey);
+        const ok = nameless ? msg.authentic : await verified(msg);
+        const who = nameless ? (ok ? "address msg:" + msg.fromKey + " (no name)" : "unverified address") : ok ? "✓ " + msg.from : "unverified: claims to be " + msg.from;
+        console.log(`[${new Date(msg.ts).toISOString()}] ${who}${rec.source === "history" ? " (from history)" : ""}: ${msg.text}`);
       }
     } catch (e) {
       console.error("node not answering: " + (e.cause?.code || e.message));
@@ -151,6 +167,6 @@ if (cmd === "keygen") {
     await new Promise((ok) => setTimeout(ok, 2000));
   }
 } else {
-  console.error("usage: node tools/msg-peer.mjs keygen | send --to <name> --from-name <name> \"text\" | listen   [--key FILE] [--api URL] [--rpc URL] [--program ID]");
+  console.error("usage: node tools/msg-peer.mjs keygen | send --to <name or msg:address> [--from-name <name>] \"text\" | listen   [--key FILE] [--api URL] [--rpc URL] [--program ID]");
   process.exit(1);
 }
