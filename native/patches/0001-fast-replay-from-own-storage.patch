@@ -346,9 +346,9 @@ rules, wire formats, the database format, the config file or the HTTP API.
 +        replay: ReplayVerification,
      ) -> Result<InitializedCryptarchia, Error> {
          info!(
-+            target: LOG_TARGET, patches = crate::replay::NODE_PATCHES, replay_verification = replay.as_str(),
++            target: LOG_TARGET, patches = replay::NODE_PATCHES, replay_verification = replay.as_str(),
 +            "logos-node-android patched node: stored blocks are replayed with {} verification (set {}=full to re-verify everything)",
-+            replay.as_str(), crate::replay::REPLAY_VERIFY_ENV,
++            replay.as_str(), replay::REPLAY_VERIFY_ENV,
 +        );
 +        timing::reset();
 +        info!(

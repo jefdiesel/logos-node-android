@@ -1,7 +1,7 @@
 name: native-build
 # Compiles the official Logos node for Android (arm64) with the NDK, twice: unpatched, and with
-# the patches in native/patches applied. Also runs upstream's tests of the patched crates and a
-# replay benchmark on a Linux arm64 runner.
+# the patches in native/patches applied. Also runs upstream's tests of the patched crates, and
+# builds both variants for Linux arm64 (for replay measurements on a Linux arm64 machine).
 # To build a newer node, change NODE_VERSION below; the circuits tag, rapidsnark and circom
 # versions are read from the node's own sources.
 on:
@@ -171,20 +171,27 @@ jobs:
           grep -E "^test result:|^     Running|FAILED|panicked" test.log | tail -80 || true
           echo "patch tests:"; grep -E "replay|trusted|fast_and_full" test.log || true
 
-  # syncs a node on testnet, then times the startup replay: unpatched, patched full, patched fast
-  replay-bench:
+  # Linux arm64 builds (glibc), unpatched and patched, from the same runner and toolchain, so the
+  # replay can be compared on a Linux arm64 machine against the official release binary too.
+  linux-arm64:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [upstream, patched]
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 300
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
-      - name: Node source, patched
+      - name: Node source
+        run: git clone -q --depth 1 --branch "$NODE_VERSION" https://github.com/logos-blockchain/logos-blockchain.git node
+      - name: Apply patches (fails if one does not apply cleanly)
+        if: matrix.variant == 'patched'
         run: |
-          git clone -q --depth 1 --branch "$NODE_VERSION" https://github.com/logos-blockchain/logos-blockchain.git node
           id=$(native/apply-patches.sh node | tail -1)
           echo "LOGOS_NODE_PATCHES_ID=$id" >> "$GITHUB_ENV"
       - name: Tools
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq clang libclang-dev pkg-config libssl-dev time >/dev/null
+          sudo apt-get update -qq && sudo apt-get install -y -qq clang libclang-dev pkg-config libssl-dev >/dev/null
           if ! command -v rustup >/dev/null; then
             curl -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
             echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"; export PATH="$HOME/.cargo/bin:$PATH"
@@ -193,24 +200,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: node
-          key: linux-arm64-release-${{ env.NODE_VERSION }}
+          key: linux-arm64-release-${{ env.NODE_VERSION }}-${{ matrix.variant }}
           cache-on-failure: true
-      - name: Build the patched node (release)
+      - name: Build the node (release)
         working-directory: node
         run: cargo build --locked --release -p logos-blockchain-node
-      - name: Official unpatched node
+      - name: Package
         run: |
-          mkdir upstream && cd upstream
-          curl -fsSL "https://github.com/logos-blockchain/logos-blockchain/releases/download/$NODE_VERSION/logos-blockchain-node-linux-aarch64-$NODE_VERSION.tar.gz" | tar xz
-          ./logos-blockchain-node --version
-          sha256sum logos-blockchain-node
-      - name: Replay benchmark
-        run: native/replay-bench.sh node/target/release/logos-blockchain-node upstream/logos-blockchain-node bench-out
-      - name: Results
-        if: always()
-        run: cat bench-out/summary.txt bench-out/sync-info.json 2>/dev/null || true
+          mkdir out && cp node/target/release/logos-blockchain-node out/
+          [ -f node/PATCHES.txt ] && { echo "logos-blockchain $NODE_VERSION with these patches (patch set id $LOGOS_NODE_PATCHES_ID):"; cat node/PATCHES.txt; } > out/PATCHES.txt
+          (cd out && sha256sum * > SHA256SUMS); cat out/SHA256SUMS
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: replay-bench-linux-arm64-${{ env.NODE_VERSION }}
-          path: bench-out/
+          name: logos-blockchain-node-linux-arm64-${{ env.NODE_VERSION }}${{ matrix.variant == 'patched' && '-patched' || '' }}
+          path: out/
