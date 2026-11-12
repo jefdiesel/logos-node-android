@@ -11,19 +11,21 @@ app and its page are exactly as before.
 - **Turn on messages** makes this phone's messaging identity. Nothing key-like is shown on the everyday
   screens. Settings (the gear) has a Messages section: your name and whether it's linked to this phone,
   the folded step that links it, and your messaging address (Show / Copy).
-- The Messages screen has its own top: no node header there. The messaging node's state shows only when it
-  isn't fine (off or starting), as one line; inside the Android app with a button to open the node.
+- The Messages screen has its own top: the title, **+** (New chat) and the gear; no node header there. Under
+  the title, one small grey line only when the messaging node isn't fine: "Connecting…" or "Offline"
+  (inside the Android app with a button to open the node). The Wallet / Messages bar steps aside while a
+  text field has the focus, so the keyboard has the room.
 - On the Wallet screen the node's state is one icon: circling arrows while it starts, re-checks, catches
   up or waits; a check when it is up to date; a stop mark when it is stopped. Tapping it opens Settings >
   Node with the full sentence and the node's numbers; inside the Android app that section also has
   **Open node**, which opens the app's own node screen.
-- **New chat** takes an LNS name (`alice`) or a messaging address (`msg:` and 64 hex characters, copied from
+- **New chat** (a full screen, like a chat) takes an LNS name (`alice`) or a messaging address (`msg:` and 64 hex characters, copied from
   someone's Messages settings; spaces and line breaks are ignored, `msg:` may be left out).
 - A Logos Blockchain wallet address is also 64 hex characters, but it can't be messaged. The app says so
   when it is one of this wallet's own addresses or can't be a messaging address. For other bare hex it asks
   you to check, which is why a copied messaging address starts with `msg:`.
 - Tap a chat's header for the person's profile: a nickname and a private note (never sent; kept encrypted on
-  the phone and in the backup), mute, block, and deleting the chat or the whole profile. The short form of
+  the phone and in the backup), mute, block (the whole row is the switch), and deleting the chat or the whole profile. The short form of
   their messaging address is under **Details**, the full one only on a further tap.
 
 ## Names, addresses and trust
@@ -33,9 +35,12 @@ app and its page are exactly as before.
   changed" and sends nothing to the new address until you accept it. Messages from the earlier address stay
   marked as such.
 - A message is shown as from a name only if it proves it was sent with that name's pinned address.
-  Anything else is marked "Not verified".
-- Someone without an LNS name can still write and be written to, by messaging address. Their chat is titled
-  with a short code (`1a2b3c…7d8e`) until you give it a nickname, and says "address only, no name to verify".
+  Anything else is marked "Not verified". When all is fine the screens say nothing about it: only problems
+  show ("Not verified", "Address changed", "Messages off"). Pinning at first contact is trust on first use,
+  not a check of who someone is, so the app never shows "verified" as a badge.
+- Someone without an LNS name can still write and be written to, by messaging address. New chat asks what
+  to call them; without a nickname the chat is "Unnamed contact" (never hex), and its header says "No LNS
+  name". The short code (`1a2b3c…7d8e`) is on the profile only.
   If you later look up a name whose `msg` entry is that address, the app offers to merge the two chats.
 
 ## Sending without a name
@@ -69,9 +74,10 @@ The app's event log records "message sent" and nothing about the message, the pe
 ## Delivery
 
 The app sends through its own queue: one post to the messaging node at a time, a second apart, and it follows
-each one: **Sending…**, **Sent** (it reached other nodes), **Stored** (a Store node holds it until the
-recipient is online), or **Not sent** with **Retry**. A message written while the messaging node is off waits
-and goes when it's back. Message details (tap a message) show the state for each recipient.
+each one. Under your message a clock means it's waiting or on its way, one tick means the network has it, and
+**Not sent** comes with **Retry**. The network holds a sent message so the other person gets it the next time
+they're online; the app can't tell when they read it. A message written while you're offline waits and goes
+when you're back. Message details (tap a message) show the state for each recipient.
 
 ## Limits
 
@@ -86,9 +92,11 @@ and goes when it's back. Message details (tap a message) show the state for each
 ## Screens
 
 Taken by `tests/chat_ui.mjs` (headless Chrome at phone width; `SHOTS=<folder>` saves them), light and dark
-in `img/messages/`: `home-no-name`, `my-messaging-address`, `link-your-name`, `new-chat-by-name`,
+in `img/messages/`: `locked`, `locked-android`, `home-no-name`, `my-messaging-address`, `link-your-name`, `new-chat-by-name`,
 `new-chat-by-address`, `list`, `chat`, `chat-address`, `profile`, `profile-address`, `key-changed`,
-`message-details`, `turn-on`, `empty-list`, `messages-home`, `wallet-home`, `node-details`, `settings`,
+`message-details`, `locked-wrong-pin`, `locked-android-cancelled`, `locked-android-keypad`,
+`wallet-home-big-balance`, `wallet-home-hidden`, `turn-on`, `empty-list`, `messages-home`, `wallet-home`, `wallet-home-starting`,
+`wallet-receive`, `wallet-send`, `settings-node`, `settings`,
 `settings-android` (with the Android bridge), and `wallet-header-sync` / `wallet-header-ok` (the page's
 status words set by hand, to show the icons; the test has no running node).
 

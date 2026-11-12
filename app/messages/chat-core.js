@@ -168,7 +168,7 @@ export class Chat {
     const p = this.profile(pid); return p && p.keys.length ? p.keys[p.keys.length - 1].key : null;
   }
   /** How to call someone: the nickname, else the name, else the address's short fingerprint. */
-  label(pid) { const p = this.profile(pid); return (p && p.nickname) || (isAddressId(pid) ? shortFp(pid.slice(2)) : pid); }
+  label(pid) { const p = this.profile(pid); return (p && p.nickname) || (isAddressId(pid) ? "Unnamed contact" : pid); }
   /** { pinned, chain, changed }: changed when the name's key on chain isn't the one pinned at first contact. */
   keyState(pid) {
     const pinned = this.pinned(pid), c = this.chainOf(pid);

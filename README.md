@@ -6,7 +6,7 @@ Nothing is cross-compiled: what runs on the phone is the unmodified `linux-aarch
 
 <p>
 <img src="docs/img/app-icon-on-home-screen.png" alt="A row of Android app icons; the middle one is the web app's black lambda on a cream circle" width="420"><br>
-<img src="docs/img/lock-screen.png" alt="The web app on the phone: block height 82,869, state Online, 138 peers, and a wallet locked with an Unlock with fingerprint button and a PIN field" width="260">
+<img src="docs/img/lock-screen.png" alt="The app's lock screen in dark mode: the lambda mark, Enter PIN, an empty PIN row and a number keypad with a fingerprint key and a delete key" width="260">
 </p>
 
 Unofficial community work. Testnet only (the *testnet* is the public test network; its coins have no value).
@@ -17,7 +17,7 @@ Unofficial community work. Testnet only (the *testnet* is the public test networ
 
 On the test phone (Pixel 8, 8 GB RAM, Android 17, Linux Terminal):
 
-- The node is fully synced and **Online**, following the tip of the chain: block 82,869 in the screenshot above, the same height as a desktop reference node, with 130+ peers (other nodes it is connected to).
+- The node is fully synced and **Online**, following the tip of the chain: block 82,869 when this was first checked, the same height as a desktop reference node, with 130+ peers (other nodes it is connected to).
 - The wallet received real transfers, and the phone's node reported them. The first was 100,000 Logos sent from another node's wallet.
 - The phone paid an LNS name (see [LNS names](#lns-names)): it looked the name up itself, showed the address, and its own node signed and sent 1,111 Logos. The receiving node, a separate desktop node, reported exactly that amount, and the phone's history recorded the send with the name and the fee.
 - The fee was 2,298 for that payment, and also 2,298 for transfers of 100,000 and of about 111 million earlier the same day. On this testnet the fee did not depend on the amount.

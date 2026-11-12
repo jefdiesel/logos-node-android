@@ -41,12 +41,14 @@ ws.addEventListener("message", (e) => {
   const m = JSON.parse(e.data);
   if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
   if (m.method === "Runtime.exceptionThrown") errors.push(m.params.exceptionDetails.exception?.description || m.params.exceptionDetails.text);
-  if (m.method === "Log.entryAdded" && m.params.entry.level === "error") errors.push(m.params.entry.text);
+  // (a wrong PIN, tried on purpose, answers 401: the browser logs that, and it is no page error)
+  if (m.method === "Log.entryAdded" && m.params.entry.level === "error" && !(m.params.entry.source === "network" && /\/api\/wallet\/unlock$/.test(m.params.entry.url || "") && / 401 /.test(m.params.entry.text))) errors.push(m.params.entry.text);
 });
 const cdp = (method, params = {}) => new Promise((ok) => { const id = ++seq; waiting.set(id, ok); ws.send(JSON.stringify({ id, method, params })); });
 await cdp("Runtime.enable"); await cdp("Log.enable"); await cdp("Page.enable");
 await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
 await cdp("Emulation.setTouchEmulationEnabled", { enabled: true });
+await cdp("Emulation.setFocusEmulationEnabled", { enabled: true });      // focus events as in a focused window
 const js = async (expr) => { const r = await cdp("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }); if (r.result.exceptionDetails) throw new Error(expr + ": " + JSON.stringify(r.result.exceptionDetails)); return r.result.result.value; };
 const click = (sel) => js(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) throw new Error("no ${sel}"); e.click(); return true; })()`);
 const text = (sel) => js(`(document.querySelector(${JSON.stringify(sel)}) || {}).innerText || ""`);
@@ -57,7 +59,21 @@ const waitFor = async (name, expr, ms = 10000) => {
   check(name, false, { errors, page: (await js(`(document.querySelector(".ov") || document.getElementById("page-msg")).innerText`).catch(() => "")).slice(0, 400) });
 };
 // the old header's words must never show again, on any screen
-const noOldHeader = async (where) => check(`${where}: no "Logos node" or "running on this device"`, !/logos node|running on this device/i.test(await js(`document.body.innerText`)));
+const noOldHeader = async (where) => {
+  check(`${where}: no "Logos node" or "running on this device"`, !/logos node|running on this device/i.test(await js(`document.body.innerText`)));
+  await bigTargets(where);
+};
+// every control on screen is at least 44 x 44 px; exceptions: message bubbles (the text itself), a link inside
+// a sentence, and a switch whose whole row (44 px or more) toggles it
+const bigTargets = async (where) => {
+  const small = await js(`[...document.querySelectorAll("button, input:not([type=checkbox]):not([type=file]), select, summary")].filter(e => {
+    const r = e.getBoundingClientRect(); if (!r.width || !r.height) return false;
+    if (e.closest(".bub, .lnk") || e.classList.contains("bub") || e.classList.contains("lnk")) return false;
+    if (e.classList.contains("sw") && e.closest(".tg") && e.closest(".tg").getBoundingClientRect().height >= 44) return false;
+    return r.height < 43.5 || r.width < 43.5;
+  }).map(e => (e.id || e.className || e.tagName) + " " + Math.round(e.getBoundingClientRect().width) + "x" + Math.round(e.getBoundingClientRect().height))`);
+  check(`${where}: every control is at least 44 px`, small.length === 0, small);
+};
 let shotN = 0;
 async function shot(name) {
   if (!SHOTS) return;
@@ -73,9 +89,21 @@ async function load() {
   await cdp("Page.navigate", { url: A.base + "/" });
   await waitFor("the page loads", `!!document.getElementById("nav-msg")`);
 }
+// the PIN goes in on the page's own keypad, as a person taps it; it must never sit in a field or the page's text
+const tapPin = (pin) => js(`(() => { const ks = [...document.querySelectorAll("#keypad button")]; for (const d of ${JSON.stringify(pin)}) ks.find(b => b.textContent === d).click(); return true; })()`);
+const pinNowhere = async (pin, where) => check(`${where}: the PIN is in no field and nowhere in the page`,
+  await js(`![...document.querySelectorAll("input, textarea")].some(i => i.value.includes(${JSON.stringify(pin)})) && !(() => { const c = document.documentElement.cloneNode(true); c.querySelectorAll("script").forEach(x => x.remove()); return c.outerHTML; })().includes(${JSON.stringify(pin)})`));
+async function enterPin(pin, where) {
+  await waitFor("the keypad shows", `!document.getElementById("lk-pad").hidden && !document.getElementById("lock").hidden`);
+  await tapPin(pin);
+  check(`${where}: one dot per digit`, await js(`document.querySelectorAll("#pin-dots span").length`) === pin.length);
+  await pinNowhere(pin, where);
+  await click("#b-pin");
+}
 async function unlock() {
-  await waitFor("the PIN form shows", `!document.getElementById("v-locked").hidden`);
-  await js(`document.getElementById("pin").value = ${JSON.stringify(A.pin)}; document.getElementById("v-locked").requestSubmit(); true`);
+  await waitFor("the lock screen shows", `!document.getElementById("v-locked").hidden`);
+  if (await js(`document.getElementById("lk-pad").hidden`)) await click("#b-enter-pin");
+  await enterPin(A.pin, "unlocking");
   await waitFor("the wallet opens", `!document.getElementById("v-open").hidden`);
   A.session = await js("token");          // one session at a time: share the page's
 }
@@ -83,9 +111,19 @@ async function unlock() {
 // ---- locked, then messages not turned on ----
 await load();
 await waitFor("locked: one lock screen and nothing else", `!document.getElementById("lock").hidden && getComputedStyle(document.getElementById("nav")).display === "none" && getComputedStyle(document.getElementById("page-main")).display === "none"`);
-check("without fingerprint the PIN field has the focus", await js(`document.activeElement && document.activeElement.id === "pin"`));
+check("without fingerprint the keypad shows at once, and no text field", await js(`!document.getElementById("lk-pad").hidden && !document.querySelector("#lock input") && document.querySelectorAll("#keypad button").length >= 11`));
+check("keypad keys are at least 56 px", await js(`[...document.querySelectorAll("#keypad button")].filter(b => !b.hidden).every(b => { const r = b.getBoundingClientRect(); return r.width >= 56 && r.height >= 56; })`));
 await shot("locked");
 await noOldHeader("the lock screen");
+// a physical keyboard: digits, Backspace, Enter; a wrong PIN shakes, clears and says so
+const pressKey = (k) => js(`dispatchEvent(new KeyboardEvent("keydown", { key: ${JSON.stringify(k)}, bubbles: true })); true`);
+for (const k of "9753184") await pressKey(k);
+await pressKey("Backspace");
+check("typed on a keyboard, with Backspace: six dots", await js(`document.querySelectorAll("#pin-dots span").length`) === 6);
+await pressKey("Enter");
+await waitFor("a wrong PIN: cleared, with the app's message", `document.querySelectorAll("#pin-dots span").length === 0 && document.getElementById("m-locked").textContent.length > 0`);
+check("the wrong PIN went nowhere in the page", await js(`!(() => { const c = document.documentElement.cloneNode(true); c.querySelectorAll("script").forEach(x => x.remove()); return c.outerHTML; })().includes("975318")`));
+await shot("locked-wrong-pin");
 await unlock();
 check("the bar shows Wallet and Messages", (await text("#nav")).includes("Wallet") && (await text("#nav")).includes("Messages"));
 // the wallet home: the header is the λ, Wallet, the node's icon and the gear; then the balance, Send and Receive
@@ -97,6 +135,43 @@ await nodeMode("online");
 await waitFor("online: up to date, the balance as the hero", `document.getElementById("node-ic").dataset.kind === "ok" && /75,000/.test(document.getElementById("bal-total").textContent)`, 20000);
 check("no addresses on the wallet home until Receive", await js(`document.getElementById("p-recv").hidden && !/[0-9a-f]{10}…/.test(document.getElementById("page-main").innerText)`));
 await shot("wallet-home");
+// the balance: a normal size, on one line inside the card at any amount, on small and large phones
+const setBal = async (key, n) => (await fetch(`http://127.0.0.1:${NODE_PORT}/balance/${key ? key + "/" : ""}${n}`, { method: "POST" })).text();
+const key0 = await js(`accts[0].key`);
+for (const width of [360, 412]) {
+  await cdp("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 2, mobile: true });
+  for (const n of ["0", "111111111", "1000000000", "100000000000", "18446744073709551615"]) {
+    await setBal(null, 0); await setBal(key0, n);
+    const want = BigInt(n).toLocaleString("en-US");
+    await js(`loadAccounts(); true`);
+    await waitFor(`${width} px: the balance shows ${want}`, `document.getElementById("bal-total").firstChild && document.getElementById("bal-total").firstChild.textContent === ${JSON.stringify(want)}`);
+    await sleep(100);
+    const m = await js(`(() => { const e = document.getElementById("bal-total"), c = e.closest(".card").getBoundingClientRect(), r = e.getBoundingClientRect(), u = e.querySelector(".unit").getBoundingClientRect();
+      return { px: parseFloat(getComputedStyle(e).fontSize), fits: e.scrollWidth <= e.clientWidth, inCard: r.left >= c.left && r.right <= c.right && u.right <= c.right,
+               oneLine: Math.abs(u.top - r.top) < parseFloat(getComputedStyle(e).fontSize) && r.height < parseFloat(getComputedStyle(e).fontSize) * 1.6,
+               pageFits: document.documentElement.scrollWidth <= innerWidth }; })()`);
+    console.log(`     ${width} px, ${want}: ${m.px} px`);
+    // 18 px or more up to 100 billion; the largest u64 (20 digits) may go to 14 px (fonts differ: 18 px on macOS, 16 on CI's Linux)
+    const floor = n.length >= 20 ? 14 : 18;
+    check(`${width} px, ${want}: one line, inside the card, no sideways scroll, ${floor} to 34 px`, m.fits && m.inCard && m.oneLine && m.pageFits && m.px >= floor && m.px <= 34, m);
+    if (width === 360 && n === "18446744073709551615") await shot("wallet-home-big-balance");
+  }
+}
+await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+await setBal(null, 12500); await js(`loadAccounts(); true`);
+await waitFor("back to the usual balance", `/75,000/.test(document.getElementById("bal-total").textContent)`);
+// the eye beside the balance hides the amounts on the home screen, and the choice stays on this device
+check("the balance shows by default, with a Hide balance eye", await js(`document.getElementById("b-eye").getAttribute("aria-label") === "Hide balance"`));
+await click("#b-eye");
+await waitFor("hidden: dots instead of the balance", `document.getElementById("bal-total").textContent === "••••••" && document.getElementById("b-eye").getAttribute("aria-label") === "Show balance"`);
+await js(`openPanel("recv"); true`);
+await waitFor("and no amounts anywhere on the home screen (Receive, Activity)", `!!document.querySelector("#accts .bal") && !/[0-9] Logos/.test(document.getElementById("page-main").innerText)`);
+check("remembered on this device", await js(`localStorage.getItem("balance-hidden") === "1"`));
+await js(`openPanel(null); true`);
+await shot("wallet-home-hidden");
+await bigTargets("the wallet home");
+await click("#b-eye");
+await waitFor("shown again", `/75,000/.test(document.getElementById("bal-total").textContent) && document.getElementById("b-eye").getAttribute("aria-label") === "Hide balance" && localStorage.getItem("balance-hidden") === null`);
 await noOldHeader("the wallet home");
 await click("#t-recv");
 await waitFor("Receive shows the address with Copy", `!document.getElementById("p-recv").hidden && document.getElementById("p-recv").innerText.includes("Copy address")`);
@@ -104,6 +179,11 @@ await shot("wallet-receive");
 await click("#t-send");
 await waitFor("Send", `!document.getElementById("p-send").hidden && !document.getElementById("b-review").disabled`);
 await shot("wallet-send");
+await bigTargets("Send");
+await js(`document.getElementById("to").focus(); true`);
+await waitFor("while typing, the bar steps aside for the keyboard", `getComputedStyle(document.getElementById("nav")).display === "none"`);
+await js(`document.getElementById("to").blur(); true`);
+await waitFor("and comes back after", `getComputedStyle(document.getElementById("nav")).display !== "none"`);
 await click("#t-send");
 await click("#node-ic");
 await waitFor("the node icon opens Settings > Node", `!document.getElementById("page-settings").hidden && document.getElementById("s-nodec").innerText.includes("Peers")`);
@@ -138,6 +218,9 @@ await shot("my-messaging-address");
 await click("#mg-addr-show");
 await js(`window.scrollTo(0, 0); document.getElementById("mg-link").open = true; true`);
 await shot("link-your-name");
+await js(`document.getElementById("mg-cmd-d").open = true; true`);
+await bigTargets("Settings > Messages, link your name");
+await js(`document.getElementById("mg-cmd-d").open = false; true`);
 await w.register("alice", { msg: key.public, color: "#2d6a4f" });
 await click("#mg-check");
 await waitFor("linked: it says messages come here", `document.getElementById("mg-check-m").textContent.includes("linked to this phone")`);
@@ -158,6 +241,7 @@ for (const [name, want] of [["zed", "isn't a registered name"], ["dave", "hasn't
   if (name === "dave") await shot("new-chat-nokey");
 }
 await shot("new-chat-by-name");
+await noOldHeader("New chat");
 await js(`[...document.querySelectorAll("#mg-found button")].find(b => b.textContent === "Start chat").click(); true`);
 await waitFor("the chat opens", `!!document.querySelector(".ov .cmp")`);
 await shot("chat-new");
@@ -172,20 +256,31 @@ for (const [t, txt] of [[yesterday - 600000, "Are you coming to the meetup tomor
 await waitFor("bob's messages show in the chat", `document.querySelector(".cv-in").innerText.includes("usual place")`);
 await js(`(() => { const t = document.querySelector(".cmp textarea"); t.value = "Yes! I'll bring the slides. Is there a projector?"; t.dispatchEvent(new Event("input")); document.querySelector(".cmp .go").click(); return true; })()`);
 await waitFor("my message shows on the right", `!!document.querySelector(".bub.out")`);
-await waitFor("and gets to Stored", `document.querySelector(".cv-in").innerText.includes("Stored")`, 15000);
+await waitFor("and gets its sent mark (one tick)", `!!document.querySelector(".cv-in [aria-label=Sent]")`, 15000);
 await bob.lookup("alice", true); await bob.sync();
 await until("bob gets it", async () => { await bob.sync(); return bob.messages("d:alice").some(m => m.dir === "in" && m.text.includes("projector")); });
 await bob.send("d:alice", "There is one, HDMI only.");
 await bob.send("d:alice", "Also: could you send me the address of that bakery you mentioned last week? I want to try their sourdough before the weekend, and I keep forgetting the name of the street it's on.");
 await waitFor("bob's replies arrive", `document.querySelector(".cv-in").innerText.includes("sourdough")`, 15000);
 check("day separators: Yesterday and Today", (await text(".cv-in")).includes("Yesterday") && (await text(".cv-in")).includes("Today"));
-check("the header says verified", (await text(".ov-top")).includes("verified"));
+check("a fine chat says nothing about verification (problems only)", !/verified/i.test(await text(".ov .ov-top")));
 await shot("chat");
+// a small phone with the keyboard up: 360 px wide, the composer above the keyboard
+await cdp("Emulation.setDeviceMetricsOverride", { width: 360, height: 420, deviceScaleFactor: 2, mobile: true });
+await js(`document.querySelector(".cmp textarea").focus(); document.querySelector(".cmp textarea").value = "On my way"; document.querySelector(".cmp textarea").dispatchEvent(new Event("input")); true`);
+await sleep(300);
+check("with the keyboard up the composer is still on screen", await js(`(() => { const r = document.querySelector(".cmp").getBoundingClientRect(); return r.bottom <= window.innerHeight + 1 && r.top > 0; })()`));
+await shot("chat-keyboard-360");
+await js(`document.querySelector(".cmp textarea").value = ""; document.querySelector(".cmp textarea").dispatchEvent(new Event("input")); document.activeElement.blur(); true`);
+await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
 await noOldHeader("a chat");
 // message details
 await js(`document.querySelector(".bub.out").click(); true`);
 await waitFor("details of my message", `!!document.querySelector(".sheet") && document.querySelector(".sheet").innerText.includes("To bob")`);
 await shot("message-details");
+{ const t = await text(".sheet");
+  check("details say what the app knows, never delivered or read", t.includes("can't tell when bob reads it") && !/Stored|delivered/i.test(t), t); }
+await bigTargets("message details");
 await js(`history.back(); true`);
 await waitFor("the sheet closes", `!document.querySelector(".sheet")`);
 
@@ -198,6 +293,7 @@ await js(`(() => { const n = document.getElementById("pv-note"); n.value = "Runs
 await waitFor("note saved", `document.querySelector(".saved").textContent.includes("Saved")`);
 await shot("profile");
 await noOldHeader("a profile");
+check("a fine profile says nothing about verification", !/verified/i.test(await text(".pv-in")));
 await js(`history.back(); true`); await sleep(200);
 await js(`history.back(); true`);
 await waitFor("back on the list", `document.querySelectorAll("#mg-rows .crow").length >= 1 && !document.querySelector(".ov")`);
@@ -213,7 +309,7 @@ await click("#mg-new");
 const wallet = await js(`accts.length ? accts[0].key : ""`);
 if (wallet) {
   await js(`document.getElementById("mg-to").value = ${JSON.stringify(wallet)}; document.getElementById("mg-find").requestSubmit(); true`);
-  await waitFor("a wallet address is refused, plainly", `document.getElementById("mg-found").innerText.includes("That's a wallet address")`);
+  await waitFor("a wallet address is refused, plainly", `document.getElementById("mg-found").innerText.includes("looks like a wallet address")`);
 } else console.log("     (no wallet keys listed in this test app: the wallet-address check runs in tests/chat_test.mjs)");
 // typed as a person would paste it (insertText keeps the field's maxlength, which .value doesn't)
 await js(`(() => { const t = document.getElementById("mg-to"); t.value = ""; t.focus(); return true; })()`);
@@ -221,17 +317,19 @@ const pasted = "msg: " + hex(did.publicKey).slice(0, 30) + " " + hex(did.publicK
 await cdp("Input.insertText", { text: pasted });
 check("a pasted messaging address isn't cut off by the field", (await js(`document.getElementById("mg-to").value`)) === pasted);
 await js(`document.getElementById("mg-find").requestSubmit(); true`);
-await waitFor("an address (with spaces) is taken: address only", `document.getElementById("mg-found").innerText.includes("no name to verify")`);
+await waitFor("an address (with spaces) is taken: no LNS name, and it asks what to call them", `document.getElementById("mg-found").innerText.includes("No LNS name") && !!document.getElementById("mg-nick")`);
 check("it shows a short code, not the address", !(await text("#mg-found")).includes(hex(did.publicKey)));
+await js(`document.getElementById("mg-nick").focus(); true`);
+await cdp("Input.insertText", { text: "Flyer friend" });
 await shot("new-chat-by-address");
 await js(`[...document.querySelectorAll("#mg-found button")].find(b => b.textContent === "Start chat").click(); true`);
 await waitFor("the address chat opens", `!!document.querySelector(".ov .cmp")`);
 await js(`(() => { const t = document.querySelector(".cmp textarea"); t.value = "Hi! Got your address from the flyer."; t.dispatchEvent(new Event("input")); document.querySelector(".cmp .go").click(); return true; })()`);
-await waitFor("sent to the address", `document.querySelector(".cv-in").innerText.includes("Stored")`, 15000);
+await waitFor("sent to the address", `!!document.querySelector(".cv-in [aria-label=Sent]")`, 15000);
 await until("the nameless person gets it, from alice", async () => { await dchat.sync(); return dchat.messages("d:alice").length === 1 && dchat.trust(dchat.messages("d:alice")[0]) === "ok"; });
 await dchat.send("d:alice", "Thanks! I don't have an LNS name yet.");
 await waitFor("their reply shows in the same chat", `document.querySelector(".cv-in").innerText.includes("don't have an LNS name")`, 15000);
-check("the header says address only", (await text(".ov-top")).includes("address only"));
+check("the header says No LNS name, and uses the name given", (await text(".ov .ov-top")).includes("No LNS name") && (await text(".ov .ov-top")).includes("Flyer friend"), await text(".ov .ov-top"));
 await shot("chat-address");
 await click(".ov .who");
 await waitFor("the address profile", `!!document.getElementById("pv-note")`);
@@ -251,15 +349,17 @@ await waitFor("carol's chat shows up, unread", `document.getElementById("mg-rows
 await waitFor("and the one claiming to be dave, marked", `document.getElementById("mg-rows").innerText.includes("Not verified")`, 15000);
 await waitFor("the bar has an unread count", `!document.querySelector("#nav .badge").hidden`);
 await shot("list");
+await bigTargets("the chat list");
 const C2 = MC.newKeyPair();
 await w.register("carol", { msg: hex(C2.publicKey) });
-const sealedNew = MC.sealMessage({ to: MC.fromHex(key.public), from: "carol", fromSecret: C2.secretKey, text: "New phone! This is my new key." });
+const sealedNew = MC.sealMessage({ to: MC.fromHex(key.public), from: "carol", fromSecret: C2.secretKey, text: "New phone, new address." });
 await w.control("inject/0", { topic: MC.inboxTopic(MC.fromHex(key.public)), payload: b64(sealedNew) });
 await js(`[...document.querySelectorAll("#mg-rows .crow")].find(r => r.innerText.includes("carol")).click(); true`);
 await waitFor("carol's address changed: the banner", `!!document.querySelector(".cv-ban:not([hidden])") && document.querySelector(".cv-ban").innerText.includes("address changed")`, 15000);
 await waitFor("her message from the new address is marked", `document.querySelector(".cv-in").innerText.includes("new messaging address, not accepted")`, 10000);
 check("and there's no composer until it's accepted", await js(`document.querySelector(".cmp").hidden`));
 await shot("key-changed");
+await bigTargets("a chat with a changed address");
 await js(`[...document.querySelectorAll(".cv-ban button")].find(b => b.textContent === "Accept the change").click(); true`);
 await waitFor("accepted: the composer is back", `!document.querySelector(".cmp").hidden`);
 check("her earlier message is marked as from the earlier address", (await text(".cv-in")).includes("earlier messaging address"));
@@ -338,10 +438,12 @@ await cdp("Page.navigate", { url: E.base + "/" });
 await waitFor("the lock screen", `!!document.getElementById("lock") && !document.getElementById("lock").hidden`);
 await sleep(600);
 check("the fingerprint check comes up by itself, once", await js(`window.__fp`) === 1);
+check("while it is up: the splash, only the mark and Enter PIN; no PIN box", await js(`!document.getElementById("lk-splash").hidden && document.getElementById("lk-pad").hidden && document.getElementById("b-fp").hidden && !document.getElementById("b-enter-pin").hidden && !document.querySelector("#lock input")`));
 await shot("locked-android");
 await noOldHeader("the Android lock screen");
 await js(`window.logosNativeUnlockFailed(); true`);
-check("after a cancel the PIN field has the focus", await js(`document.activeElement.id === "pin"`));
+check("after a cancel: still the splash, with Enter PIN and Use fingerprint", await js(`!document.getElementById("lk-splash").hidden && !document.getElementById("b-fp").hidden && !document.getElementById("b-enter-pin").hidden && document.getElementById("lk-pad").hidden`));
+await shot("locked-android-cancelled");
 await sleep(1000);
 check("and it doesn't come up again by itself", await js(`window.__fp`) === 1);
 const vis = (state) => js(`Object.defineProperty(document, "visibilityState", { configurable: true, get: () => ${JSON.stringify(state)} }); document.dispatchEvent(new Event("visibilitychange")); true`);
@@ -349,7 +451,10 @@ await vis("hidden"); await sleep(300); await vis("visible"); await sleep(300);
 check("not even after a moment hidden (the phone's own dialog)", await js(`window.__fp`) === 1);
 await js(`document.getElementById("b-fp").click(); true`);
 check("Use fingerprint asks again", await js(`window.__fp`) === 2);
-await js(`document.getElementById("pin").value = ${JSON.stringify(E.pin)}; document.getElementById("v-locked").requestSubmit(); true`);
+await click("#b-enter-pin");
+check("Enter PIN: the keypad at once, with a fingerprint key", await js(`!document.getElementById("lk-pad").hidden && !!document.getElementById("k-fp")`));
+await shot("locked-android-keypad");
+await enterPin(E.pin, "unlocking in the Android app");
 await waitFor("unlocked with the PIN", `!document.getElementById("v-open").hidden`);
 E.session = await js("token");
 await click("#nav-msg");
@@ -364,15 +469,16 @@ const behind = await js(`document.body.innerText`);
 check("nothing behind the lock screen: no chats, names, balances", !/bob|hi erin|erin/.test(behind) && (await js(`document.querySelectorAll(".crow, .bub, .acct, .ov").length`)) === 0, behind.slice(0, 300));
 await vis("hidden"); await sleep(2800); await vis("visible"); await sleep(400);
 check("coming back to the app later: it comes up again", await js(`window.__fp`) === 4);
-await js(`document.getElementById("pin").value = ${JSON.stringify(E.pin)}; document.getElementById("v-locked").requestSubmit(); true`);
-await waitFor("after unlocking: back in the same chat", `!document.getElementById("page-msg").hidden && !!document.querySelector(".ov .cmp") && document.querySelector(".ov-top").innerText.includes("bob")`, 15000);
+await click("#b-enter-pin");
+await enterPin(E.pin, "unlocking after an auto-lock");
+await waitFor("after unlocking: back in the same chat", `!document.getElementById("page-msg").hidden && !!document.querySelector(".ov .cmp") && document.querySelector(".ov .ov-top").innerText.includes("bob")`, 15000);
 await js(`history.back(); true`);
 await click("#nav-wallet");
 await js(`document.getElementById("b-lock").click(); true`);
 await waitFor("locked by hand", `!document.getElementById("lock").hidden`);
 await sleep(600);
 check("after the user's own Lock, no prompt by itself", await js(`window.__fp`) === 4);
-check("both options are there", await js(`!document.getElementById("b-fp").hidden && !!document.getElementById("pin")`));
+check("both options are there", await js(`!document.getElementById("b-fp").hidden && !document.getElementById("b-enter-pin").hidden`));
 ws.close(); stopAll();
 console.log("all checks passed" + (SHOTS ? ` (screenshots in ${SHOTS})` : ""));
 process.exit(0);

@@ -8,7 +8,7 @@ Python standard library only. Wallet calls need a PIN that is set on first use.
 import base64, calendar, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.9.3"
+APP_VERSION = "0.9.5"
 # APP_EMBEDDED=android: this app runs inside the Android app (embedded Python, page in a WebView).
 # Then it never updates or restarts itself (the Android app brings new versions), and fingerprint
 # unlock goes through the phone's own fingerprint check instead of a passkey. Unset: nothing changes.
@@ -985,6 +985,15 @@ def keystore_location():
 BACKUP_STATE_FILE = os.path.join(DATA_DIR, "wallet-backup.json")
 
 
+def backup_has_messaging():
+    """Whether the last backup holds the messaging key (made with Messages on, from 0.9.4; None if unknown)."""
+    try:
+        with open(BACKUP_STATE_FILE) as f:
+            return json.load(f).get("messaging")
+    except Exception:
+        return None
+
+
 def last_backup():
     """When a backup was last exported (UTC), or None if never."""
     try:
@@ -1686,7 +1695,9 @@ def messaging_get(path, query):
                               "checked_s_ago": round(time.time() - st["checked"]) if st["checked"] else None},
                      "key": key["public"] if key else None, "name": (key or {}).get("name", ""),
                      "topic": inbox_topic(key["public"]) if key else None, "subscribed": bool(key and st["subscribed"]),
-                     "inbox": count, "unread": count, "missed": st["missed"]}
+                     "inbox": count, "unread": count, "missed": st["missed"],
+                     "backup": {"last": last_backup(), "messaging": backup_has_messaging(),
+                                "key_created": (key or {}).get("created")}}
     if path == "/api/messages/key":
         key = msg_key_load()
         if not key:
@@ -1940,7 +1951,7 @@ def backup_export(password, history=True):
     try:
         fd = os.open(BACKUP_STATE_FILE + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
-            json.dump({"last": created}, f)
+            json.dump({"last": created, "messaging": bool(mk)}, f)          # whether it holds the messaging key
         os.replace(BACKUP_STATE_FILE + ".tmp", BACKUP_STATE_FILE)
     except Exception:
         pass
