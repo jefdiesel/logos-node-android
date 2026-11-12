@@ -21,10 +21,13 @@ for src in cborencoder.c cborencoder_close_container_checked.c cborparser.c cbor
 done
 
 # The header includes <tinycbor/cbor.h>, so the parent of tinycbor/ is on the include path.
+# librln comes first: liblogosdelivery.so has no RUNPATH, so Android's linker can only satisfy
+# its librln.so dependency with a copy the runner (RUNPATH=$ORIGIN) has already loaded.
+# -Wl,--no-as-needed keeps librln.so in the runner's NEEDED list although the runner calls nothing in it.
 "$CC" -O2 -fPIE -pie -std=gnu11 -Wall -Wno-unused-function \
   -I"$LIB/include" -I"$LIB" \
   "$HERE/runner/waku_runner.c" "$WORK"/*.o \
-  -L"$LIB" -llogosdelivery -lrln -llog \
+  -L"$LIB" -Wl,--no-as-needed -lrln -llogosdelivery -llog \
   -Wl,-rpath,'$ORIGIN' \
   -o "$OUT/waku-runner"
 

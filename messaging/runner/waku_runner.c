@@ -286,7 +286,8 @@ int main(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
 
     logf_("liblogosdelivery %s, pid %d", logosdelivery_version(), (int)getpid());
-    logf_("config %s: %s", config_path, config);
+    // not printed: it can hold the node's private key (nodekey)
+    logf_("config %s (%zu bytes)", config_path, strlen(config));
 
     reply_init(&g_create);
     if (logosdelivery_ctx_create(config, on_created, NULL) != 0) { logf_("create_node: submit failed"); return 1; }
