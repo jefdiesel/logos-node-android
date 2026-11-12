@@ -13,6 +13,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import java.io.File
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
@@ -25,13 +26,25 @@ class NodeService : Service() {
     companion object {
         const val ACTION_START = "io.github.jefdiesel.logosnode.START"
         const val ACTION_STOP = "io.github.jefdiesel.logosnode.STOP"
+        /** Start the node from a snapshot: the intent's data is the tar's content URI (from the file picker). */
+        const val ACTION_IMPORT = "io.github.jefdiesel.logosnode.IMPORT"
+        /** Swap the node's state with state.previous. */
+        const val ACTION_REVERT = "io.github.jefdiesel.logosnode.REVERT"
+        /** Debug builds only: the import, against files/scratch-import, never the node's own state. */
+        const val ACTION_TEST_IMPORT = "io.github.jefdiesel.logosnode.TEST_IMPORT"
         private const val CHANNEL = "node"
         private const val NOTIFICATION_ID = 1
 
         /** For the screen: is the service up, and what is it doing. */
         @Volatile var active = false
         @Volatile var status = "stopped"
+        /** A snapshot import or a go-back is running in this process. */
+        @Volatile var importRunning = false
     }
+
+    private val startLock = Object()
+    @Volatile private var hold = false
+    @Volatile private var importCancel = false
 
     private lateinit var files: NodeFiles
     private lateinit var log: NodeLog
@@ -54,20 +67,153 @@ class NodeService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopEverything()
-            return START_NOT_STICKY
+        when (intent?.action) {
+            ACTION_STOP -> {
+                if (importRunning) {
+                    importCancel = true
+                    log.app("stop requested during a snapshot import: cancelling it")
+                }
+                stopEverything()
+                return START_NOT_STICKY
+            }
+            ACTION_IMPORT, ACTION_REVERT -> {
+                goForeground(if (intent.action == ACTION_IMPORT) "Starting from a snapshot" else "Going back to the previous state")
+                startStateJob(intent)
+                return START_STICKY
+            }
+            ACTION_TEST_IMPORT -> {
+                goForeground("Test import")
+                if (BuildConfig.DEBUG && !importRunning) thread(name = "test-import") { testImport() }
+                return START_NOT_STICKY
+            }
         }
         // ACTION_START, or a null intent when Android restarts this sticky service
         goForeground(if (intent == null) "Restarted by Android" else "Starting the node")
-        if (supervisor?.isAlive != true) {
-            if (intent == null) log.app("service restarted by Android")
-            stopRequested = false
-            active = true
-            supervisor = thread(name = "node-supervisor") { supervise() }
-            monitor = thread(name = "node-monitor", isDaemon = true) { monitorMemory() }
-        }
+        if (intent == null) log.app("service restarted by Android")
+        stopRequested = false
+        ensureSupervisor()
         return START_STICKY
+    }
+
+    private fun ensureSupervisor() = synchronized(startLock) {
+        if (stopRequested || supervisor?.isAlive == true) return@synchronized
+        active = true
+        supervisor = thread(name = "node-supervisor") { supervise() }
+        if (monitor?.isAlive != true) monitor = thread(name = "node-monitor", isDaemon = true) { monitorMemory() }
+    }
+
+    // ---- snapshot import and going back (Snapshot.kt does the work) ----
+
+    private fun saveImportStatus(text: String) {
+        val line = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date()) + " " + text
+        log.app("snapshot: $text")
+        try {
+            files.importStatus.writeText(line)
+        } catch (_: Exception) {
+        }
+    }
+
+    /** Pauses the supervisor and stops the node, and waits until no node process is left. */
+    private fun holdNode() {
+        synchronized(startLock) { hold = true }
+        killNode()
+        val until = System.currentTimeMillis() + 30_000
+        while (NodeProcesses.pids().isNotEmpty() && System.currentTimeMillis() < until) {
+            NodeProcesses.pids().forEach { android.os.Process.sendSignal(it, 15) }
+            Thread.sleep(500)
+        }
+        NodeProcesses.pids().forEach { android.os.Process.sendSignal(it, 9) }
+    }
+
+    private fun releaseNode() {
+        synchronized(startLock) { hold = false }
+        ensureSupervisor()
+    }
+
+    private fun startStateJob(intent: Intent) {
+        if (importRunning) {
+            log.app("snapshot: refused, one is already running")
+            return
+        }
+        importRunning = true
+        importCancel = false
+        stopRequested = false
+        val uri = intent.data
+        val action = intent.action
+        val lock = getSystemService(PowerManager::class.java)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "logosnode:import").apply { acquire(3 * 60 * 60_000L) }
+        thread(name = "node-import") {
+            try {
+                val home = files.home
+                val message = if (action == ACTION_REVERT) {
+                    saveImportStatus("Going back to the previous state")
+                    holdNode()
+                    try {
+                        StateSwap(home).revert()
+                    } finally {
+                        releaseNode()
+                    }
+                    "Went back to the previous state. The state it replaced is kept as state.previous."
+                } else {
+                    if (uri == null) throw SnapshotError("No file was chosen.")
+                    val size = contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.SIZE), null, null, null)?.use {
+                        if (it.moveToFirst() && !it.isNull(0)) it.getLong(0) else null
+                    }
+                    val available = android.os.StatFs(home.path).availableBytes
+                    saveImportStatus("Importing a snapshot" + (size?.let { " (${SnapshotImporter.mb(it)} MB)" } ?: ""))
+                    SnapshotImporter(home, status = { setStatus(it); files.importStatus.writeText(it) }, cancelled = { importCancel })
+                        .run(
+                            open = { contentResolver.openInputStream(uri) ?: throw SnapshotError("The chosen file can't be opened.") },
+                            size = size, available = available,
+                            stopNode = { holdNode() }, startNode = { releaseNode() },
+                        )
+                }
+                saveImportStatus("Done: $message")
+            } catch (e: SnapshotError) {
+                saveImportStatus("Failed: ${e.message}")
+            } catch (e: Exception) {
+                saveImportStatus("Failed: $e")
+            } finally {
+                synchronized(startLock) { hold = false }
+                importRunning = false
+                if (lock.isHeld) lock.release()
+                if (uri != null) try {
+                    contentResolver.releasePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                } catch (_: Exception) {
+                }
+                if (!stopRequested) ensureSupervisor()
+            }
+        }
+    }
+
+    /**
+     * Debug builds: the same import code against files/scratch-import (a fake state folder there and
+     * the tar at scratch-import/in.tar), with no node stopped or started. Writes scratch-import/result.txt.
+     */
+    private fun testImport() {
+        val root = File(filesDir, "scratch-import")
+        val result = File(root, "result.txt")
+        importRunning = true
+        try {
+            File(root, "state").mkdirs()
+            File(root, "state/marker").writeText("the scratch state before the test import")
+            val tar = File(root, "in.tar")
+            val text = try {
+                "OK: " + SnapshotImporter(root, status = { log.app("[test import] $it") }).run(
+                    open = { tar.inputStream() }, size = tar.length(), available = android.os.StatFs(root.path).availableBytes,
+                    stopNode = { log.app("[test import] here the node would stop") },
+                    startNode = { log.app("[test import] here the node would start") },
+                )
+            } catch (e: Exception) {
+                "FAILED: ${e.message}"
+            }
+            val tree = root.walkTopDown().filter { it.isFile }.joinToString("\n") { "${it.relativeTo(root)} ${it.length()}" }
+            result.writeText("$text\n$tree\n")
+            log.app("[test import] $text")
+        } finally {
+            importRunning = false
+            if (!active) main.post { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
+        }
     }
 
     override fun onDestroy() {
@@ -139,6 +285,16 @@ class NodeService : Service() {
         var backoffSeconds = 5L
         try {
             while (!stopRequested) {
+                if (hold) {                                  // a snapshot import or go-back has the state
+                    if (status != "paused for the snapshot") setStatus("paused for the snapshot")
+                    try {
+                        Thread.sleep(500)
+                    } catch (_: InterruptedException) {
+                        if (stopRequested) break
+                    }
+                    backoffSeconds = 5
+                    continue
+                }
                 val started = System.currentTimeMillis()
                 val exit = try {
                     prepare()
@@ -150,6 +306,7 @@ class NodeService : Service() {
                     null
                 }
                 if (stopRequested) break
+                if (hold) continue                           // stopped on purpose for the import
                 if (System.currentTimeMillis() - started > 10 * 60_000) backoffSeconds = 5
                 log.app("node exited (exit code $exit); restarting in $backoffSeconds s")
                 setStatus("node exited (code $exit), restarting in $backoffSeconds s")
@@ -169,6 +326,8 @@ class NodeService : Service() {
     /** Folders, fresh keys on the first start, and the config (rewritten each start). */
     private fun prepare() {
         files.mkdirs()
+        // an import or go-back cut short when the app was killed: undo or finish it before the node opens the state
+        if (!importRunning) StateSwap(files.home).recover()?.let { saveImportStatus(it) }
         val bin = files.binary
         if (!bin.exists()) throw IllegalStateException("node binary missing at ${bin.path}")
         if (!files.keystore.exists()) {
@@ -203,8 +362,10 @@ class NodeService : Service() {
     private fun runNode(): Int {
         val launcher = files.launcher
         log.app("starting ${launcher.path} (node ${BuildConfig.NODE_VERSION}, sha256 ${BuildConfig.NODE_SHA256})")
-        val p = processBuilder(listOf(launcher.path, files.config.name)).start()
-        process = p
+        val p = synchronized(startLock) {
+            if (hold || stopRequested) return -1                    // an import took the state meanwhile
+            processBuilder(listOf(launcher.path, files.config.name)).start().also { process = it }
+        }
         setStatus("node running")
         try {
             p.inputStream.bufferedReader().forEachLine { log.node(it) }

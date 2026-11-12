@@ -17,6 +17,8 @@ class NodeFiles(context: Context) {
     val config = File(home, "user_config.yaml")
     val keystore = File(home, "keystore.yaml")
     val output = File(home, "output.log")              // the node's stdout and stderr, plus app events
+    val importStatus = File(home, "import-status.txt")  // the last snapshot import or go-back, for the screen
+    val previousState = File(home, "state.previous")    // kept by an import (see Snapshot.kt)
 
     /**
      * files/node/logos-blockchain-node, a link to the bundled binary. Started through it, the node's

@@ -49,7 +49,8 @@ jobs:
         working-directory: android
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-36" "build-tools;$BUILD_TOOLS" >/dev/null
-          gradle --no-daemon assembleDebug \
+          # unit tests first: the snapshot import's tar reader, RocksDB check and state swap
+          gradle --no-daemon testDebugUnitTest assembleDebug \
             -PnodeVersion=${{ steps.node.outputs.version }} -PnodeSha256=${{ steps.node.outputs.sha }}
       - name: Check the APK
         run: |

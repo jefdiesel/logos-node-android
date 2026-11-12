@@ -84,4 +84,9 @@ chaquopy {
 
 tasks.named("preBuild") { dependsOn(copyWebApp) }
 
+dependencies {
+    // JVM unit tests of the snapshot import (tar reader, RocksDB check, state swap); run with testDebugUnitTest
+    testImplementation("junit:junit:4.13.2")
+}
+
 kotlin { jvmToolchain(17) }

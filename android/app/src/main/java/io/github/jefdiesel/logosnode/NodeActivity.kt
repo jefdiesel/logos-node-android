@@ -27,7 +27,13 @@ class NodeActivity : Activity() {
     private lateinit var processView: TextView
     private lateinit var statusView: TextView
     private lateinit var logView: TextView
+    private lateinit var snapshotView: TextView
+    private lateinit var revertButton: Button
     private var visible = false
+
+    companion object {
+        private const val PICK_SNAPSHOT = 7
+    }
 
     private val refresh = object : Runnable {
         override fun run() {
@@ -42,6 +48,14 @@ class NodeActivity : Activity() {
         files = NodeFiles(this)
         log = NodeLog(files.output)
         setContentView(layout().also { Insets.pad(it) })
+        // an import cut short by the app being killed, while the node service isn't running: tidy it now
+        if (!NodeService.active && !NodeService.importRunning) {
+            io.execute {
+                StateSwap(files.home).recover()?.let { msg ->
+                    try { files.importStatus.writeText(msg) } catch (_: Exception) {}
+                }
+            }
+        }
     }
 
     override fun onResume() {
@@ -74,8 +88,8 @@ class NodeActivity : Activity() {
                 14f,
                 "This app runs the official Logos node (${BuildConfig.NODE_VERSION}) on this phone. A fresh install " +
                     "syncs the chain from its first block, and that cannot finish on a phone: the node's memory grows " +
-                    "with the chain during the first sync. For now a synced database (a snapshot) can be put in place " +
-                    "with adb, as android/README.md in the project describes; importing one in the app is the next step."
+                    "with the chain during the first sync. Start it from a snapshot instead: a tar of a synced node's " +
+                    "database, made as the project's docs/start-from-a-synced-database.md describes."
             )
         )
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -98,6 +112,25 @@ class NodeActivity : Activity() {
         column.addView(buttons)
         processView = text(16f).also { column.addView(it) }
         statusView = text(16f).also { column.addView(it) }
+
+        column.addView(text(18f, "Snapshot"))
+        snapshotView = text(14f).also { column.addView(it) }
+        column.addView(Button(this).apply {
+            text = "Start from a snapshot"
+            setOnClickListener {
+                if (NodeService.importRunning) return@setOnClickListener
+                val pick = Intent(Intent.ACTION_OPEN_DOCUMENT)
+                    .addCategory(Intent.CATEGORY_OPENABLE)
+                    .setType("*/*")                                   // Downloads often types a tar as octet-stream
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                @Suppress("DEPRECATION") startActivityForResult(pick, PICK_SNAPSHOT)
+            }
+        })
+        revertButton = Button(this).apply {
+            text = "Go back to the previous state"
+            visibility = android.view.View.GONE
+            setOnClickListener { confirmRevert() }
+        }.also { column.addView(it) }
         column.addView(text(14f, "Log (full log: files/node/output.log)"))
         logView = text(11f).apply { typeface = Typeface.MONOSPACE }.also { column.addView(it) }
         column.addView(
@@ -123,11 +156,84 @@ class NodeActivity : Activity() {
         val statusText = if (pids.isEmpty()) "" else nodeStatus()
         val walletText = WalletServer.describe(this)
         val logText = log.tail(40)
+        val snapshotText = snapshotText()
+        val previous = files.previousState
+        val previousLabel = if (previous.isDirectory && !NodeService.importRunning) {
+            "Go back to the previous state (from " +
+                java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date(previous.lastModified())) + ")"
+        } else null
         main.post {
             processView.text = processText + "\n" + walletText
             statusView.text = statusText
             logView.text = logText
+            snapshotView.text = snapshotText
+            revertButton.visibility = if (previousLabel != null) android.view.View.VISIBLE else android.view.View.GONE
+            if (previousLabel != null) revertButton.text = previousLabel
         }
+    }
+
+    /** The last import or go-back, and what the node is doing with the state now (from its log). */
+    private fun snapshotText(): String {
+        val last = try {
+            files.importStatus.readText().trim()
+        } catch (_: Exception) {
+            ""
+        }
+        val tail = log.tail(400)
+        val found = Regex("found (\\d+) stored blocks to replay").findAll(tail).lastOrNull()?.groupValues?.get(1)
+        val replayed = Regex("(\\d+) blocks replayed").findAll(tail).lastOrNull()
+        val replay = when {
+            found == null -> ""
+            replayed == null || replayed.range.first < tail.lastIndexOf("found $found stored blocks") -> "\nThe node is replaying $found saved blocks."
+            else -> "\nThe node replayed ${replayed.groupValues[1]} saved blocks; its height is above."
+        }
+        return (if (NodeService.importRunning) "Running: " else "") +
+            last.ifEmpty { "No snapshot imported yet. The node's state now: ${if (files.state.isDirectory) "present" else "none"}." } + replay
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        @Suppress("DEPRECATION") super.onActivityResult(requestCode, resultCode, data)
+        val uri = data?.data
+        if (requestCode != PICK_SNAPSHOT || resultCode != RESULT_OK || uri == null) return
+        val name = contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+            if (it.moveToFirst()) it.getString(0) else null
+        } ?: uri.lastPathSegment
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Start from this snapshot?")
+            .setMessage(
+                "$name\n\nThe node's database is replaced by the one in this file. The node is stopped for the swap " +
+                    "and started again. Its keys and settings are not touched, and the current database is kept so you " +
+                    "can go back. You trust whoever made the snapshot for the history up to it."
+            )
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Import") { _, _ ->
+                try {
+                    contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                } catch (_: Exception) {
+                }
+                startForegroundService(
+                    Intent(this, NodeService::class.java).setAction(NodeService.ACTION_IMPORT).setData(uri)
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                )
+                io.execute { update() }
+            }
+            .show()
+    }
+
+    private fun confirmRevert() {
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Go back to the previous state?")
+            .setMessage(
+                "The node is stopped, its current database and the previous one swap places, and it starts again. " +
+                    "You can swap back the same way."
+            )
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Go back") { _, _ ->
+                startForegroundService(Intent(this, NodeService::class.java).setAction(NodeService.ACTION_REVERT))
+                io.execute { update() }
+            }
+            .show()
     }
 
     private fun nodeStatus(): String = try {
