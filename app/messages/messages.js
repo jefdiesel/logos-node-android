@@ -521,6 +521,7 @@ $("mg-scan").addEventListener("click", () => {
       const p = parseScan(text);
       if (p.error) return scanSay(p.error);
       if (p.kind === "wallet") return scanSay("That's a wallet address, for coins, not a messaging address. To pay them, use Send in the wallet. To write to them, ask for their messaging address or LNS name.");
+      if (p.kind !== "msg") return scanSay("That's a LEZ account, not a messaging address. To send LEZ to it, use the Wallet.");
       findNow("msg:" + p.value);
     },
     fail: scanSay });

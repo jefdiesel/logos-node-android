@@ -507,6 +507,18 @@ class WalletActivity : Activity() {
             }
         }
 
+        /**
+         * Settings > Appearance (web app 0.9.10): the page's background after a theme change, so the window
+         * behind it and the system bars' icons match, as they do after each page load (PAGE_CHECK).
+         */
+        @JavascriptInterface
+        fun setTheme(background: String) {
+            main.post {
+                if (!FingerprintUnlock.isOwnPage(web.url)) return@post
+                WalletPage.parseCssColor(background)?.let { setBars(it) }
+            }
+        }
+
         /** Called by SAVE_HOOK when the page saves a file (the wallet backup). */
         @JavascriptInterface
         fun saveFile(name: String, dataUrl: String) {

@@ -108,6 +108,18 @@ def main():
         print("applied in block 9")
         print("%s is registered" % name)
         sys.exit(0)
+    if args[:3] == ["wallet", "auth-transfer", "send"]:      # a plain public transfer, as LEZ's own wallet prints it
+        record()
+        o = dict(zip(args[3::2], args[4::2]))
+        if sorted(o) != ["--amount", "--from", "--to"] or o["--from"] != "Public/" + ACCOUNT or not o["--amount"].isdigit():
+            fail("unexpected arguments")
+        if o["--amount"] == "13":             # the wallet gives up waiting (as a late inclusion looks)
+            print("Transaction hash is " + "ef" * 32, flush=True)
+            fail("Transaction not found in 30 blocks")
+        print("Transaction hash is " + rpc("sendTransaction", [{"Public": "transfer", "amount": int(o["--amount"])}]), flush=True)
+        print("Transaction is included in block 12")
+        print("Transaction data is PublicTransaction { signature: " + FAKE_PHRASE + " }")
+        sys.exit(0)
     if args and args[0] == "set-text":
         record()
         if len(args) != 4:

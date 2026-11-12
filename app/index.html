@@ -11,16 +11,24 @@
 <link rel="icon" href="/lambda-192.png">
 <link rel="apple-touch-icon" href="/lambda-192.png">
 <meta name="theme-color" content="#11110f">
+<!-- Settings > Appearance: System (nothing stored), Light or Dark, set before anything is drawn -->
+<script>try { var th = localStorage.getItem("theme"); if (th === "light" || th === "dark") document.documentElement.dataset.theme = th; } catch (e) {}</script>
 <style>
 :root{
   --bg:#f4f2ec;--card:#fffefb;--ink:#1b1a17;--dim:#6d6960;--line:#d6d1c4;--field:#f7f5ef;--field-line:#8a8476;
   --accent:#f0794a;--accent-ink:#1b1a17;--accent-text:#a8470c;--ok:#1d7448;--warn:#9a5b00;--bad:#b3261e;
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 }
-@media (prefers-color-scheme:dark){:root{
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){
   --bg:#11110f;--card:#201f1b;--ink:#edeae2;--dim:#a29d91;--line:#3a3832;--field:#161613;--field-line:#7d786e;
   --accent:#f0794a;--accent-ink:#1b1a17;--accent-text:#f0794a;--ok:#62d19b;--warn:#e6ad55;--bad:#ff8a80;
 }}
+:root[data-theme=dark]{
+  --bg:#11110f;--card:#201f1b;--ink:#edeae2;--dim:#a29d91;--line:#3a3832;--field:#161613;--field-line:#7d786e;
+  --accent:#f0794a;--accent-ink:#1b1a17;--accent-text:#f0794a;--ok:#62d19b;--warn:#e6ad55;--bad:#ff8a80;
+  color-scheme:dark;
+}
+:root[data-theme=light]{color-scheme:light}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%}
 main{max-width:520px;margin:0 auto;padding:20px 16px 48px}
@@ -45,6 +53,23 @@ h3{font-size:15px;font-weight:650;margin:16px 0 6px}
 .hero-note{font-size:14px;color:var(--dim);margin:10px 0 0}.hero-note:empty{display:none}
 .ph{color:var(--dim);font-weight:500}
 .acts{margin-top:18px}.acts button{min-height:50px}
+/* the Wallet: a list of tokens (tap one to pick it), then Send / Receive / Activity for the one picked */
+.tok-head{display:flex;align-items:center;justify-content:space-between;min-height:44px;font-size:14px;color:var(--dim)}
+.toks{margin:0 -16px;border-top:1px solid var(--line)}
+.tok{display:flex;align-items:center;gap:12px;width:100%;min-height:64px;margin:0;padding:10px 16px;border:0;border-bottom:1px solid var(--line);border-radius:0;background:none;text-align:left;font-weight:400;color:var(--ink);box-shadow:inset 3px 0 0 transparent}
+.tok[aria-checked="true"]{background:var(--field);box-shadow:inset 3px 0 0 var(--accent)}
+.tok-ic{flex:none;width:38px;height:38px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;background:var(--field);border:1px solid var(--line);color:var(--ink);font-size:12px;font-weight:700;letter-spacing:.02em}
+.tok-t{flex:1;min-width:0}.tok-t b{display:block;font-size:16px;font-weight:620;line-height:1.3}
+.tok-t small{display:block;font-size:13px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tok-amt{flex:0 1 auto;min-width:0;max-width:58%;font-size:18px;font-weight:650;letter-spacing:-.02em;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden}
+.tok-amt .unit{font-size:max(11px,.7em);font-weight:500;color:var(--dim);letter-spacing:0;margin-left:.3em}
+.tok-amt .mask{letter-spacing:.08em}
+.wtabs{display:flex;gap:6px;margin:16px 0 0;border-bottom:1px solid var(--line)}
+.wtabs button{flex:1;margin:0;min-height:46px;border:0;border-radius:0;background:none;font-weight:600;color:var(--dim);box-shadow:inset 0 -3px 0 transparent}
+.wtabs button[aria-selected="true"]{color:var(--ink);box-shadow:inset 0 -3px 0 var(--accent)}
+.recv-addr{font-family:var(--mono);font-size:13px;overflow-wrap:anywhere;text-align:center;margin:8px 0 0}
+.seg{display:flex;gap:8px}.seg label{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;min-height:44px;border:1px solid var(--line);border-radius:10px;margin:0;font-weight:500;color:var(--ink)}
+.seg input{width:auto;min-height:0;margin:0}.seg label:has(input:checked){border-color:var(--ink);box-shadow:inset 0 0 0 1px var(--ink)}
 .acts button[aria-expanded="true"]{box-shadow:inset 0 0 0 2px var(--ink)}
 /* the one top bar of every screen with a Back: a chevron (44 px) and the title beside it, on one line */
 .bar{display:flex;align-items:center;gap:4px;min-height:56px;padding:6px 8px;background:var(--card);border-bottom:1px solid var(--line)}
@@ -200,24 +225,28 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
     </form>
 
     <div id="v-open" hidden>
-      <div class="hero">
-        <div class="hero-label"><span id="bal-label">Balance</span><button type="button" id="b-eye" class="eye" aria-pressed="false"></button></div>
-        <div class="hero-amt" id="bal-total"><span class="ph">—</span></div>
-        <p class="hero-note" id="m-sync"></p>
-      </div>
-      <div class="row acts">
-        <button type="button" id="t-send" class="primary act" aria-expanded="false" aria-controls="p-send">Send</button>
-        <button type="button" id="t-recv" class="act" aria-expanded="false" aria-controls="p-recv">Receive</button>
-      </div>
       <button type="button" class="notice" id="n-bk" hidden>No backup yet. If this device is wiped, the coins are lost.</button>
       <button type="button" class="notice" id="n-upd" hidden></button>
-      <div id="p-recv" class="panel" hidden>
-        <p class="note" style="margin-top:6px">Your wallet address, for coins. Let them scan the code, or copy the address and send it to whoever pays you. People can also pay your LNS name, if it has this address set.</p>
+      <div class="tok-head"><span id="bal-label">Tokens</span><button type="button" id="b-eye" class="eye" aria-pressed="false"></button></div>
+      <div class="toks" id="tokens" role="radiogroup" aria-label="Tokens">
+        <button type="button" class="tok" id="tok-logos" role="radio" aria-checked="true">
+          <span class="tok-ic" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" focusable="false"><path d="M8.6 5.1l7.9 13.8M12.1 10.9L7 18.9M6.9 5.6L8.6 5.1" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          <span class="tok-t"><b>Logos</b><small>Logos blockchain testnet</small></span>
+          <span class="tok-amt" id="bal-total"><span class="ph">—</span></span>
+        </button>
+      </div>
+      <p class="hero-note" id="m-sync"></p>
+      <div class="wtabs" role="tablist" aria-label="Logos">
+        <button type="button" id="t-send" role="tab" aria-selected="false" aria-controls="p-send">Send</button>
+        <button type="button" id="t-recv" role="tab" aria-selected="false" aria-controls="p-recv">Receive</button>
+        <button type="button" id="t-act" role="tab" aria-selected="true" aria-controls="p-hist">Activity</button>
+      </div>
+      <div id="p-recv" class="panel" role="tabpanel" aria-labelledby="t-recv" hidden>
         <div class="qr-wrap" id="recv-qr"></div>
         <div id="accts"></div>
-        <details id="more" hidden><summary>Other accounts in this wallet</summary><div id="accts-more"></div></details>
+        <details id="more" hidden><summary>Other accounts</summary><div id="accts-more"></div></details>
       </div>
-      <div id="p-send" class="panel" hidden>
+      <div id="p-send" class="panel" role="tabpanel" aria-labelledby="t-send" hidden>
       <form id="f-send" autocomplete="off">
         <label for="from" id="l-from">From</label>
         <select id="from"></select>
@@ -257,12 +286,12 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
       </div>
 
       </div>
+      <section class="panel" id="p-hist" role="tabpanel" aria-labelledby="t-act">
+        <h2 id="h-hist" class="vh">Activity</h2>
+        <div id="hist" aria-label="Activity"><p class="note">Loading…</p></div>
+      </section>
+      <div id="tok-panels"></div>   <!-- other tokens' Send / Receive / Activity (LEZ: filled by /lns/lns.js) -->
     </div>
-  </section>
-
-  <section class="card" id="p-hist" aria-labelledby="h-hist" hidden>
-    <h2 id="h-hist">Activity</h2>
-    <div id="hist" aria-label="Activity"><p class="note">Loading…</p></div>
   </section>
 
   </div>
@@ -402,6 +431,14 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
     </section>
 
 
+    <section class="card" id="s-look" aria-labelledby="h-s-look">
+      <h2 id="h-s-look">Appearance</h2>
+      <div class="seg" role="radiogroup" aria-labelledby="h-s-look">
+        <label><input type="radio" name="theme" id="th-system" value="system"> System</label>
+        <label><input type="radio" name="theme" id="th-light" value="light"> Light</label>
+        <label><input type="radio" name="theme" id="th-dark" value="dark"> Dark</label>
+      </div>
+    </section>
     <section class="card" id="s-about" aria-labelledby="h-s-about">
       <h2 id="h-s-about">About</h2>
       <p style="margin:0">Version <b id="about-version">-</b>.</p>
@@ -475,19 +512,60 @@ async function api(path, body) {
   } catch (e) { return { ok: false, status: 0, data: { error: "The app on this device isn't answering." } }; }
 }
 function setToken(t) { token = t; try { t ? sessionStorage.setItem("session", t) : sessionStorage.removeItem("session"); } catch (e) {} }
-function openPanel(which) {   // "send", "recv" or null: one open at a time; a send in progress is kept while closed
-  for (const [t, p, name] of [["t-send", "p-send", "send"], ["t-recv", "p-recv", "recv"]]) {
-    const on = which === name; $(p).hidden = !on; $(t).setAttribute("aria-expanded", String(on));
-  }
-  if (which === "hist") { loadHistory(); $("p-hist").scrollIntoView({ block: "start" }); }
-  if (which === "recv") drawRecvQr();
+// ---- the Wallet: a list of tokens, then Send / Receive / Activity for the one picked ----------------------------
+// TOKENS is the list, in order. Logos is the wallet's own (the rows and panels in the page); another token (LEZ, from
+// /lns/lns.js) is added with walletToken({id, name, net, initials, panels: {send, recv, hist}, onShow}). A token's
+// panels are ids of elements it puts in #tok-panels; the tabs show the picked token's one. A token added later
+// defaults to an initials badge.
+const TOKENS = [{ id: "logos", name: "Logos", row: $("tok-logos"), panels: { send: "p-send", recv: "p-recv", hist: "p-hist" },
+  onShow: tab => { if ($("v-open").hidden) return; if (tab === "recv") drawRecvQr(); if (tab === "hist") loadHistory(); } }];   // nothing is asked while locked
+let tokSel = "logos", wTab = "hist";
+function walletToken(t) {
+  let have = TOKENS.find(x => x.id === t.id);
+  if (!have) {
+    const b = document.createElement("button"); b.type = "button"; b.className = "tok"; b.id = "tok-" + t.id;
+    b.setAttribute("role", "radio"); b.setAttribute("aria-checked", "false");
+    b.innerHTML = '<span class="tok-ic" aria-hidden="true"></span><span class="tok-t"><b></b><small></small></span><span class="tok-amt"></span>';
+    b.addEventListener("click", () => { const x = TOKENS.find(y => y.id === t.id); if (x && x.pick) x.pick(); else walletPick(t.id); });
+    $("tokens").append(b);
+    have = Object.assign({ row: b }, t); TOKENS.push(have);
+  } else Object.assign(have, t);
+  have.row.querySelector(".tok-ic").textContent = have.initials || have.name.slice(0, 3).toUpperCase();
+  have.row.querySelector("b").textContent = have.name; have.row.querySelector("small").textContent = have.net || "";
+  return have.row;
 }
-$("t-send").addEventListener("click", () => openPanel($("p-send").hidden ? "send" : null));
-$("t-recv").addEventListener("click", () => openPanel($("p-recv").hidden ? "recv" : null));
+function walletTokenGone(id) {
+  const i = TOKENS.findIndex(x => x.id === id); if (i < 1) return;
+  TOKENS[i].row.remove(); TOKENS.splice(i, 1);
+  if (tokSel === id) walletPick("logos"); else walletShow();
+}
+/** Picks a token (its row marked), and optionally a tab: "send", "recv" or "hist". */
+function walletPick(id, tab) {
+  if (TOKENS.find(x => x.id === id)) tokSel = id;
+  if (tab) wTab = tab;
+  walletShow();
+}
+function walletShow() {
+  const t = TOKENS.find(x => x.id === tokSel) || TOKENS[0];
+  for (const x of TOKENS) {
+    x.row.setAttribute("aria-checked", String(x === t));
+    for (const k of ["send", "recv", "hist"]) { const p = x.panels && $(x.panels[k]); if (p) p.hidden = !(x === t && k === wTab); }
+  }
+  for (const [b, k] of [["t-send", "send"], ["t-recv", "recv"], ["t-act", "hist"]]) {
+    $(b).setAttribute("aria-selected", String(k === wTab)); $(b).setAttribute("aria-controls", (t.panels && t.panels[k]) || "");
+  }
+  document.querySelector(".wtabs").setAttribute("aria-label", t.name);
+  if (t.onShow) t.onShow(wTab);
+}
+$("tok-logos").addEventListener("click", () => walletPick("logos"));
+$("t-send").addEventListener("click", () => walletPick(tokSel, "send"));
+$("t-recv").addEventListener("click", () => walletPick(tokSel, "recv"));
+$("t-act").addEventListener("click", () => walletPick(tokSel, "hist"));
+/** Logos' tabs, as before: "send", "recv", "hist", or null (Activity). A send in progress is kept meanwhile. */
+function openPanel(which) { walletPick("logos", which || "hist"); }
 function show(view) {
   const wasLocked = !$("lock").hidden;
   for (const v of ["v-loading", "v-setup", "v-locked", "v-open"]) $(v).hidden = v !== view;
-  $("p-hist").hidden = view !== "v-open";
   $("lock").hidden = view !== "v-locked"; document.body.classList.toggle("is-locked", view === "v-locked");
   if (view !== "v-open") {   // nothing about amounts stays on a locked page
     afterUnlock = true; popItems = []; $("pop").hidden = true;
@@ -496,6 +574,7 @@ function show(view) {
     $("bal-total").replaceChildren(phSpan());
     for (const id of ["r-amount", "r-to", "r-from", "r-name", "s-hash"]) $(id).textContent = "";
     openPanel(null);
+    if (window.LNS && window.LNS.home) window.LNS.home(false);   // the LEZ row and panels empty too
   }
   settingsUi();
   if (view === "v-locked" && !wasLocked) lockAppeared();
@@ -622,9 +701,27 @@ const ST_GROUPS = [
     icon: GI('<path d="M12 4v11M7 10.5l5 5 5-5M5 19.5h14"/>') },
   { id: "bk", label: "Backup & restore", sections: ["s-bk", "s-rs"], state: bkState1,
     icon: GI('<rect x="3.5" y="4.5" width="17" height="4.5" rx="1.2"/><path d="M5 9v9.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V9M10 13h4"/>') },
+  { id: "look", label: "Appearance", sections: ["s-look"], state: () => ({ light: "Light", dark: "Dark" })[document.documentElement.dataset.theme] || "System",
+    icon: GI('<circle cx="12" cy="12" r="8.6"/><path d="M12 3.4v17.2" /><path d="M12 3.4a8.6 8.6 0 0 1 0 17.2z" fill="currentColor"/>') },
   { id: "about", label: "About", sections: ["s-about"], state: () => "Version " + (PAGE_VERSION || "-") + " · Testnet",
     icon: GI('<circle cx="12" cy="12" r="8.6"/><path d="M12 11v5.5M12 7.8v.1"/>') },
 ];
+// ---- Settings > Appearance: System (the phone's), Light or Dark, kept on this device; set before the first paint
+// by the script in <head>. The Android app is told the page's background, for its status and navigation bars.
+const themeNow = () => document.documentElement.dataset.theme || "system";
+function themeUi() {
+  for (const v of ["system", "light", "dark"]) $("th-" + v).checked = themeNow() === v;
+  try { if (window.LogosAndroid && typeof window.LogosAndroid.setTheme === "function") window.LogosAndroid.setTheme(getComputedStyle(document.body).backgroundColor); } catch (e) {}
+  if (!$("page-settings").hidden) stRows();
+}
+function themeSet(v) {
+  if (v === "light" || v === "dark") document.documentElement.dataset.theme = v; else delete document.documentElement.dataset.theme;
+  try { if (v === "light" || v === "dark") localStorage.setItem("theme", v); else localStorage.removeItem("theme"); } catch (e) {}
+  themeUi();
+}
+for (const v of ["system", "light", "dark"]) $("th-" + v).addEventListener("change", () => themeSet(v));
+try { matchMedia("(prefers-color-scheme: dark)").addEventListener("change", themeUi); } catch (e) {}
+themeUi();
 // one short line of where each group stands; [text, "warn"] for something to look at
 function nodeState1() {
   const w = $("pill").textContent.trim();
@@ -833,10 +930,12 @@ window.logosScanned = text => { const h = scanHandler; scanHandler = null; if (h
 // no message: the scan was cancelled (Cancel, Back, or no to the camera question), so nothing to say
 window.logosScanFailed = msg => { const h = scanHandler; scanHandler = null; if (h && typeof msg === "string" && msg) h.fail(msg.slice(0, 200)); };
 const SCAN_BAD = "That code isn't a wallet address or a messaging address.";
-/** What a scanned code holds: { kind: "wallet" | "msg", value: 64 hex } or { error }. */
+/** What a scanned code holds: { kind: "wallet" | "msg", value: 64 hex }, { kind: "lez", value: "Public/<id>" } or { error }. */
 function parseScan(text) {
   if (typeof text !== "string" || text.length > 200) return { error: SCAN_BAD };
-  const t = text.trim().toLowerCase();
+  const raw = text.trim();
+  if (/^Public\/[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(raw)) return { kind: "lez", value: raw };    // base58: case kept
+  const t = raw.toLowerCase();
   let m;
   if ((m = /^msg:([0-9a-f]{64})$/.exec(t))) return { kind: "msg", value: m[1] };
   if (/^[0-9a-f]{64}$/.test(t)) return { kind: "wallet", value: t };
@@ -854,6 +953,11 @@ $("b-scan").addEventListener("click", () => {
         const go = window.logosOpenNewChat ? Object.assign(document.createElement("button"), { type: "button", className: "small", textContent: "Open New chat" }) : null;
         if (go) go.addEventListener("click", () => window.logosOpenNewChat("msg:" + p.value));
         return say("bad", "That's a messaging address, for messages. Coins can't be sent to it. Ask them for their wallet address, or write to them in New chat. ", ...(go ? [go] : []));
+      }
+      if (p.kind === "lez") {
+        const go = window.LNS && window.LNS.sendTo ? Object.assign(document.createElement("button"), { type: "button", className: "small", textContent: "Send LEZ" }) : null;
+        if (go) go.addEventListener("click", () => window.LNS.sendTo(p.value));
+        return say("bad", "That's a LEZ account. ", ...(go ? [go] : [Object.assign(document.createElement("span"), { textContent: "This wallet sends Logos." })]));
       }
       $("to").value = p.value; $("to").focus();                       // only fills the box; Review checks it as typed
     },
@@ -878,12 +982,13 @@ nodeIcon();
 $("node-ic").addEventListener("click", () => openSettings("s-nodec"));
 // the balance stays on one line: from 34 px the font gets smaller until it fits the card (18 px for any
 // amount the node can hold, a u64; smaller only past that)
-function fitHero() {
-  const e = $("bal-total"); if (!e || e.offsetParent === null) return;      // hidden: done when it shows
+function fitAmt(e) {       // a token's amount stays on one line: the font gets smaller until it fits its row
+  if (!e || e.offsetParent === null) return;      // hidden: done when it shows
   e.style.fontSize = "";
   let px = parseFloat(getComputedStyle(e).fontSize);
-  while (e.scrollWidth > e.clientWidth && px > 12) { px -= px > 18 ? 1 : 0.5; e.style.fontSize = px + "px"; }
+  while (e.scrollWidth > e.clientWidth && px > 11) { px -= px > 18 ? 1 : 0.5; e.style.fontSize = px + "px"; }
 }
+function fitHero() { for (const e of document.querySelectorAll(".tok-amt")) fitAmt(e); }
 // again when the amount changes, and when the card's width changes or it shows (another tab, Settings)
 new MutationObserver(fitHero).observe($("bal-total"), { childList: true, characterData: true, subtree: true });
 let heroW = -1;
@@ -1054,14 +1159,13 @@ async function loadWallet() {
   show("v-open"); loadAccounts(); loadHistory();
   if (afterUnlock) checkReceipts();
 }
-function acctNode(a) {
+function acctNode(a) {   // Receive: the account's name, its address in full, Copy (no balance)
   const d = document.createElement("div"); d.className = "acct";
   const top = document.createElement("div"); top.className = "top";
   const name = document.createElement("span"); name.className = "name"; name.textContent = a.label;
-  const bal = document.createElement("span"); bal.className = "bal"; if (a.balance == null) { bal.append(phSpan()); } else if (balHidden) { bal.append(MASK); } else { const u = document.createElement("span"); u.className = "unit"; u.textContent = UNIT; bal.append(fmt(a.balance), u); }
-  top.append(name, bal);
+  top.append(name);
   const addr = document.createElement("div"); addr.className = "addr";
-  const code = document.createElement("code"); code.textContent = short(a.key); code.title = a.key;
+  const code = document.createElement("code"); code.textContent = a.key; code.title = a.key;
   const btn = document.createElement("button"); btn.type = "button"; btn.className = "small"; btn.textContent = "Copy address";
   btn.addEventListener("click", async () => {
     try { await navigator.clipboard.writeText(a.key); btn.textContent = "Copied"; }
@@ -1093,6 +1197,7 @@ async function loadAccounts() {
   if (keep) sel.value = keep;
   const one = main.length <= 1; sel.hidden = one; $("l-from").hidden = one;
   drawRecvQr();
+  if (window.LNS && window.LNS.home) window.LNS.home(true);     // the LEZ row refreshes with the wallet
 }
 
 $("v-setup").addEventListener("submit", async e => {
@@ -1339,7 +1444,7 @@ async function checkReceipts() {
   $("pop").hidden = false; $("pop-ok").focus();
   loadAccounts(); loadHistory();
 }
-$("pop-ok").addEventListener("click", () => { $("pop").hidden = true; popItems = []; openPanel(null); $("p-hist").scrollIntoView({ block: "start" }); });
+$("pop-ok").addEventListener("click", () => { $("pop").hidden = true; popItems = []; openPanel("hist"); $("p-hist").scrollIntoView({ block: "start" }); });
 
 
 tickStatus(); setInterval(tickStatus, 5000);
