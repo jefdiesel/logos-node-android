@@ -719,7 +719,11 @@ export const REVIEW3 = {
       for (let i = 0; i < 4; i++) await settle(bus, 1);
       bus.down.clear();
       const inv = V.engine.listInvites()[0];
-      await V.engine.acceptInvite(inv.id);
+      // review 4 S4: the first accept checks the claim and refuses (NOT_VERIFIED); the invitation stays
+      const first = await code(V.engine.acceptInvite(inv.id));
+      const after = V.engine.listInvites()[0];
+      check("accepting a false claim: NOT_VERIFIED, the invitation now shows the unverified address", first === "NOT_VERIFIED" && after?.id === inv.id && !after.verified && !after.unchecked && after.from !== "alice" && !Object.keys(V.engine.data.joins).length, first);
+      await V.engine.acceptInvite(inv.id); // the user accepts again, knowingly
       await settle(bus);
       const g = V.engine.listGroups().find((x) => x.id === gx);
       check("an unchecked invitation from a false alice stays an unverified address after the check", g && g.admin !== "alice" && g.adminVerified === false);
@@ -889,3 +893,6 @@ export const REVIEW3 = {
     }
   },
 };
+
+// shared with review4.mjs
+export { Bus, client, settle, group, seal, freeKey, of, msgs, gt, epoch, stateOf, framesFrom, controlsTo, bodyOf, badKp, lastKpRequest, forged, isCommit, code, hex, unhex, rand, te, MIN, HOUR, DAY };
