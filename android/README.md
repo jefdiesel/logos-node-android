@@ -218,13 +218,19 @@ checks the APK's copy byte for byte. The screen shows the variant under "Node bi
 
 - **The patched node** applies `native/patches/` to the official 0.3.4 source;
   `native/patches/README.md` is the full description. At each start it replays the stored blocks
-  after its last final block. When the replay marker `state/db.replay-verified` says this same
-  build already verified this same database in full, it skips the two zero-knowledge proof checks
-  for those blocks: about 15 s instead of 26 s per 1,000 blocks on a Pixel 8. Everything else is
-  still checked: decoding, signatures, parent links, and the full ledger transition.
-- **What fast mode trusts:** that nobody but this node wrote to its database since the marker was
-  written. Without a matching marker (first start, new build, other database) it replays in full,
-  as the official node does, then writes the marker.
+  after its last final block.
+  - **The marker.** `state/db.replay-verified` holds the build id and the tip and final block that
+    this build has verified. The running node rewrites it at most every 5 s, so its content changes
+    all the time.
+  - **What replays fast:** the vouched tip and its ancestors skip the two zero-knowledge proof
+    checks, about 15 s instead of 26 s per 1,000 blocks on a Pixel 8. Blocks stored after the
+    vouched tip, or on another branch, are verified in full, so one start can be mixed. The screen
+    shows "Replayed N blocks: X fast, Y in full".
+  - **What is still checked on every block:** decoding, signatures, parent links, and the full
+    ledger transition.
+- **What fast mode trusts:** that nobody but this node wrote the marker or the database's final
+  state. Without a marker from this build that matches the stored final block (first start, new
+  build, other database), it replays in full, as the official node does, then writes the marker.
 - **Imports and swaps never carry a marker over.** A snapshot import, going back to the previous
   state, and recovery from an interrupted swap all delete the marker of the state put in place.
   The snapshot reader also drops any `db.replay-verified` found inside a tar. So the first start
