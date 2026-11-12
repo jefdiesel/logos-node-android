@@ -41,7 +41,8 @@ ws.addEventListener("message", (e) => {
   const m = JSON.parse(e.data);
   if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
   if (m.method === "Runtime.exceptionThrown") errors.push(m.params.exceptionDetails.exception?.description || m.params.exceptionDetails.text);
-  if (m.method === "Log.entryAdded" && m.params.entry.level === "error") errors.push(m.params.entry.text);
+  // (a wrong PIN, tried on purpose, answers 401: the browser logs that, and it is no page error)
+  if (m.method === "Log.entryAdded" && m.params.entry.level === "error" && !(m.params.entry.source === "network" && /\/api\/wallet\/unlock$/.test(m.params.entry.url || "") && / 401 /.test(m.params.entry.text))) errors.push(m.params.entry.text);
 });
 const cdp = (method, params = {}) => new Promise((ok) => { const id = ++seq; waiting.set(id, ok); ws.send(JSON.stringify({ id, method, params })); });
 await cdp("Runtime.enable"); await cdp("Log.enable"); await cdp("Page.enable");
@@ -88,9 +89,21 @@ async function load() {
   await cdp("Page.navigate", { url: A.base + "/" });
   await waitFor("the page loads", `!!document.getElementById("nav-msg")`);
 }
+// the PIN goes in on the page's own keypad, as a person taps it; it must never sit in a field or the page's text
+const tapPin = (pin) => js(`(() => { const ks = [...document.querySelectorAll("#keypad button")]; for (const d of ${JSON.stringify(pin)}) ks.find(b => b.textContent === d).click(); return true; })()`);
+const pinNowhere = async (pin, where) => check(`${where}: the PIN is in no field and nowhere in the page`,
+  await js(`![...document.querySelectorAll("input, textarea")].some(i => i.value.includes(${JSON.stringify(pin)})) && !(() => { const c = document.documentElement.cloneNode(true); c.querySelectorAll("script").forEach(x => x.remove()); return c.outerHTML; })().includes(${JSON.stringify(pin)})`));
+async function enterPin(pin, where) {
+  await waitFor("the keypad shows", `!document.getElementById("lk-pad").hidden && !document.getElementById("lock").hidden`);
+  await tapPin(pin);
+  check(`${where}: one dot per digit`, await js(`document.querySelectorAll("#pin-dots span").length`) === pin.length);
+  await pinNowhere(pin, where);
+  await click("#b-pin");
+}
 async function unlock() {
-  await waitFor("the PIN form shows", `!document.getElementById("v-locked").hidden`);
-  await js(`document.getElementById("pin").value = ${JSON.stringify(A.pin)}; document.getElementById("v-locked").requestSubmit(); true`);
+  await waitFor("the lock screen shows", `!document.getElementById("v-locked").hidden`);
+  if (await js(`document.getElementById("lk-pad").hidden`)) await click("#b-enter-pin");
+  await enterPin(A.pin, "unlocking");
   await waitFor("the wallet opens", `!document.getElementById("v-open").hidden`);
   A.session = await js("token");          // one session at a time: share the page's
 }
@@ -98,9 +111,19 @@ async function unlock() {
 // ---- locked, then messages not turned on ----
 await load();
 await waitFor("locked: one lock screen and nothing else", `!document.getElementById("lock").hidden && getComputedStyle(document.getElementById("nav")).display === "none" && getComputedStyle(document.getElementById("page-main")).display === "none"`);
-check("without fingerprint the PIN field has the focus", await js(`document.activeElement && document.activeElement.id === "pin"`));
+check("without fingerprint the keypad shows at once, and no text field", await js(`!document.getElementById("lk-pad").hidden && !document.querySelector("#lock input") && document.querySelectorAll("#keypad button").length >= 11`));
+check("keypad keys are at least 56 px", await js(`[...document.querySelectorAll("#keypad button")].filter(b => !b.hidden).every(b => { const r = b.getBoundingClientRect(); return r.width >= 56 && r.height >= 56; })`));
 await shot("locked");
 await noOldHeader("the lock screen");
+// a physical keyboard: digits, Backspace, Enter; a wrong PIN shakes, clears and says so
+const pressKey = (k) => js(`dispatchEvent(new KeyboardEvent("keydown", { key: ${JSON.stringify(k)}, bubbles: true })); true`);
+for (const k of "9753184") await pressKey(k);
+await pressKey("Backspace");
+check("typed on a keyboard, with Backspace: six dots", await js(`document.querySelectorAll("#pin-dots span").length`) === 6);
+await pressKey("Enter");
+await waitFor("a wrong PIN: cleared, with the app's message", `document.querySelectorAll("#pin-dots span").length === 0 && document.getElementById("m-locked").textContent.length > 0`);
+check("the wrong PIN went nowhere in the page", await js(`!(() => { const c = document.documentElement.cloneNode(true); c.querySelectorAll("script").forEach(x => x.remove()); return c.outerHTML; })().includes("975318")`));
+await shot("locked-wrong-pin");
 await unlock();
 check("the bar shows Wallet and Messages", (await text("#nav")).includes("Wallet") && (await text("#nav")).includes("Messages"));
 // the wallet home: the header is the λ, Wallet, the node's icon and the gear; then the balance, Send and Receive
@@ -128,13 +151,27 @@ for (const width of [360, 412]) {
                oneLine: Math.abs(u.top - r.top) < parseFloat(getComputedStyle(e).fontSize) && r.height < parseFloat(getComputedStyle(e).fontSize) * 1.6,
                pageFits: document.documentElement.scrollWidth <= innerWidth }; })()`);
     console.log(`     ${width} px, ${want}: ${m.px} px`);
-    check(`${width} px, ${want}: one line, inside the card, no sideways scroll, 18 to 34 px`, m.fits && m.inCard && m.oneLine && m.pageFits && m.px >= 18 && m.px <= 34, m);
+    // 18 px or more up to 100 billion; the largest u64 (20 digits) may go to 14 px (fonts differ: 18 px on macOS, 16 on CI's Linux)
+    const floor = n.length >= 20 ? 14 : 18;
+    check(`${width} px, ${want}: one line, inside the card, no sideways scroll, ${floor} to 34 px`, m.fits && m.inCard && m.oneLine && m.pageFits && m.px >= floor && m.px <= 34, m);
     if (width === 360 && n === "18446744073709551615") await shot("wallet-home-big-balance");
   }
 }
 await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
 await setBal(null, 12500); await js(`loadAccounts(); true`);
 await waitFor("back to the usual balance", `/75,000/.test(document.getElementById("bal-total").textContent)`);
+// the eye beside the balance hides the amounts on the home screen, and the choice stays on this device
+check("the balance shows by default, with a Hide balance eye", await js(`document.getElementById("b-eye").getAttribute("aria-label") === "Hide balance"`));
+await click("#b-eye");
+await waitFor("hidden: dots instead of the balance", `document.getElementById("bal-total").textContent === "••••••" && document.getElementById("b-eye").getAttribute("aria-label") === "Show balance"`);
+await js(`openPanel("recv"); true`);
+await waitFor("and no amounts anywhere on the home screen (Receive, Activity)", `!!document.querySelector("#accts .bal") && !/[0-9] Logos/.test(document.getElementById("page-main").innerText)`);
+check("remembered on this device", await js(`localStorage.getItem("balance-hidden") === "1"`));
+await js(`openPanel(null); true`);
+await shot("wallet-home-hidden");
+await bigTargets("the wallet home");
+await click("#b-eye");
+await waitFor("shown again", `/75,000/.test(document.getElementById("bal-total").textContent) && document.getElementById("b-eye").getAttribute("aria-label") === "Hide balance" && localStorage.getItem("balance-hidden") === null`);
 await noOldHeader("the wallet home");
 await click("#t-recv");
 await waitFor("Receive shows the address with Copy", `!document.getElementById("p-recv").hidden && document.getElementById("p-recv").innerText.includes("Copy address")`);
@@ -401,10 +438,12 @@ await cdp("Page.navigate", { url: E.base + "/" });
 await waitFor("the lock screen", `!!document.getElementById("lock") && !document.getElementById("lock").hidden`);
 await sleep(600);
 check("the fingerprint check comes up by itself, once", await js(`window.__fp`) === 1);
+check("while it is up: the splash, only the mark and Enter PIN; no PIN box", await js(`!document.getElementById("lk-splash").hidden && document.getElementById("lk-pad").hidden && document.getElementById("b-fp").hidden && !document.getElementById("b-enter-pin").hidden && !document.querySelector("#lock input")`));
 await shot("locked-android");
 await noOldHeader("the Android lock screen");
 await js(`window.logosNativeUnlockFailed(); true`);
-check("after a cancel the PIN field has the focus", await js(`document.activeElement.id === "pin"`));
+check("after a cancel: still the splash, with Enter PIN and Use fingerprint", await js(`!document.getElementById("lk-splash").hidden && !document.getElementById("b-fp").hidden && !document.getElementById("b-enter-pin").hidden && document.getElementById("lk-pad").hidden`));
+await shot("locked-android-cancelled");
 await sleep(1000);
 check("and it doesn't come up again by itself", await js(`window.__fp`) === 1);
 const vis = (state) => js(`Object.defineProperty(document, "visibilityState", { configurable: true, get: () => ${JSON.stringify(state)} }); document.dispatchEvent(new Event("visibilitychange")); true`);
@@ -412,7 +451,10 @@ await vis("hidden"); await sleep(300); await vis("visible"); await sleep(300);
 check("not even after a moment hidden (the phone's own dialog)", await js(`window.__fp`) === 1);
 await js(`document.getElementById("b-fp").click(); true`);
 check("Use fingerprint asks again", await js(`window.__fp`) === 2);
-await js(`document.getElementById("pin").value = ${JSON.stringify(E.pin)}; document.getElementById("v-locked").requestSubmit(); true`);
+await click("#b-enter-pin");
+check("Enter PIN: the keypad at once, with a fingerprint key", await js(`!document.getElementById("lk-pad").hidden && !!document.getElementById("k-fp")`));
+await shot("locked-android-keypad");
+await enterPin(E.pin, "unlocking in the Android app");
 await waitFor("unlocked with the PIN", `!document.getElementById("v-open").hidden`);
 E.session = await js("token");
 await click("#nav-msg");
@@ -427,7 +469,8 @@ const behind = await js(`document.body.innerText`);
 check("nothing behind the lock screen: no chats, names, balances", !/bob|hi erin|erin/.test(behind) && (await js(`document.querySelectorAll(".crow, .bub, .acct, .ov").length`)) === 0, behind.slice(0, 300));
 await vis("hidden"); await sleep(2800); await vis("visible"); await sleep(400);
 check("coming back to the app later: it comes up again", await js(`window.__fp`) === 4);
-await js(`document.getElementById("pin").value = ${JSON.stringify(E.pin)}; document.getElementById("v-locked").requestSubmit(); true`);
+await click("#b-enter-pin");
+await enterPin(E.pin, "unlocking after an auto-lock");
 await waitFor("after unlocking: back in the same chat", `!document.getElementById("page-msg").hidden && !!document.querySelector(".ov .cmp") && document.querySelector(".ov .ov-top").innerText.includes("bob")`, 15000);
 await js(`history.back(); true`);
 await click("#nav-wallet");
@@ -435,7 +478,7 @@ await js(`document.getElementById("b-lock").click(); true`);
 await waitFor("locked by hand", `!document.getElementById("lock").hidden`);
 await sleep(600);
 check("after the user's own Lock, no prompt by itself", await js(`window.__fp`) === 4);
-check("both options are there", await js(`!document.getElementById("b-fp").hidden && !!document.getElementById("pin")`));
+check("both options are there", await js(`!document.getElementById("b-fp").hidden && !document.getElementById("b-enter-pin").hidden`));
 ws.close(); stopAll();
 console.log("all checks passed" + (SHOTS ? ` (screenshots in ${SHOTS})` : ""));
 process.exit(0);

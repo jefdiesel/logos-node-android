@@ -33,7 +33,11 @@ this: it keeps running and is never restarted by an update.
   bar at the bottom steps aside while you type; clearer people icons; every button is at least 44 px. The
   backup texts say what a backup holds once Messages is on, and Messages asks for a new backup when the
   last one was made before Messages was turned on.
-- 0.9.5: the balance is a normal size and always fits on one line (the font gets smaller for long
+- 0.9.5: the lock screen is a splash with the λ and **Enter PIN**; with fingerprint unlock on, the phone's
+  fingerprint prompt comes up over it by itself, and after a cancel the splash offers **Enter PIN** and
+  **Use fingerprint**. The PIN is typed on the app's own number keypad (a physical keyboard works too), not
+  in a text box. An eye beside the balance hides the amounts on the home screen, remembered on this
+  device. The balance is a normal size and always fits on one line (the font gets smaller for long
   amounts); message details only say "the network holds it" once it does; a profile no longer says "Not
   verified" for someone you haven't written to yet; linking your name points to the Names app, with the
   terminal command folded away; people icons and every remaining button meet the size and contrast rules;

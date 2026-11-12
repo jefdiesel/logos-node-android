@@ -94,7 +94,8 @@ when you're back. Message details (tap a message) show the state for each recipi
 Taken by `tests/chat_ui.mjs` (headless Chrome at phone width; `SHOTS=<folder>` saves them), light and dark
 in `img/messages/`: `locked`, `locked-android`, `home-no-name`, `my-messaging-address`, `link-your-name`, `new-chat-by-name`,
 `new-chat-by-address`, `list`, `chat`, `chat-address`, `profile`, `profile-address`, `key-changed`,
-`message-details`, `turn-on`, `empty-list`, `messages-home`, `wallet-home`, `wallet-home-starting`,
+`message-details`, `locked-wrong-pin`, `locked-android-cancelled`, `locked-android-keypad`,
+`wallet-home-big-balance`, `wallet-home-hidden`, `turn-on`, `empty-list`, `messages-home`, `wallet-home`, `wallet-home-starting`,
 `wallet-receive`, `wallet-send`, `settings-node`, `settings`,
 `settings-android` (with the Android bridge), and `wallet-header-sync` / `wallet-header-ok` (the page's
 status words set by hand, to show the icons; the test has no running node).
