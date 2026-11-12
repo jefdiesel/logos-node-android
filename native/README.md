@@ -3,12 +3,17 @@
 This builds the official Logos blockchain node (`logos-blockchain-node` from
 [logos-blockchain/logos-blockchain](https://github.com/logos-blockchain/logos-blockchain)) at a
 tagged release, compiled for Android arm64 (`aarch64-linux-android`, API 28) with the Android NDK.
-The node source is used as published: no patches, no fork. The result is one executable that needs
-only the system's `libc.so`, `libm.so` and `libdl.so`.
+It is built twice: once from the node source as published (no patches, no fork), and once with
+the small patches in [`patches/`](patches/README.md) applied (currently one: a fast replay of the
+node's own stored blocks at startup). The result is one executable that needs only the system's
+`libc.so`, `libm.so` and `libdl.so`.
 
 The build runs only in GitHub Actions (`.github/workflows/native-build.yml`). It runs on every
-push that touches `native/**` or that workflow file, and the binary is kept as a workflow
-artifact (`logos-blockchain-node-android-arm64-<version>`). It is not published anywhere else.
+push that touches `native/**` or that workflow file, and the binaries are kept as workflow
+artifacts (`logos-blockchain-node-android-arm64-<version>` unpatched,
+`logos-blockchain-node-android-arm64-<version>-patched` patched). They are not published anywhere
+else. The same workflow runs upstream's tests of the patched crates and a replay benchmark on a
+Linux arm64 runner.
 
 ## How it works
 

@@ -1,0 +1,180 @@
+From: logos-node-android
+Subject: [BENCH PATCH 9001] Timing spans inside the ledger update, for replay profiling only
+
+Applies on top of native/patches/0001. Built only as the Linux "profile" variant to measure
+where replay time goes inside the ledger transition. Never shipped, never on a phone build.
+It adds timing counters around the parent-state clone, the cryptarchia and mantle header
+updates, the seen-block record, the transaction loop and the block accounting, and one more
+summary line at the end of the startup replay.
+
+--- b/ledger/src/lib.rs
++++ c/ledger/src/lib.rs
+@@ -9,8 +9,46 @@
+ pub mod mantle;
+ mod update;
+ 
+-use std::hash::Hash;
++use std::{hash::Hash, time::Instant};
+ 
++/// Bench-only timing counters (logos-node-android bench patch 9001, never shipped).
++pub mod bench_timing {
++    use std::{
++        sync::atomic::{AtomicU64, Ordering},
++        time::Duration,
++    };
++
++    pub static CRYPTARCHIA_HEADER: AtomicU64 = AtomicU64::new(0);
++    pub static MANTLE_HEADER: AtomicU64 = AtomicU64::new(0);
++    pub static SEEN_BLOCK: AtomicU64 = AtomicU64::new(0);
++    pub static TXS: AtomicU64 = AtomicU64::new(0);
++    pub static BLOCK_ACCOUNTING: AtomicU64 = AtomicU64::new(0);
++    pub static POW_DIFFICULTY: AtomicU64 = AtomicU64::new(0);
++    pub static STATE_CLONE: AtomicU64 = AtomicU64::new(0);
++    pub static TX_COUNT: AtomicU64 = AtomicU64::new(0);
++
++    pub fn reset() {
++        for c in [
++            &CRYPTARCHIA_HEADER, &MANTLE_HEADER, &SEEN_BLOCK, &TXS, &BLOCK_ACCOUNTING,
++            &POW_DIFFICULTY, &STATE_CLONE, &TX_COUNT,
++        ] {
++            c.store(0, Ordering::Relaxed);
++        }
++    }
++
++    pub fn add(c: &AtomicU64, d: Duration) {
++        c.fetch_add(u64::try_from(d.as_nanos()).unwrap_or(u64::MAX), Ordering::Relaxed);
++    }
++
++    pub fn secs(c: &AtomicU64) -> f64 {
++        Duration::from_nanos(c.load(Ordering::Relaxed)).as_secs_f64()
++    }
++
++    pub fn count(c: &AtomicU64) -> u64 {
++        c.load(Ordering::Relaxed)
++    }
++}
++
+ pub use config::Config;
+ use cryptarchia::LedgerState as CryptarchiaLedger;
+ pub use cryptarchia::{EpochState, UtxoTree};
+@@ -195,8 +233,10 @@
+             .get(&parent_id)
+             .ok_or(LedgerError::ParentNotFound(parent_id))?;
+ 
++        let started = Instant::now();
++        let parent_state = parent_state.clone();
++        bench_timing::add(&bench_timing::STATE_CLONE, started.elapsed());
+         let (new_state, events, deferred_proofs) = parent_state
+-            .clone()
+             .try_update::<_, _, _, Profile>(id, slot, proof, uncle_slots, txs, &self.config)?;
+ 
+         Ok(PreparedUpdate::new(id, new_state, events, deferred_proofs))
+@@ -267,7 +307,9 @@
+         // block's id is known — unlike a proposer's direct
+         // `try_apply_header` call for a block still being built.
+         let block_hash: BlockHash = block_id.into();
++        let started = Instant::now();
+         state.mantle_ledger.add_seen_block(block_hash, slot, config);
++        bench_timing::add(&bench_timing::SEEN_BLOCK, started.elapsed());
+         // Count the block's transactions into the epoch totals the Blend `PoW`
+         // difficulty is retargeted from, for the same reason as above: only a
+         // block that is actually applied, contents included, belongs in the
+@@ -279,6 +321,8 @@
+                 txs.inspect(|_| txs_in_block = txs_in_block.saturating_add(1)),
+             )?;
+         state.mantle_ledger.pow.record_block_txs(txs_in_block);
++        bench_timing::TX_COUNT.fetch_add(txs_in_block, std::sync::atomic::Ordering::Relaxed);
++        let started = Instant::now();
+         state.update_pow_reward_difficulty(
+             // count all claimed rewards
+             tx_events
+@@ -289,6 +333,7 @@
+                 .count() as u64,
+             config,
+         );
++        bench_timing::add(&bench_timing::POW_DIFFICULTY, started.elapsed());
+         let events = header_events
+             .into_iter()
+             .map(Into::into)
+@@ -312,6 +357,7 @@
+     where
+         LeaderProof: leader_proof::LeaderProof,
+     {
++        let started = Instant::now();
+         let last_epoch_state = self.cryptarchia_ledger.epoch_state().clone();
+         let mut cryptarchia_ledger = self
+             .cryptarchia_ledger
+@@ -326,6 +372,8 @@
+                 &self.mantle_ledger.pow,
+                 config,
+             )?;
++        bench_timing::add(&bench_timing::CRYPTARCHIA_HEADER, started.elapsed());
++        let started = Instant::now();
+         let (mantle_ledger, effect) = self.mantle_ledger.try_apply_header(
+             &last_epoch_state,
+             cryptarchia_ledger.epoch_state(),
+@@ -337,6 +385,7 @@
+         for utxo in effect.reward_utxos {
+             cryptarchia_ledger.utxos = cryptarchia_ledger.utxos.insert(utxo.id(), utxo).0;
+         }
++        bench_timing::add(&bench_timing::MANTLE_HEADER, started.elapsed());
+ 
+         Ok((
+             Self {
+@@ -531,6 +580,7 @@
+         let mut tx_events = Vec::new();
+         let mut deferred_proofs = DeferredProofs::new();
+ 
++        let started = Instant::now();
+         for tx in txs {
+             let (next_state, tx_gas_and_fees, events, deferred) =
+                 self.try_apply_transaction::<_, Id, Profile>(config, &tx)?;
+@@ -539,6 +589,8 @@
+             tx_events.extend(events);
+             deferred_proofs.extend(deferred);
+         }
++        bench_timing::add(&bench_timing::TXS, started.elapsed());
++        let started = Instant::now();
+ 
+         // Compute Block rewards and give tips
+         self = self.compute_block_rewards(
+@@ -551,6 +603,7 @@
+         // Accumulate storage gas consumed so the storage market can update the
+         // price at the next epoch rotation.
+         self = self.add_storage_gas_consumed(gas_and_fees.storage_gas)?;
++        bench_timing::add(&bench_timing::BLOCK_ACCOUNTING, started.elapsed());
+         Ok((self, tx_events, deferred_proofs))
+     }
+ 
+--- b/services/chain/chain-service/src/lib.rs
++++ c/services/chain/chain-service/src/lib.rs
+@@ -1138,6 +1138,7 @@
+             replay.as_str(), replay::REPLAY_VERIFY_ENV,
+         );
+         timing::reset();
++        lb_ledger::bench_timing::reset();
+         info!(
+             target: LOG_TARGET, tip = ?recovery_state.tip, lib = ?recovery_state.lib, lib_height = recovery_state.lib_block_length, genesis = ?recovery_state.genesis_id,
+             "recovering Cryptarchia",
+@@ -1328,6 +1329,21 @@
+         timing::secs(&timing::DECODE),
+         apply_secs - ledger_secs - batch_secs - store_secs,
+     );
++    {
++        use lb_ledger::bench_timing as b;
++        info!(
++            target: LOG_TARGET,
++            "replay ledger profile (bench patch 9001): {} txs; parent state clone {:.2}s, cryptarchia header {:.2}s (incl. leader proofs), mantle header {:.2}s, seen block {:.2}s, txs {:.2}s, block accounting {:.2}s, pow difficulty {:.2}s",
++            b::count(&b::TX_COUNT),
++            b::secs(&b::STATE_CLONE),
++            b::secs(&b::CRYPTARCHIA_HEADER),
++            b::secs(&b::MANTLE_HEADER),
++            b::secs(&b::SEEN_BLOCK),
++            b::secs(&b::TXS),
++            b::secs(&b::BLOCK_ACCOUNTING),
++            b::secs(&b::POW_DIFFICULTY),
++        );
++    }
+     let tip = cryptarchia.tip_branch();
+     let lib = cryptarchia.lib_branch();
+     if let Some(state) = cryptarchia.ledger.state(&tip.id()) {
