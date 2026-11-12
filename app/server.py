@@ -1235,6 +1235,8 @@ def messaging_round():
     code, subs = waku("GET", "/messaging/v1/subscriptions", timeout=6)
     if code == 404:
         with msg_lock:
+            if not msg_state.get("starting"):
+                msg_state["starting_since"] = time.time()
             msg_state.update(starting=True, subscribed=None)
         return
     if code != 200 or not isinstance(subs, list):
@@ -1321,10 +1323,11 @@ def messaging_loop():
             messaging_round()
         except Exception:
             pass
-        # quickly while the node starts or the inbox isn't subscribed: the start-up catch-up (messages sent while
-        # the node was off) takes subscriptions only until 10 s after it finishes
-        waiting = msg_state.get("configured") and msg_state["reachable"] is not False and not msg_state["subscribed"]
-        time.sleep(min(MSG_POLL, 0.5) if waiting else MSG_POLL)
+        # quickly for the first minute while the node starts: its start-up catch-up (messages sent while it was
+        # off) takes subscriptions only until 10 s after it finishes. A node that keeps answering 404 is not
+        # starting any more, and one without a key to subscribe never gets here.
+        starting = msg_state.get("starting") and time.time() - msg_state.get("starting_since", 0) < 60
+        time.sleep(min(MSG_POLL, 0.5) if starting and msg_state["reachable"] is not False else MSG_POLL)
 
 
 def messaging_post(path, body, req):

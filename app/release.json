@@ -38,7 +38,7 @@
   "noble-curves/abstract/oprf.js": "2ca36b3e4930092db1f91559410e86975816c036e248067bc65a8055aa1c504c",
   "noble-curves/ed25519.js": "3bef00ec8466eeb85a4a0d055846aafe4cc1df4bfc09ddfe75758f379fca22f9",
   "noble-curves/utils.js": "ba29ee6d5c0129f0913e0cb11e1c84d09b7e1dd73c55e158cd49b5987bb62a65",
-  "server.py": "9212456aa9211591e2b699a316503b5900ced5745fde2d3518cdc0de7f592048"
+  "server.py": "4616b0617431bca0bf54de5275b23682422aecdf5cc7663c04141f5b2ccac5b7"
  },
  "version": "0.8.1"
 }
