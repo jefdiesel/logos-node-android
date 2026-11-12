@@ -611,6 +611,8 @@ check("the page was hidden behind the scanner for a few seconds: the scan still 
 await js(`document.getElementById("to").value = ${JSON.stringify(otherHex)}; true`);
 await click("#b-scan"); await js(`window.logosScanFailed("The camera is off for this app. Allow it in the phone's settings to scan."); true`);
 check("a scan that didn't work says why", (await scanMsg()).includes("The camera is off for this app") && await toIs() === otherHex);
+await click("#b-scan"); await js(`window.logosScanFailed(); true`);
+check("a cancelled scan (no message): nothing said, nothing filled", await toIs() === otherHex && await js(`document.getElementById("m-scan").hidden`));
 await js(`window.logosScanned(${JSON.stringify(someHex)}); true`);
 check("an answer with no scan open goes nowhere", await toIs() === otherHex);
 await click("#b-scan");
