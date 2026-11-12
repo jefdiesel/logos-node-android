@@ -95,7 +95,30 @@ def node_status():
 # the height of the best tip a peer reported ("tip poll: enqueued peer tip ... height=H").
 
 ANSI_RE = re.compile(rb"\x1b\[[0-9;]*m")
-_sync_memo = {"cadence": None, "threshold": None, "spacing": None, "spacing_at": 0.0}
+_sync_memo = {"cadence": None, "threshold": None, "spacing": None, "spacing_at": 0.0, "peer": None}
+_log_read = {"path": None, "pos": 0}
+_log_lock = threading.Lock()
+
+
+def node_log_new(first=8000000, cap=8000000):
+    """The complete lines the node's newest log gained since the last call, without colour codes. The lines
+    this app needs are rare (the peer tip is written once per catch-up) and scroll away fast while the node
+    syncs, so it reads on from where it stopped rather than looking at the end each time."""
+    try:
+        logs = os.path.join(os.path.dirname(NODE_CFG), "logs")
+        newest = max((os.path.join(logs, f) for f in os.listdir(logs)), key=os.path.getmtime)
+        size = os.path.getsize(newest)
+        if newest != _log_read["path"] or size < _log_read["pos"]:      # a new or rotated file
+            _log_read["path"], _log_read["pos"] = newest, max(0, size - first)
+        start = max(_log_read["pos"], size - cap)
+        with open(newest, "rb") as f:
+            f.seek(start)
+            data = f.read(size - start)
+        end = data.rfind(b"\n") + 1                                        # keep a half-written line for next time
+        _log_read["pos"] = start + end
+        return ANSI_RE.sub(b"", data[:end])
+    except Exception:
+        return b""
 
 
 def node_log_tail(size=400000):
@@ -121,13 +144,14 @@ def sync_facts(c):
     """What the node's log and headers add to /cryptarchia/info `c`: the node's own expected block interval
     and lag threshold in slots, the block spacing measured over its last irreversible stretch, and the
     best tip height a peer reported (with when)."""
-    text = node_log_tail()
-    m = re.findall(rb"cadence_slots\W{0,4}(\d+)\W{1,8}lag_threshold_slots\W{0,4}(\d+)", text)
-    if m:
-        _sync_memo["cadence"], _sync_memo["threshold"] = int(m[-1][0]), int(m[-1][1])
-    peer = None
-    for stamp, height in re.findall(rb"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)\S*\s+\w+\s+\S+\s+tip poll: enqueued peer tip[^\n]*? height=(\d+)", text)[-1:]:
-        peer = {"height": int(height), "at": log_time(stamp)}
+    with _log_lock:
+        text = node_log_new()
+        m = re.findall(rb"cadence_slots\W{0,4}(\d+)\W{1,8}lag_threshold_slots\W{0,4}(\d+)", text)
+        if m:
+            _sync_memo["cadence"], _sync_memo["threshold"] = int(m[-1][0]), int(m[-1][1])
+        for stamp, height in re.findall(rb"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)\S*\s+\w+\s+\S+\s+tip poll: enqueued peer tip[^\n]*? height=(\d+)", text)[-1:]:
+            _sync_memo["peer"] = {"height": int(height), "at": log_time(stamp)}
+        peer = _sync_memo["peer"]
     tip_slot, lib_slot = c.get("slot") or 0, c.get("lib_slot") or 0
     if lib_slot and tip_slot > lib_slot and time.time() - _sync_memo["spacing_at"] > 60:
         code, ids = node("/cryptarchia/headers?from=%s&to=%s" % (c.get("tip"), c.get("lib")), timeout=5)

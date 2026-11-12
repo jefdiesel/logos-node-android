@@ -88,4 +88,27 @@ text = server.ANSI_RE.sub(b"", b"2026-11-12T13:20:01.1Z  INFO logos_blockchain::
 check("the node's interval and threshold are read from its start-up line",
       re.findall(rb"cadence_slots\W{0,4}(\d+)\W{1,8}lag_threshold_slots\W{0,4}(\d+)", text) == [(b"30", b"90")])
 check("log times are UTC", server.log_time(b"2026-11-12T13:21:31") == NOW - 9)
+# the peer's tip is written once per catch-up and scrolls out of the log fast: the app must keep it
+import tempfile
+d = tempfile.mkdtemp(); os.makedirs(os.path.join(d, "logs"))
+server.NODE_CFG = os.path.join(d, "user_config.yaml")
+log = os.path.join(d, "logs", "node.log")
+with open(log, "wb") as f:
+    f.write(b"2026-11-12T13:20:01.1Z  INFO logos_blockchain::chain::network: Tip-poll lag watchdog enabled cadence_slots=30 lag_threshold_slots=90\n")
+    f.write(b"2026-11-12T13:21:31.050452Z  INFO logos_blockchain::chain::network: tip poll: enqueued peer tip for catch-up tip=HeaderId(62793a79) height=84471 local_height=0\n")
+facts = server.sync_facts({"slot": 80287, "lib_slot": 0})
+check("the peer's tip and the node's interval are read from its log", facts["peer"] == {"height": 84471, "at": NOW - 9}
+      and facts["cadence_slots"] == 30 and facts["threshold_slots"] == 90, facts)
+with open(log, "ab") as f:                     # the node keeps logging while it catches up: 2 MB of other lines
+    for i in range(20000):
+        f.write(b"2026-11-12T13:22:%02d.0Z  INFO logos_blockchain::chain::service: applied block %08d with a fairly long log line\n" % (i % 60, i))
+    f.write(b"2026-11-12T13:22:59.0Z  INFO logos_blockchain::chain::serv")      # a line still being written
+facts = server.sync_facts({"slot": 90000, "lib_slot": 0})
+check("both are kept after they have scrolled far out of the log's end", facts["peer"] == {"height": 84471, "at": NOW - 9}
+      and facts["cadence_slots"] == 30, facts)
+with open(log, "ab") as f:
+    f.write(b"ice: tip poll: enqueued peer tip for catch-up tip=HeaderId(ab) height=99999 local_height=0\n")
+    f.write(b"2026-11-12T13:23:10.0Z  INFO logos_blockchain::chain::network: tip poll: enqueued peer tip for catch-up tip=HeaderId(cd) height=84600 local_height=40000\n")
+facts = server.sync_facts({"slot": 90000, "lib_slot": 0})
+check("a line written in two parts is read whole, and the newest report wins", facts["peer"]["height"] == 84600, facts)
 print("all checks passed")
