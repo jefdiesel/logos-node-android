@@ -9,8 +9,10 @@ app and its page are exactly as before.
 - **Messages** in the bar at the bottom of the page. It locks with the wallet: the same PIN or fingerprint
   opens both, and auto-lock closes both.
 - **Turn on messages** makes this phone's messaging identity. Nothing key-like is shown on the everyday
-  screens. Settings (the gear) has a Messages page, the same one the gear on Messages opens: your name and
-  whether it's linked to this phone, the folded step that links it, and your messaging address (Show / Copy).
+  screens. Settings (the gear) has a Messages page, the same one the gear on Messages opens. It is a short
+  list: **Name** (your LNS name and whether it's linked to this phone, with the folded step that links it)
+  and **Address** (your messaging address: Show, with its QR code, and Copy). Each opens its own page; Back
+  goes to the list, then to where you opened it.
 - The Messages screen has its own top: the title, **+** (New chat) and the gear; no node header there. Under
   the title, one small grey line only when the messaging node isn't fine: "Connecting…" or "Offline"
   (inside the Android app with a button to open the node). The Wallet / Messages bar steps aside while a

@@ -696,6 +696,7 @@ try { if (history.state && history.state.st) history.replaceState(null, ""); } c
 try { history.scrollRestoration = "manual"; } catch (e) {}      // each level starts at its top; the browser doesn't move it
 function stUp() { if (stLevel !== "home" && !stDeep) { stShow("home"); window.scrollTo(0, 0); } else closeSettings(); }
 function settingsBack() {
+  if (typeof window.stSubBack === "function" && window.stSubBack()) return;    // a page inside a group (Messages) goes up first
   if (history.state && history.state.st) { stIgnore++; history.back(); }
   stUp();
 }
