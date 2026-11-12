@@ -26,7 +26,25 @@ reached Online replayed 17,211 blocks in about 12.5 minutes, and an earlier one 
 
 ### Where the time goes
 
-MEASUREMENT_PLACEHOLDER
+Measured on one testnet database with 1,000 blocks (9,878 transactions) after its LIB. Times are
+from "found 1000 stored blocks to replay" to "1000 blocks replayed", using timing spans added to
+the replay (full verification, i.e. what 0.3.4 does):
+
+| Part | Linux arm64 (3 CPUs) | Pixel 8 |
+|---|---|---|
+| leader proofs (Groth16) | 1.2 s (10%) | 3.1 s |
+| deferred transaction proofs (`verify_batch_proofs`) | 4.7 s (40%) | 12.7 s |
+| transaction execution in `try_apply_block_contents` | 5.7 s (49%) | ~15 s |
+| header update without the proof, state clone, accounting, store | < 0.15 s | ~0.4 s |
+| whole replay | 11.7 s | 26–32 s |
+
+Reading and decoding the 1,000 blocks before the replay took 1.3 s on Linux and 5–19 s on the
+phone (flash reads).
+
+With the two proof checks skipped for blocks replayed from the node's own storage, the replay
+took 5.7 s on Linux (3 runs: 5.74, 5.71, 5.72 s, vs 11.7 s; the official 0.3.4 release took
+11.4–11.9 s) and 15.0 s on the phone (2 runs, vs 26.4 s for 0.3.4). The resulting tip, LIB, UTXO
+roots and epoch nonces were identical in every run.
 
 ### Proposal
 

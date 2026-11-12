@@ -92,9 +92,55 @@ only by a fast replay; that test is the written form of the trust statement abov
 - Delete `<state>/db.replay-verified` to get one full replay on the next start.
 - Or use the unpatched artifact.
 
-### Measurements
+### Measurements (2026-11-12)
 
-See the `replay-bench` job of the native-build workflow (Linux arm64 runner): it syncs a fresh
-testnet node, then times the replay of identical copies of its database with the unpatched node,
-the patched node in full mode and in fast mode. Results are in the run's
-`replay-bench-linux-arm64-<version>` artifact.
+The same testnet database was used for every run, freshly copied each time: 1,000 stored blocks
+after its LIB (heights 81,820 to 82,820). The figures time the startup replay, from the log line
+"found 1000 stored blocks to replay" to "1000 blocks replayed". The load before it (reading and
+decoding the blocks) is listed separately.
+
+**Phone** (Pixel 8, Android build, adb shell user; the app's own node was running alongside):
+
+| Binary | Replay (1,000 blocks) | Load |
+|---|---|---|
+| unpatched | 26.4 s, 26.5 s | 5.1 s, 13.9 s |
+| patched, full (no marker / `LOGOS_REPLAY_VERIFY=full`) | 32.0 s, 31.6 s | 18.8 s, 10.5 s |
+| patched, fast | 15.0 s, 15.0 s | 7.2 s, 13.0 s |
+
+Load time on the phone is mostly flash reads and varies a lot between runs. The patched full
+runs came out about 5 s slower than unpatched on the phone but not on the Linux machine below
+(where they match to within 1%), so that difference is attributed to the phone (run order,
+temperature), not to the patch.
+
+**Linux arm64** (4-core machine, container limited to 3 CPUs, database on tmpfs; unpatched and
+patched built by the same CI job and toolchain, plus the official 0.3.4 release):
+
+| Binary | Replay (1,000 blocks), 3 runs | Load |
+|---|---|---|
+| official 0.3.4 release | 11.88 s, 11.38 s, 11.53 s | 1.3–1.5 s |
+| unpatched (CI build) | 12.65 s, 11.69 s, 11.71 s | 1.3–2.0 s |
+| patched, `LOGOS_REPLAY_VERIFY=full` | 11.76 s, 11.66 s, 11.73 s | 1.3 s |
+| patched, fast | 5.74 s, 5.71 s, 5.72 s | 1.3 s |
+
+**Where unpatched replay time goes** (per 1,000 blocks, from the patched node's timing line in
+full mode, which runs the upstream checks):
+
+| Part | Linux arm64 | Phone |
+|---|---|---|
+| reading blocks from the database | 1.2 s | 9–18 s |
+| decoding (header signature, body root, stateless tx checks) | 0.1 s | 1.2 s |
+| leader proofs (Groth16) | 1.2 s (10% of replay) | 3.1 s |
+| deferred transaction proofs (batch) | 4.7 s (40%) | 12.7 s |
+| rest of the ledger transition | 5.8 s (50%) | 15.5 s |
+| writing the block back to the database | 0.04 s | 0.2 s |
+
+The fast replay removes the two proof rows and nothing else. Every fast and full run of the
+patched node ended in the same tip, LIB, UTXO roots and epoch nonces.
+
+What is left in "rest of the ledger transition" was split with a bench-only build
+(`native/bench-patches/9001-replay-ledger-profile.patch`, built as the `-profile` Linux artifact,
+never shipped): these 1,000 blocks carry 9,878 transactions. Executing them (the stateful
+transaction checks and ledger updates) takes 5.7 s, about 0.58 ms per transaction on Linux arm64.
+The header update without the leader proof takes 0.03 s. Cloning the parent state, recording
+the seen block, the block accounting and the PoW difficulty update are each at most 0.01 s. So
+after this patch, replay time is almost all transaction execution, which a patch must not skip.
