@@ -56,6 +56,9 @@ class NodeActivity : Activity() {
         if (m.running) {
             s.rssKb?.let { lines += "Memory: ${it / 1024} MB" }
             lines += "Since start: ${s.bytesIn?.let { MessagingPolicy.mb(it) } ?: "?"} in, ${s.bytesOut?.let { MessagingPolicy.mb(it) } ?: "?"} out"
+            if (s.inPerMinute != null && s.outPerMinute != null) {
+                lines += "Now: ${MessagingPolicy.mb(s.inPerMinute)}/min in, ${MessagingPolicy.mb(s.outPerMinute)}/min out"
+            }
             lines += "API on ${MessagingSettings.WAKU_API}"
         }
         lines += today

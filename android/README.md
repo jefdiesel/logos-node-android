@@ -209,20 +209,34 @@ adb shell am start-foreground-service -n $P/.NodeService -a $P.START
 The app also carries the Logos Messaging node, the official `liblogosdelivery` library with a
 small runner, from the `waku-build` workflow; see `messaging/README.md`. It is not rebuilt here.
 
-**Files.** The APK holds three files from that workflow's run on the commit in
-`messaging-commit.txt`. CI checks each one against `messaging.sha256`, and checks the APK copies
-are byte-identical:
+**Files.** The APK holds the files listed in `messaging.sha256`, from the waku-build run whose id is
+in `messaging-run.txt`. CI checks each one against its sha256, and checks the APK copies are
+byte-identical. Now that is v0.40.0-rc.3, with two files:
 - `lib/arm64-v8a/libwakurunner.so`: the runner. Android installs only `lib*.so` files, so it is
   renamed.
-- `lib/arm64-v8a/liblogosdelivery.so` and `lib/arm64-v8a/librln.so`: the libraries, which keep
-  their names because they are loaded by name.
+- `lib/arm64-v8a/liblogosdelivery.so`: the library, which keeps its name because the runner loads
+  it by name.
+
+Earlier builds also carried `librln.so`; rc3 no longer needs it. To change versions, change the run
+id and the sha256 lines.
 
 **Switches.** The Node screen has a **Messaging node** switch, off by default and remembered. When
 it is on, the node service runs the runner as a second child process. It has its own supervisor
 (`Messaging.kt`), apart from the blockchain node and the wallet. It is stopped with SIGTERM, then
 SIGKILL after 25 s, and restarted with a backoff if it exits. The process is started with:
-- `LD_LIBRARY_PATH` = the app's native library folder, because `librln.so` has no SONAME
+- `LD_LIBRARY_PATH` = the app's native library folder. Earlier builds needed it for `librln.so`;
+  it is kept because running without it hasn't been checked.
 - `--status-every 15`
+
+**One shard.** It relays one shard (7), without the filter and lightpush services:
+`MessagingSettings.EXTRA`, in the config's flat shape (the structured shape makes rc3 relay every
+shard). On the Mini that cost about 0.5 MB/min each way, against about 35/32 MB/min for a full relay.
+The screen shows the rate per minute, and the node log has a "messaging: traffic …/min" line at each
+reading.
+
+**Status text.** On rc3, `connectionStatus` is the thinnest mesh among the subscribed shards. It
+can say PartiallyConnected or Disconnected while messages flow, so the screen shows it as reported
+("running: PartiallyConnected, 12 peers"), never as "no network".
 
 **Where it may run.** By default it runs only on an unmetered network (Wi-Fi). If the network
 becomes metered, it stops and the screen says why. **Also use mobile data** (off by default)
@@ -230,9 +244,9 @@ allows mobile data. It also stops for the day when its traffic reaches the daily
 `MessagingSettings.DAILY_CAP_BYTES` (2 GB).
 
 **What the screen shows:**
-- the state: starting, connected with N peers, or stopped and why
+- the state: starting, running with the node's status and N peers, or stopped and why
 - its memory
-- the bytes in and out since it started
+- the bytes in and out since it started, and the current rate per minute
 - today's total against the cap
 
 These come from the runner's status lines and its `libp2p_network_bytes` metric. That counts libp2p

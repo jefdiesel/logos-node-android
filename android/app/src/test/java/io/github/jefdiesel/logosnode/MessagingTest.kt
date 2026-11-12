@@ -33,6 +33,9 @@ class MessagingTest {
         assertEquals(18645, o.getInt("rest-port")); assertEquals("none", o.getString("nat"))
         assertEquals(key, o.getString("nodekey"))
         assertEquals(f.data.absolutePath, o.getString("local-storage-path"))
+        // the one-shard relay, at the top level (rc3 ignores these in the structured shape)
+        assertEquals("[7]", o.getJSONArray("shard").toString())
+        assertEquals(false, o.getBoolean("filter")); assertEquals(false, o.getBoolean("lightpush"))
         assertEquals("rw-------", perms(f.config))
         assertEquals("rw-------", perms(f.nodekey))
     }
@@ -42,7 +45,8 @@ class MessagingTest {
         val good = MessagingConfig.build(key, "/data")
         assertNull(MessagingConfig.problem(good, key))
         for (bad in listOf(good.dropLast(3), "{\"mode\":\"Core\",\"preset\":\"logos.test\",\"messagingOverrides\":{\"nodekey\":\"$key\"}}",
-            good.replace("logos.test", "logos.dev"), good.replace(key, "cd".repeat(32)), good.replace("18645", "8090"))) {
+            good.replace("logos.test", "logos.dev"), good.replace(key, "cd".repeat(32)), good.replace("18645", "8090"),
+            JSONObject(good).apply { remove("shard") }.toString(), JSONObject(good).apply { put("filter", true) }.toString())) {
             val p = MessagingConfig.problem(bad, key)
             assertNotNull(p)
             assertFalse("problem text must not carry the key: $p", p!!.contains(key))
@@ -136,8 +140,8 @@ class MessagingTest {
                 "echo '2026-11-12T15:00:00Z [runner] status connection=Connected connected_peers=3 rss_kb=1000'; exec sleep 30"),
             log = { synchronized(logs) { logs += it } })
         s.start()
-        waitFor("connected") { s.state.startsWith("connected") }
-        assertEquals("connected, 3 peers", s.state)
+        waitFor("connected") { s.state.startsWith("running: Connected") }
+        assertEquals("running: Connected, 3 peers", s.state)
         assertEquals("running", f.state.readText().trim())
         s.stop("test over")
         val out = f.output.readText()
@@ -146,6 +150,23 @@ class MessagingTest {
         assertFalse(logs.any { it.contains(key) })
         assertEquals("stopped: test over", s.state)
         assertTrue(f.state.readText().startsWith("stopped"))
+    }
+
+    @Test fun trafficRateIsReported() {
+        val f = files()
+        val logs = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val m = "2026-11-12T15:00:00Z [runner] metric libp2p_network_bytes_total"
+        val s = MessagingSupervisor(f, DataUsage(File(tmp.root, "u8.txt")),
+            runner("echo '$m{direction=\"in\"} 1000000'; echo '$m{direction=\"out\"} 500000'; sleep 1; " +
+                "echo '$m{direction=\"in\"} 1500000'; echo '$m{direction=\"out\"} 750000'; exec sleep 30"),
+            log = { logs += it })
+        s.start()
+        waitFor("rates") { s.status.inPerMinute != null && s.status.outPerMinute != null }
+        // 0.5 MB in and 0.25 MB out in about a second: tens of MB a minute, the right order
+        assertTrue(s.status.inPerMinute!! in 10_000_000L..40_000_000L)
+        assertTrue(s.status.outPerMinute!! in 5_000_000L..20_000_000L)
+        assertTrue(logs.any { it.startsWith("messaging: traffic ") })
+        s.stop("test over")
     }
 
     @Test fun capReachedWhileRunningStopsTheRunner() {
@@ -165,7 +186,7 @@ class MessagingTest {
                 .redirectErrorStream(true).start().also { procs += it } },
             log = {})
         s.start()
-        waitFor("connected") { s.state.startsWith("connected") }
+        waitFor("connected") { s.state.startsWith("running: Connected") }
         assertTrue(s.ownsRunner); assertFalse(s.stuck)
         s.debugAbandon = true
         waitFor("stuck") { s.stuck }

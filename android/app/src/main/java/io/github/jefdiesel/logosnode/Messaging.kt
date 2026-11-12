@@ -31,11 +31,12 @@ object MessagingSettings {
     const val STOP_GRACE_SECONDS = 25L
 
     /**
-     * More flat-shape options (top level, next to mode and preset), for a relay that costs less:
-     * e.g. "shard" to [5], "filter" to false. Filled in from the measurements of what a smaller relay
-     * costs; empty for now.
+     * More flat-shape options (top level, next to mode and preset), for a relay that costs less: one
+     * shard instead of all eight, without the filter and lightpush services (about 0.5 MB/min each way
+     * on the Mini with v0.40.0-rc.3, against about 35/32 for a full relay). They work only in the flat
+     * shape: in the structured one rc3 relays every shard.
      */
-    val EXTRA: Map<String, Any> = emptyMap()
+    val EXTRA: Map<String, Any> = linkedMapOf("shard" to listOf(7), "filter" to false, "lightpush" to false)
 }
 
 /** The messaging node's folder, files/waku: config.json and nodekey (owner-only), data/, output.log. */
@@ -118,6 +119,10 @@ object MessagingConfig {
         if (o.optString("nodekey") != key || !MessagingFiles.KEY.matches(key)) return "the messaging config has no valid node key"
         if (o.optString("rest-address") != MessagingSettings.REST_ADDRESS || o.optInt("rest-port") != MessagingSettings.REST_PORT) return "the messaging config's REST address is wrong"
         if (o.optString("local-storage-path").isEmpty()) return "the messaging config has no storage path"
+        for ((k, v) in MessagingSettings.EXTRA) {
+            val want = if (v is List<*>) JSONArray(v).toString() else v.toString()
+            if (!o.has(k) || o.get(k).toString() != want) return "the messaging config's $k isn't as set"
+        }
         return null
     }
 }
@@ -129,6 +134,9 @@ data class MessagingStatus(
     val rssKb: Long? = null,
     val bytesIn: Long? = null,
     val bytesOut: Long? = null,
+    /** Bytes a minute since the previous reading of the traffic counters. */
+    val inPerMinute: Long? = null,
+    val outPerMinute: Long? = null,
 )
 
 /**
@@ -388,7 +396,7 @@ class MessagingSupervisor(
                 setState("stopped: today's data cap of ${MessagingPolicy.mb(MessagingSettings.DAILY_CAP_BYTES)} is reached")
                 return
             }
-            usage.newRun()
+            usage.newRun(); lastIn = null; lastOut = null
             status = MessagingStatus()
             setState("starting")
             val started = System.currentTimeMillis()
@@ -434,16 +442,40 @@ class MessagingSupervisor(
         }
         val line = RunnerLines.redact(raw, key)
         appendCapped(line)
-        val next = RunnerLines.apply(status, line)
+        var next = RunnerLines.apply(status, line)
         if (next == status) return
+        next = withRates(status, next, System.currentTimeMillis())
         status = next
         if (next.bytesIn != null || next.bytesOut != null) usage.record(next.bytesIn, next.bytesOut)
+        // the status as the node reports it: on v0.40 connectionStatus is the thinnest mesh among the subscribed
+        // shards, so "PartiallyConnected" or even "Disconnected" can show while messages flow; never "no network"
         val c = next.connection
-        setState(if (c != null && c.contains("Connected") && !c.startsWith("Dis")) "connected, ${next.peers ?: 0} peers" else "starting")
+        setState(if (c != null) "running: $c, ${next.peers ?: 0} peers" else "starting")
         if (usage.capReached() && !stopRequested) {
             // stop from another thread: this one is reading the runner's output
             thread(name = "messaging-cap") { stop("today's data cap of ${MessagingPolicy.mb(MessagingSettings.DAILY_CAP_BYTES)} is reached") }
         }
+    }
+
+    private var lastIn: Pair<Long, Long>? = null       // (time ms, bytes) of the previous reading
+    private var lastOut: Pair<Long, Long>? = null
+
+    /** Adds the bytes-a-minute rates since the previous counter readings (logged once per pair, for the record). */
+    private fun withRates(old: MessagingStatus, new: MessagingStatus, now: Long): MessagingStatus {
+        var s = new
+        if (new.bytesIn != null && new.bytesIn != old.bytesIn) {
+            lastIn?.let { (t, b) -> if (now > t && new.bytesIn >= b) s = s.copy(inPerMinute = (new.bytesIn - b) * 60_000 / (now - t)) }
+            lastIn = now to new.bytesIn
+        }
+        if (new.bytesOut != null && new.bytesOut != old.bytesOut) {
+            lastOut?.let { (t, b) -> if (now > t && new.bytesOut >= b) s = s.copy(outPerMinute = (new.bytesOut - b) * 60_000 / (now - t)) }
+            lastOut = now to new.bytesOut
+            if (s.inPerMinute != null && s.outPerMinute != null) {
+                log("messaging: traffic ${MessagingPolicy.mb(s.inPerMinute!!)}/min in, ${MessagingPolicy.mb(s.outPerMinute!!)}/min out; " +
+                    "since start ${MessagingPolicy.mb(new.bytesIn ?: 0)} in, ${MessagingPolicy.mb(new.bytesOut)} out")
+            }
+        }
+        return s
     }
 
     private fun appendCapped(line: String) {
