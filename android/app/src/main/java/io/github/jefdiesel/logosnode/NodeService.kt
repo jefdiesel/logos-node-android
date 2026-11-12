@@ -40,6 +40,130 @@ class NodeService : Service() {
         @Volatile var status = "stopped"
         /** A snapshot import or a go-back is running in this process. */
         @Volatile var importRunning = false
+
+        /** The messaging node switches changed (or the screen wants them re-checked). */
+        const val ACTION_MESSAGING = "io.github.jefdiesel.logosnode.MESSAGING"
+        /** The messaging node, for the Node screen; null while the service isn't running. */
+        @Volatile var messaging: MessagingSupervisor? = null
+        @Volatile var messagingBlocker: String? = "off"
+        @Volatile var messagingUsage: DataUsage? = null
+
+        fun messagingPrefs(context: android.content.Context) =
+            context.getSharedPreferences("messaging", android.content.Context.MODE_PRIVATE)
+    }
+
+    // ---- the messaging (Waku) node: a second child, with its own supervisor (Messaging.kt) ----
+
+    private val messagingWork = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private var messagingController: MessagingController? = null
+    private var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
+    @Volatile private var metered: Boolean? = null
+
+    private fun messagingEnabled() = messagingPrefs(this).getBoolean("enabled", false)
+
+    private fun setUpMessaging() {
+        if (messagingController != null) return
+        val mf = MessagingFiles(File(filesDir, "waku"))
+        mf.mkdirs()
+        // nothing of an earlier run survives the app's process, so a "running" left in the file is stale
+        try { mf.state.writeText("stopped: off\n") } catch (_: Exception) {}
+        val usage = DataUsage(mf.usage)
+        val libDir = applicationInfo.nativeLibraryDir
+        val sup = MessagingSupervisor(mf, usage,
+            launch = { config ->
+                // a runner left over from an earlier run of the app would hold the ports
+                runnerPids().forEach { android.os.Process.sendSignal(it, 9) }
+                ProcessBuilder(File(libDir, "libwakurunner.so").path, config.path,
+                    "--status-every", MessagingSettings.STATUS_EVERY_SECONDS.toString())
+                    .directory(mf.dir)
+                    .redirectErrorStream(true)
+                    .apply {
+                        // librln.so has no SONAME, so the loader finds it only on the library path
+                        environment()["LD_LIBRARY_PATH"] = libDir
+                        environment()["HOME"] = mf.dir.path
+                        environment()["TMPDIR"] = File(mf.dir, "tmp").apply { mkdirs() }.path
+                    }
+                    .start()
+            },
+            log = { log.app(it) },
+            onChange = { updateNotification() })
+        messaging = sup
+        messagingUsage = usage
+        messagingController = MessagingController(usage, { sup.running }, { sup.start() }, { sup.stop(it) })
+    }
+
+    private fun runnerPids(): List<Int> =
+        File("/proc").listFiles { f -> f.name.all(Char::isDigit) }.orEmpty().mapNotNull { dir ->
+            val argv0 = try { File(dir, "cmdline").readText().substringBefore('\u0000') } catch (_: Exception) { "" }
+            if (argv0.endsWith("/libwakurunner.so")) dir.name.toInt() else null
+        }
+
+    /** Re-checks the switches, the network and the day's data use; starts or stops the messaging node. */
+    private fun evaluateMessaging() {
+        setUpMessaging()
+        val enabled = messagingEnabled()
+        if (enabled) watchNetwork() else unwatchNetwork()
+        val mobile = messagingPrefs(this).getBoolean("mobile", false)
+        messagingWork.execute {
+            try {
+                messagingController?.update(enabled, metered, mobile)
+                messagingBlocker = messagingController?.blocker
+            } catch (e: Exception) {
+                log.app("messaging: $e")
+            }
+            main.post { stopIfIdle() }
+        }
+    }
+
+    private fun watchNetwork() {
+        if (networkCallback != null) return
+        val cm = getSystemService(android.net.ConnectivityManager::class.java)
+        val cb = object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onCapabilitiesChanged(network: android.net.Network, caps: android.net.NetworkCapabilities) {
+                val m = !caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+                if (m != metered) { metered = m; main.post { evaluateMessaging() } }
+            }
+
+            override fun onLost(network: android.net.Network) {
+                metered = null
+                main.post { evaluateMessaging() }
+            }
+        }
+        // the current state first, then changes
+        metered = cm.activeNetwork?.let { cm.getNetworkCapabilities(it) }
+            ?.let { !it.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED) }
+        cm.registerDefaultNetworkCallback(cb)
+        networkCallback = cb
+    }
+
+    private fun unwatchNetwork() {
+        val cb = networkCallback ?: return
+        try { getSystemService(android.net.ConnectivityManager::class.java).unregisterNetworkCallback(cb) } catch (_: Exception) {}
+        networkCallback = null
+    }
+
+    private fun messagingRunning() = messaging?.running == true
+
+    /** The service stays up while the blockchain node or the messaging node is wanted. */
+    private fun stopIfIdle() {
+        if (supervisor?.isAlive == true || importRunning || stopping || messagingEnabled() || messagingRunning()) {
+            updateNotification()
+            return
+        }
+        active = false
+        status = "stopped"
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    private fun updateNotification() {
+        val node = if (supervisor?.isAlive == true) status else "node stopped"
+        val msg = messaging?.state?.takeIf { messagingEnabled() || messagingRunning() }
+        try {
+            getSystemService(NotificationManager::class.java)
+                .notify(NOTIFICATION_ID, notification(if (msg != null) "$node · messaging: $msg" else node))
+        } catch (_: Exception) {
+        }
     }
 
     private val startLock = Object()
@@ -81,6 +205,11 @@ class NodeService : Service() {
                 startStateJob(intent)
                 return START_STICKY
             }
+            ACTION_MESSAGING -> {
+                goForeground(if (supervisor?.isAlive == true) status else "Messaging node")
+                evaluateMessaging()
+                return START_STICKY
+            }
             ACTION_TEST_IMPORT -> {
                 goForeground("Test import")
                 if (BuildConfig.DEBUG && !importRunning) thread(name = "test-import") { testImport() }
@@ -98,6 +227,7 @@ class NodeService : Service() {
         }
         stopRequested = false
         ensureSupervisor()
+        if (messagingEnabled()) evaluateMessaging()
         return START_STICKY
     }
 
@@ -229,6 +359,9 @@ class NodeService : Service() {
         log.app("service destroyed")
         stopRequested = true
         thread(name = "node-stop-on-destroy") { killNode() }
+        unwatchNetwork()
+        messaging?.let { m -> if (m.running) thread(name = "messaging-stop-on-destroy") { m.stop("the app's service stopped") } }
+        messaging = null
         active = false
         status = "stopped"
         super.onDestroy()
@@ -293,8 +426,7 @@ class NodeService : Service() {
                 }
                 active = false
                 status = "stopped"
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
+                stopIfIdle()                                 // stays up for the messaging node if that's on
             }
         }
     }

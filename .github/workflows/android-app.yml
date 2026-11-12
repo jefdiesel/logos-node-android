@@ -38,6 +38,23 @@ jobs:
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "run=$RUN" >> "$GITHUB_OUTPUT"
           echo "node $VERSION, sha256 $SHA, from native-build run $RUN"
+      - name: Messaging node files from the waku-build run of the pinned commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # the commit and the three files' sha256 are committed in android/ (messaging-commit.txt, messaging.sha256)
+          C=$(tr -d '[:space:]' < android/messaging-commit.txt)
+          RUN=$(gh run list -R "$GITHUB_REPOSITORY" --workflow waku-build.yml --commit "$C" --status success \
+                --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [ -z "$RUN" ]; then echo "::error::no successful waku-build run for commit $C"; exit 1; fi
+          echo "waku-build run $RUN (commit $C)"
+          gh run download "$RUN" -R "$GITHUB_REPOSITORY" -p 'logos-delivery-android-arm64-*' -D wdl
+          W=$(ls -d wdl/logos-delivery-android-arm64-* | head -1)
+          [ -n "$W" ] || { echo "::error::run $RUN has no messaging artifact"; exit 1; }
+          (cd "$W" && sha256sum -c "$GITHUB_WORKSPACE/android/messaging.sha256")
+          J=android/app/src/main/jniLibs/arm64-v8a
+          cp "$W/waku-runner" "$J/libwakurunner.so"        # Android installs only lib*.so files
+          cp "$W/liblogosdelivery.so" "$W/librln.so" "$J/"   # these keep their names: the runner and the library load them by name
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -68,6 +85,12 @@ jobs:
           [ "$(unzip -p "$A" lib/arm64-v8a/liblogosnode.so | sha256sum | cut -d' ' -f1)" = "${{ steps.node.outputs.sha }}" ] \
             || fail "lib/arm64-v8a/liblogosnode.so is missing or differs from the node artifact"
           ! unzip -l "$A" | grep ' lib/' | grep -v ' lib/arm64-v8a/' || fail "native libraries for another ABI in the APK"
+          # the messaging node: the three files byte for byte as pinned in android/messaging.sha256
+          while read -r sum name; do
+            [ "$name" = waku-runner ] && in_apk=libwakurunner.so || in_apk=$name
+            [ "$(unzip -p "$A" "lib/arm64-v8a/$in_apk" | sha256sum | cut -d' ' -f1)" = "$sum" ] \
+              || fail "lib/arm64-v8a/$in_apk is missing or differs from the pinned $name"
+          done < android/messaging.sha256
           # the wallet: the repository's own app/ files, unchanged, and Python to run them
           for f in server.py index.html names/names.js names/lookup.js; do
             [ "$(unzip -p "$A" "assets/webapp/$f" | sha256sum | cut -d' ' -f1)" = "$(sha256sum "app/$f" | cut -d' ' -f1)" ] \
@@ -82,7 +105,7 @@ jobs:
           grep -q 'NodeService' manifest.txt || fail "NodeService not declared"
           grep -q 'foregroundServiceType(0x01010599)=0x40000000' manifest.txt || fail "service is not foregroundServiceType=specialUse"
           grep -q 'PROPERTY_SPECIAL_USE_FGS_SUBTYPE' manifest.txt || fail "specialUse subtype property missing"
-          for p in INTERNET FOREGROUND_SERVICE FOREGROUND_SERVICE_SPECIAL_USE POST_NOTIFICATIONS WAKE_LOCK USE_BIOMETRIC; do
+          for p in INTERNET FOREGROUND_SERVICE FOREGROUND_SERVICE_SPECIAL_USE POST_NOTIFICATIONS WAKE_LOCK USE_BIOMETRIC ACCESS_NETWORK_STATE; do
             grep -q "\"android.permission.$p\"" manifest.txt || fail "permission $p missing"
           done
           echo "all checks passed"

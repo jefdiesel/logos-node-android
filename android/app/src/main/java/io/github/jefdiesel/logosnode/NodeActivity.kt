@@ -29,6 +29,38 @@ class NodeActivity : Activity() {
     private lateinit var logView: TextView
     private lateinit var snapshotView: TextView
     private lateinit var revertButton: Button
+    private lateinit var messagingSwitch: android.widget.Switch
+    private lateinit var messagingView: TextView
+
+    private fun setMessaging(key: String, on: Boolean) {
+        NodeService.messagingPrefs(this).edit().putBoolean(key, on).apply()
+        // the service re-checks the switches; it starts itself if needed (it stops again when nothing runs)
+        if (NodeService.messagingPrefs(this).getBoolean("enabled", false) || NodeService.messaging?.running == true) {
+            startForegroundService(Intent(this, NodeService::class.java).setAction(NodeService.ACTION_MESSAGING))
+        }
+        io.execute { update() }
+    }
+
+    /** The messaging node's state, memory and data use, for the screen. */
+    private fun messagingText(): String {
+        val enabled = NodeService.messagingPrefs(this).getBoolean("enabled", false)
+        val m = NodeService.messaging
+        val usage = NodeService.messagingUsage ?: DataUsage(MessagingFiles(java.io.File(filesDir, "waku")).usage)
+        val today = "Today: ${MessagingPolicy.mb(usage.todayTotal())} of ${MessagingPolicy.mb(MessagingSettings.DAILY_CAP_BYTES)}" +
+            " (${MessagingPolicy.mb(usage.todayIn)} in, ${MessagingPolicy.mb(usage.todayOut)} out)."
+        if (m == null || (!m.running && !enabled)) return "Off. $today"
+        val blocker = NodeService.messagingBlocker
+        val state = if (!m.running && blocker != null && blocker != "off") "stopped: $blocker" else m.state
+        val s = m.status
+        val lines = mutableListOf("State: $state")
+        if (m.running) {
+            s.rssKb?.let { lines += "Memory: ${it / 1024} MB" }
+            lines += "Since start: ${s.bytesIn?.let { MessagingPolicy.mb(it) } ?: "?"} in, ${s.bytesOut?.let { MessagingPolicy.mb(it) } ?: "?"} out"
+            lines += "API on ${MessagingSettings.WAKU_API}"
+        }
+        lines += today
+        return lines.joinToString("\n")
+    }
     private var visible = false
 
     companion object {
@@ -131,6 +163,28 @@ class NodeActivity : Activity() {
             visibility = android.view.View.GONE
             setOnClickListener { confirmRevert() }
         }.also { column.addView(it) }
+
+        column.addView(text(18f, "Messaging node"))
+        column.addView(
+            text(
+                13f,
+                "The Logos Messaging (Waku) node relays other people's messages on the network, so it uses a lot " +
+                    "of data. It runs only on Wi-Fi or another unmetered network unless you allow mobile data, and stops " +
+                    "for the day at ${MessagingPolicy.mb(MessagingSettings.DAILY_CAP_BYTES)}."
+            )
+        )
+        val prefs = NodeService.messagingPrefs(this)
+        messagingSwitch = android.widget.Switch(this).apply {
+            text = "Messaging node"
+            isChecked = prefs.getBoolean("enabled", false)
+            setOnCheckedChangeListener { _, on -> setMessaging("enabled", on) }
+        }.also { column.addView(it) }
+        android.widget.Switch(this).apply {
+            text = "Also use mobile data"
+            isChecked = prefs.getBoolean("mobile", false)
+            setOnCheckedChangeListener { _, on -> setMessaging("mobile", on) }
+        }.also { column.addView(it) }
+        messagingView = text(14f).also { column.addView(it) }
         column.addView(text(14f, "Log (full log: files/node/output.log)"))
         logView = text(11f).apply { typeface = Typeface.MONOSPACE }.also { column.addView(it) }
         column.addView(
@@ -157,6 +211,7 @@ class NodeActivity : Activity() {
         val walletText = WalletServer.describe(this)
         val logText = log.tail(40)
         val snapshotText = snapshotText()
+        val messagingText = messagingText()
         val previous = files.previousState
         val previousLabel = if (previous.isDirectory && !NodeService.importRunning) {
             "Go back to the previous state (from " +
@@ -167,6 +222,7 @@ class NodeActivity : Activity() {
             statusView.text = statusText
             logView.text = logText
             snapshotView.text = snapshotText
+            messagingView.text = messagingText
             revertButton.visibility = if (previousLabel != null) android.view.View.VISIBLE else android.view.View.GONE
             if (previousLabel != null) revertButton.text = previousLabel
         }

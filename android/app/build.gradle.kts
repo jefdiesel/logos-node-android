@@ -30,8 +30,8 @@ android {
         applicationId = "io.github.jefdiesel.logosnode"
         minSdk = 28 // the node binary is built for API 28
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.3.1"
+        versionCode = 5
+        versionName = "0.4.0"
         ndk { abiFilters += "arm64-v8a" }
         buildConfigField("String", "NODE_VERSION", "\"$nodeVersion\"")
         buildConfigField("String", "NODE_SHA256", "\"$nodeSha256\"")
@@ -64,6 +64,8 @@ android {
             useLegacyPackaging = true
             // ship the binary byte for byte as built (it is already stripped)
             keepDebugSymbols += "**/liblogosnode.so"
+            // the messaging node's runner and libraries too (checked by sha256 in CI)
+            keepDebugSymbols += listOf("**/libwakurunner.so", "**/liblogosdelivery.so", "**/librln.so")
         }
     }
 
@@ -87,6 +89,8 @@ tasks.named("preBuild") { dependsOn(copyWebApp) }
 dependencies {
     // JVM unit tests of the snapshot import (tar reader, RocksDB check, state swap); run with testDebugUnitTest
     testImplementation("junit:junit:4.13.2")
+    // the real org.json for JVM tests (Android's own copy is only a stub there)
+    testImplementation("org.json:json:20260814")
 }
 
 kotlin { jvmToolchain(17) }

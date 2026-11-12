@@ -11,6 +11,8 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- the phone's fingerprint check, for unlocking the wallet (strong biometrics only) -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <!-- whether the network is metered: the messaging node runs only on unmetered networks unless allowed -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <application
         android:name=".LogosApp"

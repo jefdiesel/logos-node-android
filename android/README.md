@@ -204,6 +204,63 @@ adb shell am start-foreground-service -n $P/.NodeService -a $P.START
 
 </details>
 
+## Messaging node (Logos Messaging / Waku), off by default
+
+The app also carries the Logos Messaging node, the official `liblogosdelivery` library with a
+small runner, from the `waku-build` workflow; see `messaging/README.md`. It is not rebuilt here.
+
+**Files.** The APK holds three files from that workflow's run on the commit in
+`messaging-commit.txt`. CI checks each one against `messaging.sha256`, and checks the APK copies
+are byte-identical:
+- `lib/arm64-v8a/libwakurunner.so`: the runner. Android installs only `lib*.so` files, so it is
+  renamed.
+- `lib/arm64-v8a/liblogosdelivery.so` and `lib/arm64-v8a/librln.so`: the libraries, which keep
+  their names because they are loaded by name.
+
+**Switches.** The Node screen has a **Messaging node** switch, off by default and remembered. When
+it is on, the node service runs the runner as a second child process. It has its own supervisor
+(`Messaging.kt`), apart from the blockchain node and the wallet. It is stopped with SIGTERM, then
+SIGKILL after 25 s, and restarted with a backoff if it exits. The process is started with:
+- `LD_LIBRARY_PATH` = the app's native library folder, because `librln.so` has no SONAME
+- `--status-every 15`
+
+**Where it may run.** By default it runs only on an unmetered network (Wi-Fi). If the network
+becomes metered, it stops and the screen says why. **Also use mobile data** (off by default)
+allows mobile data. It also stops for the day when its traffic reaches the daily cap,
+`MessagingSettings.DAILY_CAP_BYTES` (2 GB).
+
+**What the screen shows:**
+- the state: starting, connected with N peers, or stopped and why
+- its memory
+- the bytes in and out since it started
+- today's total against the cap
+
+These come from the runner's status lines and its `libp2p_network_bytes` metric. That counts libp2p
+traffic; discovery (discv5) traffic is not in it.
+
+**Its files** are in `files/waku/`:
+- `config.json` and `nodekey`, both owner-only (0600)
+- `data/`, the node's own database
+- `output.log`, capped at 2 MB with one old copy
+- `usage.txt`, today's traffic
+- `state.txt`
+
+**The config.**
+- It is written by the app in the library's flat shape: `mode`, `preset` and the node options at
+  the top level, REST on `127.0.0.1:18645`, NAT mapping off.
+- It is parsed back and checked before every start, because the library logs the whole file,
+  node key included, when it can't parse it.
+- The node key is 32 random bytes, made once.
+- Neither the key nor the config contents are ever logged. Runner output is filtered for the key.
+
+**Settings in one place.** Every value is in `MessagingSettings`: mode, preset, ports, REST, the
+status interval, the cap, the stop grace, and `EXTRA` for further flat options such as shards. The
+values for a smaller relay will go in `EXTRA`.
+
+**The wallet.** While the messaging node runs, the wallet server gets
+`WAKU_API=http://127.0.0.1:18645` in its environment; while it doesn't, the variable is unset. The
+wallet process checks `files/waku/state.txt` every 5 s.
+
 ## Signing
 
 `debug.keystore` is the standard throwaway Android debug key (alias `androiddebugkey`, passwords

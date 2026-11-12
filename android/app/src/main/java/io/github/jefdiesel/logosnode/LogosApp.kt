@@ -76,6 +76,7 @@ object WalletServer {
                 ).toString()
                 Python.getInstance().getModule("logos_embed").callAttr("start", web.path, env)
                 log(app, "server.py started from ${web.path}")
+                watchMessaging(app)
             } catch (e: Throwable) {
                 fail(app, "the wallet did not start: $e", e)
                 return@thread
@@ -89,6 +90,31 @@ object WalletServer {
                 val crash = crashFile(app).takeIf { it.exists() }?.readText()?.trim()?.lines()?.lastOrNull()
                 fail(app, "the wallet does not answer on $URL after 60 s (${lastConnectError ?: "no answer"})" +
                     (crash?.let { "; server.py stopped with: $it" } ?: ""), null)
+            }
+        }
+    }
+
+    /**
+     * WAKU_API for the web app: set while the messaging node runs (the node service, in the main process,
+     * writes files/waku/state.txt), removed while it doesn't. Checked every 5 seconds.
+     */
+    private fun watchMessaging(context: Context) {
+        val state = MessagingFiles(File(context.filesDir, "waku")).state
+        thread(name = "wallet-waku-env", isDaemon = true) {
+            var last: Boolean? = null
+            while (true) {
+                val running = try { state.readText().trim() == "running" } catch (_: Exception) { false }
+                if (running != last) {
+                    try {
+                        Python.getInstance().getModule("logos_embed")
+                            .callAttr("set_env", "WAKU_API", if (running) MessagingSettings.WAKU_API else null)
+                        log(context, if (running) "WAKU_API set: the messaging node runs" else "WAKU_API unset")
+                    } catch (e: Exception) {
+                        log(context, "couldn't set WAKU_API: $e")
+                    }
+                    last = running
+                }
+                Thread.sleep(5000)
             }
         }
     }

@@ -48,6 +48,15 @@ def start(app_dir, env_json):
     return True
 
 
+def set_env(name, value):
+    """Sets (or, with value None, removes) one environment variable of this process, e.g. WAKU_API
+    while the messaging node runs. The web app reads it from os.environ."""
+    if value is None:
+        os.environ.pop(str(name), None)
+    else:
+        os.environ[str(name)] = str(value)
+
+
 def native_unlock():
     """server.native_unlock(): a session token after the phone's fingerprint check, or None."""
     return _server.native_unlock() if _server is not None else None
