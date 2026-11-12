@@ -134,6 +134,47 @@ export async function run({ mls, providers, log }) {
       r.members[n] = row;
       log(`sizes ${pname} n=${n}: ${JSON.stringify(row)}`);
     }
+
+    // Growth after the tree has filled parent nodes (what ts-mls #860 needs): 6 members one by one, an admin
+    // self-update, a Remove (always carries a path), then one add per commit up to 32 members. Every new member
+    // must join from its Welcome. Run without and with an empty admin commit before each Add.
+    for (const emptyCommitBeforeAdd of [false, true]) {
+      const admin = await kp("admin");
+      let g = await mls.createGroup(crypto.getRandomValues(new Uint8Array(32)), admin.publicPackage, admin.privatePackage, [], impl);
+      const addOne = async (name) => {
+        if (emptyCommitBeforeAdd) g = (await commit(g)).newState;
+        const k = await kp(name);
+        const cc = await commit(g, [add(k)]);
+        g = cc.newState;
+        try {
+          await mls.joinGroup(cc.welcome, k.publicPackage, k.privatePackage, mls.emptyPskIndex, impl);
+          return [cc.welcome, undefined];
+        } catch (e) {
+          return [cc.welcome, e?.message];
+        }
+      };
+      for (let i = 1; i < 6; i++) await addOne(`m${i}`);
+      g = (await commit(g)).newState;
+      g = (await commit(g, [{ proposalType: "remove", remove: { removed: 2 } }])).newState;
+      const errors = [];
+      let last;
+      let count = g.ratchetTree.filter((x) => x?.nodeType === "leaf").length;
+      for (let i = 0; count < 32; i++, count++) {
+        const [w, err] = await addOne(`n${i}`);
+        last = w;
+        if (err) errors.push(`member ${count + 1}: ${err}`);
+      }
+      const key = emptyCommitBeforeAdd ? "afterRemoveWithEmptyCommitBeforeEachAdd" : "afterRemoveAddOnly";
+      r[key] = {
+        members: g.ratchetTree.filter((x) => x?.nodeType === "leaf").length,
+        joinFailures: errors.length,
+        firstFailure: errors[0],
+        welcome32: encWelcome(last).length,
+        welcome32AsV2SealedBytes: v2Sealed(encWelcome(last).length),
+        adminStateBytes: mls.encodeGroupState(g).length,
+      };
+      log(`sizes ${pname} ${key}: ${JSON.stringify(r[key])}`);
+    }
   }
   out.limitNote = "plan: sealed v2 control message <= 65536 bytes; welcomeAsV2SealedBytes = base64 Welcome + seal + ~400 B JSON";
   return out;

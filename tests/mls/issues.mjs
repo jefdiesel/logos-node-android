@@ -72,7 +72,8 @@ export async function run({ mls, providers, log }) {
     ga = c.newState;
     let gb = await mls.joinGroup(c.welcome, bob.publicPackage, bob.privatePackage, mls.emptyPskIndex, impl);
     const startEpoch = gb.groupContext.epoch;
-    const held = I["secretTree.js"].allSecretTreeValues(gb.secretTree).filter(Boolean);
+    let held; // exactly what removeOldHistoricalReceiverData should return for startEpoch (issue #856)
+    let heldSenderData; // not returned for zeroing on main either
     const msgs = [];
     for (let i = 0; i < 8; i++) {
       // two messages per epoch: Bob reads one, misses the other
@@ -93,6 +94,11 @@ export async function run({ mls, providers, log }) {
       const r = await proc(gb, cc.commit.privateMessage);
       gb = r.newState;
       r.consumed.forEach(mls.zeroOutUint8Array);
+      if (!held) {
+        const archived = gb.historicalReceiverData.get(startEpoch);
+        held = I["secretTree.js"].allSecretTreeValues(archived.secretTree).filter(Boolean);
+        heldSenderData = archived.senderDataSecret;
+      }
     }
     const nonZero = held.filter((b) => b.some((x) => x !== 0)).length;
     // Steal Bob's stored state now and try every message from a fresh copy of it.
@@ -113,8 +119,9 @@ export async function run({ mls, providers, log }) {
       epochNow: String(gb.groupContext.epoch),
       epochsInStoredState: [...gb.historicalReceiverData.keys()].map(String),
       startEpochStillInState: gb.historicalReceiverData.has(startEpoch),
-      startEpochSecretsHeld: held.length,
-      startEpochSecretsStillNonZeroInMemory: nonZero,
+      startEpochSecretTreeValues: held.length,
+      startEpochSecretTreeValuesStillNonZeroInMemory: nonZero,
+      startEpochSenderDataSecretStillNonZero: heldSenderData.some((x) => x !== 0),
       storedStateBytes: stolen.length,
       whatAStolenStoredStateDecrypts: readable,
     };

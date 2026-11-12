@@ -55,7 +55,8 @@ export const appCryptoProvider = {
           return ed25519.sign(message, seedOf(signKey));
         },
         async verify(publicKey, message, signature) {
-          // RFC 8032 rules (zip215: false), like WebCrypto, not noble's ZIP-215 default.
+          // RFC 8032 rules (zip215: false) rather than noble's ZIP-215 default. Whether every edge case matches
+          // WebCrypto's verifier is not checked.
           return ed25519.verify(signature, message, publicKey, { zip215: false });
         },
         async keygen() {
