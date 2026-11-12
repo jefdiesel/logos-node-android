@@ -206,6 +206,12 @@ class NodeService : Service() {
                 return START_STICKY
             }
             ACTION_MESSAGING -> {
+                // debug builds: the switches can be set from adb (--ez enabled true|false, --ez mobile true|false)
+                if (BuildConfig.DEBUG) {
+                    val edit = messagingPrefs(this).edit()
+                    for (key in listOf("enabled", "mobile")) if (intent.hasExtra(key)) edit.putBoolean(key, intent.getBooleanExtra(key, false))
+                    edit.apply()
+                }
                 goForeground(if (supervisor?.isAlive == true) status else "Messaging node")
                 evaluateMessaging()
                 return START_STICKY
