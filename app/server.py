@@ -1014,14 +1014,19 @@ def native_unlock():
 
 
 # ---- messages: LNS name-to-name messages through a Logos Messaging (Waku) node on this device -----
-# Only when WAKU_API names that node's REST API on this device (the Android app sets it while its
+# Only where a messaging node can run: inside the Android app (APP_EMBEDDED=android), when WAKU_API is set
+# at start, or once the app calls set_waku_api(). The node itself can come and go while the app runs (the
+# user switches it on and off): set_waku_api(url or None) says where it is now; until the app calls that,
+# WAKU_API is read again each time. Elsewhere (Linux, Termux) none of this is reachable.
+# WAKU_API names that node's REST API on this device (the Android app sets it while its
 # messaging node runs). Without it nothing below is reachable and the page is unchanged.
 # The format is the names project's (app/messages/msg-crypto.js): the page seals and opens messages;
 # this server only stores the device's messaging key for unlocked pages, forwards sealed payloads to
 # the node, and collects the sealed payloads that arrive on this device's inbox topic.
 
-def _waku_api():
-    raw = os.environ.get("WAKU_API", "").strip()
+def _loopback_url(raw):
+    """The node REST URL if it is plain http on this device, else "" (refused)."""
+    raw = (raw or "").strip()
     if not raw:
         return ""
     try:
@@ -1031,12 +1036,37 @@ def _waku_api():
             return "http://%s:%d" % ("[::1]" if u.hostname == "::1" else u.hostname, u.port)
     except Exception:
         pass
-    sys.stderr.write("WAKU_API refused: it must be http://127.0.0.1:<port>, a node on this device\n")
+    if raw not in _waku["refused"]:
+        _waku["refused"].add(raw)
+        sys.stderr.write("WAKU_API refused: it must be http://127.0.0.1:<port>, a node on this device\n")
     return ""
 
 
-WAKU_API = _waku_api()
-MESSAGING = bool(WAKU_API)
+_waku = {"set": False, "url": "", "feature": False, "thread": False, "refused": set()}
+
+
+def waku_api():
+    """Where the messaging node's REST API is right now, or "" while it is off."""
+    if _waku["set"]:
+        return _waku["url"]
+    return _loopback_url(os.environ.get("WAKU_API", ""))
+
+
+def messaging_on():
+    """Whether this app has messages at all (decided once; the node's own on/off state is separate)."""
+    return _waku["feature"]
+
+
+def set_waku_api(url):
+    """For the Android app: the messaging node's REST URL now that it runs, or None when it stopped.
+    Turns messages on in this app and says where the node is. Returns False (and changes nothing) for a URL
+    that isn't on this device. No HTTP route."""
+    u = _loopback_url(url) if url else ""
+    if url and not u:
+        return False
+    _waku.update(set=True, url=u, feature=True)
+    messaging_start()
+    return True
 MSG_KEY_FILE = os.path.join(DATA_DIR, "wallet-msgkey.json")
 INBOX_FILE = os.path.join(DATA_DIR, "wallet-inbox.json")
 INBOX_MAX, SEEN_MAX, PAYLOAD_MAX = 500, 4000, 16384      # messages kept, hashes remembered, bytes per message
@@ -1122,7 +1152,10 @@ def inbox_load():
     return {"version": 1, "items": [], "seen": [], "next": 1}
 
 
-inbox = inbox_load() if MESSAGING else {"version": 1, "items": [], "seen": [], "next": 1}
+inbox = {"version": 1, "items": [], "seen": [], "next": 1}
+_waku["feature"] = EMBEDDED or bool(waku_api())          # messages exist here at all (decided once)
+if _waku["feature"]:
+    inbox.update(inbox_load())
 
 
 def inbox_save():
@@ -1138,12 +1171,15 @@ def inbox_save():
 def messaging_inbox_count():
     """How many sealed messages wait in the inbox (for a notification without content). No HTTP route."""
     with msg_lock:
-        return len(inbox["items"]) if MESSAGING else 0
+        return len(inbox["items"]) if messaging_on() else 0
 
 
 def waku(method, path, body=None, timeout=6):
     """(http status, parsed JSON or text) from the messaging node; status 0 when it doesn't answer."""
-    req = urllib.request.Request(WAKU_API + path, data=None if body is None else json.dumps(body).encode(), method=method,
+    api = waku_api()
+    if not api:
+        return 0, None
+    req = urllib.request.Request(api + path, data=None if body is None else json.dumps(body).encode(), method=method,
                                  headers={"Content-Type": "application/json", "Accept": "application/json"})
     try:
         with _outside.open(req, timeout=timeout) as r:
@@ -1175,8 +1211,18 @@ def messaging_health():
 
 
 def messaging_round():
+    api = waku_api()
+    with msg_lock:
+        if not api:                              # the node is switched off: say so, and subscribe again later
+            msg_state.update(configured=False, reachable=False, subscribed=None, health=None, connection=None)
+            return
+        if msg_state.get("configured") is False or msg_state.get("api") != api:
+            msg_state.update(checked=0.0, misses=0, subscribed=None)    # it (re)appeared: look at it now
+        msg_state.update(configured=True, api=api)
     key = msg_key_load()
-    if time.time() - msg_state["checked"] >= MSG_HEALTH_EVERY:
+    # until the inbox is subscribed, look every round: a node only catches up on missed messages for topics
+    # subscribed during its start-up catch-up or within 10 s after it (logos-delivery recv_service.nim)
+    if time.time() - msg_state["checked"] >= (MSG_HEALTH_EVERY if msg_state["subscribed"] else 0):
         messaging_health()
     if not key or msg_state["reachable"] is False:
         return
@@ -1227,6 +1273,17 @@ def messaging_round():
             changed = True
         if changed:
             inbox_save()
+
+
+def messaging_start():
+    """Loads the inbox and starts the messaging loop, once."""
+    with msg_lock:
+        if _waku["thread"]:
+            return
+        _waku["thread"] = True
+        if not inbox["items"] and not inbox["seen"]:
+            inbox.update(inbox_load())
+    threading.Thread(target=messaging_loop, daemon=True).start()
 
 
 def messaging_loop():
@@ -1308,7 +1365,8 @@ def messaging_get(path, query):
         with msg_lock:
             st = dict(msg_state)
             count = len(inbox["items"])
-        return 200, {"node": {"reachable": st["reachable"], "health": st["health"], "connection": st["connection"],
+        return 200, {"node": {"configured": st.get("configured", bool(waku_api())), "reachable": st["reachable"],
+                              "health": st["health"], "connection": st["connection"],
                               "checked_s_ago": round(time.time() - st["checked"]) if st["checked"] else None},
                      "key": key["public"] if key else None, "name": (key or {}).get("name", ""),
                      "topic": inbox_topic(key["public"]) if key else None, "subscribed": bool(key and st["subscribed"]),
@@ -1752,13 +1810,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 with open(os.path.join(APP_DIR, "index.html"), "rb") as f:
                     page = f.read().replace(b"__APP_VERSION__", APP_VERSION.encode())
                 page = page.replace(b"__APP_EMBEDDED__", b"android" if EMBEDDED else b"")
-                if MESSAGING:                     # the Messages panel, only when a messaging node is there
+                if messaging_on():                # the Messages panel, only where a messaging node can run
                     page = page.replace(b"</body>", b'<script type="module" src="/messages/messages.js"></script>\n</body>', 1)
                 return self.reply(200, raw=page, ctype="text/html; charset=utf-8")
             except Exception:
                 return self.reply(500, {"error": "index.html is missing"})
         if path.startswith("/api/messages/") or path.startswith("/messages/") or path.startswith("/noble-curves/"):
-            if not MESSAGING:
+            if not messaging_on():
                 return self.reply(404, {"error": "not found"})
             m = MESSAGES_FILE_RE.match(path)
             if m:
@@ -1937,7 +1995,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             event("auto-lock changed", self, minutes=n)
             return self.reply(200, {"autolock_minutes": n})
         if path.startswith("/api/messages/"):
-            if not MESSAGING:
+            if not messaging_on():
                 return self.reply(404, {"error": "not found"})
             if not self.authed():
                 return self.reply(401, {"error": "locked"})
@@ -2027,8 +2085,8 @@ def main():
     threading.Thread(target=history_loop, daemon=True).start()
     if not EMBEDDED:
         threading.Thread(target=update_loop, daemon=True).start()
-    if MESSAGING:
-        threading.Thread(target=messaging_loop, daemon=True).start()
+    if messaging_on():
+        messaging_start()
     threading.Thread(target=session_watch, daemon=True).start()
     http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
 

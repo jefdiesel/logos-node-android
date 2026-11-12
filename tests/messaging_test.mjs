@@ -68,7 +68,7 @@ if (process.env.NAMES_MSG_CRYPTO) {
 
 // ---- the fake world: a messaging network, a sequencer, apps ---------------------------------------
 const PROGRAM = N.base58Encode(new Uint8Array(32).fill(7));
-const SEQ_PORT = 18547, CTL = 18659, NODE_A = 18651, NODE_B = 18652;
+const SEQ_PORT = 18547, CTL = 18659, NODE_A = 18651, NODE_B = 18652, NODE_PEER = 18654;
 const shards = new Map();
 async function register(name, texts) {
   const d = await N.deriveName(name);
@@ -85,7 +85,7 @@ const sequencer = createServer((req, res) => {
   });
 });
 await new Promise((ok) => sequencer.listen(SEQ_PORT, "127.0.0.1", ok));
-procs.push(spawn("python3", [join(here, "fake_waku.py"), String(CTL), String(NODE_A), String(NODE_B)], { stdio: "ignore" }));
+procs.push(spawn("python3", [join(here, "fake_waku.py"), String(CTL), String(NODE_A), String(NODE_B), String(NODE_PEER)], { stdio: "ignore" }));
 const control = (what) => fetch(`http://127.0.0.1:${CTL}/${what}`, { method: "POST", body: "{}" });
 const inject = (node, topic, payload) => fetch(`http://127.0.0.1:${CTL}/inject/${node}`, { method: "POST", body: JSON.stringify({ topic, payload }) });
 
@@ -224,6 +224,33 @@ await inject(0, MC.inboxTopic(A.key.publicKey), b64(forged));
 await until("a message claiming to be bob arrives", async () => (await inbox(A)).length === 2);
 const fake = (await opened(A))[1];
 check("it opens, but isn't verified as bob", fake && fake.from === "bob" && !MC.isVerified(fake, await msgKey(A, "bob")), fake);
+
+// the command-line peer (tools/msg-peer.mjs), as on the Mini next to a desktop node
+const peerDir = mkdtempSync(join(tmpdir(), "peer-")), peerKey = join(peerDir, "key.json");
+const peerArgs = ["--key", peerKey, "--api", `http://127.0.0.1:${NODE_PEER}`, "--rpc", `http://127.0.0.1:${SEQ_PORT}`, "--program", PROGRAM];
+const peerPub = execFileSync(process.execPath, [join(ROOT, "tools", "msg-peer.mjs"), "keygen", ...peerArgs], { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+check("msg-peer keygen prints only the public key, and keeps the secret in a 0600 file",
+  /^[0-9a-f]{64}$/.test(peerPub) && JSON.parse(readFileSync(peerKey, "utf8")).public === peerPub && (await import("node:fs")).statSync(peerKey).mode % 0o1000 === 0o600, peerPub);
+await register("mini", { msg: peerPub });
+const listener = spawn(process.execPath, [join(ROOT, "tools", "msg-peer.mjs"), "listen", ...peerArgs], { stdio: ["ignore", "pipe", "ignore"] });
+procs.push(listener);
+let heard = "";
+listener.stdout.on("data", (d) => (heard += d));
+await sleep(2500);                                  // it subscribes first
+await send(A, "alice", "mini", "hi mini, from the phone");
+await until("msg-peer listen prints the message, verified", async () => heard.includes("✓ alice: hi mini, from the phone") && heard, 15000);
+const peerSend = spawn(process.execPath, [join(ROOT, "tools", "msg-peer.mjs"), "send", "--to", "alice", "--from-name", "mini", "hello alice, from the Mini", ...peerArgs], { stdio: ["ignore", "pipe", "pipe"] });
+let peerOut = ""; peerSend.stdout.on("data", (d) => (peerOut += d)); peerSend.stderr.on("data", (d) => (peerOut += d));
+const peerCode = await new Promise((ok) => peerSend.on("exit", ok));
+check("msg-peer send resolves alice, seals and sends, and reports sent", peerCode === 0 && peerOut.includes("sent to alice") && peerOut.includes("  sent"), peerOut);
+await until("alice's app gets it", async () => (await inbox(A)).length === 3);
+got = (await opened(A)).find((m) => m && m.from === "mini");
+check("and opens it, verified as mini", got && got.text === "hello alice, from the Mini" && MC.isVerified(got, await msgKey(A, "mini")), got);
+const noKey = spawn(process.execPath, [join(ROOT, "tools", "msg-peer.mjs"), "send", "--to", "carol", "--from-name", "mini", "x", ...peerArgs], { stdio: ["ignore", "ignore", "pipe"] });
+let noKeyErr = ""; noKey.stderr.on("data", (d) => (noKeyErr += d));
+const noKeyCode = await new Promise((ok) => noKey.on("exit", ok));
+check("msg-peer send to a name without a msg entry says so", noKeyCode === 1 && noKeyErr.includes("carol has no messaging key"), noKeyErr);
+listener.kill();
 
 // duplicates: the same record twice (the replay of history after a restart is checked further down)
 await control("dup/1"); await sleep(1500);
