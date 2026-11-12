@@ -10,8 +10,8 @@
 //    oversized payloads, a node going down and coming back, a node restarting without going away and one
 //    starting (404 while initializing), the sender's own copy and letting go of the recipient's topic after
 //    a send, deleting, and the messaging key in the backup.
-// 3. Without WAKU_API (or with one that isn't on this device): no new routes or fields, and the page is the
-//    0.7.7 page.
+// 3. Without WAKU_API (or with one that isn't on this device): no new routes or fields, the same CSP, and
+//    the page served is the page file (no Messages module).
 import { spawn, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cpSync, mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
@@ -131,9 +131,10 @@ globalThis.fetch = (url, opt = {}) => {            // what the page's fetch shim
 const until = async (name, f, ms = 10000) => { const end = Date.now() + ms; let v; while (Date.now() < end) { v = await f(); if (v) return v; await sleep(200); } check(name, false, v); };
 
 // ---- 3. without WAKU_API nothing is new -----------------------------------------------------------
-const INDEX_077 = "c8cbce48989455d88ecf72223eebef492b7c08bf0fecc7e02752873ff4613965";
+// The page file itself changes between releases (for everyone). What matters here is that without a
+// messaging node nothing of Messages reaches the page: no module, no routes, the same CSP and fields.
 const indexFile = readFileSync(join(ROOT, "app", "index.html"));
-check("the page file is the 0.7.7 page", createHash("sha256").update(indexFile).digest("hex") === INDEX_077);
+check("the page file loads no Messages code itself (that comes only with the module)", !/messages\.js|\/api\/messages|type="module"/.test(indexFile.toString("utf8")));
 for (const [label, extra, port] of [["without WAKU_API", { WAKU_API: null }, 8097], ["with a WAKU_API off this device", { WAKU_API: "http://192.168.1.5:18645" }, 8098]]) {
   const c = await app(port, extra);
   const w = await call(c, "/api/wallet");

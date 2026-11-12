@@ -219,14 +219,6 @@ for (const id of ["footer-talk", "about-talk"]) if ($(id)) $(id).textContent = $
 
 // ---- the screen ----------------------------------------------------------------------------------------
 page.innerHTML = `
-  <section class="card" id="mg-locked" hidden>
-    <div class="empty" style="padding-top:8px">
-      <div class="art" id="mg-locked-art"></div>
-      <h3>Messages are locked</h3>
-      <p>They lock with the wallet. Unlock with your PIN or fingerprint to read and write.</p>
-      <button type="button" class="primary" id="mg-unlock">Unlock</button>
-    </div>
-  </section>
   <section class="card hero" id="mg-nokey" hidden>
     <h2>Messages</h2>
     <h3>Chat with anyone who has an LNS name</h3>
@@ -254,7 +246,7 @@ page.innerHTML = `
       <h2 id="h-new">New chat</h2>
       <form id="mg-find" autocomplete="off">
         <label for="mg-to" style="margin-top:0">An LNS name or a messaging address</label>
-        <div class="pwrow"><input id="mg-to" class="mono" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="40" placeholder="alice, or msg:…" enterkeyhint="search"><button type="submit" id="mg-look">Look up</button></div>
+        <div class="pwrow"><input id="mg-to" class="mono" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="100" placeholder="alice, or msg:…" enterkeyhint="search"><button type="submit" id="mg-look">Look up</button></div>
         <p class="hint">Names are looked up on the chain from this phone. A messaging address is what someone copies from their own Messages settings.</p>
       </form>
       <div id="mg-found"></div>
@@ -286,23 +278,30 @@ page.innerHTML = `
 for (const b of page.querySelectorAll(".mg-home")) { b.append(svg(P.back, 20), "Chats"); b.addEventListener("click", () => home()); }
 $("mg-new").append(svg(P.plus, 18), "New chat");
 $("mg-me").append(svg(P.sliders, 22));
-$("mg-locked-art").append(svg(P.lock, 34));
 // room for "New group" next to New chat once groups exist; nothing is shown for it until then
 
 let chat = null, me = null, status = null, view = "home", loading = null;
-const forget = () => { chat = null; me = null; loading = null; closeAll(); $("mg-rows").replaceChildren(); $("mg-found").replaceChildren(); $("mg-to").value = ""; badge.hidden = true; };
+const forget = () => {        // nothing of the chats stays in the page while it is locked
+  chat = null; me = null; loading = null; closeAll();
+  for (const id of ["mg-rows", "mg-found", "mg-hint"]) $(id).replaceChildren();
+  for (const id of ["mg-to", "mg-name"]) $(id).value = "";
+  for (const id of ["mg-cmd", "mg-addr", "mg-check-m", "mg-name-m", "mg-addr-m"]) $(id).textContent = "";
+  badge.hidden = true;
+};
 function home() { view = "home"; for (const [id, v] of [["mg-newv", "new"], ["mg-mev", "me"]]) $(id).hidden = true; render(); }
 
 // everything goes when the wallet locks
 const pageShow = window.show;
+// The lock screen covers everything (the page's own); after unlocking, back to where the user was: the
+// same tab, and the same chat if one was open.
+let resume = null, reopen = null;
 window.show = v => {
+  if (v !== "v-open" && !resume && (chat || tab === "msg")) resume = { tab, convo: cv.id };
   pageShow(v);
   if (v !== "v-open") forget();
-  else if (wantMsg) { wantMsg = false; setTab("msg"); return; }     // unlocked from the Messages screen: back there
+  else if (resume) { const r = resume; resume = null; reopen = r.convo; setTab(r.tab); return; }
   if (tab === "msg") render();
 };
-$("mg-unlock").addEventListener("click", () => { wantMsg = true; setTab("wallet"); const f = $("b-fp").hidden ? $("pin") : $("b-fp"); f && f.focus(); });
-let wantMsg = false;
 
 const unlocked = () => !$("v-open").hidden && token;
 function locked401(r) { if (r && r.status === 401) { lockedNow(); return true; } return false; }
@@ -324,6 +323,7 @@ async function refresh() {
   }
   if (!status.key) { me = null; chat = null; }
   if (loading) { await loading; loading = null; }
+  if (reopen && chat && chat.convo(reopen)) { const id = reopen; reopen = null; render(); openConvo(id); }
   else if (chat) { try { if (await chat.sync()) changed(); } catch (e) { if (e.status === 401) return lockedNow(); } }
   render();
 }
@@ -339,7 +339,6 @@ const nodeText = () => {
 };
 function render() {
   const open = unlocked();
-  $("mg-locked").hidden = open;
   $("mg-nokey").hidden = !open || !status || !!status.key;
   const ready = open && !!chat && !!chat.ready;
   $("mg-home").hidden = !ready || view !== "home";
@@ -375,6 +374,9 @@ function updateBadge() {
 }
 $("mg-me").addEventListener("click", () => { view = "me"; render(); openMe(); });
 const cardOf = pid => { const c = chat && !isAddressId(pid) && chat.chainOf(pid); return c ? { avatar: c.avatar, color: c.color } : {}; };
+/** A conversation's icon; a grey "?" for messages that didn't come from the name they claim. */
+const convoIcon = (c, size) => c.unverified ? icon("", { key: "", size, letters: "?", color: "#8a8476" })
+  : c.kind === "direct" ? iconOf(chat.peer(c), size) : icon(c.title, { key: c.id, size });
 /** A person's icon: generated from the name (or address) and the pinned key, or the name's own picture. */
 const iconOf = (pid, size, key) => isAddressId(pid)
   ? icon("", { key: pid.slice(2), size, letters: ((chat.profile(pid) || {}).nickname || "#").slice(0, 1).toUpperCase() })
@@ -398,6 +400,7 @@ function preview(c) {
     return { text: (st.bad ? "Not sent: " : "You: ") + t, warn: st.bad };
   }
   const trust = chat.trust(m);
+  if (c.convo.unverified) return { text: t, warn: true };         // the title already says it
   if (trust === "unverified") return { text: "⚠ Not verified: " + t, warn: true };
   if (c.convo.kind !== "direct") return { text: chat.label(m.sender) + ": " + t, warn: false };
   return { text: t, warn: false };
@@ -418,7 +421,7 @@ function renderList() {
     const time = el("span", { className: "ct" + (c.unread && !c.muted ? " new" : "") }, c.muted ? svg(P.mute, 14) : null, c.last ? shortWhen(c.last.ts) : "");
     const count = c.unread ? el("span", { className: "badge" + (c.muted ? " quiet" : ""), textContent: c.unread > 99 ? "99+" : String(c.unread) }) : null;
     const row = el("button", { type: "button", className: "crow" },
-      c.convo.kind === "direct" ? iconOf(chat.peer(c.convo), 48) : icon(c.title, { key: id, size: 48 }),
+      convoIcon(c.convo, 48),
       el("span", { className: "cb" },
         el("span", { className: "cl" }, el("span", { className: "cn", textContent: c.title }), time),
         el("span", { className: "cl" }, el("span", { className: "cp" + (pv.warn ? " warn" : ""), textContent: c.blocked ? "Blocked" : pv.text }), count)));
@@ -427,7 +430,10 @@ function renderList() {
     return row;
   }));
   // chats whose names haven't been read from the chain yet: read them, for pictures and key checks
-  for (const c of list) for (const m of c.convo.members) if (m.name && !chat.chainOf(m.name)) chat.lookup(m.name).then(() => { if (view === "home" && !cv.id) renderList(); }).catch(() => {});
+  const again = () => { if (view === "home" && !cv.id) render(); };
+  for (const c of list) for (const m of c.convo.members) if (m.name && !chat.chainOf(m.name)) chat.lookup(m.name).then(again).catch(() => {});
+  // a "Not verified" row may only be one the name service couldn't be asked about yet
+  for (const c of list) if (c.convo.unverified && !isAddressId(c.convo.claimed) && !chat.chainOf(c.convo.claimed)) chat.lookup(c.convo.claimed).then(() => chat.sync()).then(again).catch(() => {});
 }
 
 // ---- new chat ------------------------------------------------------------------------------------------
@@ -538,7 +544,7 @@ $("mg-name-save").addEventListener("click", async () => {
   if (locked401(r)) return;
   if (!r.ok) return void (m.className = "msg bad", m.textContent = r.data.error || "Couldn't save it.");
   me.name = name; openMe();
-  m.className = "msg ok"; m.textContent = name ? "Saved." : "";
+  m.className = "msg"; m.textContent = name ? "Saved. Messages go out under " + name + " once it's linked to this phone (below); until then they show your messaging address." : "";
   checkMine(true);
 });
 $("mg-copy").addEventListener("click", async () => {
@@ -575,7 +581,7 @@ function openConvo(id) {
   const back = el("button", { type: "button", className: "back", ariaLabel: "Back to chats" }, svg(P.back));
   back.addEventListener("click", () => popOv());
   const who = el("button", { type: "button", className: "who" });
-  who.addEventListener("click", () => { const c = chat.convo(cv.id); if (c && c.kind === "direct") openProfile(chat.peer(c)); });
+  who.addEventListener("click", () => { const c = chat.convo(cv.id); if (c && c.kind === "direct" && !c.unverified) openProfile(chat.peer(c)); });
   const ban = el("div", { className: "cv-ban", hidden: true });
   const inner = el("div", { className: "cv-in" });
   const scroll = el("div", { className: "cv-scroll" }, inner);
@@ -634,7 +640,7 @@ async function checkSend(fresh) {
     un.addEventListener("click", async () => { await chat.setProfile(why.name, { blocked: false }); checkSend(false); renderConvo(); });
     n.note.replaceChildren(why.text, un); n.note.hidden = false; n.cmp.hidden = true;
   } else if (why && why.code !== "offline") {
-    n.note.replaceChildren(why.text + " Messages can't be sent to them now."); n.note.hidden = false; n.cmp.hidden = true;
+    n.note.replaceChildren(why.code === "unverified" ? why.text : why.text + " Messages can't be sent to them now."); n.note.hidden = false; n.cmp.hidden = true;
   }
   n.go.disabled = !n.ta.value.trim() || !!n.blocker;
   renderWho();
@@ -644,14 +650,15 @@ function renderWho() {
   const pid = c.kind === "direct" ? chat.peer(c) : null;
   const p = pid && chat.profile(pid), st = pid && chat.keyState(pid);
   let sub = c.members.length + " people", cls = "";
-  if (pid && isAddressId(pid)) sub = (p && p.nickname ? shortFp(pid.slice(2)) + " · " : "") + "address only, no name to verify";
+  if (c.unverified) { sub = "Didn't come from " + (isAddressId(c.claimed) ? "the address it names" : c.claimed + "'s messaging address"); cls = "warn"; }
+  else if (pid && isAddressId(pid)) sub = (p && p.nickname ? shortFp(pid.slice(2)) + " · " : "") + "address only, no name to verify";
   else if (pid) {
     if (st.changed) { sub = "messaging address changed"; cls = "warn"; }
     else if (st.pinned && st.chain === st.pinned) { sub = (p && p.nickname ? pid + " · " : "") + "✓ verified"; cls = "ok"; }
     else if (st.chain === null) { sub = pid + " · messages off"; cls = "warn"; }
     else sub = p && p.nickname ? pid : "LNS name";
   }
-  n.who.replaceChildren(pid ? iconOf(pid, 40) : icon(c.title, { key: c.id, size: 40 }),
+  n.who.replaceChildren(convoIcon(c, 40),
     el("span", { className: "t" }, el("b", { textContent: chat.title(c) }), el("small", { className: cls, textContent: sub })));
 }
 const STATES = { queued: "Waiting to send", sending: "Sending…", propagated: "Sent", sent: "Stored", failed: "Not sent" };
@@ -699,7 +706,8 @@ function renderConvo(toBottom = false) {
       const meta = el("div", { className: "meta " + m.dir }, el("span", { textContent: new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }));
       if (st) {
         meta.append(el("span", { className: st.bad ? "bad" : "", textContent: st.text }));
-        if (st.bad) { const r = el("button", { type: "button", textContent: "Retry" }); r.addEventListener("click", async () => { r.disabled = true; await chat.retry(m.n); renderConvo(); }); meta.append(r); }
+        if (st.bad && m.sends.some(x => x.state === "failed" && x.resend)) { const r = el("button", { type: "button", textContent: "Retry" }); r.addEventListener("click", async () => { r.disabled = true; await chat.retry(m.n); renderConvo(); }); meta.append(r); }
+        else if (st.bad) meta.append(el("span", { textContent: "(restored from a backup; it can't be sent again)" }));
       }
       kids.push(meta);
     }

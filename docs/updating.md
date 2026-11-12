@@ -20,6 +20,12 @@ this: it keeps running and is never restarted by an update.
 - Your PIN, fingerprint keys, history, event log and backup reminder are kept: they are in files the
   update never touches (`wallet-*`).
 
+## What changes you'll see
+
+- 0.9.2: a locked app shows one lock screen (the λ, your PIN, and fingerprint where it's on) instead of the
+  wallet in a locked state, and Restore accepts backups made with Messages on (they were refused before).
+- 0.9.3: the wallet's look changes: the balance first, one Settings page, stronger contrast in dark mode.
+
 ## Going back to the previous version by hand
 
 The previous files are next to the new ones, with `.prev` added: `server.py.prev`, `index.html.prev`,
