@@ -625,7 +625,9 @@ def lns_view():
             "name": st["name"], "job": job, "last_backup": last_backup(), "notes": notes,
             # the last backup doesn't hold the account as it is now (or there is none)
             "backup_needed": bool(st["account"]) and lns_fingerprint() != lns_backed_up(),
-            "values": {"blockchain": main, "msg": mk["public"] if mk else None}}
+            "values": {"blockchain": main, "msg": mk["public"] if mk else None},
+            "cost": lns_cost() if st["account"] else None, "bridge": bridge_view(),
+            "faucet": dict(lns_faucet_last) or None}
 
 
 def lns_watch(kind, proc, deadline, on_success):
@@ -765,6 +767,532 @@ def lns_text(body):
             return 500, {"error": "That address isn't in the expected form."}
         return 200, (["set-text", name, entry, value], name, entry, lambda: None)
     return lns_start("text", build)
+
+
+# ---- getting LEZ into the name account (android/NAMES.md, "Getting LEZ") ---------------------
+# Two ways: the project's faucet, and a bridge from this app's own wallet (Logos Blockchain -> the name account),
+# made through the node's own HTTP API (POST /channel/deposit). A deposit moves whole notes and can't be undone,
+# so the bridge first sends the exact amount to the same key (a split), waits for that note to be in a block, and
+# deposits that one note; the fee comes from the key's other notes. One bridge at a time. Its state is written to
+# BRIDGE_FILE before each call to the node, so it carries on after the app restarts and never spends a note twice.
+
+LNS_FAUCET_URL = os.environ.get("LNS_FAUCET_URL", "https://lez.buggers.online/faucet")
+BRIDGE_FILE = os.path.join(DATA_DIR, "wallet-bridge.json")
+BRIDGE_MAX_FEE = 100000                      # the deposit's fee cap (max_tx_fee), as `names bridge` sets it
+SPLIT_FEE_ROOM = 10000                       # set aside for the split's own fee (866 to 2,054 seen)
+BRIDGE_POLL = float(os.environ.get("BRIDGE_POLL", "20"))
+BRIDGE_GIVE_UP = float(os.environ.get("BRIDGE_GIVE_UP", str(30 * 60)))   # a split or an unanswered deposit not in a block by then
+BRIDGE_ACTIVE = ("splitting", "ready", "depositing", "sent")             # notes of the key are spoken for
+LEZ_V03_PROBE = {"jsonrpc": "2.0", "id": 1, "method": "getRecoveryBinding", "params": ["11111111111111111111111111111111"]}
+LNS_RESERVE_BYTES = 1500                     # a registration's transaction bytes, generously: billed at the storage fee
+B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+bridge_lock = threading.Lock()               # guards the bridge state and its file
+bridge_wake = threading.Event()
+lns_cost_cache = {"settings": None, "settings_at": 0.0, "fees": None, "fees_at": 0.0}
+lns_faucet_lock = threading.Lock()
+lns_faucet_last = {}
+
+
+def b58decode(text):
+    n = 0
+    for c in text:
+        i = B58.find(c)
+        if i < 0:
+            raise ValueError("not base58")
+        n = n * 58 + i
+    raw = n.to_bytes((n.bit_length() + 7) // 8, "big") if n else b""
+    return b"\0" * (len(text) - len(text.lstrip("1"))) + raw
+
+
+def lez_account_bytes(account):
+    """The 32 bytes of a LEZ account id: what LEZ 0.3 reads as a deposit's metadata (borsh of AccountId)."""
+    raw = b58decode(account)
+    if len(raw) != 32:
+        raise ValueError("not 32 bytes")
+    return raw
+
+
+def deposit_op_id(channel_hex, notes, metadata):
+    """The deposit's operation id, as LEZ mints it: Blake2b-256("OPERATION_ID_V1" | channel | one-byte note count |
+    each note's 32 bytes | metadata length, u32 little-endian | metadata). None for note ids that aren't 32 bytes."""
+    try:
+        parts = [bytes.fromhex(channel_hex), bytes([len(notes)])] + [bytes.fromhex(n) for n in notes]
+        if len(parts[0]) != 32 or any(len(p) != 32 for p in parts[2:]):
+            return None
+    except Exception:
+        return None
+    h = hashlib.blake2b(digest_size=32)
+    h.update(b"OPERATION_ID_V1")
+    for p in parts:
+        h.update(p)
+    h.update(struct.pack("<I", len(metadata)))
+    h.update(bytes(metadata))
+    return h.hexdigest()
+
+
+def lez_rpc(method, params, timeout=10):
+    """The sequencer's `result` for one call, or raises."""
+    code, data = fetch_outside(NAMES_RPC_URL, {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, timeout=timeout)
+    reply = json.loads(data)
+    if code != 200 or not isinstance(reply, dict) or reply.get("error") is not None or "result" not in reply:
+        raise ValueError("no answer")
+    return reply["result"]
+
+
+def lez_is_v03():
+    """True when the sequencer runs LEZ 0.3 (it doesn't know 0.4's getRecoveryBinding), False for 0.4, None when its
+    answer tells neither. A deposit whose metadata LEZ can't read is never credited, so only 0.3 is bridged to."""
+    try:
+        code, data = fetch_outside(NAMES_RPC_URL, LEZ_V03_PROBE, timeout=10)
+        reply = json.loads(data)
+    except Exception:
+        return None
+    if not isinstance(reply, dict):
+        return None
+    err = reply.get("error")
+    if isinstance(err, dict):
+        return True if err.get("code") == -32601 else None
+    return False if "result" in reply else None
+
+
+def lns_fee_state():
+    """(exec ceiling, storage ceiling) of the next block, from getFeeState; None when not known. Cached a minute."""
+    now = time.time()
+    if lns_cost_cache["fees"] and now - lns_cost_cache["fees_at"] < 60:
+        return lns_cost_cache["fees"]
+    try:
+        r = lez_rpc("getFeeState", [])
+        fees = (int(r["next_base_fee_exec_ceiling"]), int(r["next_base_fee_stor_ceiling"]))
+    except Exception:
+        return None
+    lns_cost_cache.update(fees=fees, fees_at=now)
+    return fees
+
+
+def lns_settings():
+    """The registry's settings as `names settings` prints them ({mode, deposits: {normal, three_characters},
+    prices}), or None while they aren't known. Read in the background (it can take a while), in a throwaway wallet
+    folder so the name account's files are never opened; again after an hour (half a minute after a failure)."""
+    now = time.time()
+    if now - lns_cost_cache["settings_at"] >= (3600 if lns_cost_cache["settings"] else 30):
+        lns_cost_cache["settings_at"] = now
+        threading.Thread(target=lns_settings_read, daemon=True).start()
+    return lns_cost_cache["settings"]
+
+
+def lns_settings_read():
+    tmp = tempfile.mkdtemp(prefix=".lns-check-", dir=DATA_DIR)
+    try:
+        os.chmod(tmp, 0o700)
+        r = subprocess.run([NAMES_BIN, "settings"], env=lns_env(tmp), cwd=tmp, capture_output=True, timeout=120,
+                           stdin=subprocess.DEVNULL, umask=0o077)
+        out = r.stdout.decode("utf-8", "replace")
+        settings = json.loads(out[out.index("{"):out.rindex("}") + 1]) if r.returncode == 0 and "{" in out else None
+        if not isinstance(settings, dict) or not isinstance(settings.get("deposits"), dict):
+            settings = None
+    except Exception:
+        settings = None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if settings or not lns_cost_cache["settings"]:
+        lns_cost_cache["settings"] = settings
+    if not settings:
+        lns_cost_cache["settings_at"] = time.time() - 3600 + 30
+
+
+def lns_cost():
+    """What registering a name takes from the name account, as `names` checks it before sending: what the reveal
+    moves (the deposit, or the 1-year price in fee mode), plus a fee reserve for each of the two transactions (the
+    commit and the reveal): the register gas limit at the next block's exec fee ceiling, plus the bytes at the
+    storage ceiling. Parts not known right now are None."""
+    st, fees = lns_settings(), lns_fee_state()
+    out = {"deposit": None, "deposit_three": None, "mode": None, "reserve": None, "need": None, "need_three": None}
+    if st:
+        out["mode"] = "fee" if st.get("mode") == "fee" else "deposit"
+        if out["mode"] == "fee":
+            one = as_int((st.get("prices") or {}).get("1y"))
+            out["deposit"] = out["deposit_three"] = str(one)
+        else:
+            out["deposit"] = str(as_int(st["deposits"].get("normal")))
+            out["deposit_three"] = str(as_int(st["deposits"].get("three_characters")))
+    if fees:
+        out["reserve"] = str(LNS_GAS["register"] * fees[0] + LNS_RESERVE_BYTES * fees[1])
+    if st and fees:
+        out["need"] = str(int(out["deposit"]) + 2 * int(out["reserve"]))
+        out["need_three"] = str(int(out["deposit_three"]) + 2 * int(out["reserve"]))
+    return out
+
+
+def lns_faucet():
+    """Asks the project's faucet to pay the name account. The faucet's own reason is passed on when it refuses."""
+    st = lns_state()
+    if not st["account"]:
+        return 409, {"error": "Make the name account first."}
+    if not lns_faucet_lock.acquire(blocking=False):
+        return 409, {"error": "Already asking the faucet."}
+    try:
+        try:
+            code, data = fetch_outside(LNS_FAUCET_URL, {"account": st["account"]}, cap=16384, timeout=60)
+        except Exception:
+            return 502, {"error": "Couldn't reach the faucet. Check your internet and try again."}
+        try:
+            reply = json.loads(data)
+        except Exception:
+            reply = None
+        if not isinstance(reply, dict):
+            return 502, {"error": "The faucet sent an answer this app can't read."}
+        if code != 200 or not isinstance(reply.get("tx"), str):
+            why = reply.get("error")
+            why = re.sub(r"[\x00-\x1f\x7f]+", " ", why).strip()[:200] if isinstance(why, str) and why.strip() else ""
+            return 409, {"error": ("The faucet says: " + why) if why else "The faucet refused, without saying why."}
+        amount = as_int(reply.get("amount"))
+        lns_faucet_last.update(at=time.time(), amount=str(amount))
+        with bridge_lock:                     # a bridge waiting to arrive must not take this grant for itself
+            b = bridge_load()
+            if b and b["state"] in ("depositing", "sent", "landed"):
+                b["lez"]["faucet"] = b["lez"].get("faucet", 0) + amount
+                bridge_save(b)
+        return 200, {"amount": str(amount), "tx": reply["tx"][:80]}
+    finally:
+        lns_faucet_lock.release()
+
+
+def bridge_load():
+    try:
+        with open(BRIDGE_FILE) as f:
+            b = json.load(f)
+        return b if isinstance(b, dict) and b.get("state") else None
+    except Exception:
+        return None
+
+
+def bridge_save(b):
+    """Writes the bridge's state atomically; the caller holds bridge_lock."""
+    b["updated"] = time.time()
+    tmp = BRIDGE_FILE + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(b, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, BRIDGE_FILE)
+
+
+def bridge_busy_key(key):
+    """Whether a bridge is using `key`'s notes right now (Send from it waits)."""
+    with bridge_lock:
+        b = bridge_load()
+    return bool(b and b["state"] in BRIDGE_ACTIVE and b["from"] == key)
+
+
+def bridge_view():
+    with bridge_lock:
+        b = bridge_load()
+    if not b:
+        return None
+    return {k: b.get(k) for k in ("state", "from", "label", "to", "amount", "fee", "split_fee", "created", "sent_at",
+                                  "landed_at", "arrived_at", "error", "wait", "id")}
+
+
+def bridge_check(frm, amount):
+    """(None, plan) when a bridge of `amount` from `frm` can start now, else (http status, reply). Changes nothing."""
+    st = lns_state()
+    if not st["account"] or not os.path.isfile(lns_storage()):
+        return 409, {"error": "Make the name account first."}
+    keys = {k["key"]: k["label"] for k in wallet_keys()}
+    if frm not in keys:
+        return 400, {"error": "That account isn't in this wallet."}
+    if amount <= 0:
+        return 400, {"error": "Enter an amount above 0."}
+    with bridge_lock:
+        b = bridge_load()
+    if b and b["state"] in BRIDGE_ACTIVE:
+        return 409, {"error": "A bridge is under way. Start another once it is in a block."}
+    with hist_lock:
+        pending = [e for e in history["entries"] if e["kind"] == "sent" and e.get("status") == "pending" and e.get("key") == frm]
+    if pending:
+        return 409, {"error": "A transfer from this account isn't in a block yet. Try again once it is."}
+    stn = node_status()
+    if not stn or stn.get("state") != "Online":
+        return 409, {"error": "The node is not online yet, so it can't bridge. Wait until it has finished syncing."}
+    notes = notes_of(frm)
+    if notes is None:
+        return 502, {"error": "The node didn't return this account's coins. Try again in a minute."}
+    exact = next((i for i, v in sorted(notes.items()) if v == amount), None)
+    others = sum(v for i, v in notes.items() if i != exact)
+    split = exact is None
+    room = BRIDGE_MAX_FEE + (SPLIT_FEE_ROOM if split else 0)
+    if (others - amount if split else others) < room:
+        return 409, {"error": "This account holds %s. Bridging %s needs about %s more for the fees (at most %s for the bridge%s)."
+                     % (fmt_int(sum(notes.values())), fmt_int(amount), fmt_int(room), fmt_int(BRIDGE_MAX_FEE),
+                        ", and about %s to set the amount aside first" % fmt_int(SPLIT_FEE_ROOM) if split else ""),
+                     "short": True}
+    v03 = lez_is_v03()
+    if v03 is None:
+        return 502, {"error": "The name service didn't say which version it runs, and a deposit it can't read is never credited. Try again in a minute. Nothing was sent."}
+    if not v03:
+        return 409, {"error": "The name service runs a newer LEZ that this app can't bridge to yet. Nothing was sent."}
+    try:
+        channel = lez_rpc("getChannelId", {})
+    except Exception:
+        channel = None
+    if not isinstance(channel, str) or not HEX64_RE.fullmatch(channel.lower()):
+        return 502, {"error": "The name service didn't give its deposit channel. Try again in a minute. Nothing was sent."}
+    if node("/channel/%s" % channel.lower(), timeout=8)[0] != 200:
+        return 409, {"error": "Your node doesn't know the name service's deposit channel yet: it may still be syncing. Nothing was sent."}
+    try:
+        with open(lns_storage(), "rb") as f:
+            held = lns_accounts_of(f.read())
+    except Exception:
+        held = []
+    if st["account"] not in held:
+        return 409, {"error": "The name account's key couldn't be read just now, so nothing is sent to it. Try again in a minute."}
+    return None, {"from": frm, "label": keys[frm], "to": st["account"], "amount": str(amount), "split": split, "note": exact,
+                  "channel": channel.lower(), "fee_max": str(BRIDGE_MAX_FEE), "split_fee_max": str(SPLIT_FEE_ROOM) if split else None,
+                  "balance": str(sum(notes.values())), "notes_before": sorted(notes)}
+
+
+def fmt_int(n):
+    return "{:,}".format(int(n))
+
+
+def lns_bridge(body):
+    """Plans (confirm false) or starts (confirm true) a bridge of `amount` from the wallet key `from`."""
+    frm = str(body.get("from", "")).strip().lower()
+    try:
+        amount = int(str(body.get("amount", "")).replace(",", "").strip())
+    except Exception:
+        return 400, {"error": "The amount must be a whole number."}
+    code, plan = bridge_check(frm, amount)
+    if code:
+        return code, plan
+    shown = {k: plan[k] for k in ("from", "label", "to", "amount", "split", "fee_max", "split_fee_max", "balance")}
+    if body.get("confirm") is not True:
+        return 200, {"plan": shown}
+    now = time.time()
+    b = {"id": "%d" % int(now * 1000), "state": "ready" if plan["note"] else "splitting", "from": frm, "label": plan["label"],
+         "to": plan["to"], "amount": plan["amount"], "channel": plan["channel"], "note": plan["note"],
+         "notes_before": plan["notes_before"], "created": now, "fee": None, "split_fee": None, "error": "", "wait": "",
+         "lez": {"base": None, "last": None, "up": 0, "faucet": 0}}
+    with bridge_lock:
+        cur = bridge_load()
+        if cur and cur["state"] in BRIDGE_ACTIVE:
+            return 409, {"error": "A bridge is under way. Start another once it is in a block."}
+        bridge_save(b)                        # the intent, before the node is asked anything
+    if plan["split"]:
+        code, reply = node("/wallet/transactions/transfer-funds", {
+            "tip": None, "change_public_key": frm, "funding_public_keys": [frm],
+            "recipient_public_key": frm, "amount": amount}, timeout=60)
+        with bridge_lock:
+            b = bridge_load()
+            if not 200 <= code < 300 or not isinstance(reply, dict) or not reply.get("hash"):
+                b.update(state="failed", error="The node refused to set the amount aside, so nothing was bridged: %s"
+                         % (reply if isinstance(reply, str) else json.dumps(reply) if reply else "no answer")[:200])
+                bridge_save(b)
+                return 502, {"error": b["error"]}
+            b.update(split_hash=reply["hash"], split_at=time.time())
+            bridge_save(b)
+        history_record_send({"key": frm, "label": plan["label"], "to": frm, "to_label": "itself", "amount": "0",
+                             "fee": None, "hash": reply["hash"], "status": "pending", "bridge": "split",
+                             "bridge_id": b["id"], "bridge_amount": plan["amount"]})
+    bridge_wake.set()
+    return 200, {"bridge": bridge_view(), "plan": shown}
+
+
+def lns_bridge_cancel():
+    """Drops a bridge that hasn't deposited anything yet. A note already set aside stays in the wallet."""
+    with bridge_lock:
+        b = bridge_load()
+        if not b or b["state"] not in ("splitting", "ready"):
+            return 409, {"error": "There is no bridge that can still be stopped."}
+        b.update(state="cancelled", error="")
+        bridge_save(b)
+    bridge_history_settle(b, "split", "in block" if b.get("note") else "not in a block")
+    return 200, {"bridge": bridge_view()}
+
+
+def bridge_deposit(b):
+    """Makes the deposit of the one note `b["note"]`. Called by the loop only, with the intent written first."""
+    v03 = lez_is_v03()
+    try:
+        channel = lez_rpc("getChannelId", {})
+    except Exception:
+        channel = None
+    if v03 is not True or channel != b["channel"] or node("/channel/%s" % b["channel"], timeout=8)[0] != 200:
+        with bridge_lock:
+            b = bridge_load()
+            b["wait"] = "waiting for the name service and your node to agree on the deposit channel"
+            bridge_save(b)
+        return
+    try:
+        metadata = list(lez_account_bytes(b["to"]))
+    except Exception:
+        with bridge_lock:
+            b = bridge_load()
+            b.update(state="failed", error="The name account's address doesn't read. Nothing was bridged.")
+            bridge_save(b)
+        return
+    notes = notes_of(b["from"]) or {}
+    if b["note"] not in notes:
+        with bridge_lock:
+            b = bridge_load()
+            b.update(state="failed", error="The note set aside for the bridge is no longer in the wallet. Nothing was bridged.")
+            bridge_save(b)
+        return
+    lez_now = lns_balance(b["to"])
+    with bridge_lock:
+        b = bridge_load()
+        if b["state"] != "ready":
+            return
+        b.update(state="depositing", deposit_at=time.time(), deposit_notes=notes, wait="",
+                 op_id=deposit_op_id(b["channel"], [b["note"]], metadata))
+        b["lez"].update(base=as_int(lez_now) if lez_now is not None else None, last=as_int(lez_now) if lez_now is not None else None)
+        # in the history now, with the intent: a deposit that lands before the node answers is still this one
+        history_record_send({"key": b["from"], "label": b["label"], "to": b["to"], "to_label": "your name account",
+                             "amount": b["amount"], "fee": None, "hash": None, "status": "pending", "bridge": "deposit",
+                             "bridge_id": b["id"]})
+        if lns_faucet_last.get("at", 0) > time.time() - 600:      # a grant asked for just before may still land
+            b["lez"]["faucet"] = as_int(lns_faucet_last.get("amount"))
+        bridge_save(b)                        # written before the node is asked: a restart never deposits it again
+    code, reply = node("/channel/deposit", {
+        "tip": None, "deposit": {"channel_id": b["channel"], "inputs": [b["note"]], "metadata": metadata},
+        "change_public_key": b["from"], "funding_public_keys": [b["from"]], "max_tx_fee": BRIDGE_MAX_FEE}, timeout=600)
+    with bridge_lock:
+        b = bridge_load()
+        if 200 <= code < 300 and isinstance(reply, dict) and isinstance(reply.get("hash"), str):
+            b.update(state="sent", hash=reply["hash"][:128], sent_at=time.time())
+        elif code == 0:                       # no answer: it may have been made; the note tells
+            b.update(state="sent", hash=None, sent_at=time.time(), unsure=True)
+        else:
+            detail = reply if isinstance(reply, str) else json.dumps(reply) if reply else ""
+            b.update(state="failed", error="The node refused the deposit, so nothing was bridged: %s" % detail[:200])
+        bridge_save(b)
+    if b["state"] == "failed":
+        bridge_history_drop(b, "deposit")     # the node made nothing
+    elif b.get("hash"):
+        with hist_lock:
+            for e in history["entries"]:
+                if e.get("bridge_id") == b["id"] and e.get("bridge") == "deposit":
+                    e["hash"] = b["hash"]
+            history_save()
+
+
+def bridge_round():
+    """One look at the bridge under way: moves it on as far as what the node and the sequencer say."""
+    with bridge_lock:
+        b = bridge_load()
+        if b and b["state"] == "depositing":  # stopped in the middle of the node call: the note tells whether it went
+            b.update(state="sent", hash=b.get("hash"), sent_at=b.get("deposit_at") or time.time(), unsure=True)
+            bridge_save(b)
+    if not b or b["state"] not in ("splitting", "ready", "sent", "overdue", "landed"):
+        return
+    now = time.time()
+    if b["state"] == "splitting":
+        notes = notes_of(b["from"])
+        if notes is None:
+            return
+        new = sorted(i for i, v in notes.items() if v == as_int(b["amount"]) and i not in b["notes_before"])
+        with bridge_lock:
+            b = bridge_load()
+            if b["state"] != "splitting":
+                return
+            if new:
+                # on once the history has the split in a block (its fee), or a minute after the note showed: the
+                # history then gets no second pending transfer from this key to mix up
+                b.setdefault("note_seen_at", now)
+                b["split_fee"] = bridge_fee_of(b, "split")
+                if b["split_fee"] is not None or now - b["note_seen_at"] > 60:
+                    b.update(state="ready", note=new[0])
+                    bridge_history_settle(b, "split")
+            elif now - b.get("split_at", b["created"]) > BRIDGE_GIVE_UP:
+                b.update(state="failed", error="Setting the amount aside didn't reach a block in time. Nothing was bridged.")
+                bridge_history_settle(b, "split", "not in a block")
+            bridge_save(b)
+        if b["state"] != "ready":
+            return
+    if b["state"] == "ready":
+        return bridge_deposit(b)
+    if b["state"] in ("sent", "overdue"):
+        notes = notes_of(b["from"])
+        if notes is None:
+            return
+        with bridge_lock:
+            b = bridge_load()
+            if b["state"] not in ("sent", "overdue"):
+                return
+            if b["note"] not in notes:        # its note is spent: the deposit is in a block
+                b.update(state="landed", landed_at=now, unsure=False, error="", fee=bridge_fee_of(b, "deposit"))
+            elif b.get("unsure") and now - b["sent_at"] > BRIDGE_GIVE_UP:
+                b.update(state="failed", error="The node didn't confirm the deposit and its note is still in your wallet, so nothing was bridged.")
+                bridge_history_settle(b, "deposit", "not in a block")
+            elif b["state"] == "sent" and now - b["sent_at"] > BRIDGE_GIVE_UP:
+                # taken by the node but not in a block: the key is free again, and the note is still watched
+                b.update(state="overdue", error="The deposit isn't in a block after 30 minutes. Its note is still in your wallet; it may still go through if the network takes it later.")
+                bridge_history_settle(b, "deposit", "not in a block")
+            bridge_save(b)
+    if b["state"] in ("sent", "landed"):
+        bal = lns_balance(b["to"])
+        if bal is None:
+            return
+        bal = int(bal)
+        with bridge_lock:
+            b = bridge_load()
+            if b["state"] not in ("sent", "landed"):
+                return
+            lez = b["lez"]
+            if lez.get("last") is not None and bal > lez["last"]:
+                lez["up"] = lez.get("up", 0) + bal - lez["last"]
+            lez["last"] = bal
+            if b["state"] == "landed" and lez["up"] - lez.get("faucet", 0) >= as_int(b["amount"]):
+                b.update(state="arrived", arrived_at=now)
+            bridge_save(b)
+        if b["state"] == "arrived":
+            event("lns bridge arrived", amount=b["amount"])
+
+
+def bridge_fee_of(b, step):
+    """The fee of the bridge's `step` ("split" or "deposit"), once the history has it in a block."""
+    with hist_lock:
+        e = next((e for e in history["entries"] if e.get("bridge_id") == b["id"] and e.get("bridge") == step), None)
+    return e.get("fee") if e and e.get("status") == "in block" else None
+
+
+def bridge_history_settle(b, step, status="in block"):
+    """Ends the bridge's `step` in the history when the history couldn't tell: in a block (its fee unknown), or not."""
+    with hist_lock:
+        for e in history["entries"]:
+            if e.get("bridge_id") == b["id"] and e.get("bridge") == step and e.get("status") == "pending":
+                e.update(status=status, landed=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+                history_save()
+
+
+def bridge_history_drop(b, step):
+    """Takes out of the history a step the node refused: nothing was made."""
+    with hist_lock:
+        history["entries"] = [e for e in history["entries"] if not (e.get("bridge_id") == b["id"] and e.get("bridge") == step)]
+        history_save()
+
+
+def bridge_loop():
+    while True:
+        try:
+            bridge_round()
+            with bridge_lock:
+                b = bridge_load()
+            if b and b["state"] in ("landed", "arrived") and time.time() - b.get("landed_at", 0) > 60:
+                bridge_history_settle(b, "deposit")   # the history couldn't match it in a minute: in a block, fee unknown
+            for key, step in (("fee", "deposit"), ("split_fee", "split")):
+                if b and b["state"] in ("ready", "sent", "landed", "arrived") and b.get(key) is None and (step == "split" or b["state"] != "ready"):
+                    fee = bridge_fee_of(b, step)
+                    if fee is not None:
+                        with bridge_lock:
+                            b = bridge_load()
+                            b[key] = fee
+                            bridge_save(b)
+        except Exception:
+            pass
+        bridge_wake.wait(BRIDGE_POLL)
+        bridge_wake.clear()
 
 
 def lns_fingerprint():
@@ -1366,6 +1894,8 @@ def send(body):
         return 400, {"error": "That would send to the same key it comes from."}
     if amount <= 0:
         return 400, {"error": "The amount must be more than zero."}
+    if EMBEDDED and bridge_busy_key(frm):
+        return 409, {"error": "This account is moving coins to your name account. Send from it once that is in a block (a minute or so)."}
     st = node_status()
     if not st or st.get("state") != "Online":
         return 409, {"error": "The node is not online yet, so it can't send. Wait until it has finished syncing."}
@@ -2894,8 +3424,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "/api/messages/key", "/api/messages/name", "/api/messages/send", "/api/messages/inbox/delete",
                     "/api/messages/outbox", "/api/messages/outbox/retry", "/api/messages/outbox/delete",
                     "/api/messages/store", "/api/wallet/lns/account", "/api/wallet/lns/register",
-                    "/api/wallet/lns/name", "/api/wallet/lns/text"}
-    LNS_ROUTES = ("/api/wallet/lns/account", "/api/wallet/lns/register", "/api/wallet/lns/name", "/api/wallet/lns/text")
+                    "/api/wallet/lns/name", "/api/wallet/lns/text", "/api/wallet/lns/faucet",
+                    "/api/wallet/lns/bridge", "/api/wallet/lns/bridge/cancel"}
+    LNS_ROUTES = ("/api/wallet/lns/account", "/api/wallet/lns/register", "/api/wallet/lns/name", "/api/wallet/lns/text",
+                  "/api/wallet/lns/faucet", "/api/wallet/lns/bridge", "/api/wallet/lns/bridge/cancel")
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
@@ -2981,6 +3513,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not self.authed():
                 return self.reply(401, {"error": "locked"})
             return self.reply(200, lns_view())
+        if path == "/api/wallet/lns/balance":          # the Wallet's LEZ row: the name account and its balance only
+            if not lns_available():
+                return self.reply(404, {"error": "not found"})
+            if not self.authed():
+                return self.reply(401, {"error": "locked"})
+            acct = lns_state()["account"]
+            return self.reply(200, {"account": acct, "balance": lns_balance(acct) if acct else None})
         if path == "/api/wallet/accounts":
             if not self.authed():
                 return self.reply(401, {"error": "locked"})
@@ -3228,6 +3767,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 code, obj = lns_link(body)
                 if code == 200:
                     event("lns name linked", self, lns_name=obj["name"])
+            elif path == "/api/wallet/lns/faucet":
+                code, obj = lns_faucet()
+                event("lns faucet " + ("paid" if code == 200 else "refused"), self, amount=obj.get("amount", ""))
+            elif path == "/api/wallet/lns/bridge":
+                code, obj = lns_bridge(body)
+                if code == 200 and body.get("confirm") is True:
+                    event("lns bridge started", self, amount=obj["plan"]["amount"], key=obj["plan"]["from"])
+            elif path == "/api/wallet/lns/bridge/cancel":
+                code, obj = lns_bridge_cancel()
+                if code == 200:
+                    event("lns bridge stopped", self)
             else:
                 code, obj = lns_text(body)
                 if code == 200:
@@ -3251,6 +3801,7 @@ def main():
                 lns_repair()                  # a change the app was stopped in the middle of
         except Exception:
             pass
+        threading.Thread(target=bridge_loop, daemon=True).start()   # a bridge under way carries on after a restart
     else:
         event("app start", port=PORT, version=APP_VERSION)
     threading.Thread(target=wallet_keys, daemon=True).start()

@@ -62,6 +62,13 @@ def main():
         for i, a in enumerate(accounts):
             print("/%d Public/%s" % (i, a))
         sys.exit(0)
+    if args == ["settings"]:                  # read-only; the app runs it in a throwaway wallet folder
+        record()
+        if os.environ.get("FAKE_SETTINGS_FAIL") or os.path.exists(os.path.join(home, "..", "fake-settings-fail")):
+            fail("failed to read the settings")
+        print(json.dumps({"admin": ACCOUNT, "mode": "deposit", "deposits": {"normal": "1000000", "three_characters": "3000000"},
+                          "treasury": ACCOUNT, "prices": {"30d": "0", "1y": "0", "5y": "0"}}, indent=2))
+        sys.exit(0)
     if not os.path.exists(storage):
         fail("there is no wallet")       # the real one would make a new wallet and print its phrase here
     gas = json.load(open(config)).get("gas_limit")

@@ -165,7 +165,7 @@ check("a second account is refused", call("/api/wallet/lns/account", {}, session
 code, d = call("/api/wallet/lns", session=s)
 check("the account and its balance show", d["account"] == FAKE.ACCOUNT and d["balance"] == "4200000", d)
 check("the balance was asked of the name service for that account",
-      {"method": "getAccountBalance", "params": [FAKE.ACCOUNT]}.items() <= seen[-1].items(), seen[-1])
+      any({"method": "getAccountBalance", "params": [FAKE.ACCOUNT]}.items() <= c.items() for c in seen[-4:]), seen[-4:])
 phrase_nowhere("after making the account")
 check("right after making it, the page is asked to prompt for a backup", d["backup_needed"] is True, d)
 
@@ -182,7 +182,7 @@ check("as `names register alice --owner Public/<account> --term 1y --wait`",
       c["args"] == ["register", "alice", "--owner", "Public/" + FAKE.ACCOUNT, "--term", "1y", "--wait"], c)
 check("with the register gas limit written first", c["gas"] == 250000, c)
 check("its calls reached the sequencer through the forwarder",
-      [b["method"] for b in seen if b["method"] != "getAccountBalance"] == ["getLastBlockId", "sendTransaction", "sendTransaction"], seen)
+      [b["method"] for b in seen if b["method"] not in ("getAccountBalance", "getFeeState")] == ["getLastBlockId", "sendTransaction", "sendTransaction"], seen)
 check("only a known progress line is shown", d["job"]["progress"] == "alice is registered", d["job"])
 check("nothing of the noise is in the reply", FAKE.FAKE_PHRASE not in json.dumps(d) and "Private/" not in json.dumps(d))
 check("a second name is refused", call("/api/wallet/lns/register", {"name": "bob"}, session=s)[0] == 409)
