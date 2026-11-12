@@ -192,6 +192,9 @@ jobs:
             set -e
             # the image does not pass docker -e variables on to this shell: set them here
             export NO_WAKE_LOCK=1 APP_SRC=/repo/app
+            # use the main package server instead of a random mirror: some mirrors answer CI with 429
+            P=${PREFIX:-/data/data/com.termux/files/usr}
+            [ -f "$P/etc/termux/mirrors/default" ] && ln -sf "$P/etc/termux/mirrors/default" "$P/etc/termux/chosen_mirrors"
             sh /repo/install-termux.sh
             # the app installed must be the one in this checkout, not a download from the release branch
             INST=$(find "${PREFIX:-/data/data/com.termux/files/usr}/var/lib/proot-distro" -path "*/root/node/app/server.py" 2>/dev/null | head -1)
