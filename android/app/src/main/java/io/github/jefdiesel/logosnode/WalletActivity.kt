@@ -162,12 +162,14 @@ class WalletActivity : Activity() {
     private fun openNodeScreen() = startActivity(Intent(this, NodeActivity::class.java))
 
     private fun showCover(text: String) {
+        Log.i(TAG, "cover: ${text.lineSequence().first()}")
         coverText.text = text
         cover.visibility = View.VISIBLE
         setBars(cream)
     }
 
     private fun hideCover() {
+        if (cover.visibility == View.VISIBLE) Log.i(TAG, "cover: gone, the page shows")
         cover.visibility = View.GONE
     }
 
@@ -339,6 +341,8 @@ class WalletActivity : Activity() {
                 hideCover()
                 WalletPage.parseCssColor(check.background)?.let { setBars(it) }
                 nodeButton.visibility = if (WalletPage.hasNodeRow(check.version)) View.GONE else View.VISIBLE
+                Log.i(TAG, "page shown: web app ${check.version}, ${check.children} elements; " +
+                    "Node button ${if (nodeButton.visibility == View.VISIBLE) "shown (no Node row in this web app)" else "hidden (the page's Settings has it)"}")
                 if (BuildConfig.DEBUG && intent.getBooleanExtra("probe", false)) {
                     // debug builds started with --ez probe true: the page's structure, in logcat. Never the
                     // page's text (it may show balances, chats or keys): only yes/no facts and element states.
