@@ -4,14 +4,17 @@
   python3 tests/fake_waku.py <control port> <node port> [<node port> ...]
 
 Each node answers the Messaging API of logos-delivery v0.39.2 (docs/api/rest-api.md, and the record shapes
-its tests-e2e check): GET /health; POST/GET /messaging/v1/subscriptions; POST /messaging/v1/messages ->
+its tests-e2e check): GET /health; POST/GET/DELETE /messaging/v1/subscriptions; POST /messaging/v1/messages ->
 {"requestId"}; GET /messaging/v1/events/send/{requestId} -> {"requestId", "events": [{"kind", ...}]}, then
 cleared, 404 while there is nothing; GET /messaging/v1/events/received -> [{"seq", "messageHash", "message":
 {"payload", "contentTopic", ...}, "source"}], oldest first, then cleared, at most 50 kept. A message sent
 to a topic reaches every running node subscribed to it ("live"); a node that subscribes later, or comes
 back, gets what it missed ("history"). The control port: POST /down/<i>, /up/<i>, /restart/<i> (seq and
-subscriptions start again), /dup/<i> (deliver the last record again), /inject/<i> with
-{"topic", "payload"} (deliver anything), and GET /sent (count of messages on the network).
+subscriptions start again), /init/<i> (a restart, then /messaging answers 404 "not available while
+initializing" for {"seconds"}, default 3), /dup/<i> (deliver the last record again), /inject/<i> with
+{"topic", "payload"} (deliver anything); GET /sent (count of messages on the network) and GET /subs/<i>
+(a node's subscriptions). As on a real node, a send subscribes the sender to the topic, so it gets its own
+message back.
 """
 import base64, hashlib, http.server, json, re, sys, threading, time
 
@@ -27,6 +30,7 @@ class Node:
 
     def reset(self):
         self.subs, self.received, self.seq, self.delivered, self.sends, self.last = set(), [], 0, set(), {}, None
+        self.init_until = 0.0
 
     def deliver(self, msg, source):
         if msg["hash"] in self.delivered:
@@ -51,7 +55,28 @@ class Node:
             def body(self):
                 return json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"null")
 
+            def initializing(self):
+                if self.path.startswith("/messaging/") and time.time() < node.init_until:
+                    self.out(404, text="not available while initializing")
+                    return True
+                return False
+
+            def do_DELETE(self):
+                if self.initializing():
+                    return
+                try:
+                    body = self.body()
+                except Exception:
+                    return self.out(400, text="malformed body")
+                with lock:
+                    if self.path == "/messaging/v1/subscriptions" and isinstance(body, list):
+                        node.subs -= set(body)
+                        return self.out(200, text="OK")
+                return self.out(404, text="not found")
+
             def do_GET(self):
+                if self.initializing():
+                    return
                 with lock:
                     if self.path == "/health":
                         return self.out(200, {"nodeHealth": "READY", "connectionStatus": "Connected", "protocolsHealth": []})
@@ -67,6 +92,8 @@ class Node:
                 return self.out(404, text="not found")
 
             def do_POST(self):
+                if self.initializing():
+                    return
                 try:
                     body = self.body()
                 except Exception:
@@ -117,11 +144,12 @@ class Node:
 
 class Control(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        b = json.dumps({"sent": len(network)}).encode()
+        m = re.match(r"^/subs/(\d+)$", self.path)
+        b = json.dumps(sorted(nodes[int(m.group(1))].subs) if m else {"sent": len(network)}).encode()
         self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
 
     def do_POST(self):
-        m = re.match(r"^/(down|up|restart|dup|inject)/(\d+)$", self.path)
+        m = re.match(r"^/(down|up|restart|dup|inject|init)/(\d+)$", self.path)
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"null")
         node = nodes[int(m.group(2))]
         act = m.group(1)
@@ -136,6 +164,10 @@ class Control(http.server.BaseHTTPRequestHandler):
             with lock:
                 if node.last:
                     node.received.append(dict(node.last, seq=node.seq + 1)); node.seq += 1
+        elif act == "init":                          # restarts, and /messaging answers 404 for a few seconds
+            with lock:
+                node.reset()
+                node.init_until = time.time() + float((body or {}).get("seconds", 3))
         elif act == "inject":
             with lock:
                 ts = time.time_ns()

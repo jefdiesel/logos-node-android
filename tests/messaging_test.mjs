@@ -7,7 +7,9 @@
 //    its own (checked against the sha256 in the vectors file). In CI the file is fetched at the pinned commit.
 // 2. Two apps (A = alice, B = bob), each with its own fake messaging node (tests/fake_waku.py), names on a
 //    fake sequencer: a message each way, checked against the senders' on-chain msg entries; duplicates,
-//    oversized payloads, a node going down and coming back, deleting, and the messaging key in the backup.
+//    oversized payloads, a node going down and coming back, a node restarting without going away and one
+//    starting (404 while initializing), the sender's own copy and letting go of the recipient's topic after
+//    a send, deleting, and the messaging key in the backup.
 // 3. Without WAKU_API (or with one that isn't on this device): no new routes or fields, and the page is the
 //    0.7.7 page.
 import { spawn, execFileSync } from "node:child_process";
@@ -87,6 +89,7 @@ const sequencer = createServer((req, res) => {
 await new Promise((ok) => sequencer.listen(SEQ_PORT, "127.0.0.1", ok));
 procs.push(spawn("python3", [join(here, "fake_waku.py"), String(CTL), String(NODE_A), String(NODE_B), String(NODE_PEER)], { stdio: "ignore" }));
 const control = (what) => fetch(`http://127.0.0.1:${CTL}/${what}`, { method: "POST", body: "{}" });
+const subsOf = async (node) => (await fetch(`http://127.0.0.1:${CTL}/subs/${node}`)).json();
 const inject = (node, topic, payload) => fetch(`http://127.0.0.1:${CTL}/inject/${node}`, { method: "POST", body: JSON.stringify({ topic, payload }) });
 
 function keystore() {
@@ -154,8 +157,8 @@ for (const [label, extra, port] of [["without WAKU_API", { WAKU_API: null }, 809
 }
 
 // ---- 2. two apps exchange messages ------------------------------------------------------------------
-const A = await app(8095, { WAKU_API: `http://127.0.0.1:${NODE_A}` });
-const B = await app(8096, { WAKU_API: `http://127.0.0.1:${NODE_B}` });
+const A = await app(8095, { WAKU_API: `http://127.0.0.1:${NODE_A}`, MESSAGING_UNSUBSCRIBE_SECONDS: "4" });
+const B = await app(8096, { WAKU_API: `http://127.0.0.1:${NODE_B}`, MESSAGING_UNSUBSCRIBE_SECONDS: "4" });
 for (const [x, pin] of [[A, "111222"], [B, "333444"]]) {
   x.pin = pin; x.session = (await call(x, "/api/wallet/setup", { pin })).d.session;
   rpcSessions.set(x.base + "/api/names/rpc", x);
@@ -250,6 +253,12 @@ const noKey = spawn(process.execPath, [join(ROOT, "tools", "msg-peer.mjs"), "sen
 let noKeyErr = ""; noKey.stderr.on("data", (d) => (noKeyErr += d));
 const noKeyCode = await new Promise((ok) => noKey.on("exit", ok));
 check("msg-peer send to a name without a msg entry says so", noKeyCode === 1 && noKeyErr.includes("carol has no messaging key"), noKeyErr);
+const peerSubs = await subsOf(2);
+check("msg-peer send let go of alice's topic afterwards, and listen kept its own", !peerSubs.includes(MC.inboxTopic(A.key.publicKey)) && peerSubs.includes(MC.inboxTopic(unhex(peerPub))), peerSubs);
+await control("restart/2");
+await until("msg-peer listen subscribes again after its node restarts", async () => (await subsOf(2)).includes(MC.inboxTopic(unhex(peerPub))), 6000);
+await send(A, "alice", "mini", "after your node restarted");
+await until("and still prints messages", async () => heard.includes("✓ alice: after your node restarted") && heard, 15000);
 listener.kill();
 
 // duplicates: the same record twice (the replay of history after a restart is checked further down)
@@ -285,6 +294,32 @@ check("and it opens", got && MC.isVerified(got, await msgKey(B, "alice")), got);
 const count = execFileSync("python3", ["-c", "import sys; sys.path.insert(0, sys.argv[1]); import server; print(server.messaging_inbox_count())", join(ROOT, "app")],
   { env: { ...process.env, APP_DATA: B.data, WAKU_API: `http://127.0.0.1:${NODE_B}` } }).toString().trim();
 check("messaging_inbox_count() says how many wait", count === "2", count);
+
+// the node restarts without going away (subscriptions are gone, WAKU_API is the same, /health never failed)
+const bobTopic = MC.inboxTopic(B.key.publicKey), aliceTopic = MC.inboxTopic(A.key.publicKey);
+await until("bob's node is subscribed to bob's inbox", async () => (await subsOf(1)).includes(bobTopic));
+await control("restart/1");
+check("a restart drops the subscription", !(await subsOf(1)).includes(bobTopic));
+await until("bob's app subscribes again within 2 s", async () => (await subsOf(1)).includes(bobTopic), 2000);
+await send(A, "alice", "bob", "after a quick restart");
+await until("and gets what comes next", async () => (await inbox(B)).length === 3, 8000);
+// the node starts: /messaging answers 404 "not available while initializing" for 3 s
+await control("init/1");
+await until("bob's app says the node is starting", async () => (await call(B, "/api/messages/status")).d.node.starting === true, 2000);
+r = await call(B, "/api/messages/send", { topic: aliceTopic, payload: b64(new Uint8Array(64)) });
+check("sending while it starts says so", r.code === 503 && r.d.starting, r);
+await until("once it's ready, bob's app subscribes at once", async () => (await subsOf(1)).includes(bobTopic), 5000);
+check("and no longer says starting", (await call(B, "/api/messages/status")).d.node.starting === false);
+// a send subscribes the sender's node to the recipient's topic: the sender's own message comes back to it
+const aliceHad = (await inbox(A)).length;
+await until("alice's node no longer listens to bob's topic from her earlier sends", async () => !(await subsOf(0)).includes(bobTopic), 8000);
+await send(A, "alice", "bob", "your own copy");
+check("the send subscribed alice's node to bob's topic", (await subsOf(0)).includes(bobTopic));
+await until("bob gets it", async () => (await inbox(B)).length === 4, 8000);
+await sleep(1500);
+check("alice's own copy, which her node hands back, isn't put in her inbox", (await inbox(A)).length === aliceHad, (await inbox(A)).length);
+await until("once the send has settled, alice's app lets go of bob's topic", async () => !(await subsOf(0)).includes(bobTopic), 10000);
+check("but keeps her own inbox", (await subsOf(0)).includes(aliceTopic));
 
 // the messaging key goes into the backup (version 2) and comes back with a restore
 r = await call(A, "/api/wallet/backup", { password: "alice backup password", pin: A.pin });

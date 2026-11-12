@@ -91,6 +91,13 @@ if (cmd === "keygen") {
   if (!k.key) die(`${to} has no messaging key (no msg entry), so it can't get messages yet`);
   const sealed = MC.sealMessage({ to: MC.fromHex(k.key), from, fromSecret: me.secret, text });
   const topic = MC.inboxTopic(MC.fromHex(k.key));
+  // the send subscribes this node to the recipient's topic: let go of it afterwards unless it was there before
+  const before = await node("GET", "/messaging/v1/subscriptions").catch(() => ({ data: null }));
+  const had = Array.isArray(before.data) && before.data.includes(topic);
+  const finish = async (code) => {
+    if (!had) await node("DELETE", "/messaging/v1/subscriptions", [topic]).catch(() => {});
+    process.exit(code);
+  };
   const r = await node("POST", "/messaging/v1/messages", { payload: Buffer.from(sealed).toString("base64"), contentTopic: topic, ephemeral: false });
   if (r.status !== 200 || !r.data || !r.data.requestId) die(`the node didn't take it: HTTP ${r.status} ${r.text.slice(0, 200)}`);
   console.log(`sent to ${to} (${topic}), request ${r.data.requestId}`);
@@ -100,27 +107,35 @@ if (cmd === "keygen") {
     if (s.status !== 200 || !s.data) continue;
     for (const e of s.data.events || []) console.log(`  ${e.kind}${e.error ? ": " + e.error : ""}`);
     const kinds = (s.data.events || []).map((e) => e.kind);
-    if (kinds.includes("sent") || kinds.includes("error")) process.exit(kinds.includes("sent") ? 0 : 2);
+    if (kinds.includes("sent") || kinds.includes("error")) await finish(kinds.includes("sent") ? 0 : 2);
   }
   console.log("  no final event within 90 s (a node without reliability stops at propagated)");
+  await finish(0);
 } else if (cmd === "listen") {
   const me = loadKey();
   const topic = MC.inboxTopic(MC.fromHex(me.public));
   const seen = new Set();
-  let subscribed = false, lastSeq = 0;
+  let lastSeq = 0, starting = false;
   console.error(`listening on ${topic} for ${me.public}`);
   for (;;) {
     try {
-      if (!subscribed) {
-        const r = await node("POST", "/messaging/v1/subscriptions", [topic]);
-        subscribed = r.status === 200;
-        if (!subscribed) console.error(`subscribe: HTTP ${r.status} ${r.text.slice(0, 200)}`);
+      // the node forgets subscriptions when it restarts, and answers 404 while it starts: look every round
+      const subs = await node("GET", "/messaging/v1/subscriptions");
+      if (subs.status === 404) {
+        if (!starting) console.error("the node is starting");
+        starting = true;
+        await new Promise((ok) => setTimeout(ok, 500));
+        continue;
+      }
+      starting = false;
+      if (!Array.isArray(subs.data) || !subs.data.includes(topic)) {
+        const s = await node("POST", "/messaging/v1/subscriptions", [topic]);
+        if (s.status !== 200) console.error(`subscribe: HTTP ${s.status} ${s.text.slice(0, 200)}`);
       }
       const r = await node("GET", "/messaging/v1/events/received");
       for (const rec of Array.isArray(r.data) ? r.data : []) {
         if (typeof rec.seq === "number") {
-          if (rec.seq < lastSeq) subscribed = false;                              // the node restarted
-          else if (lastSeq && rec.seq > lastSeq + 1) console.error(`(${rec.seq - lastSeq - 1} messages dropped or taken by another client)`);
+          if (lastSeq && rec.seq > lastSeq + 1) console.error(`(${rec.seq - lastSeq - 1} messages dropped or taken by another client)`);
           lastSeq = rec.seq;
         }
         if (!rec.message || rec.message.contentTopic !== topic || seen.has(rec.messageHash)) continue;
@@ -131,7 +146,6 @@ if (cmd === "keygen") {
         console.log(`[${new Date(msg.ts).toISOString()}] ${ok ? "✓ " + msg.from : "unverified: claims to be " + msg.from}${rec.source === "history" ? " (from history)" : ""}: ${msg.text}`);
       }
     } catch (e) {
-      subscribed = false;
       console.error("node not answering: " + (e.cause?.code || e.message));
     }
     await new Promise((ok) => setTimeout(ok, 2000));

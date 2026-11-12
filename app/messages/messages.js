@@ -91,7 +91,10 @@ async function refresh() {
   const r = await api("/api/messages/status");
   if (r.status === 401) return lockedNow();
   if (!r.ok) return;
-  $("mg-off").hidden = r.data.node.reachable !== false;
+  const starting = r.data.node.starting && r.data.node.reachable !== false;
+  $("mg-off").hidden = r.data.node.reachable !== false && !starting;
+  $("mg-off").textContent = starting ? "The messaging node is starting. Messages come in once it's ready."
+    : "The messaging node is off, so messages can't be sent or received right now. The app starts it again by itself.";
   if (!r.data.key) { $("mg-nokey").hidden = false; $("mg-ready").hidden = true; return; }
   if (!mine || mine.public !== r.data.key) {
     const k = await api("/api/messages/key");

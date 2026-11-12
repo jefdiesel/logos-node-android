@@ -8,7 +8,7 @@ Python standard library only. Wallet calls need a PIN that is set on first use.
 import base64, calendar, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.8.0"
+APP_VERSION = "0.8.1"
 # APP_EMBEDDED=android: this app runs inside the Android app (embedded Python, page in a WebView).
 # Then it never updates or restarts itself (the Android app brings new versions), and fingerprint
 # unlock goes through the phone's own fingerprint check instead of a passkey. Unset: nothing changes.
@@ -1072,6 +1072,8 @@ INBOX_FILE = os.path.join(DATA_DIR, "wallet-inbox.json")
 INBOX_MAX, SEEN_MAX, PAYLOAD_MAX = 500, 4000, 16384      # messages kept, hashes remembered, bytes per message
 MSG_POLL = float(os.environ.get("MESSAGING_POLL_SECONDS", "3"))
 MSG_HEALTH_EVERY = float(os.environ.get("MESSAGING_HEALTH_SECONDS", "10"))
+MSG_UNSUB_AFTER = float(os.environ.get("MESSAGING_UNSUBSCRIBE_SECONDS", "180"))
+sent_topics = {}                  # another name's inbox topic -> when this app last sent to it
 MSG_TOPIC_RE = re.compile(r"^/names/1/msg-[0-9a-f]{16}/proto$")
 HEX32_RE = re.compile(r"^[0-9a-f]{64}$")
 msg_lock = threading.Lock()
@@ -1214,7 +1216,7 @@ def messaging_round():
     api = waku_api()
     with msg_lock:
         if not api:                              # the node is switched off: say so, and subscribe again later
-            msg_state.update(configured=False, reachable=False, subscribed=None, health=None, connection=None)
+            msg_state.update(configured=False, reachable=False, subscribed=None, health=None, connection=None, starting=False)
             return
         if msg_state.get("configured") is False or msg_state.get("api") != api:
             msg_state.update(checked=0.0, misses=0, subscribed=None)    # it (re)appeared: look at it now
@@ -1227,12 +1229,39 @@ def messaging_round():
     if not key or msg_state["reachable"] is False:
         return
     topic = inbox_topic(key["public"])
-    if msg_state["subscribed"] != topic or time.time() - msg_state["subscribed_at"] > 300:
+    # Is the inbox still subscribed? The node forgets subscriptions when it restarts, even a quick restart
+    # that WAKU_API never shows, so look each round and subscribe again the moment it's missing. While the
+    # node starts, /messaging answers 404 ("not available while initializing"): keep trying.
+    code, subs = waku("GET", "/messaging/v1/subscriptions", timeout=6)
+    if code == 404:
+        with msg_lock:
+            msg_state.update(starting=True, subscribed=None)
+        return
+    if code != 200 or not isinstance(subs, list):
+        return
+    with msg_lock:
+        msg_state["starting"] = False
+    if topic not in subs:
         code, _ = waku("POST", "/messaging/v1/subscriptions", [topic])
         if code != 200:
+            with msg_lock:
+                msg_state["subscribed"] = None
             return
         with msg_lock:
             msg_state.update(subscribed=topic, subscribed_at=time.time())
+    else:
+        with msg_lock:
+            msg_state["subscribed"] = topic
+    # A send subscribes the node to the recipient's inbox topic, and everything sent to that name would then
+    # fill the node's 50-message buffer between reads: let go of those topics once the send has settled.
+    with msg_lock:
+        done = [t for t, at in sent_topics.items() if time.time() - at > MSG_UNSUB_AFTER]
+    drop = [t for t in done if t != topic and t in subs]
+    if done and (not drop or waku("DELETE", "/messaging/v1/subscriptions", drop)[0] == 200):
+        with msg_lock:
+            for t in done:
+                if time.time() - sent_topics.get(t, 0) > MSG_UNSUB_AFTER:    # unless sent to again meanwhile
+                    sent_topics.pop(t, None)
     code, records = waku("GET", "/messaging/v1/events/received", timeout=10)
     if code != 200 or not isinstance(records, list):
         if code == 0:
@@ -1292,7 +1321,10 @@ def messaging_loop():
             messaging_round()
         except Exception:
             pass
-        time.sleep(MSG_POLL)
+        # quickly while the node starts or the inbox isn't subscribed: the start-up catch-up (messages sent while
+        # the node was off) takes subscriptions only until 10 s after it finishes
+        waiting = msg_state.get("configured") and msg_state["reachable"] is not False and not msg_state["subscribed"]
+        time.sleep(min(MSG_POLL, 0.5) if waiting else MSG_POLL)
 
 
 def messaging_post(path, body, req):
@@ -1340,10 +1372,14 @@ def messaging_post(path, body, req):
                            {"payload": base64.b64encode(raw).decode(), "contentTopic": topic, "ephemeral": False}, timeout=10)
         if code == 0:
             return 503, {"error": "The messaging node is off, so the message wasn't sent.", "node_off": True}
+        if code == 404:                          # "not available while initializing"
+            return 503, {"error": "The messaging node is starting. Try again in a few seconds.", "starting": True}
         if code == 429:
             return 429, {"error": "The messaging node is busy. Try again in a moment."}
         if code != 200 or not isinstance(reply, dict) or not isinstance(reply.get("requestId"), str):
             return 502, {"error": "The messaging node didn't take the message."}
+        with msg_lock:
+            sent_topics[topic] = time.time()
         event("message sent", req)
         return 200, {"requestId": reply["requestId"]}
     if path == "/api/messages/inbox/delete":
@@ -1366,6 +1402,7 @@ def messaging_get(path, query):
             st = dict(msg_state)
             count = len(inbox["items"])
         return 200, {"node": {"configured": st.get("configured", bool(waku_api())), "reachable": st["reachable"],
+                              "starting": bool(st.get("starting")),
                               "health": st["health"], "connection": st["connection"],
                               "checked_s_ago": round(time.time() - st["checked"]) if st["checked"] else None},
                      "key": key["public"] if key else None, "name": (key or {}).get("name", ""),
