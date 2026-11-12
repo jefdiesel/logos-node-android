@@ -1,5 +1,7 @@
 name: native-build
-# Compiles the official Logos node for Android (arm64) with the NDK.
+# Compiles the official Logos node for Android (arm64) with the NDK, twice: unpatched, and with
+# the patches in native/patches applied. Also runs upstream's tests of the patched crates and a
+# replay benchmark on a Linux arm64 runner.
 # To build a newer node, change NODE_VERSION below; the circuits tag, rapidsnark and circom
 # versions are read from the node's own sources.
 on:
@@ -21,6 +23,10 @@ env:
   FAST: "0"
 jobs:
   android-arm64:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [upstream, patched]
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
@@ -31,6 +37,12 @@ jobs:
           df -h /
       - name: Node source
         run: git clone -q --depth 1 --branch "$NODE_VERSION" https://github.com/logos-blockchain/logos-blockchain.git node
+      - name: Apply patches (fails if one does not apply cleanly)
+        if: matrix.variant == 'patched'
+        run: |
+          id=$(native/apply-patches.sh node | tail -1)
+          echo "LOGOS_NODE_PATCHES_ID=$id" >> "$GITHUB_ENV"
+          echo "patch set id: $id"; cat node/PATCHES.txt
       - name: Tools and versions
         id: v
         run: |
@@ -66,8 +78,10 @@ jobs:
         if: steps.lbc.outputs.cache-hit != 'true'
         run: native/build-circuits.sh node "$GITHUB_WORKSPACE/lbc-android"
       # saved straight away, so a later failure in the node build does not throw it away
+      # (both variants may try; the second save of the same key is skipped)
       - uses: actions/cache/save@v4
         if: steps.lbc.outputs.cache-hit != 'true'
+        continue-on-error: true
         with:
           path: lbc-android
           key: ${{ steps.lbc.outputs.cache-primary-key }}
@@ -76,7 +90,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: node
-          key: android-${{ env.NODE_VERSION }}-fast${{ env.FAST }}
+          key: android-${{ env.NODE_VERSION }}-fast${{ env.FAST }}-${{ matrix.variant }}
           cache-on-failure: true
       - name: Build the node for Android
         working-directory: node
@@ -111,9 +125,92 @@ jobs:
           if "$TC/bin/llvm-readelf" -d "$B" | grep -q 'libc++_shared'; then
             cp "$TC/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" out/
           fi
+          if [ -f node/PATCHES.txt ]; then
+            { echo "logos-blockchain $NODE_VERSION with these patches (patch set id $LOGOS_NODE_PATCHES_ID):"; cat node/PATCHES.txt; } > out/PATCHES.txt
+            strings out/logos-blockchain-node | grep -q '0001-fast-replay-from-own-storage' || { echo "patch marker string missing from the binary"; exit 1; }
+          fi
           (cd out && sha256sum * > SHA256SUMS)
-          ls -la out
+          cat out/SHA256SUMS; ls -la out
       - uses: actions/upload-artifact@v4
         with:
-          name: logos-blockchain-node-android-arm64-${{ env.NODE_VERSION }}
+          name: logos-blockchain-node-android-arm64-${{ env.NODE_VERSION }}${{ matrix.variant == 'patched' && '-patched' || '' }}
           path: out/
+
+  # upstream's own tests of the crates the patches touch, plus the patches' new tests
+  patched-crate-tests:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: Node source, patched
+        run: |
+          git clone -q --depth 1 --branch "$NODE_VERSION" https://github.com/logos-blockchain/logos-blockchain.git node
+          native/apply-patches.sh node
+      - name: Tools
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq clang libclang-dev pkg-config libssl-dev >/dev/null
+          if ! command -v rustup >/dev/null; then
+            curl -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"; export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          (cd node && rustc -V && cargo -V)
+          df -h /
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: node
+          key: linux-arm64-tests-${{ env.NODE_VERSION }}
+          cache-on-failure: true
+      - name: cargo test (chain service, ledger, node binary)
+        working-directory: node
+        run: |
+          # the step's shell runs with pipefail, so a failing test fails the step
+          cargo test --locked -p logos-blockchain-chain-service -p logos-blockchain-ledger -p logos-blockchain-node --no-fail-fast 2>&1 | tee ../test.log
+      - name: Test summary
+        if: always()
+        run: |
+          grep -E "^test result:|^     Running|FAILED|panicked" test.log | tail -80 || true
+          echo "patch tests:"; grep -E "replay|trusted|fast_and_full" test.log || true
+
+  # syncs a node on testnet, then times the startup replay: unpatched, patched full, patched fast
+  replay-bench:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - name: Node source, patched
+        run: |
+          git clone -q --depth 1 --branch "$NODE_VERSION" https://github.com/logos-blockchain/logos-blockchain.git node
+          id=$(native/apply-patches.sh node | tail -1)
+          echo "LOGOS_NODE_PATCHES_ID=$id" >> "$GITHUB_ENV"
+      - name: Tools
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq clang libclang-dev pkg-config libssl-dev time >/dev/null
+          if ! command -v rustup >/dev/null; then
+            curl -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"; export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          (cd node && rustc -V && cargo -V)
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: node
+          key: linux-arm64-release-${{ env.NODE_VERSION }}
+          cache-on-failure: true
+      - name: Build the patched node (release)
+        working-directory: node
+        run: cargo build --locked --release -p logos-blockchain-node
+      - name: Official unpatched node
+        run: |
+          mkdir upstream && cd upstream
+          curl -fsSL "https://github.com/logos-blockchain/logos-blockchain/releases/download/$NODE_VERSION/logos-blockchain-node-linux-aarch64-$NODE_VERSION.tar.gz" | tar xz
+          ./logos-blockchain-node --version
+          sha256sum logos-blockchain-node
+      - name: Replay benchmark
+        run: native/replay-bench.sh node/target/release/logos-blockchain-node upstream/logos-blockchain-node bench-out
+      - name: Results
+        if: always()
+        run: cat bench-out/summary.txt bench-out/sync-info.json 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: replay-bench-linux-arm64-${{ env.NODE_VERSION }}
+          path: bench-out/
