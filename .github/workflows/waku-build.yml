@@ -2,7 +2,8 @@ name: waku-build
 # Builds the official Logos Messaging (Waku) node library, liblogosdelivery, for Android
 # arm64 with upstream's own make target (the one its CI runs), plus the small runner in
 # messaging/runner that turns it into a process. See messaging/README.md.
-# To build a newer release, change WAKU_VERSION below (a tag, or a commit sha).
+# To build a newer release, change WAKU_VERSION and WAKU_SHA below (the tag and the commit it
+# points to; the build fails if they disagree). A hand-run build of another tag or sha skips the check.
 on:
   push:
     paths: ['messaging/**', .github/workflows/waku-build.yml]
@@ -10,11 +11,14 @@ on:
     inputs:
       waku_version:
         description: logos-delivery tag or commit to build
-        default: "v0.39.2"
+        default: "v0.40.0-rc.3"
 permissions:
   contents: read
 env:
-  WAKU_VERSION: ${{ inputs.waku_version || 'v0.39.2' }}
+  # v0.40.0-rc.3 is a release candidate, accepted for the testnet: v0.39.2 relays all 8 shards
+  # whatever --shard says (fixed upstream by PR #4513), which costs several GB an hour.
+  WAKU_VERSION: ${{ inputs.waku_version || 'v0.40.0-rc.3' }}
+  WAKU_SHA: ${{ (inputs.waku_version == '' || inputs.waku_version == null || inputs.waku_version == 'v0.40.0-rc.3') && '57e04dc4473aec7a36e4be5f025697b477a6562a' || '' }}
   # Android API level (upstream builds 30; the app's minimum is 28) and upstream CI's NDK (r27c)
   ANDROID_API: "28"
   NDK_VERSION: "27.2.12479018"
@@ -37,6 +41,9 @@ jobs:
           cd ld
           git -c advice.detachedHead=false checkout -q "$WAKU_VERSION"
           git submodule update -q --init --recursive
+          if [ -n "$WAKU_SHA" ] && [ "$(git rev-parse HEAD)" != "$WAKU_SHA" ]; then
+            echo "tag $WAKU_VERSION is $(git rev-parse HEAD), expected $WAKU_SHA"; exit 1
+          fi
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "describe=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
           git log -1 --format='%H %cs %s'
@@ -84,7 +91,11 @@ jobs:
           B=ld/build/android/arm64-v8a
           ls -la "$B" ld/library/generated
           mkdir -p lib-out/include
-          cp "$B/liblogosdelivery.so" "$B/librln.so" lib-out/
+          cp "$B/liblogosdelivery.so" lib-out/
+          # librln.so only when the node library still asks for it (v0.39.2 did; rc3 with RLN off does not)
+          if "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -d "$B/liblogosdelivery.so" | grep -q 'librln.so'; then
+            cp "$B/librln.so" lib-out/
+          fi
           cp ld/library/liblogosdelivery.h ld/library/liblogosdelivery_kernel.h ld/library/liblogosdelivery_rln.h \
              ld/library/logosdelivery_service_discovery.h lib-out/include/ 2>/dev/null || true
           cp -r ld/library/generated lib-out/include/
@@ -118,7 +129,7 @@ jobs:
           for f in out/*; do "$TC/bin/llvm-strip" -o "pkg/$(basename "$f")" "$f"; done
           cp lib-out/VERSION messaging/logos-test.json messaging/logos-test-rest.json pkg/
           cp -r lib-out/include pkg/
-          (cd pkg && sha256sum waku-runner *.so > SHA256SUMS && cat SHA256SUMS)
+          (cd pkg && sha256sum waku-runner *.so > SHA256SUMS && cat SHA256SUMS && ls -l waku-runner *.so)
           du -ah pkg | sort -h | tail -20
       - uses: actions/upload-artifact@v4
         with:

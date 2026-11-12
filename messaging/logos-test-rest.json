@@ -1,6 +1,9 @@
 {
   "mode": "Core",
   "preset": "logos.test",
+  "shard": [7],
+  "filter": false,
+  "lightpush": false,
   "nat": "none",
   "tcp-port": 60000,
   "discv5-udp-port": 9000,
