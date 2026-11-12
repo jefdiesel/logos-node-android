@@ -171,6 +171,7 @@ class WalletActivity : Activity() {
     private fun hideCover() {
         if (cover.visibility == View.VISIBLE) Log.i(TAG, "cover: gone, the page shows")
         cover.visibility = View.GONE
+        main.post { runQueuedUnlock() }
     }
 
     /** The window behind the page (status bar area) in `color`, with status bar icons that read on it. */
@@ -259,15 +260,35 @@ class WalletActivity : Activity() {
         }
     }
 
+    private var resumed = false
+    private var pendingUnlock = false
+
+    private fun askFingerprint() {
+        pendingUnlock = false
+        val url = web.url
+        io.execute { fingerprint.request(url) }
+    }
+
+    /** A fingerprint request the page made while the screen wasn't ready: now, once it is. */
+    private fun runQueuedUnlock() {
+        if (pendingUnlock && resumed && cover.visibility != View.VISIBLE && FingerprintUnlock.isOwnPage(web.url)) {
+            Log.i(TAG, "running the queued fingerprint request")
+            askFingerprint()
+        }
+    }
+
     override fun onResume() {
         super.onResume()
+        resumed = true
         web.onResume()       // the page sees itself visible again (its auto-lock listens for this)
         if (FingerprintUnlock.isOwnPage(web.url)) syncFingerprintKey()
         main.removeCallbacks(watchdog)
         main.postDelayed(watchdog, 10_000)
+        main.post { runQueuedUnlock() }
     }
 
     override fun onPause() {
+        resumed = false
         web.onPause()        // ... and hidden
         main.removeCallbacks(watchdog)
         super.onPause()
@@ -417,8 +438,17 @@ class WalletActivity : Activity() {
         @JavascriptInterface
         fun unlockWithFingerprint() {
             main.post {
-                val url = web.url
-                io.execute { fingerprint.request(url) }
+                val own = FingerprintUnlock.isOwnPage(web.url)
+                Log.i(TAG, "unlockWithFingerprint called; the wallet's own page: $own")
+                if (!own) return@post
+                // Android only shows the fingerprint prompt over a resumed, visible screen; a call that comes
+                // earlier (the page asks at once on load) waits for that instead of failing silently
+                if (!resumed || cover.visibility == View.VISIBLE) {
+                    Log.i(TAG, "fingerprint request queued until the screen is resumed and the page shows")
+                    pendingUnlock = true
+                    return@post
+                }
+                askFingerprint()
             }
         }
 
@@ -497,6 +527,13 @@ class WalletActivity : Activity() {
                 r.navShown = shown($("nav"));
                 r.navButtons = $("nav") ? [...$("nav").querySelectorAll("button")].map(b => b.id) : [];
                 r.walletScreenShown = shown($("page-main"));
+                // the full-screen lock (web app 0.9.2): only it, with the PIN field, while locked
+                r.lockShown = shown($("lock"));
+                r.lockForm = shown($("v-locked"));
+                r.pinField = !!$("pin");
+                r.fingerprintButtonShown = shown($("b-fp"));
+                r.messagesScreenShown = shown($("page-msg"));
+                if (r.lockShown) return JSON.stringify(r);       // locked: don't touch the tabs
                 const msg = $("nav-msg");
                 if (msg) msg.click();
                 setTimeout(() => {

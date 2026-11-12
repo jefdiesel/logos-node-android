@@ -86,12 +86,17 @@ object FingerprintKey {
         val prompt = BiometricPrompt.Builder(activity)
             .setTitle("Unlock the wallet")
             .setDescription("Confirm with your fingerprint. Your PIN works too.")
-            .setNegativeButton("Use PIN", executor) { _, _ -> report(FingerprintUnlock.Outcome.NotConfirmed(notConfirmed)) }
+            .setNegativeButton("Use PIN", executor) { _, _ ->
+                android.util.Log.i("LogosWallet", "fingerprint prompt: Use PIN chosen")
+                report(FingerprintUnlock.Outcome.NotConfirmed(notConfirmed))
+            }
             .apply { if (Build.VERSION.SDK_INT >= 30) setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG) }
             .build()
+        android.util.Log.i("LogosWallet", "fingerprint prompt shown")
         prompt.authenticate(BiometricPrompt.CryptoObject(cipher), CancellationSignal(), executor,
             object : BiometricPrompt.AuthenticationCallback() {
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    android.util.Log.i("LogosWallet", "fingerprint prompt: confirmed")
                     // the key only works after a real strong-biometric check: use it once to be sure
                     val ok = try {
                         result.cryptoObject?.cipher?.doFinal(byteArrayOf(1)) != null
@@ -102,6 +107,7 @@ object FingerprintKey {
                 }
 
                 override fun onAuthenticationError(code: Int, message: CharSequence) {
+                    android.util.Log.i("LogosWallet", "fingerprint prompt: ended without a fingerprint (code $code)")
                     report(
                         when (code) {
                             BiometricPrompt.BIOMETRIC_ERROR_NO_BIOMETRICS -> FingerprintUnlock.Outcome.NoneEnrolled
