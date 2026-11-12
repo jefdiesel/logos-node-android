@@ -110,9 +110,21 @@ jobs:
           grep -q 'NodeService' manifest.txt || fail "NodeService not declared"
           grep -q 'foregroundServiceType(0x01010599)=0x40000000' manifest.txt || fail "service is not foregroundServiceType=specialUse"
           grep -q 'PROPERTY_SPECIAL_USE_FGS_SUBTYPE' manifest.txt || fail "specialUse subtype property missing"
-          for p in INTERNET FOREGROUND_SERVICE FOREGROUND_SERVICE_SPECIAL_USE POST_NOTIFICATIONS WAKE_LOCK USE_BIOMETRIC ACCESS_NETWORK_STATE; do
+          for p in INTERNET FOREGROUND_SERVICE FOREGROUND_SERVICE_SPECIAL_USE POST_NOTIFICATIONS WAKE_LOCK USE_BIOMETRIC ACCESS_NETWORK_STATE CAMERA; do
             grep -q "\"android.permission.$p\"" manifest.txt || fail "permission $p missing"
           done
+          # exactly these permissions and no others (DUMP is the service's guard, not a permission the app asks for)
+          got=$(grep -oE '"android\.permission\.[A-Z_]+"' manifest.txt | tr -d '"' | sed 's/android.permission.//' | sort -u | tr '\n' ' ')
+          want="ACCESS_NETWORK_STATE CAMERA DUMP FOREGROUND_SERVICE FOREGROUND_SERVICE_SPECIAL_USE INTERNET POST_NOTIFICATIONS USE_BIOMETRIC WAKE_LOCK "
+          [ "$got" = "$want" ] || fail "permissions are '$got', expected '$want'"
+          # the QR scanner: our own screen in the wallet's process; the ZXing library's screen is not in the app,
+          # and no Google Play services, ML Kit, Firebase or AndroidX code came along with it
+          grep -q '"io.github.jefdiesel.logosnode.ScanActivity"' manifest.txt || fail "ScanActivity not declared"
+          ! grep -q 'com.journeyapps.barcodescanner.CaptureActivity' manifest.txt || fail "ZXing's CaptureActivity is in the manifest"
+          for c in Lcom/google/android/gms/ Lcom/google/mlkit/ Lcom/google/firebase/ Lcom/google/android/datatransport/ Landroidx/activity/; do
+            ! unzip -p "$A" 'classes*.dex' | grep -aq "$c" || fail "unexpected classes in the APK: $c"
+          done
+          unzip -p "$A" 'classes*.dex' | grep -aq 'Lcom/journeyapps/barcodescanner/BarcodeView;' || fail "the ZXing scanner is not in the APK"
           echo "all checks passed"
           mkdir out && cp "$A" "out/logos-node-${{ steps.node.outputs.version }}-${{ steps.node.outputs.variant }}-debug.apk"
           (cd out && sha256sum *.apk > SHA256SUMS && cat SHA256SUMS)

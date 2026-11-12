@@ -103,6 +103,25 @@ It is a debug build for testing, not something to publish.
   The key is made when the page shows fingerprint unlock is on, and deleted when it is off.
   Turning it on or off happens in the page's Settings, and turning it on needs the PIN.
 
+- **QR scan, and the camera permission.** The app declares `android.permission.CAMERA` and uses it
+  only for the page's Scan button (web app 0.9.5). The button calls `window.LogosAndroid.scanQr()`.
+  The app asks for the camera only when Scan is tapped, never at start-up: first one line saying
+  why, then Android's own question. If access is refused, the page gets
+  `window.logosScanFailed("Camera access is off. Turn it on in Android settings to scan.")`. Once
+  Android stops asking, the app doesn't ask either.
+
+  The scanner is the app's own screen. It shows the camera picture, one line of text and Cancel.
+  It is portrait only and reads QR codes only. The camera stops as soon as a code is read or the
+  screen is left.
+
+  The decoded text goes to the page exactly as read, with `window.logosScanned(text)`, and the app
+  does nothing else with it. It is never logged. Cancel gives `window.logosScanFailed()` with no
+  message, and only one scan runs at a time.
+
+  The scanner is ZXing (`com.journeyapps:zxing-android-embedded` 4.3.0 with ZXing core,
+  Apache-2.0). It runs entirely on the phone. There is no Google Play services, ML Kit, Firebase
+  or AndroidX code in the app, and CI checks that.
+
 - **Network.** Cleartext HTTP is allowed to `127.0.0.1` and `localhost` only
   (`network_security_config.xml`). The wallet server itself makes HTTPS requests to the LNS
   sequencer for name lookups, as on Linux.
@@ -353,8 +372,10 @@ The APK is built in CI (`.github/workflows/android-app.yml`). The workflow runs 
   - the node library is present for arm64-v8a with the expected hash
   - the web app files are identical to `app/`
   - Python is included
-  - the manifest has the service, its foreground type, the permissions, and the wallet's separate
-    process
+  - the manifest has the service, its foreground type, exactly the expected permissions (camera
+    included) and no others, and the wallet's separate process
+  - the QR scanner is the app's own screen; ZXing's own screen is not in the manifest, and no
+    Google Play services, ML Kit, Firebase or AndroidX classes are in the APK
 - uploads the APK as a workflow artifact, and nowhere else
 
 To build it on a computer (JDK 17, Android SDK platform 36 and build-tools 36.0.0, Gradle 8.14; no
