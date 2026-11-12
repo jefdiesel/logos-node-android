@@ -85,7 +85,7 @@ const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join(""
 const unhex = (s) => Uint8Array.from(s.match(/../g) ?? [], (h) => parseInt(h, 16));
 const eqBytes = (a, b) => !!a && !!b && a.length === b.length && a.every((x, i) => x === b[i]);
 const rand = (n) => crypto.getRandomValues(new Uint8Array(n));
-const hashHex = (bytes) => hex(sha256(bytes));
+const hashHex = (bytes) => hex(sha256(bytes)).slice(0, 16); // seen-message ids: 64 bits is plenty per group
 const concat = (...p) => {
   const out = new Uint8Array(p.reduce((n, x) => n + x.length, 0));
   let o = 0;
@@ -231,7 +231,17 @@ class GroupEngine {
   }
 
   // ---------- events ----------
-  /** onEvent(cb) -> unsubscribe. Events are plain objects with a `type`; see EVENTS in tests/groups/README. */
+  /** onEvent(cb) -> unsubscribe. Events (plain objects; member ids are "alice" or "k:<64 hex>"):
+   *   created {groupId, name}                  joined {groupId, name, admin}        left {groupId}
+   *   invite {inviteId, groupId, groupName, from, verified}    -> acceptInvite / declineInvite
+   *   invite-sent {groupId, member}            invite-failed {groupId, member, code}
+   *   message {groupId, from, address, text, ts, late, verified}   (late: opened after its epoch closed)
+   *   members {groupId, added[], removed[], members[]}           renamed {groupId, name}
+   *   removed {groupId}   (this device was removed)               key-changed {groupId, member}
+   *   catching-up {groupId, held} / caught-up {groupId}            missed-messages {groupId, count, epoch}
+   *   needs-readd {groupId, reason}            rejoin-request {groupId, member} (admin; it re-adds by itself)
+   *   rejoin-requested {groupId, name, admin}  admin-lost {groupId, name} (restored admin: the group can't change)
+   *   dropped {code}   (a message refused or unreadable; never content)      state-reloaded {} (another tab wrote) */
   onEvent(cb) {
     this.listeners.add(cb);
     return () => this.listeners.delete(cb);
@@ -278,10 +288,12 @@ class GroupEngine {
   }
 
   /** Runs fn(draft, ctx) on a copy of the state, saves it (compare-and-swap), and only then posts, subscribes
-   * and emits. On a conflict (another tab wrote first) it reloads and runs fn once more on the fresh state. */
+   * and emits. On a conflict (another tab wrote first) it reloads and runs fn again on the fresh state, up to
+   * 6 times with a short random pause; then STATE_CONFLICT. */
   _mutate(fn) {
     const run = async () => {
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; attempt < 6; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, 10 + Math.random() * 40 * attempt));
         const draft = structuredClone(this.data);
         const ctx = { posts: [], events: [], zero: [], subscribe: [], unsubscribe: [] };
         const result = await fn(draft, ctx);
@@ -609,37 +621,43 @@ class GroupEngine {
   }
 
   // ---------- incoming ----------
-  /** incoming(topic, bytes, meta) -> true when the payload was for the group engine. */
+  /** incoming(topic, bytes, meta) -> true when the payload was the group engine's (and is saved). Throws a
+   * GroupError (STATE_CONFLICT) when it couldn't be saved: hand it in again later. */
   async incoming(topic, bytes, meta = {}) {
-    return this.incomingMany([{ topic, bytes, meta }]).then((n) => n > 0);
+    const r = await this.incomingMany([{ topic, bytes, meta }]);
+    if (r.failed.length) fail("STATE_CONFLICT");
+    return r.handled > 0;
   }
 
-  /** incomingMany([{ topic, bytes, meta }]) -> how many payloads were for the group engine. Batches are
-   * processed per group in epoch order (messages before the commit that closes their epoch). */
+  /** incomingMany([{ topic, bytes, meta }]) -> { handled, failed }: how many payloads were the group engine's,
+   * and the indices of those whose result could not be saved (hand them in again; repeats are dropped by their
+   * hash). Payloads of one group are processed in epoch order (messages before the commit that closes their
+   * epoch). Payloads that aren't the engine's (v1 messages, unknown topics) are left alone and not counted. */
   async incomingMany(items) {
     let handled = 0;
+    const failed = [];
     const byGroup = new Map();
-    for (const it of items) {
+    for (const [i, it] of items.entries()) {
       const bytes = it.bytes instanceof Uint8Array ? it.bytes : unb64(String(it.bytes));
       if (it.topic === this.inbox) {
         if (bytes[0] !== 2) continue; // v1: the chat's, not ours
         handled++;
-        await this._mutate((d, ctx) => this._control_in(d, ctx, bytes)).catch(() => {});
+        await this._mutate((d, ctx) => this._control_in(d, ctx, bytes)).catch(() => failed.push(i));
         continue;
       }
       const g = Object.values(this.data.groups).find((x) => x.topic === it.topic && x.status === "active");
       if (!g) continue;
       handled++;
       if (!byGroup.has(g.id)) byGroup.set(g.id, []);
-      byGroup.get(g.id).push(bytes);
+      byGroup.get(g.id).push([i, bytes]);
     }
     for (const [gid, list] of byGroup) {
       await this._mutate(async (d, ctx) => {
         const g = d.groups[gid];
-        if (g?.status === "active") await this._groupBatch(d, ctx, g, list);
-      }).catch(() => {});
+        if (g?.status === "active") await this._groupBatch(d, ctx, g, list.map(([, b]) => b));
+      }).catch(() => failed.push(...list.map(([i]) => i)));
     }
-    return handled;
+    return { handled, failed: failed.sort((a, b) => a - b) };
   }
 
   _parse(bytes) {
@@ -990,6 +1008,10 @@ class GroupEngine {
         }
         if (g.role === "admin") for (const [p, inv] of Object.entries(g.invites)) if (now - inv.ts > this.timings.inviteTtlMs) delete g.invites[p];
       }
+      // accepted invitations whose Welcome never came, and restore requests never answered, stop counting
+      for (const [gid, j] of Object.entries(d.joins)) if (now - j.ts > this.timings.inviteTtlMs) delete d.joins[gid];
+      for (const [gid, r] of Object.entries(d.rejoin)) if (now - r.ts > this.timings.inviteTtlMs) delete d.rejoin[gid];
+      for (const [id, inv] of Object.entries(d.invites)) if (now - inv.ts > this.timings.inviteTtlMs) delete d.invites[id];
     }).catch(() => {});
   }
 

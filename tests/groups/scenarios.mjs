@@ -403,6 +403,17 @@ async function growTo32(net, check, log, workaround) {
     log(`largest sealed control message from the admin: ${Math.max(...welcomes)} bytes`);
     check("every sealed control message under 64 KiB", Math.max(...welcomes) <= 65536);
     check("no library errors at the admin", !A.engine.stats()["library-error"], JSON.stringify(A.engine.stats()));
+    // the cost of one blob for everything: its size and the time of one send at 32 members
+    let t = performance.now();
+    await A.engine.send(gid, "timing");
+    const adminSendMs = Math.round(performance.now() - t);
+    t = performance.now();
+    await ms[0].engine.send(gid, "timing 2");
+    const memberSendMs = Math.round(performance.now() - t);
+    await settle(all);
+    const sizes = { adminBlob: A.storage.blob.length, adminJson: JSON.stringify(A.engine.data).length, memberBlob: ms[0].storage.blob.length, adminSendMs, memberSendMs, adminWrites: A.storage.writes };
+    log(`state at 32 members: ${JSON.stringify(sizes)}`);
+    check("state sizes measured", sizes.adminBlob > 0, JSON.stringify(sizes));
   }
 }
 
