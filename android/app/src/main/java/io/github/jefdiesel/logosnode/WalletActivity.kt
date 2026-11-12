@@ -498,7 +498,7 @@ class WalletActivity : Activity() {
         }
 
         /**
-         * The page's Scan button (web app 0.9.5): the QR scanner. The answer comes back as
+         * The page's Scan button (web app 0.9.7): the QR scanner. The answer comes back as
          * window.logosScanned(text) or window.logosScanFailed(message); see QrScan.
          */
         @JavascriptInterface

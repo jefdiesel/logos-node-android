@@ -97,7 +97,7 @@ jobs:
               || fail "lib/arm64-v8a/$in_apk is missing or differs from the pinned $name"
           done < android/messaging.sha256
           # the wallet: the repository's own app/ files, unchanged, and Python to run them
-          for f in server.py index.html names/names.js names/lookup.js; do
+          for f in server.py index.html release.json names/names.js names/lookup.js messages/messages.js qr/qrcode.js; do
             [ "$(unzip -p "$A" "assets/webapp/$f" | sha256sum | cut -d' ' -f1)" = "$(sha256sum "app/$f" | cut -d' ' -f1)" ] \
               || fail "assets/webapp/$f is missing or differs from app/$f"
           done
@@ -121,10 +121,16 @@ jobs:
           # and no Google Play services, ML Kit, Firebase or AndroidX code came along with it
           grep -q '"io.github.jefdiesel.logosnode.ScanActivity"' manifest.txt || fail "ScanActivity not declared"
           ! grep -q 'com.journeyapps.barcodescanner.CaptureActivity' manifest.txt || fail "ZXing's CaptureActivity is in the manifest"
-          for c in Lcom/google/android/gms/ Lcom/google/mlkit/ Lcom/google/firebase/ Lcom/google/android/datatransport/ Landroidx/activity/; do
-            ! unzip -p "$A" 'classes*.dex' | grep -aq "$c" || fail "unexpected classes in the APK: $c"
-          done
-          unzip -p "$A" 'classes*.dex' | grep -aq 'Lcom/journeyapps/barcodescanner/BarcodeView;' || fail "the ZXing scanner is not in the APK"
+          grep -A3 '"io.github.jefdiesel.logosnode.ScanActivity"' manifest.txt | grep -q 'exported(0x01010010)=false' || fail "ScanActivity is exported"
+          # classes defined in the APK (not names merely referred to: ZXing's unused ScanContract names AndroidX)
+          mkdir dex && unzip -q -o "$A" 'classes*.dex' -d dex
+          for d in dex/classes*.dex; do "$BT/dexdump" "$d"; done | sed -n "s/^  Class descriptor  : '\(.*\)'$/\1/p" | sort -u > classes.txt
+          echo "$(wc -l < classes.txt) classes defined"
+          ! grep -E '^L(com/google/android/gms|com/google/mlkit|com/google/firebase|com/google/android/datatransport|androidx)/' classes.txt \
+            || fail "Google Play services, ML Kit, Firebase or AndroidX classes in the APK"
+          grep -qx 'Lcom/journeyapps/barcodescanner/BarcodeView;' classes.txt || fail "the ZXing scanner is not in the APK"
+          grep -qx 'Lcom/google/zxing/qrcode/QRCodeReader;' classes.txt || fail "the ZXing QR decoder is not in the APK"
+          grep -qx 'Lio/github/jefdiesel/logosnode/ScanActivity;' classes.txt || fail "ScanActivity is not in the APK"
           echo "all checks passed"
           mkdir out && cp "$A" "out/logos-node-${{ steps.node.outputs.version }}-${{ steps.node.outputs.variant }}-debug.apk"
           (cd out && sha256sum *.apk > SHA256SUMS && cat SHA256SUMS)

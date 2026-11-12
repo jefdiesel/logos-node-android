@@ -14,7 +14,7 @@ class QrScanTest {
     private class Run(
         var allowed: Boolean = true,
         val answer: Boolean? = true,
-        val result: Result? = Result.Scanned("logos:abc"),     // null: the scanner stays open
+        val result: Result? = Result.Scanned("msg:abc"),     // null: the scanner stays open
         var url: String? = "http://127.0.0.1:18190/",
         val scannerThrows: Boolean = false,
     ) {
@@ -57,7 +57,7 @@ class QrScanTest {
         r.qr.request()
         assertEquals(0, r.asked)                                  // camera already allowed: no question
         assertEquals(1, r.opened)
-        assertEquals(listOf("window.logosScanned && window.logosScanned(\"logos:abc\")"), r.page)
+        assertEquals(listOf("window.logosScanned && window.logosScanned(\"msg:abc\")"), r.page)
         assertFalse(r.qr.busy)
     }
 
@@ -106,7 +106,7 @@ class QrScanTest {
         assertEquals(1, r.asked)
         assertEquals(0, r.opened)                                 // no scanner without the camera
         assertEquals(listOf("window.logosScanFailed && window.logosScanFailed(" +
-            "\"Camera access is off. Turn it on in Android settings to scan.\")"), r.page)
+            "\"The app can't use the camera, so it can't scan. Allow the camera in Android settings, or type or paste the address.\")"), r.page)
         assertFalse(r.qr.busy)
         r.qr.request()                                            // the next tap asks once more, no loop on its own
         assertEquals(2, r.asked)

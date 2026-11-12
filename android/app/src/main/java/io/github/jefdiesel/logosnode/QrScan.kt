@@ -62,7 +62,7 @@ class QrScan(
     }
 
     companion object {
-        const val CAMERA_OFF = "Camera access is off. Turn it on in Android settings to scan."
+        const val CAMERA_OFF = "The app can't use the camera, so it can't scan. Allow the camera in Android settings, or type or paste the address."
         const val NO_SCANNER = "The scanner couldn't be opened. Try again."
         const val CAMERA_ERROR = "The camera couldn't be started. Try again."
 

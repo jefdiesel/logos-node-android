@@ -32,8 +32,8 @@ android {
         applicationId = "io.github.jefdiesel.logosnode"
         minSdk = 28 // the node binary is built for API 28
         targetSdk = 36
-        versionCode = 16
-        versionName = "0.5.5"
+        versionCode = 17
+        versionName = "0.5.6"
         ndk { abiFilters += "arm64-v8a" }
         buildConfigField("String", "NODE_VERSION", "\"$nodeVersion\"")
         buildConfigField("String", "NODE_SHA256", "\"$nodeSha256\"")
@@ -91,7 +91,8 @@ tasks.named("preBuild") { dependsOn(copyWebApp) }
 
 dependencies {
     // the QR scanner (Scan button): ZXing's camera view and decoder, Apache-2.0, all on the phone. Its only
-    // dependency is ZXing core; no AndroidX, no Google Play services.
+    // dependency is ZXing core; no AndroidX, no Google Play services. (Its ScanContract names AndroidX's
+    // ActivityResultContract but is never used, and no AndroidX class is in the APK: CI checks that.)
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     // JVM unit tests of the snapshot import (tar reader, RocksDB check, state swap); run with testDebugUnitTest
     testImplementation("junit:junit:4.13.2")

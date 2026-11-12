@@ -104,10 +104,10 @@ It is a debug build for testing, not something to publish.
   Turning it on or off happens in the page's Settings, and turning it on needs the PIN.
 
 - **QR scan, and the camera permission.** The app declares `android.permission.CAMERA` and uses it
-  only for the page's Scan button (web app 0.9.5). The button calls `window.LogosAndroid.scanQr()`.
+  only for the page's Scan button (web app 0.9.7: Send and New chat). The button calls `window.LogosAndroid.scanQr()`.
   The app asks for the camera only when Scan is tapped, never at start-up: first one line saying
   why, then Android's own question. If access is refused, the page gets
-  `window.logosScanFailed("Camera access is off. Turn it on in Android settings to scan.")`. Once
+  `window.logosScanFailed(...)` with a plain message saying the camera is off and the address can be typed. Once
   Android stops asking, the app doesn't ask either.
 
   The scanner is the app's own screen. It shows the camera picture, one line of text and Cancel.
@@ -115,8 +115,11 @@ It is a debug build for testing, not something to publish.
   screen is left.
 
   The decoded text goes to the page exactly as read, with `window.logosScanned(text)`, and the app
-  does nothing else with it. It is never logged. Cancel gives `window.logosScanFailed()` with no
-  message, and only one scan runs at a time.
+  does nothing else with it. It is never logged. The page checks it strictly (64 hex characters for a
+  wallet address, `msg:` and 64 hex for a messaging address, nothing else) and fills only the box Scan
+  was tapped in. Cancel gives `window.logosScanFailed()` with no message, and only one scan runs at a
+  time. The request and the answer both go only to the wallet's own page (`http://127.0.0.1:<port>`,
+  the same check as fingerprint unlock); the scanner screen is not exported.
 
   The scanner is ZXing (`com.journeyapps:zxing-android-embedded` 4.3.0 with ZXing core,
   Apache-2.0). It runs entirely on the phone. There is no Google Play services, ML Kit, Firebase
@@ -374,8 +377,9 @@ The APK is built in CI (`.github/workflows/android-app.yml`). The workflow runs 
   - Python is included
   - the manifest has the service, its foreground type, exactly the expected permissions (camera
     included) and no others, and the wallet's separate process
-  - the QR scanner is the app's own screen; ZXing's own screen is not in the manifest, and no
-    Google Play services, ML Kit, Firebase or AndroidX classes are in the APK
+  - the QR scanner is the app's own screen, not exported; ZXing's own screen is not in the manifest,
+    ZXing's scanner classes are in the APK, and no Google Play services, ML Kit, Firebase or AndroidX
+    classes are defined in it (read from the dex files with dexdump)
 - uploads the APK as a workflow artifact, and nowhere else
 
 To build it on a computer (JDK 17, Android SDK platform 36 and build-tools 36.0.0, Gradle 8.14; no
