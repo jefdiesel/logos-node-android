@@ -445,7 +445,7 @@ $("mg-find").addEventListener("submit", async e => {
   if (c.lapsed) lines.push(el("p", { className: "msg warn", textContent: name + "'s registration has lapsed; it may change hands." }));
   const known = chat.pinned(name);
   if (known && c.key && known !== c.key) lines.push(el("p", { className: "msg warn", textContent: name + "'s messaging address changed since you last talked. The chat will ask you to accept it." }));
-  if (!c.key) lines.push(el("p", { className: "note", textContent: "They can turn messages on in the Names app or in the Logos node app. Until then you can write to them only if they give you their messaging address." }));
+  if (!c.key) lines.push(el("p", { className: "note", textContent: name + " can't get messages by name yet. Ask " + name + " for their messaging address." }));
   const merge = c.key && chat.addressChatFor(c.key);
   if (merge) {
     const mg = el("button", { type: "button", className: "primary", textContent: "Merge into " + name });

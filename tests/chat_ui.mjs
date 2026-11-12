@@ -54,6 +54,8 @@ const waitFor = async (name, expr, ms = 10000) => {
   while (Date.now() < end) { if (await js(expr).catch(() => false)) return true; await sleep(150); }
   check(name, false, { errors, page: (await js(`(document.querySelector(".ov") || document.getElementById("page-msg")).innerText`).catch(() => "")).slice(0, 400) });
 };
+// the old header's words must never show again, on any screen
+const noOldHeader = async (where) => check(`${where}: no "Logos node" or "running on this device"`, !/logos node|running on this device/i.test(await js(`document.body.innerText`)));
 let shotN = 0;
 async function shot(name) {
   if (!SHOTS) return;
@@ -81,6 +83,7 @@ await load();
 await waitFor("locked: one lock screen and nothing else", `!document.getElementById("lock").hidden && getComputedStyle(document.getElementById("nav")).display === "none" && getComputedStyle(document.getElementById("page-main")).display === "none"`);
 check("without fingerprint the PIN field has the focus", await js(`document.activeElement && document.activeElement.id === "pin"`));
 await shot("locked");
+await noOldHeader("the lock screen");
 await unlock();
 check("the bar shows Wallet and Messages", (await text("#nav")).includes("Wallet") && (await text("#nav")).includes("Messages"));
 // the wallet home: the header is the λ, Wallet, the node's icon and the gear; then the balance, Send and Receive
@@ -92,6 +95,7 @@ await nodeMode("online");
 await waitFor("online: up to date, the balance as the hero", `document.getElementById("node-ic").dataset.kind === "ok" && /75,000/.test(document.getElementById("bal-total").textContent)`, 20000);
 check("no addresses on the wallet home until Receive", await js(`document.getElementById("p-recv").hidden && !/[0-9a-f]{10}…/.test(document.getElementById("page-main").innerText)`));
 await shot("wallet-home");
+await noOldHeader("the wallet home");
 await click("#t-recv");
 await waitFor("Receive shows the address with Copy", `!document.getElementById("p-recv").hidden && document.getElementById("p-recv").innerText.includes("Copy address")`);
 await shot("wallet-receive");
@@ -103,6 +107,7 @@ await click("#node-ic");
 await waitFor("the node icon opens Settings > Node", `!document.getElementById("page-settings").hidden && document.getElementById("s-nodec").innerText.includes("Peers")`);
 await js(`document.getElementById("s-nodec").scrollIntoView(); true`);
 await shot("settings-node");
+await noOldHeader("Settings");
 await click("#b-settings-back");
 await click("#nav-msg");
 await waitFor("no key yet: the turn-on screen", `!document.getElementById("mg-nokey").hidden`);
@@ -138,6 +143,7 @@ await click("#b-settings-back");
 await waitFor("the empty chat list", `!!document.querySelector("#mg-rows .empty")`);
 check("home shows names and icons only: no address", !/[0-9a-f]{20,}/.test(await js(`document.getElementById("page-msg").innerText`)));
 await shot("empty-list");
+await noOldHeader("Messages");
 check("Messages has its own top: no node header, no status pill", await js(`document.querySelector("main > header").hidden && !!document.getElementById("h-chats")`));
 check("no name linked yet: no name card on Messages home", !(await text("#mg-home")).includes("People reach you"));
 
@@ -173,6 +179,7 @@ await waitFor("bob's replies arrive", `document.querySelector(".cv-in").innerTex
 check("day separators: Yesterday and Today", (await text(".cv-in")).includes("Yesterday") && (await text(".cv-in")).includes("Today"));
 check("the header says verified", (await text(".ov-top")).includes("verified"));
 await shot("chat");
+await noOldHeader("a chat");
 // message details
 await js(`document.querySelector(".bub.out").click(); true`);
 await waitFor("details of my message", `!!document.querySelector(".sheet") && document.querySelector(".sheet").innerText.includes("To bob")`);
@@ -188,6 +195,7 @@ await waitFor("nickname saved", `document.querySelector(".saved").textContent.in
 await js(`(() => { const n = document.getElementById("pv-note"); n.value = "Runs the Thursday meetup. Prefers Signal for anything urgent."; n.dispatchEvent(new Event("input")); n.dispatchEvent(new Event("blur")); return true; })()`);
 await waitFor("note saved", `document.querySelector(".saved").textContent.includes("Saved")`);
 await shot("profile");
+await noOldHeader("a profile");
 await js(`history.back(); true`); await sleep(200);
 await js(`history.back(); true`);
 await waitFor("back on the list", `document.querySelectorAll("#mg-rows .crow").length >= 1 && !document.querySelector(".ov")`);
@@ -329,6 +337,7 @@ await waitFor("the lock screen", `!!document.getElementById("lock") && !document
 await sleep(600);
 check("the fingerprint check comes up by itself, once", await js(`window.__fp`) === 1);
 await shot("locked-android");
+await noOldHeader("the Android lock screen");
 await js(`window.logosNativeUnlockFailed(); true`);
 check("after a cancel the PIN field has the focus", await js(`document.activeElement.id === "pin"`));
 await sleep(1000);
