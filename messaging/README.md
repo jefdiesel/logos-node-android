@@ -2,9 +2,13 @@
 
 This builds the official Logos Messaging node library, `liblogosdelivery`, from
 [logos-messaging/logos-delivery](https://github.com/logos-messaging/logos-delivery) (the Nim
-node formerly called nwaku) at a tagged release, for Android arm64 (`aarch64-linux-android`,
-API 28). It uses upstream's own make target, `liblogosdelivery-android-arm64`, which upstream's
-CI also builds. The source is used as published: no patches, no fork.
+node formerly called nwaku), for Android arm64 (`aarch64-linux-android`, API 28). It uses
+upstream's own make target, `liblogosdelivery-android-arm64`, which upstream's CI also builds.
+The source is used as published: no patches, no fork.
+
+**Version: v0.40.0-rc.3** (commit `57e04dc4473aec7a36e4be5f025697b477a6562a`), a release
+candidate. That is acceptable on a testnet. It is needed because v0.39.2, the latest stable
+release, ignores `--shard` and relays all 8 shards; see "Traffic" below.
 
 Upstream supports Android only as a library: there is no Android target for the
 `logosdeliverynode` command-line node. So this directory adds a small runner,
@@ -15,28 +19,30 @@ The build runs only in GitHub Actions (`.github/workflows/waku-build.yml`), on e
 touches `messaging/**` or that workflow. The result is kept as a workflow artifact
 (`logos-delivery-android-arm64-<version>`) and is not published anywhere else. A build from
 scratch takes about 8 minutes. When only the runner changes, the cached library is reused.
+Builds of the same source are not byte-for-byte reproducible, so pin the hashes of one specific
+run.
 
 ## Files in the artifact
 
 | File | Size (stripped) | Needs |
 | --- | --- | --- |
-| `waku-runner` | 47 KB | `liblogosdelivery.so`, `liblog.so`, libc, libdl |
-| `liblogosdelivery.so` | 35 MB | `librln.so`, `liblog.so`, libc, libm, libdl (libc++ is static) |
-| `librln.so` | 6.4 MB | libc, libm, libdl |
+| `waku-runner` | 47 KB | `liblogosdelivery.so` (found next to it, `RUNPATH=$ORIGIN`), `liblog.so`, libc, libdl |
+| `liblogosdelivery.so` | 36 MB | `liblog.so`, libc, libm, libdl (libc++ is static) |
 
 - `include/`: the C headers (`liblogosdelivery.h` and `generated/`), for calling the library
   directly, for example through JNI, instead of through the runner.
-- `logos-test.json`, `logos-test-rest.json`: the test configurations (below).
+- `logos-test.json`, `logos-test-rest.json`: the recommended configuration, without and with REST.
+- `SHA256SUMS`, `VERSION`.
 
-`librln.so` is still needed, although RLN is compiled out (`-d:disable_rln`). With RLN off the
-node uses none of its symbols, but upstream's Android task always links `-lrln`, so the loader
-still asks for it.
+v0.39.2 also needed `librln.so`. Upstream's Android task linked it even with RLN compiled out,
+and the runner then had to run with `LD_LIBRARY_PATH` set. The rc3 library asks only for system
+libraries, so `librln.so` is no longer shipped. The workflow ships it again automatically if a
+version needs it.
 
 ## How it works
 
 1. `make build-deps`, then `make liblogosdelivery-android-arm64 ANDROID_TARGET=28` in the upstream
-   checkout, with the NDK that upstream's CI uses (r27c). This cross-compiles librln with `cross`
-   and the node with Nim and the NDK clang.
+   checkout, with the NDK that upstream's CI uses (r27c).
 2. Extra Nim flags go through upstream's `NIMFLAGS` variable and are listed in `nimflags`:
    - logging at INFO level to stdout. Upstream's Android task compiles in ERROR level and sends
      it to a `dynamic` log sink that only an embedding app would configure. The log level is
@@ -49,89 +55,156 @@ still asks for it.
 
 ## Building a newer version
 
-Change `v0.39.2` in `.github/workflows/waku-build.yml` (the `WAKU_VERSION` default and the
-`workflow_dispatch` default) and push. You can also run the workflow by hand with a tag or a
-commit sha.
+Change `WAKU_VERSION` and `WAKU_SHA` in `.github/workflows/waku-build.yml` (the tag and the
+commit it points to; the build fails if they disagree), and the `workflow_dispatch` default, then
+push. You can also run the workflow by hand with any tag or commit sha.
 
 ## Running it
 
 ```
-LD_LIBRARY_PATH=<dir of the .so files> waku-runner <config.json> \
-    [--duration SEC] [--status-every SEC] [--topic CONTENT_TOPIC] [--send-every SEC]
+waku-runner <config.json> [--duration SEC] [--status-every SEC] [--topic CONTENT_TOPIC] [--send-every SEC]
 ```
-
-`LD_LIBRARY_PATH` is required. The runner finds `liblogosdelivery.so` next to itself
-(`RUNPATH=$ORIGIN`), but `liblogosdelivery.so` has no RUNPATH and `librln.so` has no SONAME, so
-Android's linker can only find `librln.so` on the search path. An app that starts the runner as a
-child process sets this variable to its native library directory.
 
 The runner logs to stdout. It prints the node's identity, then a status line at each interval:
 connection status, connected peers, RSS, and some relay and traffic metrics. On SIGINT or SIGTERM
-it stops the node and exits within about 20 seconds. In every test, the library's `stop_node`
-never answered (the runner waits 15 seconds for it), and `destroy` then reported the context as
-quarantined. The process still exited normally.
+it stops the node and exits.
 
-### Configuration
+On v0.39.2 the library's `stop_node` never answered (the runner waits 15 seconds for it),
+`destroy` then reported the context as quarantined, and the process exited about 20 seconds after
+the signal. This is not yet checked on rc3. Allow 25 seconds, then kill the process.
 
-The configuration is the library's JSON (see `library/README.md` upstream). It comes in two
-shapes:
+### Configuration (recommended)
 
-- **Structured** (`logos-test.json`): `mode`, `preset`, `messagingOverrides`. This is the
-  documented shape. `messagingOverrides` accepts only messaging-level keys, such as ports, `nat`,
-  `nodekey`, `local-storage-path`, `log-level` and the store and rate-limit settings. It rejects
-  `rest*`, `filter`, `lightpush` and `shard`.
-- **Flat** (`logos-test-rest.json`): `mode` and `preset` plus any node option at the top level,
-  including `rest`, `rest-address`, `rest-port`, `filter`, `lightpush` and `shard`. Upstream
-  marks this shape as legacy, kept for compatibility.
+```json
+{
+  "mode": "Core",
+  "preset": "logos.test",
+  "shard": [7],
+  "filter": false,
+  "lightpush": false,
+  "nat": "none",
+  "tcp-port": 60000,
+  "discv5-udp-port": 9000,
+  "rest": true,
+  "rest-address": "127.0.0.1",
+  "rest-port": 18645,
+  "nodekey": "<64 hex digits, generated once and kept private>",
+  "local-storage-path": "<app data directory>"
+}
+```
 
-Both test configurations join `logos.test` (cluster 2, 8 auto-shards, RLN off) as a Core
-(relay) node. They turn NAT port mapping off (`"nat": "none"`), so the node never asks the router
-to open ports. With `"nodekey": "<64 hex>"` the node kept the same peer id across every test run.
-Keep that file private. The runner never prints it, but the library logs the whole configuration
-JSON, key included, when it fails to parse it, so check the configuration before passing it on.
-The node keeps a small SQLite database (`messaging.db`, about 160 KB after the tests) in
-`local-storage-path`. The library's default API layer is `channels` (messaging plus reliable
-channels).
+What each setting does:
+- Relay node (`Core`) on `logos.test` (cluster 2, 8 auto-shards, RLN off), relaying **shard 7
+  only**.
+- Filter and lightpush serving off; peer discovery left at its defaults.
+- NAT port mapping off (`"nat": "none"`), so the node never asks the router to open ports.
+- REST on loopback only.
 
-Ports: TCP 60000 and QUIC UDP 60000 (libp2p), UDP 9000 (discv5), and, with REST on, TCP 18645
-on 127.0.0.1 only.
+The node keeps a small SQLite database in `local-storage-path`. With a fixed `nodekey` it keeps
+the same peer id across restarts. The runner never prints the configuration, but the library logs
+it, key included, when it fails to parse it. So check the configuration before passing it on.
 
-## Tested on a device
+Ports: TCP 60000 and QUIC UDP 60000 (libp2p), UDP 9000 (discv5), TCP 18645 on 127.0.0.1 (REST).
+
+**This must be the flat shape.** The library accepts two configuration shapes:
+- **Structured:** `mode`, `preset`, `messagingOverrides`, as documented in upstream's
+  `library/README.md`. Its `messagingOverrides` has no `shard`, `rest*`, `filter` or `lightpush`
+  key. With it the node relays every shard.
+- **Flat:** node options at the top level, as above. This is the only way to set those options.
+  Upstream marks the flat shape as legacy (see `upstream-drafts/02-…`).
+
+### Shards and topics
+
+Auto-sharding puts a content topic `/<app>/<version>/<name>/<encoding>` on shard
+`sha256(<app> + <version>)` mod 8. The name part does not count. **So every `/names/1/.../proto`
+topic, and therefore every LNS inbox, is on shard 7.**
+
+On rc3:
+- **Receiving:** subscribing to a content topic on another shard makes the relay join that shard
+  too, so the node then pays for that shard's traffic.
+- **Sending:** to a topic on another shard works without joining it. Relay publishes to the peers
+  on that shard and falls back to lightpush.
+
+### Health
+
+`connectionStatus` (from `/health` and the runner's status line) comes from the **smallest relay
+mesh across all subscribed shards**: `Connected` needs at least 4 mesh peers, `PartiallyConnected`
+at least 1. It can therefore say `PartiallyConnected` or `Disconnected` while messages flow:
+- when a subscribed topic lives on a shard nobody else uses;
+- with peer discovery turned off (7 to 17 peers), even though 100 or more messages a minute were
+  arriving.
+
+Do not treat it alone as "offline".
+
+## Traffic
+
+Measured on 2026-11-12, on `logos.test`, with the official macOS node releases on a desktop.
+Each figure is a single 3–4 minute window. **The network load swung about 2x within one
+afternoon**, so read these as rough sizes, not constants.
+
+| Version | Configuration | Peers | MB/min in / out | GB/day in / out |
+| --- | --- | --- | --- | --- |
+| v0.39.2 | Core, all shards | 48 | 70.5 / 76.6 | 101 / 110 |
+| v0.39.2 | Core, `shard: [5]` (ignored, still relays all shards) | 48 | 46.8 / 34.8 | 67 / 50 |
+| v0.39.2 | as above, discovery and filter/lightpush/mix off | 17 | 24.7 / 7.1 | 36 / 10 |
+| v0.40.0-rc.3 | Core, all shards (an hour later) | 46 | 30.2 / 16.5 | 43 / 24 |
+| **v0.40.0-rc.3** | **Core, shard 7** | 45 | **0.51 / 0.56** | **0.73 / 0.81** |
+| v0.40.0-rc.3 | Core, shard 7, filter/lightpush off | 44 | 0.57 / 0.45 | 0.82 / 0.65 |
+| v0.40.0-rc.3 | Core, shard 7, discovery off too | 7 | 0.08 / 0.04 | 0.12 / 0.06 (status `Disconnected`) |
+| v0.40.0-rc.3 | Edge, one subscription (light client, for comparison) | 44 | 0.32 / 0.04 | 0.46 / 0.06 |
+
+Notes:
+- **Phone check:** on the phone, v0.39.2 on all shards measured 49 / 31 MB/min over 16 minutes,
+  in line with the desktop.
+- **Cause:** v0.39.2 subscribes the relay to every auto-sharding shard at start-up, whatever
+  `--shard` says. Upstream fixed this in
+  [PR #4513](https://github.com/logos-messaging/logos-delivery/pull/4513) ("make --shard limit
+  the relay shards under autosharding"), after v0.39.2.
+- **Where the load was:** that day, shard 1 (several `/scala/1/<id>/json` topics, 8–24 KB
+  messages, 60% of the bytes) and shard 6 (one topic, `/lez-atomic-swaps/1/offers/json`, 33%).
+  Shard 7 carried about 130 small messages a minute.
+- **What the relay adds:** forwarding, with gossipsub's fixed mesh degree of 6, adds upload on top
+  of download.
+- **Discovery:** Kademlia used about 0.13 MB/min.
+- **Expected cost of the recommended configuration:** about 0.5–0.6 MB/min each way, roughly
+  **1.5 GB/day** at the shard-7 load measured. It grows if other applications that hash to shard 7
+  get busier.
+- **`--max-connections`:** a value of 10 crashes rc3 at start-up (see `upstream-drafts/01-…`);
+  20 works.
+
+## Tested on a device (v0.39.2)
 
 One phone, a Pixel 8 on Android 17, run from the adb shell as the `shell` user in
-`/data/local/tmp`, `logos.test`, v0.39.2. The runs below used the libraries of build run
-43239037351 (`liblogosdelivery.so` sha256 `6ddfb7bb…`, `librln.so` `1a4f7aea…`, identical in later
-builds). The final runner of build run 43244009283 (sha256 `81eea7cb…`) was then run for one
-minute with `logos-test.json`: connected to 28 peers and stopped cleanly. `phone-test.sh` is the
-script for such a run.
+`/data/local/tmp`, on `logos.test` with v0.39.2. These runs used the libraries of build run
+43239037351. The runner (sha256 `81eea7cb…`, unchanged since) was run for one minute with the
+then-default config: it connected to 28 peers and stopped cleanly. `phone-test.sh` is the script
+for such a run.
 
-- `--version` printed `v0.39.2`.
 - The node started in under a second, was `Connected` within 20 seconds and kept 40 to 46 peers.
-  `/health` reported `nodeHealth: READY` with Relay, Filter and Lightpush `READY`.
-- The node relayed: it validated about 31,000 gossip messages from peers in 16 minutes.
-  Test messages it published to a topic of our own (`/logos-node-android/1/waku-runner-test/proto`,
-  shard 5) were reported as propagated. Later runs delivered those same messages again, but
-  this may be the node's own reliability layer re-sending from its database, so it does not prove
-  a round trip.
+- It relayed about 31,000 gossip messages from peers in 16 minutes. Test messages it published
+  to a topic of our own were reported as propagated.
 - Memory (RSS): about 130 MB after 1 minute, 142 MB after 5, 168 MB after 15, and a peak of
   178 MB. It was still rising slowly when the run ended.
-- **Traffic is high.** On `logos.test` as it was during the test, relaying all 8 shards used
-  about 785 MB down and 500 MB up in 16 minutes (about 2.9 GB/h down, 1.8 GB/h up). The phone's
-  Wi-Fi counters agreed. Relaying shard 5 only (flat config, `"shard": [5]`) still used about
-  33 MB/min down. Most of this is other people's traffic on the network, relayed through the
-  phone.
-- REST (flat config, `127.0.0.1:18645`): `/health`, `/debug/v1/version`, `/debug/v1/info` and
-  `/messaging/v1/subscriptions` answered. `/admin/v1/peers` returned nothing (admin endpoints are
-  off by default; `rest-admin` turns them on, not tested). With `"filter": false,
-  "lightpush": false` (flat shape) those two protocols were not mounted, and relay kept working.
-- Under relay load the node's event loop sometimes lagged. `/health` once reported
-  `EVENT_LOOP_LAGGING`, and 2 of 17 `/health` probes during the long run got no answer within
+- REST on `127.0.0.1:18645` (flat config): `/health`, `/debug/v1/version`, `/debug/v1/info`
+  and `/messaging/v1/subscriptions` answered.
+- Under relay load the event loop sometimes lagged: 2 of 17 `/health` probes got no answer within
   5 seconds.
+
+On a desktop, an rc3 relay node on shard 7 and a v0.39.2 Edge node exchanged messages on
+`/names/1/msg-…/proto` topics, both live and after the receiver had been offline:
+- **Live:** delivered both ways, with `propagated` then `sent` reported for each send.
+- **Receiver offline:** the message arrived as `history`. The v0.39.2 Edge receiver had it within
+  45 seconds of subscribing. The rc3 relay receiver took 60–80 seconds.
+- **Duplicates:** both nodes also delivered some earlier messages a second time, as `history`. A
+  client should de-duplicate by message hash, and ignore its own sends, which also show up in
+  `/messaging/v1/events/received`.
 
 ## Not verified
 
+- **rc3 on the phone:** the build itself, the runner starting without `LD_LIBRARY_PATH`,
+  `"shard": [7]` through the library, and whether `stop_node` answers.
 - Running inside an app sandbox, or loading the library in-process through JNI.
 - Long runs, memory after an hour, battery use, and behaviour across network changes and the
   phone sleeping.
-- Messages from another node arriving on the phone (a round trip). No second client was used.
-- Any other phone, Android version, CPU, or network (`logos.dev` was not run).
+- How shard 7's load changes over days.
+- Any other phone, Android version or CPU.
