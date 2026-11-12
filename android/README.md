@@ -107,8 +107,9 @@ It is a debug build for testing, not something to publish.
   only for the page's Scan button (web app 0.9.7: Send and New chat). The button calls `window.LogosAndroid.scanQr()`.
   The app asks for the camera only when Scan is tapped, never at start-up: first one line saying
   why, then Android's own question. If access is refused, the page gets
-  `window.logosScanFailed(...)` with a plain message saying the camera is off and the address can be typed. Once
-  Android stops asking, the app doesn't ask either.
+  `window.logosScanFailed(...)` with a plain message saying the camera is off and the address can be typed. Each
+  tap goes through Android's question; once Android has stopped asking (refused for good), it
+  answers no at once and the page shows that message.
 
   The scanner is the app's own screen. It shows the camera picture, one line of text and Cancel.
   It is portrait only and reads QR codes only. The camera stops as soon as a code is read or the

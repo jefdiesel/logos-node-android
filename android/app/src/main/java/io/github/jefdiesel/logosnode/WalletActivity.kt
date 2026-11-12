@@ -70,19 +70,16 @@ class WalletActivity : Activity() {
 
     /**
      * The camera question, only when the user tapped Scan: one line saying why, then Android's own question.
-     * Once Android stops asking (refused for good), no question at all: the page is told the camera is off.
+     * Always through Android's question: when Android has stopped asking (refused for good), it answers
+     * "no" at once, and only then is the page told the camera is off. (A one-time grant that ran out, or
+     * the question dismissed without an answer, is asked again.)
      */
     private fun askCamera(onAnswer: (Boolean?) -> Unit) {
-        val prefs = getSharedPreferences("camera", MODE_PRIVATE)
-        if (prefs.getBoolean("asked", false) && !shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)) {
-            return onAnswer(false)
-        }
         var answered = false
         android.app.AlertDialog.Builder(this)
             .setMessage("To scan a QR code the app needs the camera. It uses it only while the scanner is open.")
             .setPositiveButton("Continue") { _, _ ->
                 answered = true
-                prefs.edit().putBoolean("asked", true).apply()
                 cameraAnswer = onAnswer
                 requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_REQUEST)
             }
@@ -96,7 +93,8 @@ class WalletActivity : Activity() {
         if (requestCode != CAMERA_REQUEST) return
         val answer = cameraAnswer ?: return
         cameraAnswer = null
-        answer(grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED)
+        // no result at all: the question was interrupted, a cancel rather than a no
+        answer(if (grantResults.isEmpty()) null else grantResults[0] == PackageManager.PERMISSION_GRANTED)
     }
 
     private fun python(function: String): String? = try {
