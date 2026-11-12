@@ -169,8 +169,13 @@ jobs:
         run: |
           docker run --rm --security-opt seccomp=unconfined -e NO_WAKE_LOCK=1 -e APP_SRC=/repo/app -v "$PWD":/repo:ro termux/termux-docker:aarch64 bash -c '
             set -e
-            echo "DIAG (temporary): APP_SRC=[$APP_SRC]"; ls -la /repo/app | head -20; ls /repo/app/messages | head -5
+            # the image does not pass docker -e variables on to this shell: set them here
+            export NO_WAKE_LOCK=1 APP_SRC=/repo/app
             sh /repo/install-termux.sh
+            # the app installed must be this repository's, not one downloaded from the release branch
+            cmp /repo/app/server.py "${PREFIX:-/data/data/com.termux/files/usr}/var/lib/proot-distro/installed-rootfs/ubuntu/root/node/app/server.py"
+            cmp /repo/app/messages/messages.js "${PREFIX:-/data/data/com.termux/files/usr}/var/lib/proot-distro/installed-rootfs/ubuntu/root/node/app/messages/messages.js"
+            echo "installed the app from this checkout"
             (~/logos-node > ~/node.log 2>&1 &)
             for i in $(seq 1 36); do
               H=$(curl -fsS -m 5 http://127.0.0.1:8090/cryptarchia/info | grep -oE "\"height\":[0-9]+" | grep -oE "[0-9]+" || true)
