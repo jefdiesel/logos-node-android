@@ -287,6 +287,13 @@ def send():
             break
         time.sleep(3)
     check("the one-node test chain is online", (st.get("node") or {}).get("state") == "Online", st)
+    for _ in range(20):
+        code, st = call("/api/status")
+        if (st.get("sync") or {}).get("stage") == "uptodate":
+            break
+        time.sleep(2)
+    print("     sync:", st.get("sync"))
+    check("the status says the one-node chain is up to date", (st.get("sync") or {}).get("stage") == "uptodate", st.get("sync"))
     code, d = call("/api/wallet/setup", {"pin": "135790"})
     check("PIN set", code == 200, (code, d))
     s = d["session"]
@@ -372,6 +379,27 @@ def unlock(pin):
     return d["session"]
 
 
+def sync_behind():
+    """The testnet node in CI, which starts from nothing: the status must say it is behind, with a
+    sensible idea of where the chain is, and never that it is up to date."""
+    seen = None
+    for _ in range(30):
+        code, st = call("/api/status")
+        sy, node = st.get("sync") or {}, st.get("node") or {}
+        check("a node far behind is never called up to date", sy.get("stage") != "uptodate", (node, sy))
+        if sy.get("stage") == "behind" and sy.get("chain_height"):
+            seen = (node, sy)
+            break
+        time.sleep(2)
+    print("     node:", seen and seen[0])
+    print("     sync:", seen and seen[1])
+    check("the status says the node is behind and where the chain is", seen is not None, st)
+    node, sy = seen
+    check("the chain is well ahead of the node", sy["chain_height"] >= 50000 and sy["behind_blocks"] >= 1000
+          and sy["chain_height"] == node["height"] + sy["behind_blocks"], sy)
+    check("its latest block is old", sy["tip_age_s"] > 3600, sy)
+
+
 def restore_before():
     """Restore, part 1 (fresh-install, real node): back up the original keys and check the refusals."""
     pin, keystore, state = os.environ["APP_PIN"], os.environ["KEYSTORE"], os.environ["RESTORE_STATE"]
@@ -449,5 +477,6 @@ def restore_after():
 
 
 if __name__ == "__main__":
-    {"guard": guard, "send": send, "restore-before": restore_before, "restore-after": restore_after}[sys.argv[1]]()
+    {"guard": guard, "send": send, "restore-before": restore_before, "restore-after": restore_after,
+     "sync-behind": sync_behind}[sys.argv[1]]()
     print("all checks passed")

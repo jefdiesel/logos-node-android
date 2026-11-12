@@ -5,10 +5,10 @@ It listens on 127.0.0.1 only and talks to the node's own API at NODE_API (127.0.
 the Linux Terminal install uses port 880).
 Python standard library only. Wallet calls need a PIN that is set on first use.
 """
-import base64, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
+import base64, calendar, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.7.4"       # set by tools/release.py, which also writes release.json
+APP_VERSION = "0.7.5"       # set by tools/release.py, which also writes release.json
 HOME = os.path.expanduser("~")
 NODE_API = os.environ.get("NODE_API", "http://127.0.0.1:8080")
 NODE_BIN = os.environ.get("NODE_BIN", HOME + "/node/logos-blockchain-node")
@@ -79,6 +79,98 @@ def node_status():
     code, net = node("/network/info", timeout=5)
     out["peers"] = len(net.get("connected_peers") or []) if code == 200 and isinstance(net, dict) else None
     return out
+
+
+# ---- how far behind the chain this node is ----------------------------------------------------
+# Only from the node on this device: /cryptarchia/info (its tip's slot and height, its state and
+# phase), /time/info (the current slot, the slot length), /cryptarchia/headers (how many blocks lie
+# between its tip and its last irreversible block), and its own log. The log has the node's expected
+# block interval and lag threshold ("Tip-poll lag watchdog enabled cadence_slots=C
+# lag_threshold_slots=L", written at start: 1/f slots and 3 of those), and, only while it is behind,
+# the height of the best tip a peer reported ("tip poll: enqueued peer tip ... height=H").
+
+ANSI_RE = re.compile(rb"\x1b\[[0-9;]*m")
+_sync_memo = {"cadence": None, "threshold": None, "spacing": None, "spacing_at": 0.0}
+
+
+def node_log_tail(size=400000):
+    """The end of the node's newest log file, without colour codes; b"" if there is none."""
+    try:
+        logs = os.path.join(os.path.dirname(NODE_CFG), "logs")
+        newest = max((os.path.join(logs, f) for f in os.listdir(logs)), key=os.path.getmtime)
+        with open(newest, "rb") as f:
+            f.seek(0, 2); f.seek(max(0, f.tell() - size))
+            return ANSI_RE.sub(b"", f.read())
+    except Exception:
+        return b""
+
+
+def log_time(stamp):
+    try:
+        return calendar.timegm(time.strptime(stamp.decode()[:19], "%Y-%m-%dT%H:%M:%S"))       # the log is in UTC
+    except Exception:
+        return None
+
+
+def sync_facts(c):
+    """What the node's log and headers add to /cryptarchia/info `c`: the node's own expected block interval
+    and lag threshold in slots, the block spacing measured over its last irreversible stretch, and the
+    best tip height a peer reported (with when)."""
+    text = node_log_tail()
+    m = re.findall(rb"cadence_slots\W{0,4}(\d+)\W{1,8}lag_threshold_slots\W{0,4}(\d+)", text)
+    if m:
+        _sync_memo["cadence"], _sync_memo["threshold"] = int(m[-1][0]), int(m[-1][1])
+    peer = None
+    for stamp, height in re.findall(rb"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)\S*\s+\w+\s+\S+\s+tip poll: enqueued peer tip[^\n]*? height=(\d+)", text)[-1:]:
+        peer = {"height": int(height), "at": log_time(stamp)}
+    tip_slot, lib_slot = c.get("slot") or 0, c.get("lib_slot") or 0
+    if lib_slot and tip_slot > lib_slot and time.time() - _sync_memo["spacing_at"] > 60:
+        code, ids = node("/cryptarchia/headers?from=%s&to=%s" % (c.get("tip"), c.get("lib")), timeout=5)
+        if code == 200 and isinstance(ids, list) and 2 <= len(ids) < 512:
+            _sync_memo["spacing"], _sync_memo["spacing_at"] = (tip_slot - lib_slot) / (len(ids) - 1), time.time()
+    return {"cadence_slots": _sync_memo["cadence"], "threshold_slots": _sync_memo["threshold"],
+            "spacing_slots": _sync_memo["spacing"], "peer": peer}
+
+
+def classify_sync(state, phase, height, tip_slot, current_slot, slot_ms, facts, now):
+    """Where this node stands against the chain (pure, so it can be tested with recorded values).
+    stage: "uptodate" (online, and its latest block is no older than the node's own lag threshold allows,
+    doubled so ordinary gaps between blocks don't flicker), "waiting" (that close, but the node hasn't
+    finished its waiting period after starting, so it isn't online and can't send), or "behind"."""
+    slot_s = (slot_ms or 1000) / 1000.0
+    lag = max(0, (current_slot or 0) - (tip_slot or 0))
+    spacing = facts.get("cadence_slots") or facts.get("spacing_slots")       # expected slots per block
+    if facts.get("threshold_slots"):
+        allowed = 2 * facts["threshold_slots"]
+    elif spacing:
+        allowed = 6 * spacing
+    else:
+        allowed = 120 / slot_s                                                 # nothing better known: 2 minutes
+    out = {"tip_age_s": round(lag * slot_s), "spacing_s": round(spacing * slot_s, 1) if spacing else None,
+           "chain_height": None, "behind_blocks": None, "estimate": True}
+    peer = facts.get("peer")
+    if peer and peer.get("height", 0) > (height or 0) and peer.get("at") and now - peer["at"] < 1800:
+        # a peer's tip, plus the blocks the chain has made since it was heard (if the interval is known)
+        grown = int((now - peer["at"]) / (spacing * slot_s)) if spacing else 0
+        out["chain_height"] = peer["height"] + grown
+        out["behind_blocks"] = out["chain_height"] - (height or 0)
+    if lag <= allowed and (out["behind_blocks"] or 0) <= 3:
+        out["stage"] = "uptodate" if state == "Online" else "waiting"
+        out["chain_height"], out["behind_blocks"] = None, 0
+    else:
+        out["stage"] = "behind"
+    return out
+
+
+def sync_status(st):
+    """The node's sync stage for /api/status, or None if the node or its clock don't answer."""
+    code, t = node("/time/info", timeout=5)
+    if not st or code != 200 or not isinstance(t, dict):
+        return None
+    code, info = node("/cryptarchia/info", timeout=5)
+    c = info.get("cryptarchia_info", info) if code == 200 and isinstance(info, dict) else {}
+    return classify_sync(st.get("state"), st.get("phase"), st.get("height"), c.get("slot", st.get("slot")),
+                         t.get("current_slot"), t.get("slot_duration_ms"), sync_facts(c), time.time())
 
 
 def node_waiting():
@@ -1260,7 +1352,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.reply(200, raw=icon_png(192 if "192" in path else 512, "maskable" in path), ctype="image/png")
         if path == "/api/status":
             st = node_status()
-            out = {"node": st} if st else {"node": None, "waiting": node_waiting()}
+            out = {"node": st, "sync": sync_status(st)} if st else {"node": None, "waiting": node_waiting()}
             out.update(version=APP_VERSION, update={"available": update_state["latest"]})
             return self.reply(200, out)
         if path in ("/cryptarchia/info", "/network/info"):       # read-only pass-through

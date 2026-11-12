@@ -33,6 +33,10 @@ jobs:
           done
           journalctl -u logos-node --no-pager -n 60
           exit 1
+      - name: The status says the node is behind the chain and catching up, with where the chain is
+        run: python3 tests/wallet_test.py sync-behind
+      - name: How the app reads the node's sync state, against recorded examples
+        run: python3 tests/sync_test.py
       - name: Node API on port 880 (below the Terminal app's port prompt) keeps other websites out
         run: |
           ss -ltn | grep -E "127.0.0.1:880 " || { echo "the node API isn't on 127.0.0.1:880"; exit 1; }
