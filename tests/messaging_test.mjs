@@ -88,9 +88,9 @@ const sequencer = createServer((req, res) => {
 });
 await new Promise((ok) => sequencer.listen(SEQ_PORT, "127.0.0.1", ok));
 procs.push(spawn("python3", [join(here, "fake_waku.py"), String(CTL), String(NODE_A), String(NODE_B), String(NODE_PEER)], { stdio: "ignore" }));
-const control = (what) => fetch(`http://127.0.0.1:${CTL}/${what}`, { method: "POST", body: "{}" });
+const control = async (what) => (await fetch(`http://127.0.0.1:${CTL}/${what}`, { method: "POST", body: "{}" })).text();
 const subsOf = async (node) => (await fetch(`http://127.0.0.1:${CTL}/subs/${node}`)).json();
-const inject = (node, topic, payload) => fetch(`http://127.0.0.1:${CTL}/inject/${node}`, { method: "POST", body: JSON.stringify({ topic, payload }) });
+const inject = async (node, topic, payload) => (await fetch(`http://127.0.0.1:${CTL}/inject/${node}`, { method: "POST", body: JSON.stringify({ topic, payload }) })).text();
 
 function keystore() {
   const r = () => createHash("sha256").update(Math.random().toString()).digest("hex");
@@ -110,7 +110,7 @@ async function app(port, extra) {
   const p = spawn("python3", [join(ROOT, "app", "server.py")], { env, stdio: "ignore" });
   procs.push(p);
   const base = `http://127.0.0.1:${port}`;
-  for (let i = 0; i < 80; i++) { try { if ((await fetch(base + "/api/wallet")).ok) break; } catch {} await sleep(100); }
+  for (let i = 0; i < 80; i++) { try { const r = await fetch(base + "/api/wallet"); await r.text(); if (r.ok) break; } catch {} await sleep(100); }
   return { base, data, proc: p, session: null };
 }
 async function call(a, path, body, session = a.session) {
@@ -172,7 +172,8 @@ let st = await until("the app sees its messaging node", async () => { const r = 
 check("status before turning messages on: no key", st.key === null && st.node.connection === "Connected", st);
 const page = (await (await fetch(A.base + "/")).text());
 check("with WAKU_API the page loads the Messages module", page.includes('<script type="module" src="/messages/messages.js"></script>'));
-check("and the module is served", (await fetch(A.base + "/messages/messages.js")).ok && (await fetch(A.base + "/noble-curves/abstract/montgomery.js")).ok);
+const served = async (path) => { const r = await fetch(A.base + path); await r.text(); return r.ok; };   // read every body: Node 20's fetch trips on unread ones
+check("and the module is served", await served("/messages/messages.js") && await served("/noble-curves/abstract/montgomery.js"));
 
 const bad = MC.newKeyPair(), other = MC.newKeyPair();
 let r = await call(A, "/api/messages/key", { secret: hex(bad.secretKey), public: hex(other.publicKey) });
