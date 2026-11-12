@@ -1,11 +1,8 @@
 package io.github.jefdiesel.logosnode
 
-import android.Manifest
 import android.app.Activity
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.graphics.Typeface
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -20,8 +17,8 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
 
-/** One screen: Start and Stop, the node's status from its own API, and the end of its log. */
-class MainActivity : Activity() {
+/** The Node screen: Start and Stop, the node's status from its own API, and the end of its log. */
+class NodeActivity : Activity() {
 
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newSingleThreadExecutor()
@@ -44,12 +41,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         files = NodeFiles(this)
         log = NodeLog(files.output)
-        setContentView(layout())
-        if (Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
-        }
+        setContentView(layout().also { Insets.pad(it) })
     }
 
     override fun onResume() {
@@ -76,20 +68,21 @@ class MainActivity : Activity() {
             setPadding(0, pad / 2, 0, pad / 2)
             setTextIsSelectable(true)
         }
-        column.addView(text(22f, "Logos node"))
+        column.addView(text(22f, "Node"))
         column.addView(
             text(
                 14f,
-                "This test build runs the official Logos node (${BuildConfig.NODE_VERSION}) inside this app and " +
-                    "syncs the chain from its first block. That cannot finish on a phone: the node's memory grows " +
-                    "with the chain during the first sync, until Android stops it. Starting from a snapshot is a later step."
+                "This app runs the official Logos node (${BuildConfig.NODE_VERSION}) on this phone. A fresh install " +
+                    "syncs the chain from its first block, and that cannot finish on a phone: the node's memory grows " +
+                    "with the chain during the first sync. For now a synced database (a snapshot) can be put in place " +
+                    "with adb, as android/README.md in the project describes; importing one in the app is the next step."
             )
         )
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         buttons.addView(Button(this).apply {
             text = "Start"
             setOnClickListener {
-                startForegroundService(Intent(this@MainActivity, NodeService::class.java).setAction(NodeService.ACTION_START))
+                startForegroundService(Intent(this@NodeActivity, NodeService::class.java).setAction(NodeService.ACTION_START))
                 io.execute { update() }
             }
         })
@@ -97,7 +90,7 @@ class MainActivity : Activity() {
             text = "Stop"
             setOnClickListener {
                 if (NodeService.active) {
-                    startService(Intent(this@MainActivity, NodeService::class.java).setAction(NodeService.ACTION_STOP))
+                    startService(Intent(this@NodeActivity, NodeService::class.java).setAction(NodeService.ACTION_STOP))
                 }
                 io.execute { update() }
             }
@@ -111,7 +104,8 @@ class MainActivity : Activity() {
             text(
                 11f,
                 "Node binary: ${BuildConfig.NODE_VERSION}, sha256 ${BuildConfig.NODE_SHA256}\n" +
-                    "App ${BuildConfig.VERSION_NAME}. API on 127.0.0.1:${NodeFiles.API_PORT}."
+                    "App ${BuildConfig.VERSION_NAME}, wallet ${BuildConfig.WEB_APP_VERSION}. Node API on " +
+                    "127.0.0.1:${NodeFiles.API_PORT}, wallet on 127.0.0.1:${WalletServer.PORT}."
             )
         )
         return ScrollView(this).apply { addView(column, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)) }
@@ -127,9 +121,10 @@ class MainActivity : Activity() {
                 " (service: ${NodeService.status})"
         }
         val statusText = if (pids.isEmpty()) "" else nodeStatus()
+        val walletText = WalletServer.describe(this)
         val logText = log.tail(40)
         main.post {
-            processView.text = processText
+            processView.text = processText + "\n" + walletText
             statusView.text = statusText
             logView.text = logText
         }

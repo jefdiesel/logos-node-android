@@ -90,7 +90,7 @@ class NodeService : Service() {
 
     private fun notification(text: String): Notification {
         val open = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
+            this, 0, Intent(this, WalletActivity::class.java), PendingIntent.FLAG_IMMUTABLE
         )
         val stop = PendingIntent.getService(
             this, 1, Intent(this, NodeService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE
@@ -181,6 +181,7 @@ class NodeService : Service() {
             if (code != 0 || !files.keystore.exists()) throw IllegalStateException("init-config failed (code $code)")
         }
         files.writeConfig()
+        files.linkBinary()
         // a node left over from an earlier run of the app would hold the database lock and the ports
         for (pid in NodeProcesses.pids()) {
             log.app("stopping a leftover node process $pid")
@@ -200,8 +201,9 @@ class NodeService : Service() {
         }
 
     private fun runNode(): Int {
-        log.app("starting ${files.binary.path} (node ${BuildConfig.NODE_VERSION}, sha256 ${BuildConfig.NODE_SHA256})")
-        val p = processBuilder(listOf(files.binary.path, files.config.name)).start()
+        val launcher = files.launcher
+        log.app("starting ${launcher.path} (node ${BuildConfig.NODE_VERSION}, sha256 ${BuildConfig.NODE_SHA256})")
+        val p = processBuilder(listOf(launcher.path, files.config.name)).start()
         process = p
         setStatus("node running")
         try {

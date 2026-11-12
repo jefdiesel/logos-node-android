@@ -1,72 +1,128 @@
-# Logos node: minimal Android app (test build)
+# Logos node: Android app (test build)
 
-A small Android app that runs the official Logos node inside the app, to find out whether the node
-works in an app's sandbox. It is a debug build for testing, not something to publish.
+An Android app that runs the official Logos node on the phone and shows the project's own wallet page.
+It is a debug build for testing, not something to publish.
 
 - Package `io.github.jefdiesel.logosnode`, name "Logos node", arm64 phones only, Android 9 (API 28)
   or newer.
-- The node is the binary from the `native-build` workflow (see `native/README.md`), bundled as it
+- **The node** is the binary from the `native-build` workflow (see `native/README.md`), bundled as it
   is, not rebuilt. The APK carries it as `lib/arm64-v8a/liblogosnode.so`. Android extracts that at
-  install to the app's native library folder. Android only lets an app run programs from there, not
-  from its data folder.
-- The screen shows the node version and binary hash the APK carries, and so does the first log line
-  of every start.
+  install to the app's native library folder, the only place it lets an app run programs from.
+- **The wallet** is the repository's web app, `app/`, at build time: its own `server.py`, `index.html`
+  and `names/`. They are shipped unchanged as assets, and `server.py` runs inside the app on
+  Python 3.12, through Chaquopy (MIT licence). There is one codebase for both routes, the Linux
+  Terminal install and this app.
 
-## What it does
+## Screens
 
-- **Start** starts a foreground service, which shows a permanent notification and runs the node as a
-  child process.
-- **Stop**, on the screen or in the notification, stops the node (SIGTERM, then SIGKILL after 20 s)
-  and the service.
-- If the node exits on its own, the service restarts it after 5 s. The wait doubles on each restart,
-  up to 5 minutes, and goes back to 5 s after a run of more than 10 minutes.
-- The service holds a partial wake lock while it runs, so the node keeps up with its peers when the
-  screen is off.
-- **Foreground service type `specialUse`.** It is the only type with no time limit: `dataSync`, for
-  example, is capped at 6 hours a day on Android 15 and later.
-- **First start.** The service runs the node's own `init-config`, which creates fresh keys
-  (`keystore.yaml`). Then it writes `user_config.yaml` in the same shape as `install.sh`: the four
-  testnet initial peers, the API on `127.0.0.1:18180`, and the log and state folders inside the app.
-  The config is rewritten on every start; the keys are kept.
-- **The screen** has Start and Stop, and shows whether the node process is running and how much
-  memory it uses. Every 3 seconds it reads block height, state, phase and peer count from the
-  node's API, and it shows the last 40 lines of the log.
-- **Network.** Cleartext HTTP is allowed to `127.0.0.1` only (`network_security_config.xml`). The app
-  makes no network connections other than the node's own.
-- **Full sync.** This build syncs from the first block, and that cannot finish on a phone: the
-  node's memory grows with the chain during the first sync. Starting from a snapshot is a later step.
+- **Wallet**, which opens first: the web app's page in a WebView. It shows the node's status, and
+  the wallet with PIN, accounts, send, history, backup, restore, settings and LNS names. A bar at the
+  top has a **Node** button.
+- **Node**, reached with that button:
+  - Start and Stop.
+  - Whether the node process is running, and its memory.
+  - The node's height, state, phase and peer count, read from its API.
+  - Whether the wallet server is answering, and if it isn't, why.
+  - The last 40 lines of the node's log.
+
+## How it runs
+
+- **The node** runs in a foreground service of type `specialUse` in the app's main process. That is
+  the only foreground type with no time limit; `dataSync`, for one, is capped at 6 hours a day on
+  Android 15 and later. The service:
+  - shows a permanent notification
+  - starts the node as a child process, through the link `files/node/logos-blockchain-node`, so
+    the node's command line carries its usual name, which the web app looks for
+  - restarts the node after 5 s if it exits. The wait doubles up to 5 minutes, and goes back to
+    5 s after a run of more than 10 minutes.
+  - stops it on Stop: SIGTERM, then SIGKILL after 20 s
+  - holds a partial wake lock while the node runs
+- **On first start**, the service runs the node's own `init-config`, which creates fresh keys. It
+  then writes `user_config.yaml` in the same shape as `install.sh`: the four testnet initial peers,
+  the API on `127.0.0.1:18180`, and log and state folders inside the app.
+- **The wallet server**, `server.py`, runs in a separate process, `:wallet`, together with the
+  wallet screen. Whatever happens there cannot take the node down. It listens on
+  `127.0.0.1:18190`; the Linux Terminal route uses 8090, so both fit on one phone. It is started
+  with its usual settings:
+
+  | setting | value |
+  |---|---|
+  | `NODE_API` | `http://127.0.0.1:18180` |
+  | `NODE_BIN` | the link above |
+  | `NODE_CFG` | `files/node/user_config.yaml` |
+  | `APP_DATA` | `files/wallet` |
+  | `APP_PORT` | `18190` |
+  | `NODE_RESTART_CMD` | `pkill -TERM -f '<node> user_config.yaml'`; the service then restarts the node |
+  | `UPDATE_URL` | empty, so the app can't update its own files: updates come as a new APK |
+
+- **Network.** Cleartext HTTP is allowed to `127.0.0.1` and `localhost` only
+  (`network_security_config.xml`). The wallet server itself makes HTTPS requests to the LNS
+  sequencer for name lookups, as on Linux.
 
 ## Files on the phone
 
-Everything is under the app's own storage, `/data/data/io.github.jefdiesel.logosnode/files/node/`:
+Everything is in the app's private storage, `/data/data/io.github.jefdiesel.logosnode/files/`.
+
+The node's files are in `node/`:
 
 | path | what |
 |---|---|
-| `output.log` | the node's stdout and stderr, plus `[app]` lines from the service (starts, exits, restarts, node memory once a minute). Capped at 4 MB, then moved to `output.log.1` |
-| `logs/` | the node's own log files (hourly, the node keeps 10) |
-| `state/` | the node's database |
-| `user_config.yaml`, `keystore.yaml` | config and keys |
-| `tmp/` | `TMPDIR`; `HOME` is `files/node` itself |
+| `node/output.log` | the node's stdout and stderr, plus `[app]` lines from the service. Capped at 4 MB, then moved to `output.log.1` |
+| `node/logs/` | the node's own hourly log files; the node keeps 10 |
+| `node/state/` | the node's database |
+| `node/user_config.yaml`, `node/keystore.yaml` | the config and the node's keys |
+
+The wallet's files are kept apart from the node's, in `wallet/`:
+
+| path | what |
+|---|---|
+| `wallet/wallet-pin.json`, `wallet-history.json`, `wallet-events.log`, `wallet-settings.json`, `wallet-backup.json` | the wallet's data |
+| `wallet/wallet-app.log` | how the wallet started, or why it didn't, with the full error |
+| `wallet/server-crash.log` | only if `server.py` itself stopped with an error |
+
+`webapp/` holds the web app's files, copied from the APK at each new install.
 
 The build is debuggable, so the files can be read from a computer:
 
 ```sh
 adb shell run-as io.github.jefdiesel.logosnode tail -50 files/node/output.log
-adb shell run-as io.github.jefdiesel.logosnode cat files/node/output.log > output.log
+adb shell run-as io.github.jefdiesel.logosnode cat files/wallet/wallet-app.log
 ```
 
 ## Install and run from adb
 
 ```sh
-adb install -r logos-node-0.3.4-debug.apk
-# start the node (or open the app and press Start)
+adb install -r logos-node-0.3.4-debug.apk          # -r keeps the app's data, keys and database
+adb shell am start -n io.github.jefdiesel.logosnode/.WalletActivity
 adb shell am start-foreground-service -n io.github.jefdiesel.logosnode/.NodeService -a io.github.jefdiesel.logosnode.START
-# stop it
 adb shell am startservice -n io.github.jefdiesel.logosnode/.NodeService -a io.github.jefdiesel.logosnode.STOP
 ```
 
 The service is exported only to callers that hold `android.permission.DUMP`. The adb shell has that
-permission and ordinary apps cannot get it, which is what makes the two `am` commands work.
+permission and ordinary apps cannot get it. Stop the node before installing a new build, and start
+it again after.
+
+## Starting from a synced database (snapshot)
+
+A fresh install syncs from the first block, and that cannot finish on a phone: the node's memory
+grows with the chain during the first sync. For now, a synced database can be put in place with adb.
+An import in the app is the next step.
+
+`state.tar` is a tar of a synced node's `state` folder, with the folder's contents at the top level.
+To put it in place:
+
+```sh
+P=io.github.jefdiesel.logosnode
+adb shell am startservice -n $P/.NodeService -a $P.STOP                 # stop the node
+adb shell run-as $P mv files/node/state files/node/state.genesis      # keep the app's own state
+adb shell run-as $P mkdir files/node/state
+adb shell run-as $P tar xf - -C files/node/state < state.tar          # stream the tar in
+adb shell am start-foreground-service -n $P/.NodeService -a $P.START    # start it again
+```
+
+The node replays the saved blocks, then catches up with the chain. On a Pixel 8 it replayed 1,000
+blocks in 31 s and caught up from 82,820 to the tip (84,523) in about eight minutes, at about 1 GB.
+The node's keys (`keystore.yaml`) stay as they were.
 
 ## Signing
 
@@ -77,18 +133,23 @@ not a release key and protects nothing.
 
 ## Building
 
-The APK is built in CI (`.github/workflows/android-app.yml`). The workflow:
+The APK is built in CI (`.github/workflows/android-app.yml`). The workflow runs on changes to
+`android/` and `app/`, and:
 
 - takes the node from the latest successful `native-build` run on `main` and checks it against its
   `SHA256SUMS`
-- builds the debug APK
-- checks the APK: the node library is present for arm64-v8a with the expected hash, native
-  libraries are extracted at install, and the service, its foreground type and the permissions are
-  in the manifest
+- builds the debug APK, with `app/` as it is in that commit
+- checks the APK:
+  - the node library is present for arm64-v8a with the expected hash
+  - the web app files are identical to `app/`
+  - Python is included
+  - the manifest has the service, its foreground type, the permissions, and the wallet's separate
+    process
 - uploads the APK as a workflow artifact, and nowhere else
 
-To build it on a computer instead (JDK 17, Android SDK platform 36 and build-tools 36.0.0, Gradle
-8.14), copy the node binary to `app/src/main/jniLibs/arm64-v8a/liblogosnode.so`, then:
+To build it on a computer (JDK 17, Android SDK platform 36 and build-tools 36.0.0, Gradle 8.14; no
+Python needed), copy the node binary to `app/src/main/jniLibs/arm64-v8a/liblogosnode.so`, then, in
+`android/`:
 
 ```sh
 gradle --no-daemon assembleDebug -PnodeVersion=0.3.4 -PnodeSha256=<sha256 of the binary>

@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Cleartext HTTP only to the node's own API on this phone; everything else stays HTTPS-only.
-     (The node's peer-to-peer traffic is native code and does not go through this.) -->
+<!-- Cleartext HTTP only to this phone itself (the wallet page and the node's API); everything else
+     stays HTTPS-only. (The node's peer-to-peer traffic and the wallet server's own requests are
+     native or Python sockets and do not go through this.) -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false" />
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
     </domain-config>
 </network-security-config>

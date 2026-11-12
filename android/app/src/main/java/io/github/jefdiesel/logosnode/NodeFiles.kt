@@ -18,8 +18,46 @@ class NodeFiles(context: Context) {
     val keystore = File(home, "keystore.yaml")
     val output = File(home, "output.log")              // the node's stdout and stderr, plus app events
 
+    /**
+     * files/node/logos-blockchain-node, a link to the bundled binary. Started through it, the node's
+     * command line carries its usual name, which the web app looks for (pgrep -f logos-blockchain-node).
+     */
+    val link = File(home, LINK_NAME)
+
+    /** What to run: the link when it works, else the binary itself. */
+    val launcher: File get() = if (link.exists()) link else binary
+
     fun mkdirs() {
         listOf(home, tmp, state, nodeLogs).forEach { it.mkdirs() }
+    }
+
+    /**
+     * (Re)creates the link when it doesn't point at this install's binary (its folder changes with
+     * every install). The new link is made under a temporary name, checked by running it, and then
+     * renamed into place, so the two processes of the app can both call this safely.
+     */
+    fun linkBinary() = synchronized(NodeFiles::class.java) {
+        val current = try {
+            android.system.Os.readlink(link.path)
+        } catch (_: Exception) {
+            null
+        }
+        if (current == binary.path) return@synchronized
+        val tmp = File(home, "$LINK_NAME.tmp-${android.os.Process.myPid()}")
+        try {
+            tmp.delete()
+            android.system.Os.symlink(binary.path, tmp.path)
+            val p = ProcessBuilder(tmp.path, "--version").redirectErrorStream(true).start()
+            p.inputStream.readBytes()
+            if (p.waitFor(20, java.util.concurrent.TimeUnit.SECONDS) && p.exitValue() == 0) {
+                android.system.Os.rename(tmp.path, link.path)
+            } else {
+                p.destroyForcibly()
+            }
+        } catch (_: Exception) {
+        } finally {
+            tmp.delete()
+        }
     }
 
     /** The user config, in the same shape as install.sh writes it. */
@@ -43,6 +81,7 @@ class NodeFiles(context: Context) {
 
     companion object {
         const val BINARY_NAME = "liblogosnode.so"
+        const val LINK_NAME = "logos-blockchain-node"
         const val API_PORT = 18180
         val INITIAL_PEERS = listOf(
             "/ip4/65.109.51.37/udp/3000/quic-v1/p2p/12D3KooWFrouXfmrR4nsLMtE7wu15DoMJ6VtoUtHinREZCvbWHar",
@@ -99,16 +138,21 @@ class NodeLog(private val file: File) {
     }
 }
 
-/** Node processes of this app, found in /proc (an app only sees its own processes there). */
+/**
+ * Running nodes of this app, found in /proc (an app only sees its own processes there): the binary or
+ * its link, started with the config file. Short calls such as --show-config are not counted.
+ */
 object NodeProcesses {
     fun pids(): List<Int> =
         File("/proc").listFiles { f -> f.name.all(Char::isDigit) }.orEmpty().mapNotNull { dir ->
-            val cmdline = try {
-                File(dir, "cmdline").readText()
+            val argv = try {
+                File(dir, "cmdline").readText().split('\u0000')
             } catch (_: Exception) {
-                ""
+                emptyList()
             }
-            if (cmdline.contains(NodeFiles.BINARY_NAME) && !cmdline.contains("init-config")) dir.name.toInt() else null
+            val name = argv.firstOrNull().orEmpty().substringAfterLast('/')
+            val isNode = name == NodeFiles.BINARY_NAME || name == NodeFiles.LINK_NAME
+            if (isNode && argv.getOrNull(1) == "user_config.yaml") dir.name.toInt() else null
         }
 
     /** Resident memory of a process in MB, from /proc/<pid>/status. */

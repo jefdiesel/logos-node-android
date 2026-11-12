@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- the web app's colours: cream disc, near-black ink, page background -->
+    <color name="icon_cream">#F3EAD7</color>
+    <color name="page_dark">#11110F</color>
+</resources>

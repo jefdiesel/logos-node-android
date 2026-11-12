@@ -4,7 +4,7 @@ name: android-app
 # The APK is kept as a workflow artifact only; nothing is published.
 on:
   push:
-    paths: ['android/**', .github/workflows/android-app.yml]
+    paths: ['android/**', 'app/**', .github/workflows/android-app.yml]
 permissions:
   contents: read
   actions: read
@@ -66,7 +66,15 @@ jobs:
           # the node, byte for byte, for arm64-v8a only
           [ "$(unzip -p "$A" lib/arm64-v8a/liblogosnode.so | sha256sum | cut -d' ' -f1)" = "${{ steps.node.outputs.sha }}" ] \
             || fail "lib/arm64-v8a/liblogosnode.so is missing or differs from the node artifact"
-          [ "$(unzip -l "$A" | grep -c ' lib/')" = 1 ] || fail "unexpected native libraries in the APK"
+          ! unzip -l "$A" | grep ' lib/' | grep -v ' lib/arm64-v8a/' || fail "native libraries for another ABI in the APK"
+          # the wallet: the repository's own app/ files, unchanged, and Python to run them
+          for f in server.py index.html names/names.js names/lookup.js; do
+            [ "$(unzip -p "$A" "assets/webapp/$f" | sha256sum | cut -d' ' -f1)" = "$(sha256sum "app/$f" | cut -d' ' -f1)" ] \
+              || fail "assets/webapp/$f is missing or differs from app/$f"
+          done
+          unzip -l "$A" | grep -q ' lib/arm64-v8a/libpython3' || fail "no Python in the APK"
+          grep -q '"io.github.jefdiesel.logosnode.WalletActivity"' manifest.txt || fail "WalletActivity not declared"
+          grep -q ':wallet"' manifest.txt || fail "the wallet does not run in its own process"
           # extracted at install, so it can be run from nativeLibraryDir
           grep -q 'extractNativeLibs(0x010104ea)=true' manifest.txt || fail "extractNativeLibs is not true"
           # the service with its foreground type (specialUse = 0x40000000) and the permissions it needs

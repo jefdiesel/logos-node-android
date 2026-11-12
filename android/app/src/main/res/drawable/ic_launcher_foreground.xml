@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The web app's mark (server.py icon_png, LAMBDA): a black lambda of three round-ended strokes,
+     at the same size relative to the visible icon as the web app's maskable icon. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M47.34,40.95 L62.79,67.05 M54.43,52.93 L45.21,67.05 M44.14,42.01 L47.34,40.95"
+        android:strokeWidth="4.8"
+        android:strokeColor="#141311"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>
