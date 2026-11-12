@@ -67,6 +67,92 @@ already take on the phone. The forwarder:
 - refuses requests without the secret
 - goes only to the configured sequencer
 
+## Getting LEZ
+
+A name is registered and changed with **LEZ testnet tokens**, held by the phone's name account. A
+person using the app has at most Logos Blockchain coins, in the app's own wallet. Without a way to
+move value into the name account, Register can't be used. The app gives two ways, both inside
+Settings → Your name.
+
+### 1. Bridge from the app's wallet (Logos Blockchain → the name account)
+
+**The node's HTTP API can do it; no module IPC is needed.** Evidence:
+- Node 0.3.4 (tag `0.3.4`, commit `f7ab032`, the one the app carries) has `POST /channel/deposit`
+  (`nodes/api-common/src/paths.rs:22`, handler `nodes/node/binary/src/api/handlers.rs:1101`). Its
+  body (`nodes/api-common/src/bodies/channel.rs`) is
+  `{tip: null, deposit: {channel_id, inputs, metadata}, change_public_key, funding_public_keys, max_tx_fee}`.
+  The node funds the fee from `funding_public_keys`, refuses a fee above `max_tx_fee`, signs with
+  its own keys, puts the transaction in its mempool and answers `{hash}`.
+- The node's own test `tests/src/tests/mantle/channel.rs` (`channel_deposit`) makes exactly this
+  call over HTTP, with one note of exactly the amount and a separate note for the fee.
+- The signer the app already carries (`names` at `27029987`) has `names bridge`, which makes this
+  same call (`cli/src/main.rs:2127–2203`). The project faucet was funded with four 30-note deposits
+  (that command's cap) from a project node on 2026-10-15, credited about 12 hours later. The desktop Names app made
+  the same deposit operation over the module IPC (`channel_deposit_with_notes`) on 2026-11-06: a
+  split of exactly 10,000,000, then that note deposited to a public LEZ account, credited in full.
+- JSON shapes (`serde` in node 0.3.4): `channel_id` is 64 hex characters; `inputs` are note ids
+  exactly as `GET /wallet/<key>/balance` lists them; `metadata` is an array of byte values (not hex);
+  `max_tx_fee` is a number.
+
+**What it takes on the Logos Blockchain side:**
+- The app reads the deposit channel from the sequencer (`getChannelId`; the public testnet answers
+  `0101…01`) and checks that its own node knows it (`GET /channel/<id>` answers 200).
+- **A deposit moves whole notes.** It credits the sum of the notes it spends, and its fee comes
+  from other notes of the same key. So the app first sends the exact amount to the same key (one
+  ordinary transfer, `/wallet/transactions/transfer-funds`), waits until that note is in a block,
+  and deposits that one note. Nothing more than the amount typed is moved. The key must hold the
+  amount plus room for two fees.
+- **Fees:** the deposit's fee is capped at 100,000 (`max_tx_fee`, as `names bridge` does). Fees
+  seen for one-input transfers are 866 to 2,054. The app sets aside 10,000 for the split's fee
+  and 100,000 for the deposit's, and shows the fee paid once each is in a block.
+- **Limits:** no minimum amount in the node or in LEZ's bridge program; at most 30 notes per
+  deposit (the node signs at most 32 items), which one exact note avoids.
+
+**What it takes on the LEZ side: nothing from the phone.** The LEZ sequencer (v0.3.1, which the
+public testnet runs) watches the channel. Once the Logos Blockchain block holding the deposit is
+final, it decodes the metadata as `borsh(DepositMetadata { recipient_id })` (the 32 bytes of the
+account) and mints the amount to that account itself, in a transaction it makes and that pays no fee
+(`lez/sequencer/core/src/lib.rs`, `build_bridge_deposit_tx_from_event`; bridge program
+`lez/programs/bridge/src/main.rs`). No claim, no proof, no LEZ fee. A deposit is minted once; a
+receipt account (`/LEZ/v0.3/BridgeDepositReceipt/0`, keyed by the deposit's operation id) marks it.
+- **LEZ 0.4** reads the metadata differently (it needs the account's public key). The app asks
+  which LEZ the sequencer runs before each deposit (`getRecoveryBinding`: "method not found" is
+  0.3) and sends nothing unless it is 0.3: a deposit LEZ can't read is never credited.
+- **How long:** finality on the Logos Blockchain, then the sequencer's next block. Minutes when the
+  chain is healthy; hours when finality lags (the 10-15 deposits took about 12 hours).
+- **It can't be undone or sent back yet.** Withdrawing from LEZ to the Logos Blockchain is disabled
+  in LEZ ("Withdraws are disabled in the current version of LEZ").
+- **How the app tells it arrived:** the name account's balance (`getAccountBalance`), read through
+  the app's forwarder. Arrival is counted as the sum of increases since the deposit, less any
+  faucet grant asked for meanwhile, reaching the amount. The deposit's operation id is kept too, for
+  a receipt check later.
+
+### 2. The project's faucet
+
+`POST https://lez.buggers.online/faucet` with `{"account": "<base58 id>"}` pays the account from
+the faucet's LEZ testnet account (`chain/faucet.py` in logos-names): `{account, amount, tx}` on
+success, or `{error}` with the reason ("this account was funded in the last day", "too many
+requests from your address today", "the faucet's daily limit is spent; try tomorrow", "the faucet is
+empty until its next refill…", "the faucet is busy sending; try again in a minute"). The app shows
+that reason as it comes.
+- **How much:** the faucet's source and its last record (2026-10-27) say **2,000,000 per account
+  per day**. The live endpoint answers only POST, so the amount can't be read in advance; the app
+  shows the `amount` the reply gives.
+- **That is less than one registration.** Registering takes the deposit (1,000,000) and, while each
+  of its two transactions runs, a fee reserve of 250,000 gas at the next block's ceiling (9 a unit
+  today, about 2.25M). So the faucet alone takes about three days to fund a name at today's fees.
+  The bridge has no such limit.
+
+### What the page shows
+
+Under the name account's balance: what registering a name costs and how much is missing ("You need
+N more"), worked out from the registry's own deposits (`names settings`, read once an hour) and the
+sequencer's fee state (`getFeeState`), with the formula `names` itself checks before sending:
+deposit + 250,000 × the exec fee ceiling + the transaction's bytes × the storage fee ceiling, for the
+reveal, plus the same reserve for the commit. Register stays disabled with that reason until the
+balance covers it. When the balance or the fees can't be read, it says so and leaves Register to
+the signer's own check.
+
 ## Why private names don't work on the phone
 
 A private holder changes a name with a privacy-preserving transaction. The client runs the
