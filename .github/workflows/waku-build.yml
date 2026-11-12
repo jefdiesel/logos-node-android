@@ -45,7 +45,12 @@ jobs:
           NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
           if [ ! -f "$NDK/source.properties" ]; then
             echo "installing NDK $NDK_VERSION..."
-            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" >/dev/null
+            # the SDK download occasionally arrives corrupt ("Archive is not a ZIP archive"): retry
+            for i in 1 2 3; do
+              yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" >/dev/null || true
+              [ -f "$NDK/source.properties" ] && break
+              echo "NDK install attempt $i failed"; sleep 20
+            done
           fi
           printf 'ANDROID_NDK_HOME=%s\nANDROID_NDK_ROOT=%s\n' "$NDK" "$NDK" >> "$GITHUB_ENV"
           grep Pkg.Revision "$NDK/source.properties"

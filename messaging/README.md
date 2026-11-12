@@ -67,9 +67,9 @@ child process sets this variable to its native library directory.
 
 The runner logs to stdout. It prints the node's identity, then a status line at each interval:
 connection status, connected peers, RSS, and some relay and traffic metrics. On SIGINT or SIGTERM
-it stops the node and exits. Allow about 35 seconds: in every test, the library's `stop_node`
-never answered within its timeout, and `destroy` then reported the context as quarantined. The
-process still exited normally.
+it stops the node and exits within about 20 seconds. In every test, the library's `stop_node`
+never answered (the runner waits 15 seconds for it), and `destroy` then reported the context as
+quarantined. The process still exited normally.
 
 ### Configuration
 
@@ -86,8 +86,15 @@ shapes:
 
 Both test configurations join `logos.test` (cluster 2, 8 auto-shards, RLN off) as a Core
 (relay) node. They turn NAT port mapping off (`"nat": "none"`), so the node never asks the router
-to open ports. Add `"nodekey": "<64 hex>"` to keep the same peer id across restarts. Keep that
-file private and do not log it. The node keeps a small SQLite database in `local-storage-path`.
+to open ports. With `"nodekey": "<64 hex>"` the node kept the same peer id across every test run.
+Keep that file private. The runner never prints it, but the library logs the whole configuration
+JSON, key included, when it fails to parse it, so check the configuration before passing it on.
+The node keeps a small SQLite database (`messaging.db`, about 160 KB after the tests) in
+`local-storage-path`. The library's default API layer is `channels` (messaging plus reliable
+channels).
+
+Ports: TCP 60000 and QUIC UDP 60000 (libp2p), UDP 9000 (discv5), and, with REST on, TCP 18645
+on 127.0.0.1 only.
 
 ## Tested on a device
 
@@ -100,8 +107,9 @@ its `SHA256SUMS`). `phone-test.sh` is the script for such a run.
   `/health` reported `nodeHealth: READY` with Relay, Filter and Lightpush `READY`.
 - The node relayed: it validated about 31,000 gossip messages from peers in 16 minutes.
   Test messages it published to a topic of our own (`/logos-node-android/1/waku-runner-test/proto`,
-  shard 5) were reported as propagated. Later runs received those same messages back from the
-  network.
+  shard 5) were reported as propagated. Later runs delivered those same messages again, but
+  this may be the node's own reliability layer re-sending from its database, so it does not prove
+  a round trip.
 - Memory (RSS): about 130 MB after 1 minute, 142 MB after 5, 168 MB after 15, and a peak of
   178 MB. It was still rising slowly when the run ended.
 - **Traffic is high.** On `logos.test` as it was during the test, relaying all 8 shards used
@@ -111,14 +119,16 @@ its `SHA256SUMS`). `phone-test.sh` is the script for such a run.
   phone.
 - REST (flat config, `127.0.0.1:18645`): `/health`, `/debug/v1/version`, `/debug/v1/info` and
   `/messaging/v1/subscriptions` answered. `/admin/v1/peers` returned nothing (admin endpoints are
-  off by default). With `"filter": false, "lightpush": false` those two protocols were not
-  mounted, and relay kept working.
+  off by default; `rest-admin` turns them on, not tested). With `"filter": false,
+  "lightpush": false` (flat shape) those two protocols were not mounted, and relay kept working.
+- Under relay load the node's event loop sometimes lagged. `/health` once reported
+  `EVENT_LOOP_LAGGING`, and 2 of 17 `/health` probes during the long run got no answer within
+  5 seconds.
 
 ## Not verified
 
 - Running inside an app sandbox, or loading the library in-process through JNI.
 - Long runs, memory after an hour, battery use, and behaviour across network changes and the
   phone sleeping.
-- Messages from another person's node arriving on the phone. Our own messages came back from the
-  network, but no second client was used.
+- Messages from another node arriving on the phone (a round trip). No second client was used.
 - Any other phone, Android version, CPU, or network (`logos.dev` was not run).
