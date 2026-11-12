@@ -16,17 +16,28 @@ const arg = (n) => {
   const i = process.argv.indexOf(n);
   return i > 0 ? process.argv[i + 1] : undefined;
 };
-const NODES = 36;
-const CTL = 18300;
-const ports = Array.from({ length: NODES }, (_, i) => CTL + 1 + i);
+const NODES = 40;
+// Free ports chosen by the OS (so this runs beside other work); only --chromium needs the fixed page origin 18190.
+async function freePorts(n) {
+  const servers = await Promise.all(Array.from({ length: n }, () => new Promise((r) => {
+    const s = createServer();
+    s.listen(0, "127.0.0.1", () => r(s));
+  })));
+  const out = servers.map((s) => s.address().port);
+  await Promise.all(servers.map((s) => new Promise((r) => s.close(r))));
+  return out;
+}
+const [CTL, ...ports] = await freePorts(NODES + 1);
 
 // 1. the layout
 const out = mkdtempSync(join(tmpdir(), "groups-test-"));
 cpSync(join(ROOT, "app", "messages"), join(out, "app", "messages"), { recursive: true });
 cpSync(join(ROOT, "app", "noble-curves"), join(out, "app", "noble-curves"), { recursive: true });
 for (const f of ["mls.js", "mls-provider.js", "msg-v2.js", "groups.js"]) cpSync(join(ROOT, "vendor-staging", "mls", f), join(out, "app", "messages", f));
+// GROUPS_ENGINE=path: run the scenarios against another groups.js (e.g. an older commit's, to show a test fails there)
+if (process.env.GROUPS_ENGINE) cpSync(resolve(process.env.GROUPS_ENGINE), join(out, "app", "messages", "groups.js"));
 mkdirSync(join(out, "suite"), { recursive: true });
-for (const f of ["harness.mjs", "scenarios.mjs", "index.html"]) cpSync(join(ROOT, "tests", "groups", f), join(out, "suite", f));
+for (const f of ["harness.mjs", "scenarios.mjs", "hostile.mjs", "index.html"]) cpSync(join(ROOT, "tests", "groups", f), join(out, "suite", f));
 writeFileSync(join(out, "package.json"), '{"type":"module"}\n');
 
 // 2. the fake network

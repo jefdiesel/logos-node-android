@@ -29,7 +29,13 @@ export class Net {
     return i;
   }
   resolver() {
-    return { msgKey: async (name) => this.chain.get(name) ?? null };
+    // resolverDown: the chain can't be read (lookups throw), as when the node or the RPC is unreachable
+    return {
+      msgKey: async (name) => {
+        if (this.resolverDown) throw new Error("chain unreachable");
+        return this.chain.get(name) ?? null;
+      },
+    };
   }
 }
 
@@ -82,6 +88,7 @@ export class Client {
     c.cipher = opts.cipher ?? pageCipher();
     c.events = [];
     c.v1 = [];
+    c.retry = []; // items the engine couldn't handle yet (state conflict, chain unreachable): fed again next poll
     c.paused = false;
     if (c.name && opts.publish !== false) net.chain.set(c.name, c.msgKey);
     c.transport = {
@@ -118,7 +125,7 @@ export class Client {
     } catch {
       return 0; // node down
     }
-    const items = [];
+    const items = this.retry.splice(0);
     for (const rec of recs) {
       const topic = rec?.message?.contentTopic;
       const bytes = unb64(rec?.message?.payload ?? "");
@@ -128,7 +135,10 @@ export class Client {
       }
       items.push({ topic, bytes, meta: { messageHash: rec.messageHash, source: rec.source } });
     }
-    if (items.length) await this.engine.incomingMany(items);
+    if (items.length) {
+      const r = await this.engine.incomingMany(items);
+      for (const i of r.failed) this.retry.push(items[i]);
+    }
     return recs.length;
   }
   /** Re-subscribes everything (what server.py does when its node comes back: brings what it missed). */

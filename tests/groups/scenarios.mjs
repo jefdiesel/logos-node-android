@@ -5,6 +5,7 @@ import * as mls from "../app/messages/mls.js";
 import { checkCapabilities, GroupError, LIMITS } from "../app/messages/groups.js";
 import { openMessage } from "../app/messages/msg-crypto.js";
 import { b64, unb64 } from "../app/messages/msg-v2.js";
+import { HOSTILE } from "./hostile.mjs";
 
 const te = new TextEncoder();
 const DAY = 86_400_000;
@@ -79,10 +80,13 @@ export const SCENARIOS = {
 
   async "remove: the removed member reads nothing new"({ net, check }) {
     const { A, B, C, gid } = await trio(net);
+    const topicBefore = A.group(gid).topic;
     await A.engine.remove(gid, "carol");
     await settle([A, B, C]);
     check("carol is told she was removed", C.of("removed", (e) => e.groupId === gid).length === 1 && C.group(gid).status === "removed");
-    check("carol's group state is wiped", C.engine.data.groups[gid].mls === "");
+    const rec = C.engine.data.groups[gid];
+    check("carol's record keeps no keys, topic or members", !("mls" in rec) && !("topicKey" in rec) && !("topic" in rec) && !("members" in rec) && rec.name === "friends", JSON.stringify(Object.keys(rec)));
+    check("those who stay moved to a new topic", A.group(gid).topic !== topicBefore && B.group(gid).topic === A.group(gid).topic);
     check("bob sees carol leave the roster", !B.group(gid).members.some((m) => m.id === "carol"));
     const before = net.posted.length;
     await A.engine.send(gid, "after carol");
@@ -94,13 +98,19 @@ export const SCENARIOS = {
     check("carol can't read it, even handed the payload", !C.messages(gid).includes("after carol"));
     const ids = stateOf(A, gid).ratchetTree.filter((n) => n?.nodeType === "leaf").map((n) => new TextDecoder().decode(n.leaf.credential.identity));
     check("the removed leaf is gone from the admin's tree", !ids.includes("carol") && ids.length === 2, ids.join());
+    net.clock.offset += 8 * DAY;
+    await settle([A, B]);
+    check("after the grace time the old topic is dropped", !A.engine.topics().includes(topicBefore) && !B.engine.topics().includes(topicBefore), JSON.stringify(A.engine.topics()));
+    await B.engine.send(gid, "still here after the topic change");
+    await settle([A, B]);
+    check("and the group talks on the new topic", A.messages(gid).includes("still here after the topic change"));
   },
 
   async "leave"({ net, check }) {
     const { A, B, C, gid } = await trio(net);
     await B.engine.leave(gid);
     await settle([A, B, C]);
-    check("bob's device forgot the group", B.group(gid).status === "left" && B.engine.data.groups[gid].mls === "" && B.engine.topics().length === 0);
+    check("bob's device forgot the group", B.group(gid).status === "left" && !("mls" in B.engine.data.groups[gid]) && B.engine.topics().length === 0);
     check("the admin committed bob's removal", !A.group(gid).members.some((m) => m.id === "bob") && !C.group(gid).members.some((m) => m.id === "bob"));
     check("admin can't leave", (await code(A.engine.leave(gid))) === "ADMIN_CANNOT_LEAVE");
     await A.engine.send(gid, "bye bob");
@@ -156,7 +166,7 @@ export const SCENARIOS = {
     check("carol read all three", ["m1", "m2", "m3"].every((t) => C.messages(gid).includes(t)), JSON.stringify(C.messages(gid)));
     check("m2 came after its epoch closed and still opened (marked late)", C.of("message", (e) => e.text === "m2")[0]?.late === true);
     check("carol is at the admin's epoch", epochOf(C, gid) === epochOf(A, gid), `${epochOf(C, gid)} vs ${epochOf(A, gid)}`);
-    check("carol said she was catching up, then caught up", C.of("catching-up").length >= 1 && C.of("caught-up").length >= 1);
+    check("nothing is left waiting", C.group(gid).catchingUp === false && C.engine.data.groups[gid].held.length === 0);
   },
 
   async "more than 50 events between reads"({ net, check }) {
@@ -181,9 +191,10 @@ export const SCENARIOS = {
     for (let k = 0; k < 55; k++) await A.engine.send(gid, `r${k}`); // ...pushed out of bob's 50 by what follows
     B.paused = false;
     await B.poll();
-    check("bob holds what he can't open yet and says so", B.of("catching-up", (e) => e.groupId === gid).length === 1 && B.group(gid).catchingUp === true);
+    check("bob holds what he can't open yet", B.engine.data.groups[gid].held.length === 50);
     net.clock.offset += 3 * 60_000; // past resendAfter: bob's tick asks the admin
     await settle([A, B, C]);
+    check("bob said he was catching up while he asked", B.of("catching-up", (e) => e.groupId === gid).length === 1);
     check("bob caught up through the admin's resend", B.of("caught-up", (e) => e.groupId === gid).length === 1 && epochOf(B, gid) === epochOf(A, gid), `${epochOf(B, gid)} vs ${epochOf(A, gid)} B ${JSON.stringify(B.engine.stats())} A ${JSON.stringify(A.engine.stats())} ${B.events.map((e) => e.type).join(",")}`);
     const got = B.messages(gid).filter((t) => /^r\d+$/.test(t));
     check("bob read the 50 messages he held", got.length === 50, `${got.length}`);
@@ -419,7 +430,7 @@ async function growTo32(net, check, log, workaround) {
 
 export async function runAll({ nodeUrl, ctlUrl, nodes, log = console.log, only }) {
   const results = {};
-  for (const [name, fn] of Object.entries(SCENARIOS)) {
+  for (const [name, fn] of Object.entries({ ...SCENARIOS, ...HOSTILE })) {
     if (only && !only.some((o) => name.includes(o))) continue;
     const net = new Net({ nodeUrl, ctlUrl, nodes });
     const checks = [];
