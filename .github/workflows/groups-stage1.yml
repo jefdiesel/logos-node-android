@@ -25,7 +25,11 @@ jobs:
       - name: The shipped app is unchanged (release.json still matches every app file)
         run: python3 tools/release.py check
       - name: Install the build inputs from the lockfile (sha512 integrity, no install scripts)
-        run: cd tools/mls && npm ci --ignore-scripts && npm ls --all
+        # ts-mls's peer dependencies (noble 2.0.1/2.1.1, the optional suites) are deliberately not installed
+        # (.npmrc legacy-peer-deps): the bundle uses the app's noble 2.4.0, so `npm ls` would report them unmet.
+        run: |
+          cd tools/mls && npm ci --ignore-scripts
+          for p in ts-mls @hpke/core @hpke/common esbuild; do node -p "'$p ' + require('./node_modules/$p/package.json').version"; done
       - name: The committed bundle is byte for byte what a fresh build makes
         run: cd tools/mls && node build.mjs --check --report
       - name: ts-mls test sources and vectors at the pinned commit
@@ -49,4 +53,6 @@ jobs:
           node tests/mls/run-chromium.mjs --src "$RUNNER_TEMP/ts-mls" --chrome "$CHROMIUM" --json "$RUNNER_TEMP/chromium.json"
       - name: Results (JSON)
         if: always()
-        run: for f in "$RUNNER_TEMP"/*.json; do echo "== $f"; cat "$f"; echo; done
+        run: |
+          shopt -s nullglob
+          for f in "$RUNNER_TEMP"/*.json; do echo "== $f"; cat "$f"; echo; done
