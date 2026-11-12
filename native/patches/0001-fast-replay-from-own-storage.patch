@@ -9,7 +9,7 @@ each one is verified again in full (leader proof, deferred transaction proofs).
 With this patch, blocks this same build already verified replay without those
 two proof checks. A marker file next to the database records the build and the
 tip and LIB of the chain the running node holds and verified; it is rewritten
-whenever the node records its recovery state. At the next start, only the
+when the node records its recovery state (at most every 5 s). At the next start, only the
 marker's tip and its ancestors replay fast, and only if the marker is from this
 build and the stored LIB is the marker's LIB. Every other block (and every
 block when LOGOS_REPLAY_VERIFY=full) is verified in full, exactly as upstream.
@@ -117,7 +117,17 @@ rules, wire formats, the database format, the config file or the HTTP API.
      service::{
          Service, delete_stale_blocks_from_storage, load_block_ids_from_storage,
          persist_recovery_state, process_block,
-@@ -508,24 +511,57 @@
+@@ -125,6 +128,9 @@
+     cryptarchia: Cryptarchia,
+     pruned_blocks: PrunedBlocks<HeaderId>,
+     fell_back_to_lib: bool,
++    /// How many stored blocks were replayed without re-verifying their proofs
++    /// (patch 0001).
++    replayed_fast: usize,
+ }
+ 
+ struct RecoveryBlocks<Tx> {
+@@ -508,24 +514,57 @@
          // Apply the block to the ledger, and batch-verify ZK proofs.
          // This ledger update is not finalized yet, and will be committed only after
          // checking if the block is accepted by the consensus engine.
@@ -183,7 +193,7 @@ rules, wire formats, the database format, the config file or the HTTP API.
  
          let outcome = self
              .consensus
-@@ -636,6 +672,11 @@
+@@ -636,6 +675,11 @@
      pub sync: SyncConfig,
      #[serde(skip)]
      pub recovery_data: RecoveryData,
@@ -195,7 +205,7 @@ rules, wire formats, the database format, the config file or the HTTP API.
  }
  
  impl StorageRecoverySettings for CryptarchiaSettings {
-@@ -741,6 +782,7 @@
+@@ -741,6 +785,7 @@
              bootstrap: bootstrap_config,
              starting_state,
              sync: sync_config,
@@ -203,20 +213,17 @@ rules, wire formats, the database format, the config file or the HTTP API.
              ..
          } = self
              .service_resources_handle
-@@ -759,11 +801,28 @@
+@@ -759,11 +804,26 @@
  
          let (current_slot, slot_timer) = Self::get_slot_timer(&relays).await?;
  
 +        // Patch 0001: the replay marker says which stored blocks this build
 +        // already verified (see `replay`); only those replay fast.
 +        let build_id = replay::build_id();
-+        let found_marker = replay_marker
-+            .as_ref()
-+            .and_then(replay::ReplayMarkerPaths::read);
-+        let (vouched, replay_reason) = replay::choose_replay(
++        let (vouched, replay_reason) = replay::plan_replay(
++            replay_marker.as_ref(),
 +            std::env::var(replay::REPLAY_VERIFY_ENV).ok().as_deref(),
 +            build_id.as_deref(),
-+            found_marker.as_deref(),
 +            self.state.lib,
 +        );
 +        info!(
@@ -229,11 +236,12 @@ rules, wire formats, the database format, the config file or the HTTP API.
              pruned_blocks,
              fell_back_to_lib,
 -        } = Self::initialize_cryptarchia(
++            ..
 +        } = Self::initialize_cryptarchia_with(
              &self.state,
              &bootstrap_config,
              ledger_config.clone(),
-@@ -771,10 +830,19 @@
+@@ -771,10 +831,18 @@
              &self.new_block_subscription_sender,
              &self.lib_subscription_sender,
              current_slot,
@@ -246,8 +254,7 @@ rules, wire formats, the database format, the config file or the HTTP API.
 +        // was replayed above or verified on arrival by this process. After a
 +        // fall-back to LIB the chain is the LIB alone, so it vouches for nothing.
 +        if let (Some(paths), Some(build_id)) = (replay_marker, build_id) {
-+            replay::install_marker_writer(replay::MarkerWriter::new(paths, build_id));
-+            replay::note_verified_chain(cryptarchia.tip(), cryptarchia.lib());
++            replay::start_marker(paths, build_id, &cryptarchia);
 +        }
 +
          // These are blocks that have been pruned by the cryptarchia engine but have not
@@ -395,7 +402,7 @@ rules, wire formats, the database format, the config file or the HTTP API.
          let RecoveryBlocks {
              blocks,
              fell_back_to_lib,
-@@ -1066,22 +1223,33 @@
+@@ -1066,22 +1223,44 @@
              relays.storage().clone(),
          )
          .await;
@@ -408,9 +415,20 @@ rules, wire formats, the database format, the config file or the HTTP API.
  
 -        // Phase 2: Apply each block in lib->tip order.
 +        // Phase 2: Apply each block in lib->tip order. Only the vouched tip and
-+        // its ancestors skip re-verifying their proofs (patch 0001).
++        // its ancestors, followed through the headers' parents, skip
++        // re-verifying their proofs (patch 0001).
 +        let ids = blocks.iter().map(|b| b.header().id()).collect::<Vec<_>>();
-+        let fast = replay::fast_flags(&ids, vouched);
++        let header_parents = blocks
++            .iter()
++            .map(|b| b.header().parent())
++            .collect::<Vec<_>>();
++        let anchor = match vouched {
++            Some(vouched) => {
++                Self::vouched_anchor(vouched.tip, lib_id, &ids, relays.storage()).await
++            }
++            None => None,
++        };
++        let fast = replay::fast_prefix(&ids, &header_parents, lib_id, anchor);
 +        let n_fast = fast.iter().filter(|f| **f).count();
 +        let apply_started = Instant::now();
          let mut pruned_blocks = PrunedBlocks::new();
@@ -432,7 +450,7 @@ rules, wire formats, the database format, the config file or the HTTP API.
                  relays,
                  new_block_subscription_sender,
                  lib_subscription_sender,
-@@ -1094,10 +1262,13 @@
+@@ -1094,18 +1273,56 @@
              pruned_blocks.extend(&outcome.pruned_blocks);
          }
  
@@ -446,7 +464,50 @@ rules, wire formats, the database format, the config file or the HTTP API.
  
          Ok(InitializedCryptarchia {
              cryptarchia,
-@@ -1166,4 +1337,45 @@
+             pruned_blocks,
+             fell_back_to_lib,
++            replayed_fast: n_fast,
+         })
+     }
+ 
++    /// Patch 0001: the index of the newest block on the replay path (`ids`)
++    /// that the vouched tip is or descends from, following the parents named
++    /// in the stored blocks' own headers. Blocks off the path (the vouched tip
++    /// stored after the recovered tip, or on another branch) are read from
++    /// storage and must decode to the id they are stored under. `None` if the
++    /// walk reaches the LIB, fails, or takes more than `MAX_VOUCHED_WALK` steps.
++    async fn vouched_anchor(
++        tip: HeaderId,
++        lib: HeaderId,
++        ids: &[HeaderId],
++        storage: &StorageApi<Tx>,
++    ) -> Option<usize> {
++        let mut current = tip;
++        for _ in 0..replay::MAX_VOUCHED_WALK {
++            if current == lib {
++                return None;
++            }
++            if let Some(index) = ids.iter().position(|id| *id == current) {
++                return Some(index);
++            }
++            let block = storage
++                .get_block_bytes(&current)
++                .await
++                .ok()
++                .flatten()
++                .and_then(|bytes| Block::<Tx>::try_from(bytes).ok())?;
++            if block.header().id() != current {
++                return None;
++            }
++            current = block.header().parent();
++        }
++        None
++    }
++
+     /// Creates [`Cryptarchia`] with the recovered LIB as its only block.
+     ///
+     /// A non-genesis LIB gets its parent from storage, so that header
+@@ -1166,4 +1383,45 @@
      /// from the time service may be behind the slot at which the block was
      /// accepted (e.g., before the time service calibrates the clock with NTP).
      Storage,
@@ -494,7 +555,7 @@ rules, wire formats, the database format, the config file or the HTTP API.
  }
 --- /dev/null
 +++ b/services/chain/chain-service/src/replay.rs
-@@ -0,0 +1,466 @@
+@@ -0,0 +1,587 @@
 +//! Fast replay of the node's own stored blocks at startup.
 +//!
 +//! Added by the logos-node-android patch `0001-fast-replay-from-own-storage`.
@@ -513,14 +574,16 @@ rules, wire formats, the database format, the config file or the HTTP API.
 +//! build and a chain, `(tip, lib)`, that this build holds in memory and has
 +//! verified: every block after `lib` up to `tip` was either verified on arrival
 +//! from the network or replayed at startup under the same rules. The node
-+//! rewrites it every time it records its recovery state. A header id is a hash
-+//! of the header, which commits to the parent id and to the block body, so the
-+//! vouched tip id pins the exact content of every vouched block.
++//! rewrites it when it records its recovery state, at most every
++//! [`MARKER_MIN_INTERVAL`]. A header id is a hash of the header, which commits
++//! to the parent id and to the block body, so the vouched tip id pins the exact
++//! content of every vouched block.
 +//!
 +//! At the next start, a block is replayed fast only if the marker is from this
 +//! build, the stored LIB is the marker's LIB, and the block is the marker's tip
-+//! or one of its ancestors. Every other block (all of them, if anything does
-+//! not match) is replayed with full verification.
++//! or one of its ancestors, followed through the parents named in the blocks'
++//! own headers (not the separate stored parent index). Every other block (all
++//! of them, if anything does not match) is replayed with full verification.
 +//!
 +//! Set `LOGOS_REPLAY_VERIFY=full` to re-verify everything on a start anyway.
 +
@@ -546,7 +609,7 @@ rules, wire formats, the database format, the config file or the HTTP API.
 +use lb_key_management_system_keys::keys::UnverifiedEd25519PublicKey;
 +use tracing::warn;
 +
-+use crate::LOG_TARGET;
++use crate::{Cryptarchia, LOG_TARGET};
 +
 +/// The patches compiled into this node, for the startup log line.
 +pub const NODE_PATCHES: &str = "0001-fast-replay-from-own-storage";
@@ -679,15 +742,54 @@ rules, wire formats, the database format, the config file or the HTTP API.
 +    )
 +}
 +
-+/// For each block to replay (ids in LIB->tip order, LIB excluded), whether it
-+/// may be replayed fast: only the vouched tip and its ancestors on this path.
-+/// Assumes `vouched.lib` is the replay's LIB, as [`choose_replay`] ensures.
++/// How many header-parent steps the walk from the vouched tip to the replay
++/// path may take before giving up (nothing is then replayed fast).
++pub const MAX_VOUCHED_WALK: usize = 10_000;
++
++/// For each block to replay, whether it may be replayed fast.
++///
++/// `ids` are the blocks in LIB->tip order (LIB excluded), as found through the
++/// stored parent index, and `header_parents` the parent each block's own
++/// header names. `anchor` is the index of the newest block on this path that
++/// the vouched tip is, or descends from, found by walking header parents from
++/// the vouched tip; `None` if the walk reached the LIB or failed.
++///
++/// Blocks up to the anchor are fast only while each block's header names the
++/// previous block on the path as its parent (the LIB for the first one), so
++/// the stored parent index cannot make a block fast that the vouched tip's
++/// headers do not lead to.
 +#[must_use]
-+pub fn fast_flags(ids: &[HeaderId], vouched: Option<VouchedChain>) -> Vec<bool> {
-+    let last_fast = vouched.and_then(|v| ids.iter().position(|id| *id == v.tip));
-+    (0..ids.len())
-+        .map(|i| last_fast.is_some_and(|last| i <= last))
-+        .collect()
++pub fn fast_prefix(
++    ids: &[HeaderId],
++    header_parents: &[HeaderId],
++    lib: HeaderId,
++    anchor: Option<usize>,
++) -> Vec<bool> {
++    let mut fast = vec![false; ids.len()];
++    let Some(anchor) = anchor else {
++        return fast;
++    };
++    for i in 0..ids.len().min(anchor.saturating_add(1)) {
++        let expected_parent = if i == 0 { lib } else { ids[i - 1] };
++        if header_parents.get(i) != Some(&expected_parent) {
++            break;
++        }
++        fast[i] = true;
++    }
++    fast
++}
++
++/// Reads the marker (if the node has a marker location) and chooses what this
++/// start may replay fast; see [`choose_replay`].
++#[must_use]
++pub fn plan_replay(
++    paths: Option<&ReplayMarkerPaths>,
++    env: Option<&str>,
++    build: Option<&str>,
++    stored_lib: HeaderId,
++) -> (Option<VouchedChain>, &'static str) {
++    let marker = paths.and_then(ReplayMarkerPaths::read);
++    choose_replay(env, build, marker.as_deref(), stored_lib)
 +}
 +
 +/// Where the replay marker lives: `<db>.replay-verified`, next to the
@@ -725,11 +827,22 @@ rules, wire formats, the database format, the config file or the HTTP API.
 +    }
 +}
 +
++/// The marker is rewritten at most this often; the once-a-minute recovery
++/// state recording catches up with any change skipped in between.
++pub const MARKER_MIN_INTERVAL: Duration = Duration::from_secs(5);
++
++#[derive(Default)]
++struct WriterState {
++    written: Option<VouchedChain>,
++    attempted_at: Option<Instant>,
++    warned: bool,
++}
++
 +/// Keeps the marker in step with the chain this process holds and verified.
 +pub struct MarkerWriter {
 +    paths: ReplayMarkerPaths,
 +    build: String,
-+    last: Mutex<Option<VouchedChain>>,
++    state: Mutex<WriterState>,
 +}
 +
 +impl MarkerWriter {
@@ -738,39 +851,74 @@ rules, wire formats, the database format, the config file or the HTTP API.
 +        Self {
 +            paths,
 +            build,
-+            last: Mutex::new(None),
++            state: Mutex::new(WriterState::default()),
 +        }
 +    }
 +
 +    /// Records that this process holds and verified `vouched`. Only call it
-+    /// with the tip and LIB of the in-memory chain.
++    /// with the tip and LIB of the in-memory chain (see [`note_chain`]).
 +    pub fn note(&self, vouched: VouchedChain) {
-+        let mut last = self.last.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-+        if *last == Some(vouched) {
++        self.note_at(vouched, Instant::now());
++    }
++
++    /// [`Self::note`] at a given time: writes when the chain changed and the
++    /// last write attempt is at least [`MARKER_MIN_INTERVAL`] old.
++    pub fn note_at(&self, vouched: VouchedChain, now: Instant) {
++        let mut state = self
++            .state
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        if state.written == Some(vouched) {
 +            return;
 +        }
++        if state
++            .attempted_at
++            .is_some_and(|at| now.saturating_duration_since(at) < MARKER_MIN_INTERVAL)
++        {
++            return;
++        }
++        state.attempted_at = Some(now);
 +        match self.paths.write(&marker_contents(&self.build, vouched)) {
-+            Ok(()) => *last = Some(vouched),
++            Ok(()) => state.written = Some(vouched),
 +            Err(error) => {
-+                warn!(target: LOG_TARGET, marker = ?self.paths.marker, %error, "could not write the replay marker: the next start replays more blocks in full");
++                if !state.warned {
++                    state.warned = true;
++                    warn!(target: LOG_TARGET, marker = ?self.paths.marker, %error, "could not write the replay marker: the next start replays in full (logged once)");
++                }
 +            }
 +        }
 +    }
 +}
 +
++/// Records the chain `cryptarchia` holds in the marker. Used after the startup
++/// replay and whenever the node records its recovery state.
++pub fn note_chain(writer: &MarkerWriter, cryptarchia: &Cryptarchia) {
++    writer.note(VouchedChain {
++        tip: cryptarchia.tip(),
++        lib: cryptarchia.lib(),
++    });
++}
++
 +static MARKER_WRITER: OnceLock<MarkerWriter> = OnceLock::new();
 +
-+/// Installs the process-wide marker writer (once, after the startup replay).
-+pub fn install_marker_writer(writer: MarkerWriter) {
-+    if MARKER_WRITER.set(writer).is_err() {
++/// After the startup replay: installs the process-wide marker writer and
++/// records the recovered chain.
++pub fn start_marker(paths: ReplayMarkerPaths, build: String, cryptarchia: &Cryptarchia) {
++    if MARKER_WRITER
++        .set(MarkerWriter::new(paths, build))
++        .is_err()
++    {
 +        warn!(target: LOG_TARGET, "replay marker writer already installed");
++    }
++    if let Some(writer) = MARKER_WRITER.get() {
++        note_chain(writer, cryptarchia);
 +    }
 +}
 +
-+/// Records the in-memory chain in the marker, if a writer is installed.
-+pub fn note_verified_chain(tip: HeaderId, lib: HeaderId) {
++/// Records the in-memory chain in the marker, if the writer is installed.
++pub fn note_installed(cryptarchia: &Cryptarchia) {
 +    if let Some(writer) = MARKER_WRITER.get() {
-+        writer.note(VouchedChain { tip, lib });
++        note_chain(writer, cryptarchia);
 +    }
 +}
 +
@@ -864,9 +1012,12 @@ rules, wire formats, the database format, the config file or the HTTP API.
 +mod tests {
 +    use lb_core::header::HeaderId;
 +
++    use std::time::{Duration, Instant};
++
 +    use super::{
-+        MarkerWriter, ReplayMarkerPaths, VouchedChain, build_id_from, choose_replay, fast_flags,
-+        forced_full, marker_contents, parse_marker,
++        MARKER_MIN_INTERVAL, MarkerWriter, ReplayMarkerPaths, VouchedChain, build_id,
++        build_id_from, choose_replay, fast_prefix, forced_full, marker_contents, parse_marker,
++        plan_replay,
 +    };
 +
 +    fn id(n: u8) -> HeaderId {
@@ -926,18 +1077,43 @@ rules, wire formats, the database format, the config file or the HTTP API.
 +    }
 +
 +    #[test]
-+    fn only_the_vouched_tip_and_its_ancestors_replay_fast() {
++    fn only_blocks_up_to_the_anchor_with_matching_headers_replay_fast() {
++        let lib = id(1);
 +        let ids = [id(2), id(3), id(4), id(5)];
-+        let vouched = |tip| Some(VouchedChain { tip, lib: id(1) });
-+        // Vouched tip is the stored tip: all fast.
-+        assert_eq!(fast_flags(&ids, vouched(id(5))), [true, true, true, true]);
-+        // Blocks stored after the vouched tip replay in full.
-+        assert_eq!(fast_flags(&ids, vouched(id(3))), [true, true, false, false]);
-+        // Vouched tip is the LIB (e.g. after a fall-back to LIB): nothing fast.
-+        assert_eq!(fast_flags(&ids, vouched(id(1))), [false; 4]);
-+        // Vouched tip not on this path (another branch): nothing fast.
-+        assert_eq!(fast_flags(&ids, vouched(id(7))), [false; 4]);
-+        assert_eq!(fast_flags(&ids, None), [false; 4]);
++        let parents = [id(1), id(2), id(3), id(4)];
++        // Anchor at the stored tip: all fast.
++        assert_eq!(fast_prefix(&ids, &parents, lib, Some(3)), [true; 4]);
++        // Blocks after the anchor replay in full.
++        assert_eq!(fast_prefix(&ids, &parents, lib, Some(1)), [true, true, false, false]);
++        // No anchor (the walk reached the LIB, or failed): nothing fast.
++        assert_eq!(fast_prefix(&ids, &parents, lib, None), [false; 4]);
++
++        // The stored parent index says L, X1, Y, T, but T's header names X1 as
++        // its parent: the vouched tip T does not lead to Y, so Y is not fast,
++        // and nothing after it either.
++        let (x1, y, t) = (id(2), id(3), id(4));
++        let ids = [x1, y, t];
++        let parents = [lib, x1, x1];
++        assert_eq!(fast_prefix(&ids, &parents, lib, Some(2)), [true, false, false]);
++        // A first block whose header does not name the LIB: nothing fast.
++        assert_eq!(fast_prefix(&ids, &[id(9), x1, y], lib, Some(2)), [false; 3]);
++    }
++
++    #[test]
++    fn build_id_is_compiled_in_when_the_build_sets_it() {
++        match option_env!("LOGOS_NODE_PATCHES_ID").map(str::trim) {
++            Some(id) if !id.is_empty() && id != "-" => {
++                assert!(build_id().is_some_and(|b| b.ends_with(id)));
++            }
++            _ => assert_eq!(build_id(), None),
++        }
++        // CI builds the tests with the patch-set id and checks it arrived.
++        if let Ok(expected) = std::env::var("LOGOS_EXPECT_PATCHES_ID") {
++            assert!(
++                build_id().is_some_and(|b| b.ends_with(&expected)),
++                "built without the patch-set id {expected}"
++            );
++        }
 +    }
 +
 +    #[test]
@@ -950,15 +1126,21 @@ rules, wire formats, the database format, the config file or the HTTP API.
 +
 +        let build = "0.3.4 patches abc".to_owned();
 +        let writer = MarkerWriter::new(paths.clone(), build.clone());
++        let start = Instant::now();
 +        let vouched = VouchedChain { tip: id(5), lib: id(1) };
-+        writer.note(vouched);
-+        let (chosen, _) = choose_replay(None, Some(&build), paths.read().as_deref(), id(1));
++        writer.note_at(vouched, start);
++        let (chosen, _) = plan_replay(Some(&paths), None, Some(&build), id(1));
 +        assert_eq!(chosen, Some(vouched));
 +
-+        // Later blocks move the marker forward.
++        // A change within the minimum interval waits; a later note writes it.
 +        let later = VouchedChain { tip: id(6), lib: id(2) };
-+        writer.note(later);
++        writer.note_at(later, start + Duration::from_secs(1));
++        assert_eq!(parse_marker(&paths.read().unwrap(), &build), Some(vouched));
++        writer.note_at(later, start + MARKER_MIN_INTERVAL);
 +        assert_eq!(parse_marker(&paths.read().unwrap(), &build), Some(later));
++
++        // Without a marker location nothing is vouched for.
++        assert_eq!(plan_replay(None, None, Some(&build), id(2)).0, None);
 +    }
 +}
 --- a/services/chain/chain-service/src/service/mod.rs
@@ -986,7 +1168,7 @@ rules, wire formats, the database format, the config file or the HTTP API.
          );
 +        // Patch 0001: the replay marker follows the in-memory chain, which this
 +        // process verified (replayed at startup or verified on arrival).
-+        crate::replay::note_verified_chain(self.cryptarchia.tip(), self.cryptarchia.lib());
++        crate::replay::note_installed(&self.cryptarchia);
      }
  }
  
@@ -1020,11 +1202,11 @@ rules, wire formats, the database format, the config file or the HTTP API.
      BlockOrigin, BootstrapConfig, Cryptarchia, CryptarchiaConsensus, CryptarchiaConsensusState,
      Error, OfflineGracePeriodConfig,
      relays::CryptarchiaConsensusRelays,
-+    replay::{MarkerWriter, ReplayMarkerPaths, VouchedChain, choose_replay, fast_flags},
++    replay::{MarkerWriter, ReplayMarkerPaths, VouchedChain, build_id, note_chain, plan_replay},
      service::{get_block_ids, process_block},
  };
  
-@@ -1105,4 +1106,349 @@
+@@ -1105,4 +1106,618 @@
      fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
          write!(f, "TestRuntimeServiceId")
      }
@@ -1278,13 +1460,298 @@ rules, wire formats, the database format, the config file or the HTTP API.
 +    assert_eq!(trusted.tip(), bad_deferred_proof.header().id());
 +}
 +
++/// Recovery state for a replay from the genesis block as LIB up to `tip`.
++fn recovery_from_genesis(stored: &Cryptarchia, tip: HeaderId) -> CryptarchiaConsensusState {
++    let genesis_id: HeaderId = GENESIS_ID.into();
++    CryptarchiaConsensusState {
++        tip,
++        lib: genesis_id,
++        lib_ledger_state: stored.ledger.state(&genesis_id).unwrap().clone(),
++        lib_block_length: 0,
++        lib_block_slot: Slot::genesis(),
++        lib_block_uncle_slots: UncleSlots::default(),
++        genesis_id,
++        storage_blocks_to_remove: HashSet::new(),
++        last_engine_state: None,
++    }
++}
++
++fn replay_bootstrap_config() -> BootstrapConfig {
++    BootstrapConfig {
++        prolonged_bootstrap_period: std::time::Duration::ZERO,
++        force_bootstrap: true,
++        offline_grace_period: OfflineGracePeriodConfig::default(),
++    }
++}
++
++/// The same block with its leader proof moved to the next slot, so the proof
++/// no longer verifies.
++fn with_bad_leader_proof(
++    valid: &Block<SignedOps<Preverified, StandardMode>>,
++    signing_key: &Ed25519Key,
++) -> Block<SignedOps<Preverified, StandardMode>> {
++    Block::create(
++        valid.header().parent(),
++        valid.header().slot().strict_add(1.into()),
++        UncleHeaders::empty(),
++        valid.header().leader_proof().clone(),
++        BlockTransactions::empty(),
++        signing_key,
++    )
++    .unwrap()
++}
++
++/// Patch 0001: a start that uses a marker verifies in full every block after
++/// the vouched tip. Stored chain `G -- B1 -- B2 -- B3`, where B3 carries a bad
++/// leader proof (first case) or a bad deferred proof (second case) and was
++/// written to storage directly (as a corrupt or foreign database would hold
++/// it). A marker vouching for B2 must not let B3 through.
++#[tokio::test(flavor = "multi_thread")]
++async fn replay_verifies_every_block_after_the_vouched_tip() {
++    type Tx = SignedOps<Preverified, StandardMode>;
++
++    for bad_leader_proof in [true, false] {
++        let (broadcast_tx, _broadcast_rx) = mpsc::channel(10);
++        let (storage_tx, storage_rx) = mpsc::channel(10);
++        let _storage_svc = spawn_storage_service(storage_rx);
++        let (time_tx, _time_rx) = mpsc::channel(10);
++        let relays = CryptarchiaConsensusRelays::<Tx>::new(
++            OutboundRelay::new(broadcast_tx),
++            StorageApi::new(OutboundRelay::new(storage_tx)),
++            OutboundRelay::new(time_tx),
++        );
++        let (new_block_tx, _new_block_rx) = broadcast::channel(100);
++        let (lib_tx, _lib_rx) = broadcast::channel(100);
++
++        let config = ledger_config(3.try_into().unwrap());
++        let genesis_id: HeaderId = GENESIS_ID.into();
++        let (zk_key, leader_utxo) = utxo();
++        let (_, funding) = utxo();
++        let mut stored = Cryptarchia::from_genesis(
++            genesis_id,
++            LedgerState::from_utxos([leader_utxo, funding], &config),
++            config,
++            lb_cryptarchia_engine::State::Bootstrapping,
++        );
++
++        let mut slot = Slot::genesis().strict_add(1.into());
++        let mut ids = Vec::new();
++        for _ in 0..2 {
++            let (block, _) = try_build_block(
++                &stored,
++                stored.tip(),
++                leader_utxo,
++                &zk_key,
++                slot,
++                UncleHeaders::empty(),
++            )
++            .unwrap();
++            slot = block.header().slot().strict_add(1.into());
++            ids.push(block.header().id());
++            process_block(
++                &mut stored,
++                block.clone(),
++                block.header().slot(),
++                BlockOrigin::Network,
++                &relays,
++                &new_block_tx,
++                &lib_tx,
++            )
++            .await
++            .unwrap();
++        }
++
++        let b3 = if bad_leader_proof {
++            let (valid, signing_key) = try_build_block(
++                &stored,
++                stored.tip(),
++                leader_utxo,
++                &zk_key,
++                slot,
++                UncleHeaders::empty(),
++            )
++            .unwrap();
++            with_bad_leader_proof(&valid, &signing_key)
++        } else {
++            // Spends `funding` with a signature from the wrong key; only the
++            // deferred proof check catches it.
++            let fake_key = ZkKey::from(Fr::from(42u64));
++            let bad_tx = transfer_tx(funding, Note::new(1, fake_key.to_public_key()), &fake_key)
++                .preverify()
++                .unwrap();
++            try_build_block_with_transactions(
++                &stored,
++                stored.tip(),
++                leader_utxo,
++                &zk_key,
++                slot,
++                UncleHeaders::empty(),
++                BlockTransactions::from([bad_tx]),
++            )
++            .unwrap()
++            .0
++        };
++        let b3_id = b3.header().id();
++        relays
++            .storage()
++            .store_block_data(
++                b3_id,
++                b3.header().parent(),
++                b3.clone(),
++                lb_core::events::Events::new(),
++                std::collections::BTreeMap::new(),
++            )
++            .await
++            .unwrap();
++
++        let recovery_state = recovery_from_genesis(&stored, b3_id);
++        let replay = async |vouched_tip: Option<HeaderId>| {
++            CryptarchiaConsensus::<Tx, SystemTimeBackend, TestRuntimeServiceId>::initialize_cryptarchia_with(
++                &recovery_state,
++                &replay_bootstrap_config(),
++                stored.ledger.config().clone(),
++                &relays,
++                &new_block_tx,
++                &lib_tx,
++                b3.header().slot(),
++                vouched_tip.map(|tip| VouchedChain { tip, lib: genesis_id }),
++            )
++            .await
++        };
++
++        let kind = if bad_leader_proof { "leader proof" } else { "deferred proof" };
++        assert!(replay(None).await.is_err(), "full replay must reject the bad {kind}");
++        assert!(
++            replay(Some(ids[1])).await.is_err(),
++            "a marker vouching for B2 must not skip the bad {kind} in B3"
++        );
++        // Only a marker that vouches for B3 itself skips it: what fast mode trusts.
++        let trusted = replay(Some(b3_id)).await.expect("B3 vouched for");
++        assert_eq!(trusted.replayed_fast, 3);
++    }
++}
++
++/// Patch 0001: a marker whose tip is on another branch vouches only for the
++/// blocks that branch shares with the stored chain, found through the
++/// headers' parents. Stored chain `G -- B1 -- B2` (B2 with a bad leader proof),
++/// a fork `B1 -- U2`, and a block `U1` on `G`.
++#[tokio::test(flavor = "multi_thread")]
++async fn marker_on_another_branch_vouches_only_the_shared_blocks() {
++    type Tx = SignedOps<Preverified, StandardMode>;
++
++    let (broadcast_tx, _broadcast_rx) = mpsc::channel(10);
++    let (storage_tx, storage_rx) = mpsc::channel(10);
++    let _storage_svc = spawn_storage_service(storage_rx);
++    let (time_tx, _time_rx) = mpsc::channel(10);
++    let relays = CryptarchiaConsensusRelays::<Tx>::new(
++        OutboundRelay::new(broadcast_tx),
++        StorageApi::new(OutboundRelay::new(storage_tx)),
++        OutboundRelay::new(time_tx),
++    );
++    let (new_block_tx, _new_block_rx) = broadcast::channel(100);
++    let (lib_tx, _lib_rx) = broadcast::channel(100);
++
++    let genesis_id: HeaderId = GENESIS_ID.into();
++    let (zk_key, utxo) = utxo();
++    let mut stored = genesis_cryptarchia(utxo);
++    let slot = Slot::genesis().strict_add(1.into());
++
++    // U1 extends G; it is only written to storage.
++    let (u1, _) =
++        try_build_block(&stored, genesis_id, utxo, &zk_key, slot, UncleHeaders::empty()).unwrap();
++    relays
++        .storage()
++        .store_block_data(
++            u1.header().id(),
++            genesis_id,
++            u1.clone(),
++            lb_core::events::Events::new(),
++            std::collections::BTreeMap::new(),
++        )
++        .await
++        .unwrap();
++
++    let apply = async |stored: &mut Cryptarchia, block: Block<Tx>| {
++        process_block(
++            stored,
++            block.clone(),
++            block.header().slot(),
++            BlockOrigin::Network,
++            &relays,
++            &new_block_tx,
++            &lib_tx,
++        )
++        .await
++        .unwrap();
++    };
++    let (b1, _) =
++        try_build_block(&stored, genesis_id, utxo, &zk_key, slot, UncleHeaders::empty()).unwrap();
++    let b1_id = b1.header().id();
++    apply(&mut stored, b1.clone()).await;
++    let next = b1.header().slot().strict_add(1.into());
++    let (u2, _) =
++        try_build_block(&stored, b1_id, utxo, &zk_key, next, UncleHeaders::empty()).unwrap();
++    let (b2_valid, b2_key) =
++        try_build_block(&stored, b1_id, utxo, &zk_key, next, UncleHeaders::empty()).unwrap();
++    let b2 = with_bad_leader_proof(&b2_valid, &b2_key);
++    apply(&mut stored, u2.clone()).await;
++    relays
++        .storage()
++        .store_block_data(
++            b2.header().id(),
++            b1_id,
++            b2.clone(),
++            lb_core::events::Events::new(),
++            std::collections::BTreeMap::new(),
++        )
++        .await
++        .unwrap();
++    let path = [b1_id, b2.header().id()];
++
++    type Service = CryptarchiaConsensus<Tx, SystemTimeBackend, TestRuntimeServiceId>;
++    // The fork tip leads back to B1 through U2's header: only B1 is shared.
++    assert_eq!(
++        Service::vouched_anchor(u2.header().id(), genesis_id, &path, relays.storage()).await,
++        Some(0)
++    );
++    // A branch off the LIB, or an unknown tip: nothing is shared.
++    assert_eq!(
++        Service::vouched_anchor(u1.header().id(), genesis_id, &path, relays.storage()).await,
++        None
++    );
++    assert_eq!(
++        Service::vouched_anchor([9; 32].into(), genesis_id, &path, relays.storage()).await,
++        None
++    );
++
++    let recovery_state = recovery_from_genesis(&stored, b2.header().id());
++    let replay = async |vouched_tip: HeaderId| {
++        Service::initialize_cryptarchia_with(
++            &recovery_state,
++            &replay_bootstrap_config(),
++            stored.ledger.config().clone(),
++            &relays,
++            &new_block_tx,
++            &lib_tx,
++            b2.header().slot(),
++            Some(VouchedChain { tip: vouched_tip, lib: genesis_id }),
++        )
++        .await
++    };
++    for tip in [u2.header().id(), u1.header().id(), [9; 32].into()] {
++        assert!(replay(tip).await.is_err(), "the bad B2 must be verified and rejected");
++    }
++}
++
 +/// Patch 0001: after a recovery that fell back to LIB (the tip branch could
 +/// not be loaded), the marker written for the recovered chain vouches for no
-+/// stored block, so the next start replays all of them in full; and the
-+/// marker read back drives the next start's choice (the wiring in `run`).
++/// stored block, so the next start replays all of them in full. Uses the same
++/// steps as the node: `plan_replay` (marker read and choice) before the
++/// recovery, `note_chain` (as `run` and `record_recovery_state` do) after it.
 +#[tokio::test(flavor = "multi_thread")]
 +async fn marker_after_fall_back_to_lib_vouches_for_nothing() {
 +    type Tx = SignedOps<Preverified, StandardMode>;
++    type Service = CryptarchiaConsensus<Tx, SystemTimeBackend, TestRuntimeServiceId>;
 +
 +    let (broadcast_tx, _broadcast_rx) = mpsc::channel(10);
 +    let (storage_tx, storage_rx) = mpsc::channel(10);
@@ -1298,10 +1765,9 @@ rules, wire formats, the database format, the config file or the HTTP API.
 +    let (new_block_tx, _new_block_rx) = broadcast::channel(10);
 +    let (lib_tx, _lib_rx) = broadcast::channel(10);
 +
-+    // A stored chain G -- B1 -- B2, written by "another binary".
++    // A stored chain G -- B1 -- B2.
 +    let (zk_key, utxo) = utxo();
 +    let mut stored = genesis_cryptarchia(utxo);
-+    let mut blocks = Vec::new();
 +    let mut slot = Slot::genesis().strict_add(1.into());
 +    for _ in 0..2 {
 +        let (block, _) =
@@ -1319,58 +1785,43 @@ rules, wire formats, the database format, the config file or the HTTP API.
 +        )
 +        .await
 +        .unwrap();
-+        blocks.push(block);
 +    }
 +    let genesis_id: HeaderId = GENESIS_ID.into();
-+    let stored_ids = blocks.iter().map(|b| b.header().id()).collect::<Vec<_>>();
++    let tip = stored.tip();
 +
-+    // The recovery state names a tip that is missing from storage.
-+    let recovery_state = CryptarchiaConsensusState {
-+        tip: [7; 32].into(),
-+        lib: genesis_id,
-+        lib_ledger_state: stored.ledger.state(&genesis_id).unwrap().clone(),
-+        lib_block_length: 0,
-+        lib_block_slot: Slot::genesis(),
-+        lib_block_uncle_slots: UncleSlots::default(),
-+        genesis_id,
-+        storage_blocks_to_remove: HashSet::new(),
-+        last_engine_state: None,
-+    };
-+    let bootstrap_config = BootstrapConfig {
-+        prolonged_bootstrap_period: std::time::Duration::ZERO,
-+        force_bootstrap: true,
-+        offline_grace_period: OfflineGracePeriodConfig::default(),
-+    };
-+    let initialized = CryptarchiaConsensus::<Tx, SystemTimeBackend, TestRuntimeServiceId>::initialize_cryptarchia_with(
-+        &recovery_state,
-+        &bootstrap_config,
-+        stored.ledger.config().clone(),
-+        &relays,
-+        &new_block_tx,
-+        &lib_tx,
-+        slot,
-+        None,
-+    )
-+    .await
-+    .unwrap();
-+    assert!(initialized.fell_back_to_lib);
-+
-+    // What `run` does after the recovery: the marker follows the recovered chain.
 +    let dir = TempDir::new().unwrap();
 +    let paths = ReplayMarkerPaths::next_to_db(&dir.path().join("db"));
-+    let build = "test build".to_owned();
-+    MarkerWriter::new(paths.clone(), build.clone())
-+        .note(VouchedChain { tip: initialized.cryptarchia.tip(), lib: initialized.cryptarchia.lib() });
++    // The real build id when the tests are built with one (CI), else a stand-in.
++    let build = build_id().unwrap_or_else(|| "test build".to_owned());
++    let recover = async |state: &CryptarchiaConsensusState| {
++        let (vouched, _) = plan_replay(Some(&paths), None, Some(&build), state.lib);
++        Service::initialize_cryptarchia_with(
++            state,
++            &replay_bootstrap_config(),
++            stored.ledger.config().clone(),
++            &relays,
++            &new_block_tx,
++            &lib_tx,
++            slot,
++            vouched,
++        )
++        .await
++        .unwrap()
++    };
 +
-+    // Next start, with the tip branch loadable again: the marker matches the
-+    // stored LIB but vouches for none of the stored blocks.
-+    let (vouched, _) = choose_replay(None, Some(&build), paths.read().as_deref(), genesis_id);
-+    assert_eq!(vouched, Some(VouchedChain { tip: genesis_id, lib: genesis_id }));
-+    assert_eq!(fast_flags(&stored_ids, vouched), [false, false]);
++    // First start: the recovery state names a tip missing from storage.
++    let fell_back = recover(&recovery_from_genesis(&stored, [7; 32].into())).await;
++    assert!(fell_back.fell_back_to_lib);
++    note_chain(&MarkerWriter::new(paths.clone(), build.clone()), &fell_back.cryptarchia);
 +
-+    // Whereas a marker written for the full chain vouches for all of it.
-+    MarkerWriter::new(paths.clone(), build.clone())
-+        .note(VouchedChain { tip: stored.tip(), lib: genesis_id });
-+    let (vouched, _) = choose_replay(None, Some(&build), paths.read().as_deref(), genesis_id);
-+    assert_eq!(fast_flags(&stored_ids, vouched), [true, true]);
++    // Next start, with the tip branch loadable: nothing is vouched for.
++    let full = recover(&recovery_from_genesis(&stored, tip)).await;
++    assert_eq!(full.cryptarchia.tip(), tip);
++    assert_eq!(full.replayed_fast, 0);
++    note_chain(&MarkerWriter::new(paths.clone(), build.clone()), &full.cryptarchia);
++
++    // The start after that: the marker now vouches for both blocks.
++    let fast = recover(&recovery_from_genesis(&stored, tip)).await;
++    assert_eq!(fast.replayed_fast, 2);
++    assert_eq!(fast.cryptarchia.ledger, full.cryptarchia.ledger);
  }

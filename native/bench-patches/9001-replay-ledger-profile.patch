@@ -156,7 +156,7 @@ summary line at the end of the startup replay.
          info!(
              target: LOG_TARGET, tip = ?recovery_state.tip, lib = ?recovery_state.lib, lib_height = recovery_state.lib_block_length, genesis = ?recovery_state.genesis_id,
              "recovering Cryptarchia",
-@@ -1364,6 +1365,21 @@
+@@ -1410,6 +1411,21 @@
          timing::secs(&timing::DECODE),
          apply_secs - ledger_secs - batch_secs - store_secs,
      );

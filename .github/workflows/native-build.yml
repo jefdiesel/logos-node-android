@@ -156,6 +156,9 @@ jobs:
         run: |
           git clone -q --depth 1 --branch "$NODE_VERSION" https://github.com/logos-blockchain/logos-blockchain.git node
           native/apply-patches.sh node
+          # built with the patch-set id like the shipped node, and the tests check it arrived
+          echo "LOGOS_NODE_PATCHES_ID=$(cat node/PATCHES.id)" >> "$GITHUB_ENV"
+          echo "LOGOS_EXPECT_PATCHES_ID=$(cat node/PATCHES.id)" >> "$GITHUB_ENV"
       - name: Tools
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq clang libclang-dev pkg-config libssl-dev >/dev/null

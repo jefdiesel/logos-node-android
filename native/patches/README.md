@@ -56,15 +56,26 @@ A small text file **next to** the database folder, `<state>/db.replay-verified` 
 
 - the build: upstream version, patch names and the patch-set id (a digest of every patch file
   applied, computed by `native/apply-patches.sh` after applying them). A build made without a
-  patch-set id never replays fast;
+  patch-set id never replays fast. The build id covers the code only, not the deployment and
+  ledger configuration the node is started with; the vouched LIB id (below) ties the marker to
+  one chain, but a changed configuration on the same chain is not detected, so delete the
+  marker when changing it;
 - a chain this process holds in memory and has verified: its tip id and its LIB id. Every block
   in that chain after the LIB was either verified on arrival from the network or replayed at
   start-up under the same rules.
 
-The node rewrites the marker every time it records its recovery state (after every block, and
-once a minute). A header id is a hash of the header, which commits to the parent id and to the
-block body, and the replay checks that every stored block decodes to its id. So the marker's tip
-id pins the exact content of every block it vouches for, wherever the database came from.
+The node rewrites the marker when it records its recovery state (after every block, and once a
+minute), at most once every 5 seconds: a small file written and renamed on the chain service's
+task. Once synced, blocks are tens of seconds apart, so the marker follows every block; while the
+node catches up it can be up to 5 seconds behind, and the once-a-minute recording brings it up to
+date. A failure to write it is logged once. There is no write at shutdown (the chain service has
+no shutdown hook), so a stop is treated like a kill.
+
+A header id is a hash of the header, which commits to the parent id and to the block body, and
+the replay checks that every stored block decodes to its id. Fast blocks are found by following
+the parent ids in the blocks' own headers back from the marker's tip, not the database's separate
+parent index. So the marker's tip id pins the exact content of every block it vouches for,
+wherever the database came from.
 
 At the next start a block is replayed fast only if all of these hold, and in full otherwise:
 
@@ -72,7 +83,8 @@ At the next start a block is replayed fast only if all of these hold, and in ful
 2. the marker is from this build (same version, patches and patch-set id);
 3. the stored recovery state's LIB is the marker's LIB (so the stored LIB ledger state is the
    one this build computed);
-4. the block is the marker's tip or one of its ancestors after the LIB.
+4. the block is the marker's tip or one of its ancestors after the LIB, following the headers'
+   parent ids, and every block before it on the replay path is fast too.
 
 Blocks stored after the marker's tip, or on another branch, are verified in full. So:
 
@@ -90,8 +102,12 @@ Blocks stored after the marker's tip, or on another branch, are verified in full
 The log says what was chosen and why (`replay mode chosen: ...`) and how many blocks were
 replayed each way (`replay timing (N blocks: X fast, Y with full verification)`).
 
-If the node is killed in the moment between recording its recovery state and rewriting the
-marker, the two disagree and the next start verifies more blocks in full; it never trusts more.
+When the stored recovery state is newer than the marker (the node stopped or was killed after
+recording its state but before the marker caught up, which during catch-up can be up to 5
+seconds), the next start verifies more blocks in full; it never trusts more. Once the node is
+Online the LIB moves with almost every block, so in that case the stored LIB usually differs
+from the marker's and the next start is a **full replay**. While bootstrapping the LIB stays put,
+and only the blocks stored after the marker's tip are verified in full.
 
 **For the Android app:** delete `<state>/db.replay-verified` when a database is imported or
 restored, and when the bundled node binary changes. The marker never vouches for a block it does
@@ -120,6 +136,12 @@ the states built when the blocks first arrived. Upstream's own recovery tests no
 full verification (the result they check) and fast, and fail if the two differ. A block with a
 bad leader proof or a bad deferred proof is rejected from the network and in a full replay, and
 accepted only by a fast replay; that test is the written form of the trust statement above.
+Further tests: a stored block with a bad leader proof or a bad deferred proof just after the
+vouched tip is rejected at start-up (only a marker vouching for that block itself lets it
+through); a marker whose tip is on another branch vouches only for the blocks that branch shares
+with the stored chain (nothing if it branches at the LIB); a parent index that disagrees with the
+headers stops the fast prefix; and after a fall-back to LIB, the next start replays everything in
+full, using the node's own marker read, choice and write steps.
 
 ### Turning it off
 
