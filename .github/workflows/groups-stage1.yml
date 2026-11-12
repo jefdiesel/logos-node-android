@@ -1,0 +1,52 @@
+name: groups-stage1
+# Group chats, Stage 1 (nothing here ships): the MLS bundle in vendor-staging/mls/ is exactly what the pinned
+# npm packages build to, and ts-mls's own RFC 9420 test vectors, the identity check, sizes and the ts-mls issue
+# checks pass against that bundle in Node 20 (arm64 and x64) and in headless Chrome and Chromium (x64; the arm64
+# image has no browser) on the app WebView's origin http://127.0.0.1:18190.
+on:
+  push:
+    paths: [vendor-staging/**, tools/mls/**, tests/mls/**, app/messages/**, app/noble-curves/**, .github/workflows/groups-stage1.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  groups-stage1:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04-arm, ubuntu-24.04]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: The shipped app is unchanged (release.json still matches every app file)
+        run: python3 tools/release.py check
+      - name: Install the build inputs from the lockfile (sha512 integrity, no install scripts)
+        run: cd tools/mls && npm ci --ignore-scripts && npm ls --all
+      - name: The committed bundle is byte for byte what a fresh build makes
+        run: cd tools/mls && node build.mjs --check --report
+      - name: ts-mls test sources and vectors at the pinned commit
+        run: |
+          C=$(python3 -c "import json; print(json.load(open('tests/mls/upstream.json'))['commit'])")
+          mkdir "$RUNNER_TEMP/ts-mls" && cd "$RUNNER_TEMP/ts-mls"
+          git init -q && git fetch -q --depth 1 https://github.com/LukaJCB/ts-mls.git "$C" && git checkout -q FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$C" && echo "ts-mls at $C"
+      - name: Node 20
+        run: |
+          node --version
+          node tests/mls/run-node.mjs --src "$RUNNER_TEMP/ts-mls" --json "$RUNNER_TEMP/node.json"
+      - name: Headless Google Chrome on http://127.0.0.1:18190
+        if: matrix.runner == 'ubuntu-24.04'
+        run: node tests/mls/run-chromium.mjs --src "$RUNNER_TEMP/ts-mls" --chrome "$(command -v google-chrome)" --json "$RUNNER_TEMP/chrome.json"
+      - name: Headless Chromium on http://127.0.0.1:18190
+        if: matrix.runner == 'ubuntu-24.04'
+        run: |
+          CHROMIUM=$(command -v chromium || command -v chromium-browser || ls /usr/local/share/chromium/chrome-linux/chrome 2>/dev/null || true)
+          if [ -z "$CHROMIUM" ]; then echo "no Chromium binary on this image"; exit 1; fi
+          node tests/mls/run-chromium.mjs --src "$RUNNER_TEMP/ts-mls" --chrome "$CHROMIUM" --json "$RUNNER_TEMP/chromium.json"
+      - name: Results (JSON)
+        if: always()
+        run: for f in "$RUNNER_TEMP"/*.json; do echo "== $f"; cat "$f"; echo; done

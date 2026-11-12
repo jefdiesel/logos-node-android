@@ -1,0 +1,16 @@
+{
+  "name": "logos-node-mls-bundle",
+  "private": true,
+  "description": "Build inputs for vendor-staging/mls/mls.js (ts-mls + @hpke/core). Not shipped; see vendor-staging/mls/VENDORED.txt.",
+  "type": "module",
+  "dependencies": {
+    "@hpke/core": "1.9.0",
+    "ts-mls": "1.6.4"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  },
+  "overrides": {
+    "@hpke/common": "1.10.0"
+  }
+}

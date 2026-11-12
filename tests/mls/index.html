@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>MLS Stage 1 checks</title>
+<pre id="log"></pre>
+<script type="module">
+  // Served by tests/mls/run-chromium.mjs on http://127.0.0.1:18190 (the app WebView's origin); posts its results back.
+  const el = document.getElementById("log");
+  const post = (path, body) => fetch(path, { method: "POST", body: typeof body === "string" ? body : JSON.stringify(body) });
+  const log = (line) => { el.textContent += line + "\n"; post("/log", line); };
+  try {
+    const { runAll } = await import("./suite/runner.mjs");
+    const results = await runAll({ log, only: new URLSearchParams(location.search).get("only")?.split(",") });
+    await post("/results", JSON.stringify(results, (k, v) => (typeof v === "bigint" ? String(v) : v)));
+  } catch (e) {
+    await post("/results", { ok: false, problems: [`page error: ${e?.message}`], stack: String(e?.stack) });
+  }
+</script>

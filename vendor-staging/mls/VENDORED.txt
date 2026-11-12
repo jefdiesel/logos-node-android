@@ -1,0 +1,33 @@
+What is here, and how to rebuild it (groups Stage 1; NOTHING HERE IS SHIPPED)
+
+This folder is outside app/, so tools/release.py, the phones' updater and the page never see it. Moving mls.js
+into the app (Stage 4) means: copy it and mls-provider.js to app/messages/, load them from the groups code,
+and run `python3 tools/release.py write`. Their relative @noble imports already assume app/messages/.
+
+mls.js            ts-mls 1.6.4 + @hpke/core 1.9.0 + @hpke/common 1.10.0 from the npm registry, bundled into one
+                  ES module by tools/mls/build.mjs with esbuild 0.28.2. Exact versions and the sha512
+                  integrity of every package are in tools/mls/package-lock.json; the header of mls.js repeats
+                  them. Not minified, no source map. 314,750 bytes, sha256
+                  b042d223c7246669b52662bc8eb72e35f735c498d12051526ed0486a5e213e65.
+                  - Exports the ts-mls public API (minus nobleCryptoProvider, which needs @noble/ciphers/aes.js,
+                    not vendored), its error classes, `hpke` (four @hpke/core classes) and `internals` (the ts-mls
+                    modules its test-vector tests use; for tests/mls/ only).
+                  - No second copy of @noble: its only @noble import is `import("../noble-curves/ed25519.js")`
+                    (the app's 2.4.0 copy), which ts-mls's default provider reaches only without crypto.subtle.
+                  - The other cipher suites' optional dependencies (P-256/384/521, X448/Ed448, ChaCha20, ML-KEM,
+                    X-Wing, ML-DSA) and @hpke/common's Node <= 18 `crypto` fallback are stubs that throw, so
+                    ts-mls reports them as DependencyError. Cipher suite 1 only.
+                  - @hpke/common carries ~5.5 KB of code derived from noble-hashes/noble-curves (MIT, Paul
+                    Miller; see ../../app/noble-curves/LICENSE) with no caller in the bundle.
+mls-provider.js   Ours. A ts-mls CryptoProvider for suite 1 that uses the app's vendored noble (sha2, hmac, hkdf,
+                  ed25519) instead of WebCrypto, keeping WebCrypto only for AES-128-GCM and @hpke/core's HPKE.
+LICENSE-ts-mls    ts-mls's LICENSE (MIT, Luka Jacobowitz), from its npm package.
+LICENSE-hpke      @hpke/core's and @hpke/common's LICENSE files (MIT, Ajitomi Daisuke), from their npm packages.
+
+Rebuild / check (CI does both in .github/workflows/groups-stage1.yml):
+  cd tools/mls && npm ci          # .npmrc: ignore-scripts, legacy-peer-deps (ts-mls's optional peers not installed)
+  node build.mjs                  # writes vendor-staging/mls/mls.js
+  node build.mjs --check          # fails if the committed file differs from a fresh build
+
+Tests: tests/mls/ (run-node.mjs, run-chromium.mjs) run ts-mls's own RFC 9420 test vectors (fetched from
+LukaJCB/ts-mls at the commit in tests/mls/upstream.json, every file checked by sha256) against this mls.js.
