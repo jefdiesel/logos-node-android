@@ -172,7 +172,7 @@ jobs:
             # the image does not pass docker -e variables on to this shell: set them here
             export NO_WAKE_LOCK=1 APP_SRC=/repo/app
             sh /repo/install-termux.sh
-            # the app installed must be this repository's, not one downloaded from the release branch
+            # the app installed must be the one in this checkout, not a download from the release branch
             INST=$(find "${PREFIX:-/data/data/com.termux/files/usr}/var/lib/proot-distro" -path "*/root/node/app/server.py" 2>/dev/null | head -1)
             echo "installed app: ${INST:-not found}"
             for f in server.py messages/messages.js; do
