@@ -223,6 +223,31 @@ object MessagingPolicy {
 }
 
 /**
+ * One pass of the orphan guard: the runner processes found at the start of the pass, unless the
+ * supervisor owns its runner, get SIGTERM, and those of them still there after [graceMs] get SIGKILL.
+ * A runner that appears during the pass (a supervisor just started one) is never touched.
+ * Returns the pids it signalled.
+ */
+object OrphanGuard {
+    fun pass(
+        owned: () -> Boolean,
+        runnerPids: () -> List<Int>,
+        signal: (pid: Int, sig: Int) -> Unit,
+        graceMs: Long = 5_000,
+        sleep: (Long) -> Unit = { Thread.sleep(it) },
+    ): List<Int> {
+        if (owned()) return emptyList()
+        val found = runnerPids()
+        if (found.isEmpty()) return emptyList()
+        found.forEach { signal(it, 15) }
+        var waited = 0L
+        while (runnerPids().any { it in found } && waited < graceMs) { sleep(250); waited += 250 }
+        runnerPids().filter { it in found }.forEach { signal(it, 9) }
+        return found
+    }
+}
+
+/**
  * Starts or stops the messaging node when the switch, the network or the day's data use changes.
  * The service calls [update]; [startRunner] and [stopRunner] are the supervisor's.
  */
@@ -307,15 +332,20 @@ class MessagingSupervisor(
         if (worker?.isAlive == true) return
         stopRequested = false
         debugAbandon = false
+        // counts as launching from this moment, so a guard pass meanwhile never takes the new runner for an orphan
+        launching = true
         worker = thread(name = "messaging-supervisor", isDaemon = true) {
             try {
                 loop()
             } catch (e: Throwable) {
+                launching = false
                 // never leave a runner behind that nothing watches or can stop
                 process?.let { p -> p.destroy(); if (!p.waitFor(MessagingSettings.STOP_GRACE_SECONDS, TimeUnit.SECONDS)) p.destroyForcibly() }
                 process = null
                 log("messaging: supervisor error: ${e.javaClass.simpleName}: ${e.message}")
                 setState("stopped: ${e.javaClass.simpleName}: ${e.message}")
+            } finally {
+                launching = false                          // the thread is over (e.g. config problem, cap): nothing launches
             }
         }
     }

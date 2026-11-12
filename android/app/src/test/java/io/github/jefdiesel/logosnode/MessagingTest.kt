@@ -181,6 +181,47 @@ class MessagingTest {
         procs.forEach { it.destroyForcibly() }
     }
 
+    @Test fun guardKillsOnlyTheOrphansItFound() {
+        // the phone case: orphan 101 found; while the guard waits, a new supervisor starts runner 202
+        val alive = mutableListOf(101)
+        val signals = mutableListOf<Pair<Int, Int>>()
+        var slept = 0
+        val hit = OrphanGuard.pass(
+            owned = { false },
+            runnerPids = { alive.toList() },
+            signal = { pid, sig -> signals += pid to sig },
+            graceMs = 1_000,
+            sleep = { slept++; if (slept == 1) alive += 202 },     // 101 ignores SIGTERM; 202 appears
+        )
+        assertEquals(listOf(101), hit)
+        assertEquals(listOf(101 to 15, 101 to 9), signals)          // never a signal for 202
+    }
+
+    @Test fun guardLeavesAnOwnedRunnerAlone() {
+        val signals = mutableListOf<Pair<Int, Int>>()
+        assertTrue(OrphanGuard.pass({ true }, { listOf(7) }, { p, s -> signals += p to s }).isEmpty())
+        assertTrue(signals.isEmpty())
+        // an orphan that goes on SIGTERM gets no SIGKILL
+        val alive = mutableListOf(8)
+        OrphanGuard.pass({ false }, { alive.toList() }, { p, s -> signals += p to s; if (s == 15) alive.remove(p) }, sleep = {})
+        assertEquals(listOf(8 to 15), signals)
+    }
+
+    @Test fun aStartingSupervisorOwnsItsRunnerFromTheStart() {
+        val f = files()
+        val proc = java.util.concurrent.atomic.AtomicReference<Process>()
+        val s = MessagingSupervisor(f, DataUsage(File(tmp.root, "u7.txt")),
+            { Thread.sleep(1500); ProcessBuilder("sh", "-c", "exec sleep 30").start().also { proc.set(it) } },
+            log = {})
+        s.start()
+        assertTrue("owned while it starts, before any process exists", s.ownsRunner)
+        assertFalse(s.stuck)
+        waitFor("launched") { proc.get() != null }
+        assertTrue(s.ownsRunner)
+        s.stop("test over")
+        assertFalse(s.ownsRunner)
+    }
+
     @Test fun supervisorIsIndependentOfOtherProcesses() {
         // the "blockchain node": a separate child the messaging supervisor knows nothing about
         val node = ProcessBuilder("sh", "-c", "sleep 60").start()

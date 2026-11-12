@@ -143,14 +143,13 @@ class NodeService : Service() {
      */
     private fun killUnownedRunners() {
         // owned = being launched, or the supervisor's handle is of a live process (not just "its thread is alive")
-        if (messaging?.ownsRunner == true) return
-        val pids = runnerPids()
-        if (pids.isEmpty()) return
-        log.app("messaging: stopping ${pids.size} runner process(es) that nothing supervises: $pids")
-        pids.forEach { android.os.Process.sendSignal(it, 15) }
-        val until = System.currentTimeMillis() + 5_000
-        while (runnerPids().isNotEmpty() && System.currentTimeMillis() < until) Thread.sleep(250)
-        runnerPids().forEach { android.os.Process.sendSignal(it, 9) }
+        // only the runners found at the start of this pass: one a new supervisor starts meanwhile is never touched
+        val signalled = OrphanGuard.pass(
+            owned = { messaging?.ownsRunner == true },
+            runnerPids = { runnerPids() },
+            signal = { pid, sig -> android.os.Process.sendSignal(pid, sig) },
+        )
+        if (signalled.isNotEmpty()) log.app("messaging: stopped ${signalled.size} runner process(es) that nothing supervised: $signalled")
     }
 
     private fun watchNetwork() {
