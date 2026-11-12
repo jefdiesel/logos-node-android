@@ -9,6 +9,7 @@ import { HOSTILE } from "./hostile.mjs";
 import { REVIEW2 } from "./hostile2.mjs";
 import { REVIEW3 } from "./review3.mjs";
 import { REVIEW4 } from "./review4.mjs";
+import { REVIEW5 } from "./review5.mjs";
 
 const te = new TextEncoder();
 const DAY = 86_400_000;
@@ -433,7 +434,7 @@ async function growTo32(net, check, log, workaround) {
 
 export async function runAll({ nodeUrl, ctlUrl, nodes, log = console.log, only }) {
   const results = {};
-  for (const [name, fn] of Object.entries({ ...SCENARIOS, ...HOSTILE, ...REVIEW2, ...REVIEW3, ...REVIEW4 })) {
+  for (const [name, fn] of Object.entries({ ...SCENARIOS, ...HOSTILE, ...REVIEW2, ...REVIEW3, ...REVIEW4, ...REVIEW5 })) {
     if (only && !only.some((o) => name.includes(o))) continue;
     const net = new Net({ nodeUrl, ctlUrl, nodes });
     const checks = [];

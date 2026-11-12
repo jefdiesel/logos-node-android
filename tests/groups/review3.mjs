@@ -290,7 +290,7 @@ export const REVIEW3 = {
     await settle(bus);
     check("...it is retried an hour later and everyone follows", epoch(A, gid) !== e0 && epoch(B, gid) === epoch(A, gid) && epoch(C, gid) === epoch(A, gid));
     const e1 = epoch(A, gid);
-    boom = 1;
+    boom = 2; // a leave reaches the admin twice (group frame and, since review 5, a sealed control): both fail
     await C.engine.leave(gid);
     n0 = bus.posted.length;
     await settle(bus);
@@ -723,7 +723,7 @@ export const REVIEW3 = {
       const first = await code(V.engine.acceptInvite(inv.id));
       const after = V.engine.listInvites()[0];
       check("accepting a false claim: NOT_VERIFIED, the invitation now shows the unverified address", first === "NOT_VERIFIED" && after?.id === inv.id && !after.verified && !after.unchecked && after.from !== "alice" && !Object.keys(V.engine.data.joins).length, first);
-      await V.engine.acceptInvite(inv.id); // the user accepts again, knowingly
+      await V.engine.acceptInvite(inv.id, { unverified: true }); // the user accepts again, knowingly (review 5: explicit)
       await settle(bus);
       const g = V.engine.listGroups().find((x) => x.id === gx);
       check("an unchecked invitation from a false alice stays an unverified address after the check", g && g.admin !== "alice" && g.adminVerified === false);
@@ -846,7 +846,8 @@ export const REVIEW3 = {
       const { id: gx } = await X.engine.createGroup("fake", ["victim"]);
       await settle(bus);
       const inv = V.engine.listInvites()[0];
-      await V.engine.acceptInvite(inv.id);
+      check("(accepting it needs the explicit confirmation)", (await code(V.engine.acceptInvite(inv.id))) === "NOT_VERIFIED");
+      await V.engine.acceptInvite(inv.id, { unverified: true });
       await settle(bus);
       const g = V.engine.listGroups().find((x) => x.id === gx);
       check("a false 'alice': shown as an unverified address, and so is the group's admin", inv.from !== "alice" && !inv.verified && inv.claimedName === "alice" && g && g.admin !== "alice" && g.adminVerified === false);

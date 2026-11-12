@@ -72,7 +72,7 @@
 //     in state instead: a key package waiting for the chain (in its invitation, retried by tick()), a re-add
 //     request (asked again daily by tick()), and a new invitation (kept as unchecked).
 //
-// Review status (reviews are in the coordinator's notes, GROUPS-REVIEW-1.md to -4.md):
+// Review status (reviews are in the coordinator's notes, GROUPS-REVIEW-1.md to -5.md):
 //   Review 1 (5ba3171): all closed - M1 seed aliasing, M2 held flood, M3 stale leave, M4 invitations (finished in
 //     review 2), S1 inbox writes, S2 topic rotation, S3 rejoin, S4 resend/outbox, S5 resolver, S6 Welcome binding,
 //     S7 member list by leaf, S8 late messages (same-epoch renames fixed in review 2), S9 unverified invites,
@@ -194,6 +194,65 @@
 //       answer (tested with the admin gone). LIMIT: such junk still makes the member flap catching-up/caught-up
 //       about 12 times a day and send about 28 resend requests a day (225 in 8 days in the scenario), within
 //       the admin's caps; real held items above the admin's epoch stay held until their commit comes.
+//   Review 5 (82c6cc7): no must-fix; 6 should-fix and 3 read-only items, fixed below. Each has a scenario in
+//   tests/groups/review5.mjs that fails at 82c6cc7 (assertion or missing API) and passes here; "review 5 pins"
+//   passes on both and is proven by mutation (removing the stored-key-package branch, the mismatch cache or the
+//   cap before the lookup each makes it fail).
+//     S1 NOT_VERIFIED was skipped when tick() (or a second tap) checked the claim first. Now accepting any
+//       invitation that isn't verified throws NOT_VERIFIED unless the call passes { unverified: true }, whatever
+//       checked it and in whatever order; tick()'s check emits invite-updated. Other effects: the page must
+//       pass the option for the explicit second accept (tests that accept false claims now do).
+//     S2 a leave after the device had answered a re-add's key-package request was refused as late, leaving a
+//       member everyone listed. leave() now also sends a sealed leave (rejoin-request {leave: true}) to the
+//       admin, which removes the leaf holding that key and ends that key's pending invitation, if the message
+//       is not older than that key's last key package or leave (a replayed old leave can't remove a later
+//       re-add; scenario). Other effects: one more sealed message per leave; a state field of the newest
+//       membership timestamp per member key (admin); the admin may see the leave twice (frame and control) and
+//       counts the second as stale.
+//     S3 needs-readd was told at most once per record. Now caught-up clears it, so it is told again when it
+//       becomes true again; listGroups() shows needsReadd. Other effects: needs-readd can repeat, but only with a
+//       caught-up in between (each one again after 7 days behind, or a too-old answer).
+//     S4 replays of a member's own refused resend-requests (not in the seen list) used up its answers, so junk
+//       could again force a false needs-readd. The admin now considers only a resend-request newer (sealed ts)
+//       than the last one that key sent. Other effects: one write per non-replayed refused request (member keys
+//       only); LIMIT: a member whose clock goes back is refused until it passes its last request's time.
+//     S5 tick() ended "catching up" (held items expired) silently: it now emits caught-up.
+//     S6 one key's burst kept the failed-lookup map full for an hour. A sender key now holds at most 10
+//       counters (beyond them its messages give up at once), and a message refused before its lookup drops its
+//       counter. Other effects: beyond 10 pending messages in an outage, a sender's later ones give up at once
+//       (an invitation is kept as unchecked, a key package waits in its invitation, a re-add request is refused
+//       and asked again the next day).
+//     Read-only items: listJoins() / listRejoins() show the joins and re-add requests this device waits for,
+//       and join-expired / rejoin-expired are told when they lapse (30 days); the frame-path leave removal ends
+//       only the pending invitation of the leaving key (a key-change re-add of the same name survives);
+//       replaceDeviceKey in two tabs: a retry after a conflict keeps a migration another tab already wrote.
+//
+// UI checklist (what the page must handle; err.code values from ERRORS, events from onEvent):
+//   start: checkCapabilities() (UNSUPPORTED); createGroupEngine: DEVICE_KEY_CHANGED (offer migration with the
+//     old engine's exportBackup; warn first about groups with role "admin" and about address-only devices),
+//     STATE_UNREADABLE (e.otherVersion: update the app, never replace; else as DEVICE_KEY_CHANGED),
+//     STATE_CONFLICT (retry). resolver.msgKey must return null for "no record" and throw only when the chain
+//     can't be read. Pass isContact. storage.write must be compare-and-swap; on state-reloaded re-read lists.
+//   always: hand failed indices of incomingMany back; call tick() every few seconds to a minute.
+//   invitations: render from listInvites() (from, claimedName, verified, unchecked, contact) and re-read on
+//     invite / invite-updated. acceptInvite: NOT_VERIFIED (show the address, ask again, then call with
+//     { unverified: true }), RESOLVER_UNAVAILABLE, UNKNOWN_INVITE, ALREADY_MEMBER, LIMIT_GROUPS. After accept
+//     show listJoins() until joined or join-expired. declineInvite: UNKNOWN_INVITE.
+//   groups: listGroups() (role, status, adminVerified, catchingUp, needsReadd, invited, members with verified,
+//     keyChanged, unknown, duplicate, malformed). Events: created, joined {readd?}, left, removed {readding?},
+//     renamed, admin-lost, message {verified, formerMember, suspicious, late}, missed-messages, members,
+//     key-changed, member-suspicious, catching-up / caught-up, needs-readd (offer requestReadd; word it as
+//     "may need"), rejoin-requested, rejoin-expired (listRejoins() shows what is pending), names-unavailable.
+//   calls and their codes: createGroup BAD_GROUP_NAME, BAD_MEMBER, LIMIT_MEMBERS, LIMIT_GROUPS (per-member
+//     failures come back in failed[]); invite / readd BAD_MEMBER, NO_MSG_KEY, RESOLVER_UNAVAILABLE, NOT_ADMIN,
+//     NOT_ACTIVE, ALREADY_MEMBER (invite only; use readd), NOT_MEMBER (readd), LIMIT_MEMBERS; remove
+//     BAD_MEMBER, NOT_ADMIN, NOT_ACTIVE, ADMIN_CANNOT_LEAVE, NOT_MEMBER; rename BAD_GROUP_NAME, NOT_ADMIN,
+//     NOT_ACTIVE; send EMPTY_TEXT, TEXT_TOO_LONG, NOT_ACTIVE; leave ADMIN_CANNOT_LEAVE, NOT_ACTIVE;
+//     requestReadd NOT_ADMIN, NOT_ACTIVE ({asked: false} = already asked today); any call UNKNOWN_GROUP,
+//     STATE_CONFLICT. Admin events: invite-sent, invite-failed {code KEY_CHANGED | BAD_KEY_PACKAGE},
+//     invite-waiting, rejoin-request. dropped {code} and stats() are diagnostics, not for users.
+//   tell users once: the admin decides membership; members don't refresh their own keys; deleteGroup sends
+//     nothing (an admin's delete freezes the group for its members); backups hold names in the clear.
 import * as mls from "./mls.js";
 import { appCryptoProvider } from "./mls-provider.js";
 import { ed25519 } from "../noble-curves/ed25519.js";
@@ -218,7 +277,8 @@ export const LIMITS = Object.freeze({
   invitesPerSender: 3, // ...and per sender key
   invitesAddress: 25, // address-only senders (free keys) get at most this many of the 50 places
   resendPerDay: 12, // resend answers per member per day, at most
-  lookupTriesKept: 1000, // failed-lookup counters kept in memory (oldest dropped first)
+  lookupTriesKept: 1000, // failed-lookup counters kept in memory, in all...
+  triesPerSender: 10, // ...and per sender key
 });
 export const STATE_VERSION = 2;
 const SUITE = "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519";
@@ -463,7 +523,8 @@ class GroupEngine {
     this.data = null;
     this.counts = {}; // dropped/refused counters: memory only, so hostile input never causes a state write
     this.lookups = new Map(); // "name|keyhex" -> time the chain last said that name has that key (v2 senders)
-    this.tries = new Map(); // v2 message id -> { n: calls in which its lookup failed, t } (capped; see _tried)
+    this.tries = new Map(); // v2 message id -> { n: calls in which its lookup failed, t, k: sender key } (see _tried)
+    this.triesPerKey = new Map(); // sender key -> its counters in this.tries
     this.misses = new Map(); // "name|keyhex" -> time the chain last said that name does NOT have that key
     this.kpTried = new Map(); // "gid|pid" -> last time tick() retried a key package that waits for the chain
     this.isContact = typeof isContact === "function" ? isContact : null;
@@ -481,6 +542,8 @@ class GroupEngine {
    *   invite-sent {groupId, member}            invite-failed {groupId, member, code}  (KEY_CHANGED, BAD_KEY_PACKAGE)
    *   invite-waiting {groupId, member, reason}  (admin: a key package waits for the chain; tick() retries it)
    *   names-unavailable {count}  (this many inbox messages were handed back: the chain can't be read now)
+   *   invite-updated {inviteId, groupId, from, claimedName?, verified}  (tick() checked an unchecked invitation)
+   *   join-expired {groupId, name, admin} / rejoin-expired {groupId, name, admin}  (30 days, no Welcome / answer)
    *   message {groupId, from, address, text, ts, late, verified, formerMember, suspicious}
    *          late: opened after its epoch closed; formerMember: its sender's leaf is no longer in the group
    *   members {groupId, added[], removed[], members[]}           renamed {groupId, name}
@@ -528,8 +591,12 @@ class GroupEngine {
       // before it leaves the old groups as they were; nothing in between can lose them.
       this.version = this.readVersion;
       this.data = emptyData({ pid: this.pid, key: this.keyHex });
+      let first = true;
       await this._mutate(async (d, ctx) => {
-        // from empty on every attempt (a state conflict reloads the old blob into d)
+        // another tab finished the migration while we tried (the reloaded groups are this key's): keep them
+        if (!first && d.me?.key === this.keyHex) return;
+        first = false;
+        // otherwise from empty on every attempt (a state conflict reloads the old blob into d)
         for (const k of Object.keys(d)) delete d[k];
         Object.assign(d, emptyData({ pid: this.pid, key: this.keyHex }));
         await this._importInto(d, ctx, this.replaceDeviceKey);
@@ -736,12 +803,23 @@ class GroupEngine {
       epoch: g.epoch ?? null,
       topic: g.topic ?? null,
       catchingUp: !!g.behind,
+      needsReadd: !!g.toldNeedsReadd, // told needs-readd and not caught up since: offer requestReadd
       members: Object.entries(g.members ?? {}).map(([leaf, m]) => ({
         id: m.pid, leaf: Number(leaf), address: m.key, isAddress: ADDR_RE.test(m.pid), isAdmin: Number(leaf) === ADMIN_LEAF,
         verified: m.status === "verified" && !m.duplicate && !m.malformed, keyChanged: m.status === "changed", unknown: m.status === "unknown", duplicate: !!m.duplicate, malformed: !!m.malformed,
       })),
       invited: Object.keys(g.invites ?? {}),
     }));
+  }
+  /** Joins this device is waiting for (an accepted invitation, or a re-add it answered): until the Welcome
+   * comes (joined) or 30 days pass (join-expired). */
+  listJoins() {
+    return Object.values(this.data.joins).map((j) => ({ groupId: j.gid, name: j.name, admin: j.admin, adminVerified: j.adminVerified !== false, since: j.ts, readd: !!j.readd }));
+  }
+  /** Re-add requests this device sent (requestReadd, importBackup) and the admin hasn't answered yet: asked again
+   * daily until answered or 30 days pass (rejoin-expired). */
+  listRejoins() {
+    return Object.entries(this.data.rejoin).map(([gid, r]) => ({ groupId: gid, name: r.name, admin: r.admin, since: r.ts, asked: r.asked ?? r.ts, readd: !!r.readd }));
   }
   listInvites() {
     return Object.values(this.data.invites).map(({ id, gid, groupName, from, claimedName, verified, ts, unchecked, contact }) => ({ id, groupId: gid, groupName, from, claimedName, verified, ts, unchecked: !!unchecked, contact: !!contact }));
@@ -852,16 +930,16 @@ class GroupEngine {
     return { member: pid };
   }
 
-  /** acceptInvite(inviteId): answers an invitation with this device's KeyPackage; joined when the Welcome comes.
-   * An invitation whose sender's key isn't the claimed name's shows `from: "k:<key>"`, `verified: false`, and the
-   * group it leads to shows its admin as that address. A finished record of the same group (left, removed) is
-   * cleared by accepting; an active one is refused. */
-  async acceptInvite(inviteId) {
+  /** acceptInvite(inviteId, { unverified }): answers an invitation with this device's KeyPackage; joined when
+   * the Welcome comes. An invitation whose sender's key isn't the claimed name's shows `from: "k:<key>"`,
+   * `verified: false`, `claimedName`; accepting one throws NOT_VERIFIED unless the call says
+   * { unverified: true } (the UI's explicit second confirmation), whoever checked the claim and in whatever
+   * order (tick, a double tap). The group it leads to shows its admin as that address. A finished record of the
+   * same group (left, removed) is cleared by accepting; an active one is refused. */
+  async acceptInvite(inviteId, { unverified = false } = {}) {
     // An unchecked invitation (the chain couldn't be read when it came) is checked first, in its own write
     // (RESOLVER_UNAVAILABLE: try again later), so an outage never makes the group's admin a bare address for good.
-    // If the claim is false, the invitation is kept, now showing the unverified address, and NOT_VERIFIED is
-    // thrown: the user accepted "<name> (couldn't check)", so the UI must ask again. A second accept joins.
-    const claim = await this._mutate(async (d) => {
+    await this._mutate(async (d) => {
       const inv = Object.hasOwn(d.invites, inviteId) ? d.invites[inviteId] : null;
       if (!inv?.unchecked) return true;
       const ok = eqBytes(await this._chain(inv.claimedName), unhex(inv.fromKey));
@@ -870,10 +948,10 @@ class GroupEngine {
       delete inv.unchecked;
       return ok;
     });
-    if (!claim) fail("NOT_VERIFIED");
     return this._mutate(async (d, ctx) => {
       const inv = Object.hasOwn(d.invites, inviteId) ? d.invites[inviteId] : null;
       if (!inv) fail("UNKNOWN_INVITE");
+      if ((inv.verified !== true || inv.unchecked) && unverified !== true) fail("NOT_VERIFIED");
       const old = Object.hasOwn(d.groups, inv.gid) ? d.groups[inv.gid] : null;
       if (old?.status === "active") fail("ALREADY_MEMBER");
       if (this._groupsInUse(d) >= LIMITS.groups) fail("LIMIT_GROUPS");
@@ -959,6 +1037,9 @@ class GroupEngine {
       if (g.role === "admin") fail("ADMIN_CANNOT_LEAVE");
       if (g.status !== "active") fail("NOT_ACTIVE");
       await this._app(ctx, g, { t: "leave" });
+      // also sealed to the admin's inbox: if this device already answered a re-add, the admin adds its new leaf
+      // before it sees the frame above (from the old leaf's epoch, refused as late), and only this removes it
+      this._control(ctx, g.adminKey, "rejoin-request", { gid: g.id, leave: true });
       this._dropOwnRejoin(d, groupId, true);
       this._forget(g, ctx, "left");
       ctx.events.push({ type: "left", groupId });
@@ -1292,7 +1373,9 @@ class GroupEngine {
             const g2 = s.groups[g.id];
             const st = await this._removeLeaves(s, c, g2, state, ls.map((l) => l.index));
             this._keep(g2, st);
-            for (const l of ls) delete g2.invites[l.pid]; // a leave also ends a pending re-add, as remove() does
+            // a leave also ends a pending re-add of that same device (key); another device of the same name (a
+            // key change waiting to be re-added) keeps its own
+            for (const l of ls) if (g2.invites[l.pid]?.key === hex(l.key)) delete g2.invites[l.pid];
             return st;
           });
         } catch (e) {
@@ -1304,11 +1387,14 @@ class GroupEngine {
     }
     this._keep(g, state);
     if (state.groupContext.epoch !== startEpoch) delete g.resendGap; // progress: resend back-off starts over
-    if (g.behind && !g.held.length && !g.ahead) {
-      delete g.behind;
-      delete g.behindSince;
-      ctx.events.push({ type: "caught-up", groupId: g.id });
-    }
+    if (g.behind && !g.held.length && !g.ahead) this._caughtUp(g, ctx);
+  }
+  /** "catching up" ends: the event, and needs-readd may be told again if it becomes true again */
+  _caughtUp(g, ctx) {
+    delete g.behind;
+    delete g.behindSince;
+    delete g.toldNeedsReadd;
+    ctx.events.push({ type: "caught-up", groupId: g.id });
   }
 
   /** One message at or before the current epoch. Every library exception is caught: the message is dropped and
@@ -1482,8 +1568,12 @@ class GroupEngine {
       case "commits":
         return g?.role === "member" && g.status === "active" && g.adminKey === fromKey ? null : "control-refused";
       case "rejoin-request":
-        // a current leaf's key (restore), or a sender claiming the name of a current leaf (key change)
-        return adminActive && Object.entries(g.members ?? {}).some(([leaf, x]) => Number(leaf) !== ADMIN_LEAF && (x.key === fromKey || x.pid === m.from)) ? null : "control-refused";
+        // a current leaf's key (restore, leave), a sender claiming the name of a current leaf (key change), or
+        // the key of a pending invitation (a leave after answering a re-add)
+        return adminActive &&
+          (Object.entries(g.members ?? {}).some(([leaf, x]) => Number(leaf) !== ADMIN_LEAF && (x.key === fromKey || x.pid === m.from)) || Object.values(g.invites).some((x) => x.key === fromKey))
+          ? null
+          : "control-refused";
       default:
         return "bad-control";
     }
@@ -1491,22 +1581,38 @@ class GroupEngine {
 
   /** Counts one more failed try for message id h (memory, capped) and returns the count; at lookupTries the
    * message stops being handed back. */
-  _tried(h) {
+  _tried(h, key) {
     const now = this.now();
     const cur = this.tries.get(h);
-    if (!cur && this.tries.size >= LIMITS.lookupTriesKept) {
-      // counters not touched for an hour go (the map is in last-touched order); if it is still full, a new
-      // message gives up at once: dropping other counters would reset them and hand those back for ever
-      for (const [k, v] of this.tries) {
-        if (now - v.t < 3_600_000) break;
-        this.tries.delete(k);
+    if (!cur) {
+      // one sender key holds at most triesPerSender counters (beyond them its new messages give up at once), so
+      // one key can't fill the map for everyone
+      if ((this.triesPerKey.get(key) ?? 0) >= LIMITS.triesPerSender) return this.timings.lookupTries;
+      if (this.tries.size >= LIMITS.lookupTriesKept) {
+        // counters not touched for an hour go (the map is in last-touched order); if it is still full, a new
+        // message gives up at once: dropping other counters would reset them and hand those back for ever
+        for (const [k, v] of this.tries) {
+          if (now - v.t < 3_600_000) break;
+          this._untry(k);
+        }
+        if (this.tries.size >= LIMITS.lookupTriesKept) return this.timings.lookupTries;
       }
-      if (this.tries.size >= LIMITS.lookupTriesKept) return this.timings.lookupTries;
     }
     const n = (cur?.n ?? 0) + 1;
-    this.tries.delete(h);
-    if (n < this.timings.lookupTries) this.tries.set(h, { n, t: now });
+    this._untry(h);
+    if (n < this.timings.lookupTries) {
+      this.tries.set(h, { n, t: now, k: key });
+      this.triesPerKey.set(key, (this.triesPerKey.get(key) ?? 0) + 1);
+    }
     return n;
+  }
+  _untry(h) {
+    const cur = this.tries.get(h);
+    if (!cur) return;
+    this.tries.delete(h);
+    const c = (this.triesPerKey.get(cur.k) ?? 1) - 1;
+    if (c > 0) this.triesPerKey.set(cur.k, c);
+    else this.triesPerKey.delete(cur.k);
   }
 
   /** Who sent m, looked up only when a handler asks: resolve({ giveUp }) -> { pid, verified, claimed?, unchecked? }.
@@ -1530,11 +1636,11 @@ class GroupEngine {
           verified = eqBytes(await this._chain(m.from), unhex(m.fromKey));
         } catch (e) {
           down.add(m.from);
-          if (!giveUp || this._tried(h) < this.timings.lookupTries) throw e;
+          if (!giveUp || this._tried(h, m.fromKey) < this.timings.lookupTries) throw e;
           // given up: a new invitation is kept as unchecked; anything else is refused (and asked again)
           return (known = giveUp === "refuse" ? null : { pid: "k:" + m.fromKey, verified: false, claimed: m.from, unchecked: true });
         }
-        this.tries.delete(h);
+        this._untry(h);
         if (verified) this.lookups.set(cacheKey, this.now());
         else {
           this.misses.delete(cacheKey);
@@ -1574,13 +1680,17 @@ class GroupEngine {
           const cur = d.invites[id];
           // same sender, same group: a new request id is news only in a NEWER message from that sender, so a
           // replayed older one can't put back an old id; such updates stay out of the seen list
+          this._untry(h); // decided without a lookup: no counter kept for it
           if (cur.req === body.req) return this._count("control-useless", ctx);
           if (m.ts <= (cur.sent ?? 0)) return this._count("stale-invite", ctx);
           Object.assign(cur, { groupName, req: body.req, ts: this.now(), sent: m.ts });
           return "unseen";
         }
         // the per-sender cap before any lookup: a free key's flood costs no chain call once it holds its places
-        if (Object.values(d.invites).filter((x) => x.fromKey === fromKey).length >= LIMITS.invitesPerSender) return this._count("too-many-invites-from-sender", ctx);
+        if (Object.values(d.invites).filter((x) => x.fromKey === fromKey).length >= LIMITS.invitesPerSender) {
+          this._untry(h);
+          return this._count("too-many-invites-from-sender", ctx);
+        }
         const w = await who.resolve({ giveUp: true });
         const inv = { id, gid, groupName, from: w.pid, fromKey, req: body.req, verified: w.verified, ts: this.now(), sent: m.ts };
         if (w.claimed) inv.claimedName = w.claimed;
@@ -1619,6 +1729,8 @@ class GroupEngine {
         // the invitation is matched by the key it was sent to and its request id: no lookup of the sender
         const pid = Object.keys(g.invites).find((p) => g.invites[p].key === fromKey && g.invites[p].req === body.req);
         if (!pid) return this._count("control-refused", ctx);
+        g.ts ??= {};
+        if (m.ts > (g.ts[fromKey] ?? 0)) g.ts[fromKey] = m.ts;
         const msg = mls.decodeMlsMessage(unb64(String(body.kp)), 0)?.[0];
         if (msg?.wireformat !== "mls_key_package") return this._count("bad-control", ctx);
         return this._addFromKp(d, ctx, g, pid, body.kp, h);
@@ -1673,6 +1785,11 @@ class GroupEngine {
         const member = leaves(state).find((l) => hex(l.key) === fromKey && l.index !== ADMIN_LEAF);
         if (!member) return this._count("control-refused", ctx); // removed members get nothing
         if (typeof body.n !== "string" || !/^[0-9a-f]{16,64}$/.test(body.n)) return this._count("bad-control", ctx);
+        // only a request newer than the last one this key sent is considered, answered or refused: a replayed one
+        // (a refused request is not in the seen list) can't use up the member's gap and daily answers
+        g.served ??= {};
+        if (m.ts <= (g.served[fromKey]?.ts ?? -1)) return this._count("resend-replayed", ctx);
+        g.served[fromKey] = { t: 0, gap: this.timings.resendServeGapMs, ...g.served[fromKey], ts: m.ts };
         let from;
         try {
           from = BigInt(String(body.fromEpoch ?? "0"));
@@ -1702,7 +1819,7 @@ class GroupEngine {
         const more = all.length > items.length;
         // too old only when the log no longer reaches back to `from` (a capped answer just says more: true)
         const tooOld = from < BigInt(g.epoch) && (!g.commitLog.length || BigInt(g.commitLog[0].e) > from);
-        g.served[fromKey] = { t: now, gap, times: [...times, now], next: more ? all[items.length].e : null };
+        g.served[fromKey] = { t: now, gap, times: [...times, now], next: more ? all[items.length].e : null, ts: m.ts };
         // chunks that fit a sealed control message; every chunk echoes the request's nonce and says where the
         // admin is and which topic is current, so a member that missed the topic change moves too
         const chunks = [[]];
@@ -1768,18 +1885,28 @@ class GroupEngine {
             // in step by the admin's word: caught up, even if held items remain (anyone who knows the topic can
             // keep junk for the next epochs held; it expires or resolves by itself), so junk alone can't keep a
             // member "behind" until needs-readd
-            if (g.behind && !g.ahead && BigInt(g.epoch) >= adminEpoch) {
-              delete g.behind;
-              delete g.behindSince;
-              ctx.events.push({ type: "caught-up", groupId: g.id });
-            }
+            if (g.behind && !g.ahead && BigInt(g.epoch) >= adminEpoch) this._caughtUp(g, ctx);
           }
         }
         return true;
       }
       case "rejoin-request": {
-        const state = this._state(g);
+        let state = this._state(g);
         const ls = leaves(state).filter((l) => l.index !== ADMIN_LEAF);
+        g.ts ??= {};
+        if (body.leave === true) {
+          // the member's sealed leave: only if newer than anything this key sent before (a replayed old leave
+          // can't remove a later re-add); removes the leaf holding the key and ends its pending invitation
+          if (m.ts < (g.ts[fromKey] ?? 0)) return this._count("stale-leave", ctx);
+          g.ts[fromKey] = m.ts;
+          for (const [p, x] of Object.entries(g.invites)) if (x.key === fromKey) delete g.invites[p];
+          const leaf = ls.find((l) => hex(l.key) === fromKey);
+          if (leaf) {
+            state = await this._removeLeaves(d, ctx, g, state, [leaf.index]);
+            this._keep(g, state);
+          }
+          return true;
+        }
         // a restore with the same key: the leaf holding the sealing key is the match, no lookup. A key change:
         // the chain must say the sealing key is now that name's key (a failed lookup is retried, never refused).
         let pid;
@@ -1840,7 +1967,7 @@ class GroupEngine {
       keyNow = await this._keyOf(pid);
     } catch (e) {
       if (e?.code !== "RESOLVER_UNAVAILABLE") throw e;
-      if (h && this._tried(h) < this.timings.lookupTries) {
+      if (h && this._tried(h, inv.key) < this.timings.lookupTries) {
         // handed back to the caller AND kept in the invitation (by _control_in, outside this message's _txn),
         // so it isn't lost if the caller drops what it was handed back
         e.deferredKp = { gid: g.id, pid, kp: kpB64 };
@@ -1921,10 +2048,7 @@ class GroupEngine {
             g.toldNeedsReadd = true;
             ctx.events.push({ type: "needs-readd", groupId: g.id, reason: "missed commits could not be recovered" });
           }
-        } else if (g.behind) {
-          delete g.behind;
-          delete g.behindSince;
-        }
+        } else if (g.behind) this._caughtUp(g, ctx); // held items expired, nothing far ahead
         if (g.role === "admin" && now - (g.lastPath ?? 0) > this.timings.adminRefreshMs) {
           // all or nothing: a self-update that fails posts nothing and is tried again later (not every tick)
           try {
@@ -1964,13 +2088,22 @@ class GroupEngine {
             delete inv.claimedName;
           }
           delete inv.unchecked;
+          ctx.events.push({ type: "invite-updated", inviteId: inv.id, groupId: inv.gid, from: inv.from, claimedName: inv.claimedName, verified: inv.verified });
         } catch {
           /* still down */
         }
       }
       // accepted invitations whose Welcome never came, and restore requests never answered, stop counting
-      for (const [k, j] of Object.entries(d.joins)) if (now - j.ts > this.timings.inviteTtlMs) delete d.joins[k];
-      for (const [gid, r] of Object.entries(d.rejoin)) if (now - r.ts > this.timings.inviteTtlMs) delete d.rejoin[gid];
+      for (const [k, j] of Object.entries(d.joins)) {
+        if (now - j.ts <= this.timings.inviteTtlMs) continue;
+        delete d.joins[k];
+        ctx.events.push({ type: "join-expired", groupId: j.gid, name: j.name, admin: j.admin });
+      }
+      for (const [gid, r] of Object.entries(d.rejoin)) {
+        if (now - r.ts <= this.timings.inviteTtlMs) continue;
+        delete d.rejoin[gid];
+        ctx.events.push({ type: "rejoin-expired", groupId: gid, name: r.name, admin: r.admin });
+      }
       // a re-add request not answered yet (lost, refused by the admin's rate limit, or the admin's chain lookup
       // failed): asked again once a day until it expires
       for (const [gid, r] of Object.entries(d.rejoin)) {

@@ -196,7 +196,7 @@ export const REVIEW4 = {
     const now = B.engine.listInvites()[0];
     check("accept says NOT_VERIFIED and answers nothing", r === "NOT_VERIFIED" && !Object.keys(B.engine.data.joins).length, r);
     check("the invitation stays, showing the unverified address", now?.id === inv.id && !now.verified && !now.unchecked && now.from.startsWith("k:") && now.claimedName === "alice");
-    await B.engine.acceptInvite(inv.id);
+    await B.engine.acceptInvite(inv.id, { unverified: true }); // review 5: the second accept says so explicitly
     await settle(bus);
     check("a second, informed accept joins, with the admin shown unverified", B.engine.listGroups().find((g) => g.id === gid)?.adminVerified === false);
   },
