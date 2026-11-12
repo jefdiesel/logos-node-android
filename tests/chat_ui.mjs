@@ -15,7 +15,7 @@ const CHROME = process.env.CHROME || "/Applications/Google Chrome.app/Contents/M
 const SHOTS = process.env.SHOTS || "";
 if (SHOTS) mkdirSync(SHOTS, { recursive: true });
 
-const w = await world(18570, 4);
+const w = await world(18570, 5);
 const A = await app(w, 8111, w.NODES[0]), B = await app(w, 8112, w.NODES[1]), C = await app(w, 8113, w.NODES[2]);
 await person(w, B, "bob", "222333"); await person(w, C, "carol", "333444");
 A.pin = "111222"; A.session = (await A.call("/api/wallet/setup", { pin: A.pin })).d.session;
@@ -74,13 +74,12 @@ async function unlock() {
 
 // ---- locked, then messages not turned on ----
 await load();
+await waitFor("locked: one lock screen and nothing else", `!document.getElementById("lock").hidden && getComputedStyle(document.getElementById("nav")).display === "none" && getComputedStyle(document.getElementById("page-main")).display === "none"`);
+check("without fingerprint the PIN field has the focus", await js(`document.activeElement && document.activeElement.id === "pin"`));
+await shot("locked");
+await unlock();
 check("the bar shows Wallet and Messages", (await text("#nav")).includes("Wallet") && (await text("#nav")).includes("Messages"));
 await click("#nav-msg");
-await waitFor("locked: Messages says so", `!document.getElementById("mg-locked").hidden`);
-await shot("locked");
-await click("#mg-unlock");
-await unlock();
-await waitFor("after unlocking it goes back to Messages", `!document.getElementById("page-msg").hidden`);
 await waitFor("no key yet: the turn-on screen", `!document.getElementById("mg-nokey").hidden`);
 check("the turn-on screen never says key", !/\bkey\b/i.test(await js(`document.getElementById("page-msg").innerText`)));
 await shot("turn-on");
@@ -181,7 +180,12 @@ if (wallet) {
   await js(`document.getElementById("mg-to").value = ${JSON.stringify(wallet)}; document.getElementById("mg-find").requestSubmit(); true`);
   await waitFor("a wallet address is refused, plainly", `document.getElementById("mg-found").innerText.includes("That's a wallet address")`);
 } else console.log("     (no wallet keys listed in this test app: the wallet-address check runs in tests/chat_test.mjs)");
-await js(`document.getElementById("mg-to").value = ${JSON.stringify("msg: " + hex(did.publicKey).slice(0, 30) + " " + hex(did.publicKey).slice(30))}; document.getElementById("mg-find").requestSubmit(); true`);
+// typed as a person would paste it (insertText keeps the field's maxlength, which .value doesn't)
+await js(`(() => { const t = document.getElementById("mg-to"); t.value = ""; t.focus(); return true; })()`);
+const pasted = "msg: " + hex(did.publicKey).slice(0, 30) + " " + hex(did.publicKey).slice(30);
+await cdp("Input.insertText", { text: pasted });
+check("a pasted messaging address isn't cut off by the field", (await js(`document.getElementById("mg-to").value`)) === pasted);
+await js(`document.getElementById("mg-find").requestSubmit(); true`);
 await waitFor("an address (with spaces) is taken: address only", `document.getElementById("mg-found").innerText.includes("no name to verify")`);
 check("it shows a short code, not the address", !(await text("#mg-found")).includes(hex(did.publicKey)));
 await shot("new-chat-by-address");
@@ -229,6 +233,34 @@ await waitFor("back on the list", `!document.querySelector(".ov")`);
 
 check("no keys on the everyday screens: list", !/[0-9a-f]{20,}/.test(await js(`document.getElementById("page-msg").innerText`)));
 check("no errors in the page", errors.length === 0, errors);
+// ---- a backup with message history, made in the page and restored through the page ----
+for (let i = 0; i < 130; i++) {                 // enough history for a file over 60 KB
+  const p = MC.sealMessage({ to: MC.fromHex(key.public), from: "bob", fromSecret: B.id.secretKey, text: "filler " + i + " ".repeat(200) });
+  await w.control("inject/0", { topic: MC.inboxTopic(MC.fromHex(key.public)), payload: b64(p) });
+  if (i % 30 === 29) await sleep(800);
+}
+await until("the filler arrives", async () => (await A.call("/api/messages/status")).d.unread >= 130, 15000);
+await click("#nav-wallet"); await click("#b-gear");
+await waitFor("Settings", `!document.getElementById("page-settings").hidden`);
+await js(`window.__blobs = []; const o = URL.createObjectURL; URL.createObjectURL = b => { window.__blobs.push(b); return o(b); }; true`);
+await js(`(() => { for (const [id, v] of [["bk-pw1", "a long backup password"], ["bk-pw2", "a long backup password"], ["bk-pin", ${JSON.stringify(A.pin)}]]) { const e = document.getElementById(id); e.value = v; e.dispatchEvent(new Event("input", { bubbles: true })); } return true; })()`);
+check("history is in the backup unless unticked", await js(`document.getElementById("bk-hist").checked`));
+await js(`document.getElementById("f-bk").requestSubmit(); true`);
+await waitFor("the page made the backup file", `!document.getElementById("bk-done").hidden && window.__blobs.length === 1`, 30000);
+const backupText = await js(`window.__blobs[0].text()`);
+const backupDoc = JSON.parse(backupText);
+check("it is a version 2 file over 60 KB (with history)", backupDoc.version === 2 && backupText.length > 60000, [backupDoc.version, backupText.length]);
+const bkFile = join(mkdtempSync(join(tmpdir(), "bk-")), "logos-node-wallet-backup.json");
+writeFileSync(bkFile, backupText);
+const docNode = (await cdp("DOM.getDocument")).result.root.nodeId;
+const input = (await cdp("DOM.querySelector", { nodeId: docNode, selector: "#rs-file" })).result.nodeId;
+await cdp("DOM.setFileInputFiles", { nodeId: input, files: [bkFile] });
+await waitFor("the page takes the file (doesn't refuse it as too big or an unknown version)", `!document.getElementById("rs-step2").hidden`, 10000);
+await js(`(() => { for (const [id, v] of [["rs-pw", "a long backup password"], ["rs-pin", ${JSON.stringify(A.pin)}]]) { const e = document.getElementById(id); e.value = v; e.dispatchEvent(new Event("input", { bubbles: true })); } const ok = document.getElementById("rs-ok"); ok.checked = true; ok.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`);
+await js(`document.getElementById("b-rs").click(); true`);
+await waitFor("restored through the page", `document.getElementById("m-rs").className === "msg ok"`, 30000);
+await click("#b-settings-back");
+
 // ---- the node's state as an icon; Settings' Node row with the Android bridge ----
 await click("#nav-wallet");
 await waitFor("the wallet screen has the node header back", `!document.querySelector("main > header").hidden`);
@@ -262,6 +294,54 @@ await click("#b-settings-back");
 await click("#nav-msg");
 await waitFor("Messages home", `!document.getElementById("mg-home").hidden`);
 await shot("messages-home");
+
+// ---- the lock screen inside the Android app, with fingerprint on (a stand-in bridge counts the prompts) ----
+const E = await app(w, 8115, w.NODES[4], { APP_EMBEDDED: "android" });
+await person(w, E, "erin", "565656");
+let r0 = await E.call("/api/wallet/native-fingerprint", { on: true, pin: E.pin });
+check("fingerprint unlock is on for the Android app", r0.code === 200, r0);
+await E.call("/api/wallet/lock", {});
+const erinBob = await chatOf(w, B);
+await erinBob.lookup("erin", true); await erinBob.startDirect("erin"); await erinBob.send("d:erin", "hi erin");
+await cdp("Page.addScriptToEvaluateOnNewDocument", { source: "window.__fp = 0; window.LogosAndroid = { unlockWithFingerprint() { window.__fp++; }, openNode() {} };" });
+await cdp("Page.navigate", { url: E.base + "/" });
+await waitFor("the lock screen", `!!document.getElementById("lock") && !document.getElementById("lock").hidden`);
+await sleep(600);
+check("the fingerprint check comes up by itself, once", await js(`window.__fp`) === 1);
+await shot("locked-android");
+await js(`window.logosNativeUnlockFailed(); true`);
+check("after a cancel the PIN field has the focus", await js(`document.activeElement.id === "pin"`));
+await sleep(1000);
+check("and it doesn't come up again by itself", await js(`window.__fp`) === 1);
+const vis = (state) => js(`Object.defineProperty(document, "visibilityState", { configurable: true, get: () => ${JSON.stringify(state)} }); document.dispatchEvent(new Event("visibilitychange")); true`);
+await vis("hidden"); await sleep(300); await vis("visible"); await sleep(300);
+check("not even after a moment hidden (the phone's own dialog)", await js(`window.__fp`) === 1);
+await js(`document.getElementById("b-fp").click(); true`);
+check("Use fingerprint asks again", await js(`window.__fp`) === 2);
+await js(`document.getElementById("pin").value = ${JSON.stringify(E.pin)}; document.getElementById("v-locked").requestSubmit(); true`);
+await waitFor("unlocked with the PIN", `!document.getElementById("v-open").hidden`);
+E.session = await js("token");
+await click("#nav-msg");
+await waitFor("erin's chat with bob", `[...document.querySelectorAll("#mg-rows .crow")].some(r => r.innerText.includes("bob"))`, 15000);
+await js(`[...document.querySelectorAll("#mg-rows .crow")].find(r => r.innerText.includes("bob")).click(); true`);
+await waitFor("the chat is open", `!!document.querySelector(".ov .cmp")`);
+await js(`lockedNow(); true`);                    // what an auto-lock does
+await waitFor("auto-locked: the lock screen", `!document.getElementById("lock").hidden`);
+await sleep(400);
+check("after an auto-lock the fingerprint check comes up by itself", await js(`window.__fp`) === 3);
+const behind = await js(`document.body.innerText`);
+check("nothing behind the lock screen: no chats, names, balances", !/bob|hi erin|erin/.test(behind) && (await js(`document.querySelectorAll(".crow, .bub, .acct, .ov").length`)) === 0, behind.slice(0, 300));
+await vis("hidden"); await sleep(2800); await vis("visible"); await sleep(400);
+check("coming back to the app later: it comes up again", await js(`window.__fp`) === 4);
+await js(`document.getElementById("pin").value = ${JSON.stringify(E.pin)}; document.getElementById("v-locked").requestSubmit(); true`);
+await waitFor("after unlocking: back in the same chat", `!document.getElementById("page-msg").hidden && !!document.querySelector(".ov .cmp") && document.querySelector(".ov-top").innerText.includes("bob")`, 15000);
+await js(`history.back(); true`);
+await click("#nav-wallet");
+await js(`document.getElementById("b-lock").click(); true`);
+await waitFor("locked by hand", `!document.getElementById("lock").hidden`);
+await sleep(600);
+check("after the user's own Lock, no prompt by itself", await js(`window.__fp`) === 4);
+check("both options are there", await js(`!document.getElementById("b-fp").hidden && !!document.getElementById("pin")`));
 ws.close(); stopAll();
 console.log("all checks passed" + (SHOTS ? ` (screenshots in ${SHOTS})` : ""));
 process.exit(0);

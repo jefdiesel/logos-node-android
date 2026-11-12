@@ -117,8 +117,10 @@ export class Chat {
     this.chain = new Map();                // name -> { registered, key, avatar, color, display, at }
   }
   emptyStore() { return { v: STORE_VERSION, profiles: {}, convos: {}, aliases: {} }; }
-  /** What goes in `from` on the wire: my LNS name, or the stand-in for a sender with no name. */
-  fromName() { return this.me.name || nameless(this.me.public); }
+  /** What goes in `from` on the wire: my LNS name once its msg entry is this phone's address (read on chain),
+   *  otherwise the stand-in for a sender with no name. A name typed in but not linked is never used. */
+  fromName() { return this.nameLinked() ? this.me.name : nameless(this.me.public); }
+  nameLinked() { const c = this.me.name && this.chain.get(this.me.name); return Boolean(c && c.key === this.me.public); }
 
   // -- store --
   async loadStore() {
@@ -227,7 +229,13 @@ export class Chat {
   thread(id) { const a = this.store.aliases[id]; return a ? convoIdOf(a) : id; }
 
   // -- conversations --
-  convo(id) { return this.store.convos[id] || null; }
+  convo(id) {
+    if (!id.startsWith("x:")) return this.store.convos[id] || null;
+    // messages that claim a name but didn't come from its messaging address: a thread of their own, never
+    // the real person's, keyed by the address they did come from
+    const m = [...this.inbox.values()].find(x => x && this.threadOf(x) === id);
+    return m ? { id, kind: "direct", unverified: true, claimed: m.sender, title: m.sender, members: [{ name: null, key: m.senderKey }], created: m.received } : null;
+  }
   /** Starts (or opens) the direct chat with `name`, after a lookup that found its messaging address. */
   async startDirect(name) {
     const c = await this.lookup(name, true);
@@ -252,7 +260,12 @@ export class Chat {
     return aid;
   }
   peer(convo) { return convo.kind === "direct" ? memberId(convo.members[0]) : null; }
-  title(convo) { return convo.kind === "direct" ? this.label(this.peer(convo)) : convo.title; }
+  title(convo) {
+    if (convo.unverified) return "Not verified: " + (isAddressId(convo.claimed) ? "unnamed" : convo.claimed);
+    return convo.kind === "direct" ? this.label(this.peer(convo)) : convo.title;
+  }
+  /** The conversation a message shows in: its own, or for an unverified one, "x:<the address it came from>". */
+  threadOf(m) { return m.dir === "in" && this.trust(m) === "unverified" ? "x:" + m.senderKey : this.thread(m.convo); }
   isBlocked(convo) { return convo.kind === "direct" && Boolean((this.profile(this.peer(convo)) || {}).blocked); }
   isMuted(convo) { return Boolean(convo.muted) || (convo.kind === "direct" && Boolean((this.profile(this.peer(convo)) || {}).muted)); }
 
@@ -287,13 +300,15 @@ export class Chat {
     const unread = new Set(ri.data.unread || []);
     if (unread.size !== this.unread.size || [...unread].some(n => !this.unread.has(n))) changed = true;
     this.unread = unread;
-    // chats for people who wrote first; pin the key a name used if the chain says it's the name's
-    const newcomers = [...new Set(fresh.filter(m => m.kind === "direct" && !this.convo(this.thread(m.convo))).map(m => m.sender))];
-    for (const pid of newcomers) { try { await this.lookup(pid); } catch (e) {} }
+    // read the chain for names whose message came from an address not pinned for them, to tell a new
+    // address from a stranger; then chats for people who wrote first (only if the message is theirs)
+    const unknown = [...new Set(fresh.filter(m => !isAddressId(m.sender) && !(this.profile(m.sender) || { keys: [] }).keys.some(k => k.key === m.senderKey)).map(m => m.sender))];
+    for (const pid of unknown) { try { await this.lookup(pid); } catch (e) {} }
+    const newcomers = [...new Set(fresh.filter(m => m.kind === "direct" && this.trust(m) !== "unverified" && !this.convo(this.thread(m.convo))).map(m => m.sender))];
     if (newcomers.length) {
       await this.mutate(s => {
         for (const pid of newcomers) {
-          const first = fresh.find(m => m.sender === pid);
+          const first = fresh.find(m => m.sender === pid && this.trust(m) !== "unverified");
           const c = this.chainOf(pid);
           const id = convoIdOf(pid);
           if (s.convos[id]) continue;
@@ -309,7 +324,7 @@ export class Chat {
       });
     }
     // a blocked sender's messages count as read straight away
-    const quiet = fresh.filter(m => this.unread.has(m.n) && this.convo(this.thread(m.convo)) && this.isBlocked(this.convo(this.thread(m.convo))));
+    const quiet = fresh.filter(m => this.unread.has(m.n) && this.convo(this.threadOf(m)) && this.isBlocked(this.convo(this.threadOf(m))));
     if (quiet.length) await this.markRead(null, quiet.map(m => m.n));
     return changed;
   }
@@ -334,12 +349,12 @@ export class Chat {
     if (!c || c.v !== 1 || typeof c.convo !== "string") return null;
     return { key: "o:" + item.n, n: item.n, dir: "out", kind: /^[dk]:/.test(c.convo) ? "direct" : "group", convo: c.convo,
              sender: c.from, to: c.to || [], ids: c.ids || [], text: String(c.text || ""), ts: c.ts,
-             sends: item.sends.map(x => ({ state: x.state, error: x.error || "", at: x.at })) };
+             sends: item.sends.map(x => ({ state: x.state, error: x.error || "", at: x.at, resend: x.resend !== false })) };
   }
   /** Every message of a conversation, oldest first (a blocked person's are left out). */
   messages(id) {
     const convo = this.convo(id);
-    const mine = m => m && this.thread(m.convo) === id;
+    const mine = m => m && this.threadOf(m) === id;
     if (convo && this.isBlocked(convo)) return [...this.outbox.values()].filter(mine).sort((a, b) => a.ts - b.ts);
     const seen = new Set(), out = [];
     for (const m of [...this.inbox.values(), ...this.outbox.values()]) {
@@ -372,7 +387,8 @@ export class Chat {
   /** The conversation list: newest first, with the last message and the unread count. */
   conversations() {
     const out = [];
-    for (const convo of Object.values(this.store.convos)) {
+    const strangers = [...new Set([...this.inbox.values()].filter(m => m && this.threadOf(m).startsWith("x:")).map(m => this.threadOf(m)))];
+    for (const convo of [...Object.values(this.store.convos), ...strangers.map(id => this.convo(id))]) {
       const list = this.messages(convo.id);
       const last = list[list.length - 1] || null;
       const unread = list.filter(m => m.dir === "in" && this.unread.has(m.n)).length;
@@ -396,6 +412,7 @@ export class Chat {
   async sendBlocker(id, fresh = false) {
     const convo = this.convo(id);
     if (!convo) return { code: "gone", text: "This chat was deleted." };
+    if (convo.unverified) return { code: "unverified", text: "These messages didn't come from " + (isAddressId(convo.claimed) ? "the address they name" : convo.claimed + "'s messaging address") + ", so you can't reply here." };
     if (this.isBlocked(convo)) { const pid = this.peer(convo); return { code: "blocked", name: pid, text: "You blocked " + this.label(pid) + "." }; }
     for (const m of convo.members) {
       if (!m.name) continue;                              // an address: nothing to check on chain
@@ -414,6 +431,7 @@ export class Chat {
     if (typeof text !== "string" || !text.trim() || text.length > MAX_TEXT) throw new Error("A message is 1 to " + MAX_TEXT + " characters.");
     const why = await this.sendBlocker(id);
     if (why) throw Object.assign(new Error(why.text), { code: why.code });
+    if (this.me.name) { try { await this.lookup(this.me.name); } catch (e) {} }
     const convo = this.convo(id), ts = Date.now(), to = [], ids = [], sends = [], from = this.fromName();
     for (const m of convo.members) {
       const key = m.name ? this.chainOf(m.name).key : m.key;
@@ -438,13 +456,14 @@ export class Chat {
   }
   /** Deletes a conversation's messages; with `profile`, the person's profile and note too. */
   async deleteConversation(id, profile = false) {
-    const ins = [...this.inbox.values()].filter(m => m && this.thread(m.convo) === id).map(m => m.n);
-    const outs = [...this.outbox.values()].filter(m => this.thread(m.convo) === id).map(m => m.n);
+    const ins = [...this.inbox.values()].filter(m => m && this.threadOf(m) === id).map(m => m.n);
+    const outs = [...this.outbox.values()].filter(m => this.threadOf(m) === id).map(m => m.n);
     if (ins.length) await this.api("/api/messages/inbox/delete", { ids: ins });
     if (outs.length) await this.api("/api/messages/outbox/delete", { ids: outs });
     for (const n of ins) this.inbox.delete(n);
     for (const n of outs) this.outbox.delete(n);
     const convo = this.convo(id);
+    if (id.startsWith("x:")) return;
     await this.mutate(s => {
       delete s.convos[id];
       if (profile && convo && convo.kind === "direct") delete s.profiles[this.peer(convo)];

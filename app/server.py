@@ -8,7 +8,7 @@ Python standard library only. Wallet calls need a PIN that is set on first use.
 import base64, calendar, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.9.1"
+APP_VERSION = "0.9.2"
 # APP_EMBEDDED=android: this app runs inside the Android app (embedded Python, page in a WebView).
 # Then it never updates or restarts itself (the Android app brings new versions), and fingerprint
 # unlock goes through the phone's own fingerprint check instead of a passkey. Unset: nothing changes.
@@ -1409,7 +1409,8 @@ def outbox_touch(item):
 def outbox_view(item):
     """An outbox item as the page sees it: its encrypted copy and each send's state, without the payloads."""
     return {"n": item["n"], "copy": item["copy"], "at": item["at"], "v": item.get("v", 0),
-            "sends": [{"state": x["state"], "error": x.get("error", ""), "at": x.get("at")} for x in item["sends"]]}
+            "sends": [{"state": x["state"], "error": x.get("error", ""), "at": x.get("at"), "resend": bool(x.get("payload"))}
+                      for x in item["sends"]]}
 
 
 def outbox_round():

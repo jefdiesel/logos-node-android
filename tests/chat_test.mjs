@@ -166,10 +166,15 @@ await w.register("bob", { msg: hex(B.id.publicKey) });      // back to bob's pho
 await a.lookup("bob", true); await a.acceptKey("bob");
 
 // ---- 6. an impostor ----
-const forged = MC.sealMessage({ to: A.id.publicKey, from: "carol", fromSecret: MC.newKeyPair().secretKey, text: "it's carol, honest" });
+const stranger = MC.newKeyPair();
+const forged = MC.sealMessage({ to: A.id.publicKey, from: "carol", fromSecret: stranger.secretKey, text: "it's carol, honest" });
 await w.control("inject/0", { topic: MC.inboxTopic(A.id.publicKey), payload: b64(forged) });
-await until("a message claiming to be carol", async () => { await a.sync(); return a.messages("d:carol").length === 1; });
-check("is unverified, and nothing is pinned from it", a.trust(a.messages("d:carol")[0]) === "unverified" && a.pinned("carol") === null);
+const xid = "x:" + hex(stranger.publicKey);
+await until("a message claiming to be carol", async () => { await a.sync(); return a.messages(xid).length === 1; });
+check("is unverified, and nothing is pinned from it", a.trust(a.messages(xid)[0]) === "unverified" && a.pinned("carol") === null);
+check("it has its own thread, never carol's: no chat with carol, a row titled 'Not verified: carol'",
+  !a.convo("d:carol") && a.messages("d:carol").length === 0 && a.conversations().some(c => c.convo.id === xid && c.title === "Not verified: carol"));
+check("and it can't be answered", (await a.sendBlocker(xid)).code === "unverified");
 
 // ---- 6b. someone with no LNS name, by messaging address ----
 {
@@ -211,12 +216,20 @@ check("and the pretender gets no chat of its own", !a.convo("k:" + hex(pretender
 await a.setProfile(fid, { nickname: "Flyer person", note: "met at the market" });
 check("an address chat takes a nickname", a.title(a.convo(fid)) === "Flyer person");
 // later the address turns out to be a name's
+// a name typed in but not linked is never used as the sender: not someone else's, not one's own yet
+await F.call("/api/messages/name", { name: "bob" }); f.me.name = "bob";
+await f.send("d:alice", "typed bob as my name");
+await until("it arrives from the address, not from bob", async () => { await a.sync(); return a.messages(fid).some(x => x.text === "typed bob as my name"); });
+check("bob's chat has nothing from it", !a.messages("d:bob").some(x => x.text === "typed bob as my name") && !a.conversations().some(c => c.last && c.last.text === "typed bob as my name" && c.convo.id !== fid));
 await F.call("/api/messages/name", { name: "frank" }); f.me.name = "frank";
+await f.send("d:alice", "frank, not linked yet");
+await until("before frank is linked it still comes from the address", async () => { await a.sync(); return a.messages(fid).some(x => x.text === "frank, not linked yet"); });
 await w.register("frank", { msg: hex(F.id.publicKey) });
 await a.lookup("frank", true);
 check("looking up frank finds the address chat to merge", a.addressChatFor(hex(F.id.publicKey)) === fid);
 const merged = await a.mergeAddress(hex(F.id.publicKey), "frank");
-check("merged: one chat with frank, with the earlier messages, nickname and note", merged === "d:frank" && !a.convo(fid) && a.messages("d:frank").length === 2 && a.profile("frank").note === "met at the market" && a.title(a.convo("d:frank")) === "Flyer person");
+check("merged: one chat with frank, with the earlier messages, nickname and note", merged === "d:frank" && !a.convo(fid) && a.messages("d:frank").length === 4 && a.profile("frank").note === "met at the market" && a.title(a.convo("d:frank")) === "Flyer person");
+await f.lookup("frank", true);                  // the app reads its own name again (it keeps a reading a minute)
 await f.send("d:alice", "now with a name");
 await until("frank's named message lands in the same chat, verified", async () => { await a.sync(); const x = a.messages("d:frank").find(y => y.text === "now with a name"); return x && a.trust(x) === "ok"; });
 let mergeErr = null; try { await a.mergeAddress(hex(MC.newKeyPair().publicKey), "frank"); } catch (e) { mergeErr = e; }
@@ -226,7 +239,9 @@ check("an address that isn't the name's can't be merged into it", mergeErr !== n
 const c = await chatOf(w, C);
 await c.startDirect("alice"); await c.send("d:alice", "real carol here");
 await until("carol's real message", async () => { await a.sync(); return a.messages("d:carol").some(x => x.text === "real carol here"); });
-check("the real carol is verified, and pinned now", a.trust(a.messages("d:carol").find(x => x.text === "real carol here")) === "ok" || a.pinned("carol") === null);
+check("the real carol gets her own chat, verified and pinned; the stranger stays apart",
+  a.trust(a.messages("d:carol").find(x => x.text === "real carol here")) === "ok" && a.pinned("carol") === hex(C.id.publicKey)
+  && a.messages("d:carol").length === 1 && a.messages(xid).length === 1);
 await a.setProfile("carol", { blocked: true });
 check("blocked: her messages are hidden and read", a.messages("d:carol").filter(x => x.dir === "in").length === 0 && a.conversations().find(x => x.convo.id === "d:carol").unread === 0);
 check("and nothing can be sent", (await a.sendBlocker("d:carol")).code === "blocked");
@@ -291,6 +306,12 @@ check("the restored key is alice's, with its seed", (await E.call("/api/messages
 check("the note and nickname came back", e.profile("bob") && e.profile("bob").note === "met at the meetup; likes sourdough" && e.title(e.convo("d:bob")) === "Bobby");
 check("and the chat with bob, both ways", e.messages("d:bob").some(x => x.dir === "in" && x.text === "hi alice") && e.messages("d:bob").some(x => x.dir === "out" && x.text === "hi bob"));
 check("the restored copy of a sent message isn't sent again", e.messages("d:bob").filter(x => x.dir === "out").every(x => x.sends.every(s => s.state !== "queued")));
+check("and says it can't be (no Retry for it)", e.messages("d:bob").filter(x => x.dir === "out").every(x => x.sends.every(s => s.resend === false)));
+{
+  const restoredOut = e.messages("d:bob").find(x => x.dir === "out");
+  r = await E.call("/api/messages/outbox/retry", { n: restoredOut.n });
+  check("retrying one queues nothing", r.code === 200 && r.d.queued === 0, r);
+}
 r = await E.call("/api/wallet/restore", { backup: full, password: "alice backup password", pin: "555666" });
 await e.sync();
 check("restoring the same backup again adds nothing twice", e.messages("d:bob").filter(x => x.text === "hi alice").length === 1, r.d);

@@ -88,6 +88,11 @@ button.notice::after{content:" \203A";font-weight:700}
 .pop-card h2{color:var(--ink);font-size:20px;text-transform:none;letter-spacing:-.01em;margin:0 0 6px}
 .pop-card .hrow .sub{font-size:13px}
 [hidden]{display:none!important}
+body.is-locked main > :not(#lock),body.is-locked #nav{display:none!important}
+#lock{min-height:calc(100dvh - 68px);display:flex;flex-direction:column;justify-content:center;max-width:360px;margin:0 auto;padding:12px 0}
+#lock .lock-mark{width:84px;height:84px;margin:0 auto 14px;border-radius:50%;background:var(--card);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;color:var(--ink)}
+#lock h2{text-align:center;color:var(--ink);font-size:22px;text-transform:none;letter-spacing:-.01em;margin:0}
+#lock .lock-sub{text-align:center;margin:2px 0 22px}
 footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
 </style>
 </head>
@@ -106,6 +111,21 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
     <button type="button" class="primary" id="b-reload">Reload</button>
   </div>
 
+
+  <section id="lock" aria-labelledby="h-lock" hidden>
+    <div class="lock-mark" aria-hidden="true"><svg viewBox="0 0 24 24" width="44" height="44" focusable="false"><path d="M8.6 5.1l7.9 13.8M12.1 10.9L7 18.9M6.9 5.6L8.6 5.1" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+    <h2 id="h-lock">Logos node</h2>
+    <p class="note lock-sub">Locked</p>
+    <form id="v-locked" hidden autocomplete="off">
+      <button class="primary" type="button" id="b-fp" style="margin-top:0" hidden>Use fingerprint</button>
+      <p class="note" id="n-fp-first" style="margin-top:0" hidden>Fingerprint unlock isn't turned on yet. Unlock with your PIN once, then open Settings (the gear at the top) and tap <b>Turn on fingerprint unlock</b>.</p>
+      <p class="note" id="n-fp-host" hidden>To use your fingerprint, open this page as <b>localhost</b>, not 127.0.0.1.</p>
+      <label for="pin" id="l-pin" style="margin-top:0">PIN</label>
+      <input id="pin" class="pin" type="text" inputmode="numeric" maxlength="12" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" required>
+      <button class="primary" type="submit" id="b-pin">Unlock</button>
+      <p class="msg bad" id="m-locked" role="alert"></p>
+    </form>
+  </section>
 
   <div id="page-main">
   <section class="card" aria-labelledby="h-node">
@@ -137,15 +157,6 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
       <p class="msg bad" id="m-setup" role="alert"></p>
     </form>
 
-    <form id="v-locked" hidden autocomplete="off">
-      <button class="primary" type="button" id="b-fp" style="margin-top:0" hidden>Unlock with fingerprint</button>
-      <p class="note" id="n-fp-first" style="margin-top:0" hidden>Fingerprint unlock isn't turned on yet. Unlock with your PIN once, then open Settings (the gear at the top) and tap <b>Turn on fingerprint unlock</b>.</p>
-      <p class="note" id="n-fp-host" hidden>To use your fingerprint, open this page as <b>localhost</b>, not 127.0.0.1.</p>
-      <label for="pin" id="l-pin" style="margin-top:0">PIN</label>
-      <input id="pin" class="pin" type="text" inputmode="numeric" maxlength="12" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" required>
-      <button class="primary" type="submit" id="b-pin">Unlock</button>
-      <p class="msg bad" id="m-locked" role="alert"></p>
-    </form>
 
     <div id="v-open" hidden>
       <div id="accts"></div>
@@ -376,14 +387,37 @@ function openPanel(which) {   // "send", "hist" or null: one open at a time; a s
 $("t-send").addEventListener("click", () => openPanel($("p-send").hidden ? "send" : null));
 $("t-hist").addEventListener("click", () => openPanel($("p-hist").hidden ? "hist" : null));
 function show(view) {
+  const wasLocked = !$("lock").hidden;
   for (const v of ["v-loading", "v-setup", "v-locked", "v-open"]) $(v).hidden = v !== view;
+  $("lock").hidden = view !== "v-locked"; document.body.classList.toggle("is-locked", view === "v-locked");
   if (view !== "v-open") {   // nothing about amounts stays on a locked page
     afterUnlock = true; popItems = []; $("pop").hidden = true;
-    for (const id of ["hist", "accts", "accts-more"]) $(id).replaceChildren();
+    for (const id of ["hist", "accts", "accts-more", "from", "pop-list"]) $(id).replaceChildren();
+    for (const id of ["r-amount", "r-to", "r-from", "r-name", "s-hash"]) $(id).textContent = "";
     openPanel(null);
   }
   settingsUi();
+  if (view === "v-locked" && !wasLocked) lockAppeared();
 }
+// ---- the lock screen: inside the Android app with fingerprint on, the phone's fingerprint check comes up
+// by itself, once each time the lock screen appears (opening the app, coming back to it, after auto-lock),
+// never while the page is hidden and not right after the user's own "Lock" tap; the PIN is always there.
+let fpPrompted = false, manualLock = false, hiddenAt = 0;
+function lockAppeared() {
+  fpPrompted = false;
+  if (!autoFp()) setTimeout(() => { if (!$("lock").hidden && document.activeElement !== $("pin")) $("pin").focus(); }, 0);
+}
+function autoFp() {
+  if (!NATIVE || !nativeFp || fpPrompted || manualLock || document.visibilityState !== "visible" || $("lock").hidden) return false;
+  fpPrompted = true; $("m-locked").textContent = "";
+  try { window.LogosAndroid.unlockWithFingerprint(); return true; } catch (e) { return false; }
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") { hiddenAt = Date.now(); return; }
+  // back from another app (not a dialog over this one): a new chance for the prompt
+  if (hiddenAt && Date.now() - hiddenAt > 2500) { fpPrompted = false; manualLock = false; }
+  hiddenAt = 0; autoFp();
+});
 // ---- auto-lock: the server decides; this page only says when the user is active, and when it is hidden ----
 let lastActivity = 0;
 function lockedNow() { setToken(null); resetSend(); show("v-locked"); }
@@ -602,10 +636,11 @@ function nativeFpUi() {
 }
 window.logosNativeUnlocked = token => {      // called by the Android app after its fingerprint check
   if (typeof token !== "string" || !/^[0-9a-f]{64}$/.test(token)) return;
-  $("pin").value = ""; $("m-locked").textContent = ""; setToken(token); loadWallet();
+  $("pin").value = ""; $("m-locked").textContent = ""; manualLock = false; setToken(token); loadWallet();
 };
 window.logosNativeUnlockFailed = msg => {     // optional: the app can say why it didn't open
   $("m-locked").textContent = msg || "Fingerprint wasn't confirmed. Use your PIN, or try again.";
+  $("pin").focus();                           // no new prompt until "Use fingerprint" is tapped
 };
 function fpAskOff(ask) { $("b-fp-off").hidden = ask; $("fp-confirm").hidden = !ask; if (ask) $("b-fp-no").focus(); }
 async function fpOff() {
@@ -719,11 +754,11 @@ $("v-locked").addEventListener("submit", async e => {
   e.preventDefault(); const m = $("m-locked"); m.textContent = "";
   const r = await api("/api/wallet/unlock", { pin: $("pin").value }); $("pin").value = "";
   if (!r.ok) return void (m.textContent = r.data.error || "Couldn't unlock.");
-  setToken(r.data.session); loadWallet();
+  manualLock = false; setToken(r.data.session); loadWallet();
 });
 $("b-fp").addEventListener("click", () => {
   if (!EMBEDDED) return fpUnlock();
-  $("m-locked").textContent = "";
+  $("m-locked").textContent = ""; fpPrompted = true;
   try { window.LogosAndroid.unlockWithFingerprint(); } catch (e) { $("m-locked").textContent = "Fingerprint unlock isn't available. Use your PIN."; }
 });
 $("b-nfp-on").addEventListener("click", async () => {
@@ -739,7 +774,7 @@ $("b-fp-set").addEventListener("click", fpOn);
 $("b-fp-off").addEventListener("click", () => fpAskOff(true));
 $("b-fp-no").addEventListener("click", () => fpAskOff(false));
 $("b-fp-yes").addEventListener("click", fpOff);
-$("b-lock").addEventListener("click", async () => { await api("/api/wallet/lock", {}); setToken(null); resetSend(); resetBackup(); resetRestore(); show("v-locked"); });
+$("b-lock").addEventListener("click", async () => { manualLock = true; await api("/api/wallet/lock", {}); setToken(null); resetSend(); resetBackup(); resetRestore(); show("v-locked"); });
 
 // ---- backup: the server encrypts the node's key file; this page only ever sees the encrypted file ----
 // ---- restore: the server decrypts the file and has the node check it before replacing the keys ----
@@ -758,9 +793,9 @@ function addrList(title, list, other) {
 $("rs-file").addEventListener("change", async () => {
   const m = $("m-rs"); m.className = "msg bad"; m.textContent = ""; $("rs-step2").hidden = true; rsDoc = null;
   const f = $("rs-file").files[0]; if (!f) return;
-  if (f.size > 60000) return void (m.textContent = "That file is too big to be a wallet backup.");
+  if (f.size > 4000000) return void (m.textContent = "That file is too big to be a wallet backup.");   // with message history it can be about 1.5 MB
   let doc; try { doc = JSON.parse(await f.text()); } catch (e) { return void (m.textContent = "That file isn't a wallet backup (it isn't JSON)."); }
-  if (!doc || doc.format !== "logos-node-wallet-backup" || doc.version !== 1) return void (m.textContent = "That file isn't a Logos node wallet backup, or it's a version this app can't read.");
+  if (!doc || doc.format !== "logos-node-wallet-backup" || (doc.version !== 1 && doc.version !== 2)) return void (m.textContent = "That file isn't a Logos node wallet backup, or it's a version this app can't read.");
   rsDoc = doc;
   const file = (doc.addresses || []).map(a => ({ label: a.label, key: String(a.key).toLowerCase() }));
   const now = accts.map(a => ({ label: a.label, key: a.key }));
@@ -780,8 +815,9 @@ $("b-rs").addEventListener("click", async () => {
   $("rs-pin").value = ""; pinButtons();
   if (r.status === 401) { setToken(null); resetRestore(); return show("v-locked"); }
   if (!r.ok) return void (m.className = "msg bad", m.textContent = r.data.error || "The restore didn't work. Nothing was changed.");
-  const msg = r.data.unchanged ? r.data.message
-    : "Restored: the wallet now has the " + r.data.addresses + " keys from the backup. " + (r.data.restarted ? "The node is restarting with them." : r.data.manual);
+  const msg = (r.data.unchanged ? r.data.message
+    : "Restored: the wallet now has the " + r.data.addresses + " keys from the backup. " + (r.data.restarted ? "The node is restarting with them." : r.data.manual))
+    + (r.data.messages_restored ? " Messages: " + r.data.messages_restored + " restored." : "");
   resetRestore(); m.className = "msg ok"; m.textContent = msg; loadAccounts(); loadHistory();
 });
 // Show/Hide for backup passwords; while the password is shown, typing it twice isn't needed
