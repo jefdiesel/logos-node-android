@@ -126,4 +126,27 @@ for line in ('unlock by fingerprint ok source="android"', "fingerprint unlock tu
     check("the event log records: " + line, line in log)
 check("no PIN or session token in the event log", PIN not in log and t not in log and s not in log)
 check("nothing re-executed at any point", not execs)
+
+# the phone's fingerprints changed: the Android app calls native_fingerprint_reset()
+s = W.unlock(PIN)
+code, d = call("/api/wallet/native-fingerprint", {"on": True, "pin": PIN}, session=s)
+check("fingerprint unlock is on again", code == 200 and server.native_unlock() is not None, (code, d))
+s = W.unlock(PIN)
+check("native_fingerprint_reset() reports that it changed something", server.native_fingerprint_reset() is True)
+check("after it, fingerprint unlock is off", call("/api/wallet")[1].get("native_fingerprint") is False)
+with open(os.path.join(data, "wallet-settings.json")) as f:
+    check("and stored off", '"native_fingerprint": false' in f.read())
+check("native_unlock() refuses", server.native_unlock() is None)
+check("the open wallet was locked", call("/api/wallet", session=s)[1].get("unlocked") is False)
+with open(os.path.join(data, "wallet-events.log")) as f:
+    log = f.read()
+check("the event log says why", 'fingerprint unlock turned off reason="fingerprints changed" source="android"' in log
+      and 'wallet locked reason="fingerprints changed"' in log)
+check("a second reset changes nothing", server.native_fingerprint_reset() is False)
+code, d = call("/api/wallet/native-fingerprint", {"on": True, "pin": PIN}, session=W.unlock(PIN))
+check("the PIN turns it on again", code == 200 and server.native_unlock() is not None, (code, d))
+server.EMBEDDED = False                     # outside the Android app the function does nothing
+check("outside embedded mode native_fingerprint_reset() is a no-op returning False", server.native_fingerprint_reset() is False)
+check("and leaves the setting as it was", server.wallet_settings.get("native_fingerprint") is True)
+server.EMBEDDED = True
 print("all checks passed")

@@ -8,7 +8,7 @@ Python standard library only. Wallet calls need a PIN that is set on first use.
 import base64, calendar, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.7.6"
+APP_VERSION = "0.7.7"
 # APP_EMBEDDED=android: this app runs inside the Android app (embedded Python, page in a WebView).
 # Then it never updates or restarts itself (the Android app brings new versions), and fingerprint
 # unlock goes through the phone's own fingerprint check instead of a passkey. Unset: nothing changes.
@@ -983,6 +983,25 @@ def native_unlock():
     token = session_new()
     event("unlock by fingerprint ok", source="android")
     return token
+
+
+def native_fingerprint_reset():
+    """Inside the Android app: the phone's fingerprints were added or removed, so the key behind fingerprint
+    unlock is gone. Turns native fingerprint unlock off (the PIN turns it on again) and locks an open
+    wallet. Returns True if it changed something (the setting was on, or a session was open), else False.
+    Not embedded: does nothing and returns False. No HTTP route: only the app's own process calls it."""
+    if not EMBEDDED:
+        return False
+    was_on = bool(wallet_settings.get("native_fingerprint"))
+    if was_on:
+        wallet_settings["native_fingerprint"] = False
+        settings_save()
+        event("fingerprint unlock turned off", reason="fingerprints changed", source="android")
+    with lock:
+        had_session, session["token"] = session["token"] is not None, None
+    if had_session:
+        event("wallet locked", reason="fingerprints changed")
+    return was_on or had_session
 
 
 def node_cmd(cfg, flag):
