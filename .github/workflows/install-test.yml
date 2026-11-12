@@ -173,8 +173,12 @@ jobs:
             export NO_WAKE_LOCK=1 APP_SRC=/repo/app
             sh /repo/install-termux.sh
             # the app installed must be this repository's, not one downloaded from the release branch
-            cmp /repo/app/server.py "${PREFIX:-/data/data/com.termux/files/usr}/var/lib/proot-distro/installed-rootfs/ubuntu/root/node/app/server.py"
-            cmp /repo/app/messages/messages.js "${PREFIX:-/data/data/com.termux/files/usr}/var/lib/proot-distro/installed-rootfs/ubuntu/root/node/app/messages/messages.js"
+            INST=$(find "${PREFIX:-/data/data/com.termux/files/usr}/var/lib/proot-distro" -path "*/root/node/app/server.py" 2>/dev/null | head -1)
+            echo "installed app: ${INST:-not found}"
+            for f in server.py messages/messages.js; do
+              A=$(sha256sum < "/repo/app/$f"); B=$(sha256sum < "$(dirname "$INST")/$f")
+              [ "$A" = "$B" ] || { echo "the installed $f is not this checkout"; exit 1; }
+            done
             echo "installed the app from this checkout"
             (~/logos-node > ~/node.log 2>&1 &)
             for i in $(seq 1 36); do
