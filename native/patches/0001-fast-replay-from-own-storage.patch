@@ -117,17 +117,18 @@ rules, wire formats, the database format, the config file or the HTTP API.
      service::{
          Service, delete_stale_blocks_from_storage, load_block_ids_from_storage,
          persist_recovery_state, process_block,
-@@ -125,6 +128,9 @@
+@@ -125,6 +128,10 @@
      cryptarchia: Cryptarchia,
      pruned_blocks: PrunedBlocks<HeaderId>,
      fell_back_to_lib: bool,
 +    /// How many stored blocks were replayed without re-verifying their proofs
 +    /// (patch 0001).
++    #[cfg_attr(not(test), expect(dead_code, reason = "read by the tests"))]
 +    replayed_fast: usize,
  }
  
  struct RecoveryBlocks<Tx> {
-@@ -508,24 +514,57 @@
+@@ -508,24 +515,57 @@
          // Apply the block to the ledger, and batch-verify ZK proofs.
          // This ledger update is not finalized yet, and will be committed only after
          // checking if the block is accepted by the consensus engine.
@@ -193,7 +194,7 @@ rules, wire formats, the database format, the config file or the HTTP API.
  
          let outcome = self
              .consensus
-@@ -636,6 +675,11 @@
+@@ -636,6 +676,11 @@
      pub sync: SyncConfig,
      #[serde(skip)]
      pub recovery_data: RecoveryData,
@@ -205,7 +206,7 @@ rules, wire formats, the database format, the config file or the HTTP API.
  }
  
  impl StorageRecoverySettings for CryptarchiaSettings {
-@@ -741,6 +785,7 @@
+@@ -741,6 +786,7 @@
              bootstrap: bootstrap_config,
              starting_state,
              sync: sync_config,
@@ -213,7 +214,7 @@ rules, wire formats, the database format, the config file or the HTTP API.
              ..
          } = self
              .service_resources_handle
-@@ -759,11 +804,26 @@
+@@ -759,11 +805,26 @@
  
          let (current_slot, slot_timer) = Self::get_slot_timer(&relays).await?;
  
@@ -241,7 +242,7 @@ rules, wire formats, the database format, the config file or the HTTP API.
              &self.state,
              &bootstrap_config,
              ledger_config.clone(),
-@@ -771,10 +831,18 @@
+@@ -771,10 +832,18 @@
              &self.new_block_subscription_sender,
              &self.lib_subscription_sender,
              current_slot,
@@ -260,7 +261,7 @@ rules, wire formats, the database format, the config file or the HTTP API.
          // These are blocks that have been pruned by the cryptarchia engine but have not
          // yet been deleted from the storage layer.
          let storage_blocks_to_remove = delete_stale_blocks_from_storage(
-@@ -921,19 +989,34 @@
+@@ -921,19 +990,34 @@
          lib: HeaderId,
          storage: StorageApi<Tx>,
      ) -> Result<Vec<Block<Tx>>, Error> {
@@ -299,7 +300,7 @@ rules, wire formats, the database format, the config file or the HTTP API.
              blocks.push(block);
          }
  
-@@ -1000,11 +1083,76 @@
+@@ -1000,11 +1084,76 @@
      /// continuing with a partially recovered chain. Otherwise, the remaining
      /// blocks are downloaded from peers, and their uncles can't be verified if
      /// the parent of an uncle is older than LIB.
@@ -377,7 +378,7 @@ rules, wire formats, the database format, the config file or the HTTP API.
          recovery_state: &CryptarchiaConsensusState,
          bootstrap_config: &BootstrapConfig,
          ledger_config: lb_ledger::Config,
-@@ -1012,8 +1160,16 @@
+@@ -1012,8 +1161,16 @@
          new_block_subscription_sender: &broadcast::Sender<ProcessedBlockEvent>,
          lib_subscription_sender: &broadcast::Sender<LibUpdate>,
          current_slot: Slot,
@@ -394,7 +395,7 @@ rules, wire formats, the database format, the config file or the HTTP API.
              target: LOG_TARGET, tip = ?recovery_state.tip, lib = ?recovery_state.lib, lib_height = recovery_state.lib_block_length, genesis = ?recovery_state.genesis_id,
              "recovering Cryptarchia",
          );
-@@ -1057,6 +1213,7 @@
+@@ -1057,6 +1214,7 @@
              target: LOG_TARGET, lib = ?lib_id, tip = ?recovery_state.tip,
              "loading stored blocks for chain recovery",
          );
@@ -402,7 +403,7 @@ rules, wire formats, the database format, the config file or the HTTP API.
          let RecoveryBlocks {
              blocks,
              fell_back_to_lib,
-@@ -1066,22 +1223,44 @@
+@@ -1066,22 +1224,44 @@
              relays.storage().clone(),
          )
          .await;
@@ -450,7 +451,7 @@ rules, wire formats, the database format, the config file or the HTTP API.
                  relays,
                  new_block_subscription_sender,
                  lib_subscription_sender,
-@@ -1094,18 +1273,56 @@
+@@ -1094,18 +1274,56 @@
              pruned_blocks.extend(&outcome.pruned_blocks);
          }
  
@@ -507,7 +508,7 @@ rules, wire formats, the database format, the config file or the HTTP API.
      /// Creates [`Cryptarchia`] with the recovered LIB as its only block.
      ///
      /// A non-genesis LIB gets its parent from storage, so that header
-@@ -1166,4 +1383,45 @@
+@@ -1166,4 +1384,45 @@
      /// from the time service may be behind the slot at which the block was
      /// accepted (e.g., before the time service calibrates the clock with NTP).
      Storage,
@@ -555,7 +556,7 @@ rules, wire formats, the database format, the config file or the HTTP API.
  }
 --- /dev/null
 +++ b/services/chain/chain-service/src/replay.rs
-@@ -0,0 +1,587 @@
+@@ -0,0 +1,590 @@
 +//! Fast replay of the node's own stored blocks at startup.
 +//!
 +//! Added by the logos-node-android patch `0001-fast-replay-from-own-storage`.
@@ -754,10 +755,11 @@ rules, wire formats, the database format, the config file or the HTTP API.
 +/// the vouched tip is, or descends from, found by walking header parents from
 +/// the vouched tip; `None` if the walk reached the LIB or failed.
 +///
-+/// Blocks up to the anchor are fast only while each block's header names the
-+/// previous block on the path as its parent (the LIB for the first one), so
-+/// the stored parent index cannot make a block fast that the vouched tip's
-+/// headers do not lead to.
++/// Blocks up to the anchor are fast only if every one of them names, in its
++/// own header, the previous block on the path as its parent (the LIB for the
++/// first one). If any header disagrees with the path, nothing is fast: the
++/// stored parent index cannot make a block fast that the vouched tip's headers
++/// do not lead to.
 +#[must_use]
 +pub fn fast_prefix(
 +    ids: &[HeaderId],
@@ -766,15 +768,15 @@ rules, wire formats, the database format, the config file or the HTTP API.
 +    anchor: Option<usize>,
 +) -> Vec<bool> {
 +    let mut fast = vec![false; ids.len()];
-+    let Some(anchor) = anchor else {
++    let Some(anchor) = anchor.filter(|anchor| *anchor < ids.len()) else {
 +        return fast;
 +    };
-+    for i in 0..ids.len().min(anchor.saturating_add(1)) {
++    let consistent = (0..=anchor).all(|i| {
 +        let expected_parent = if i == 0 { lib } else { ids[i - 1] };
-+        if header_parents.get(i) != Some(&expected_parent) {
-+            break;
-+        }
-+        fast[i] = true;
++        header_parents.get(i) == Some(&expected_parent)
++    });
++    if consistent {
++        fast[..=anchor].fill(true);
 +    }
 +    fast
 +}
@@ -1089,12 +1091,14 @@ rules, wire formats, the database format, the config file or the HTTP API.
 +        assert_eq!(fast_prefix(&ids, &parents, lib, None), [false; 4]);
 +
 +        // The stored parent index says L, X1, Y, T, but T's header names X1 as
-+        // its parent: the vouched tip T does not lead to Y, so Y is not fast,
-+        // and nothing after it either.
++        // its parent: the vouched tip T does not lead to Y, so Y must not be
++        // fast. Any such disagreement makes the whole replay full.
 +        let (x1, y, t) = (id(2), id(3), id(4));
 +        let ids = [x1, y, t];
 +        let parents = [lib, x1, x1];
-+        assert_eq!(fast_prefix(&ids, &parents, lib, Some(2)), [true, false, false]);
++        assert_eq!(fast_prefix(&ids, &parents, lib, Some(2)), [false; 3]);
++        // A disagreement after the anchor does not matter.
++        assert_eq!(fast_prefix(&ids, &parents, lib, Some(1)), [true, true, false]);
 +        // A first block whose header does not name the LIB: nothing fast.
 +        assert_eq!(fast_prefix(&ids, &[id(9), x1, y], lib, Some(2)), [false; 3]);
 +    }
@@ -1206,7 +1210,7 @@ rules, wire formats, the database format, the config file or the HTTP API.
      service::{get_block_ids, process_block},
  };
  
-@@ -1105,4 +1106,618 @@
+@@ -1105,4 +1106,617 @@
      fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
          write!(f, "TestRuntimeServiceId")
      }
@@ -1786,7 +1790,6 @@ rules, wire formats, the database format, the config file or the HTTP API.
 +        .await
 +        .unwrap();
 +    }
-+    let genesis_id: HeaderId = GENESIS_ID.into();
 +    let tip = stored.tip();
 +
 +    let dir = TempDir::new().unwrap();
