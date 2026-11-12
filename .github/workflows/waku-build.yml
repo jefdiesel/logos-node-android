@@ -1,0 +1,121 @@
+name: waku-build
+# Builds the official Logos Messaging (Waku) node library, liblogosdelivery, for Android
+# arm64 with upstream's own make target (the one its CI runs), plus the small runner in
+# messaging/runner that turns it into a process. See messaging/README.md.
+# To build a newer release, change WAKU_VERSION below (a tag, or a commit sha).
+on:
+  push:
+    paths: ['messaging/**', .github/workflows/waku-build.yml]
+  workflow_dispatch:
+    inputs:
+      waku_version:
+        description: logos-delivery tag or commit to build
+        default: "v0.39.2"
+permissions:
+  contents: read
+env:
+  WAKU_VERSION: ${{ inputs.waku_version || 'v0.39.2' }}
+  # upstream's Makefile default (ANDROID_TARGET) and upstream CI's NDK (r27c)
+  ANDROID_API: "30"
+  NDK_VERSION: "27.2.12479018"
+  # Extra Nim flags on top of upstream's android task are in messaging/nimflags (see the
+  # README there); they go through upstream's own NIMFLAGS variable.
+jobs:
+  android-arm64:
+    runs-on: ubuntu-22.04   # upstream's build-android job runs on 22.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL /usr/local/.ghcup
+          df -h /
+      - name: logos-delivery source
+        id: src
+        run: |
+          git clone -q --filter=blob:none https://github.com/logos-messaging/logos-delivery.git ld
+          cd ld
+          git -c advice.detachedHead=false checkout -q "$WAKU_VERSION"
+          git submodule update -q --init --recursive
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "describe=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
+          git log -1 --format='%H %cs %s'
+      - name: NDK
+        run: |
+          NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
+          if [ ! -f "$NDK/source.properties" ]; then
+            echo "installing NDK $NDK_VERSION..."
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" >/dev/null
+          fi
+          printf 'ANDROID_NDK_HOME=%s\nANDROID_NDK_ROOT=%s\n' "$NDK" "$NDK" >> "$GITHUB_ENV"
+          grep Pkg.Revision "$NDK/source.properties"
+      - name: Cache library build
+        id: lib
+        uses: actions/cache/restore@v4
+        with:
+          path: lib-out
+          key: waku-lib-${{ steps.src.outputs.sha }}-ndk${{ env.NDK_VERSION }}-api${{ env.ANDROID_API }}-${{ hashFiles('messaging/nimflags') }}
+      # librln is cross-compiled with cross-rs (docker); same cache upstream keeps
+      - uses: actions/cache@v4
+        if: steps.lib.outputs.cache-hit != 'true'
+        with:
+          path: ~/.cargo/bin/cross
+          key: cross-${{ hashFiles('ld/scripts/build_rln_android.sh') }}
+      - name: Nimble dependencies
+        if: steps.lib.outputs.cache-hit != 'true'
+        working-directory: ld
+        run: make build-deps
+      - name: Build liblogosdelivery for Android arm64 (upstream make target)
+        if: steps.lib.outputs.cache-hit != 'true'
+        working-directory: ld
+        run: |
+          NIMFLAGS=$(tr '\n' ' ' < ../messaging/nimflags)
+          echo "NIMFLAGS: $NIMFLAGS"
+          make V=1 -j1 liblogosdelivery-android-arm64 ANDROID_TARGET="$ANDROID_API" NIMFLAGS="$NIMFLAGS"
+          df -h /
+      - name: Collect library, header and TinyCBOR
+        if: steps.lib.outputs.cache-hit != 'true'
+        run: |
+          B=ld/build/android/arm64-v8a
+          ls -la "$B" ld/library/generated
+          mkdir -p lib-out/include
+          cp "$B/liblogosdelivery.so" "$B/librln.so" lib-out/
+          cp ld/library/liblogosdelivery.h ld/library/liblogosdelivery_kernel.h ld/library/liblogosdelivery_rln.h \
+             ld/library/logosdelivery_service_discovery.h lib-out/include/ 2>/dev/null || true
+          cp -r ld/library/generated lib-out/include/
+          FFI=$(ls -dt ld/nimbledeps/pkgs2/ffi-* | head -1)
+          cp -r "$FFI/ffi/codegen/templates/cpp/vendor/tinycbor" lib-out/
+          echo "${{ steps.src.outputs.describe }} ${{ steps.src.outputs.sha }}" > lib-out/VERSION
+      - uses: actions/cache/save@v4
+        if: steps.lib.outputs.cache-hit != 'true'
+        with:
+          path: lib-out
+          key: ${{ steps.lib.outputs.cache-primary-key }}
+      - name: Upload header for inspection
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logosdelivery-header-${{ steps.src.outputs.describe }}
+          path: |
+            ld/library/generated/
+            lib-out/include/
+          if-no-files-found: ignore
+      - name: Build the runner
+        run: messaging/build-runner.sh lib-out out
+      - name: Describe and package the result
+        run: |
+          TC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+          for f in out/*; do
+            echo "== $f"; file "$f"; ls -la "$f"
+            "$TC/bin/llvm-readelf" -d "$f" | grep -E "NEEDED|RUNPATH|RPATH|SONAME" || true
+          done
+          mkdir pkg
+          for f in out/*; do "$TC/bin/llvm-strip" -o "pkg/$(basename "$f")" "$f"; done
+          cp lib-out/VERSION messaging/logos-dev.json pkg/
+          cp -r lib-out/include pkg/
+          (cd pkg && sha256sum waku-runner *.so > SHA256SUMS && cat SHA256SUMS)
+          du -ah pkg | sort -h | tail -20
+      - uses: actions/upload-artifact@v4
+        with:
+          name: logos-delivery-android-arm64-${{ steps.src.outputs.describe }}
+          path: pkg/
