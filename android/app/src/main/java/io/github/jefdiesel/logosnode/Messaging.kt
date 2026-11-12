@@ -131,22 +131,37 @@ data class MessagingStatus(
     val bytesOut: Long? = null,
 )
 
+/**
+ * Reads the runner's lines with plain string handling, no regular expressions: Android's regex engine
+ * (ICU) is stricter than Java's, and a pattern Java accepted stopped the supervisor on the phone.
+ */
 object RunnerLines {
-    // Every bracket and brace escaped: Android's regex engine (ICU) rejects a bare ']' or '}' that Java accepts.
-    private val STATUS = Regex("""\[runner\] status connection=(\S+) connected_peers=(\d+) rss_kb=(\d+)""")
-    private val BYTES = Regex("""\[runner\] metric libp2p_network_bytes(?:_total)?\{[^\}]*direction="(in|out)"[^\}]*\}\s+([0-9.eE+]+)""")
-
     /** The status after `line`, or the same status if the line says nothing about it. */
     fun apply(status: MessagingStatus, line: String): MessagingStatus {
-        STATUS.find(line)?.let {
-            return status.copy(connection = it.groupValues[1], peers = it.groupValues[2].toInt(), rssKb = it.groupValues[3].toLong())
+        val status_ = line.substringAfter("[runner] status ", "")
+        if (status_.isNotEmpty()) {
+            val f = fields(status_)
+            val peers = f["connected_peers"]?.toIntOrNull()
+            val rss = f["rss_kb"]?.toLongOrNull()
+            val connection = f["connection"] ?: return status
+            return status.copy(connection = connection, peers = peers ?: status.peers, rssKb = rss ?: status.rssKb)
         }
-        BYTES.find(line)?.let {
-            val v = it.groupValues[2].toDoubleOrNull()?.toLong() ?: return status
-            return if (it.groupValues[1] == "in") status.copy(bytesIn = v) else status.copy(bytesOut = v)
+        val metric = line.substringAfter("[runner] metric ", "")
+        if (metric.startsWith("libp2p_network_bytes_total{") || metric.startsWith("libp2p_network_bytes{")) {
+            val labels = metric.substringAfter('{').substringBefore('}')
+            val value = metric.substringAfter('}').trim().substringBefore(' ').toDoubleOrNull()?.toLong() ?: return status
+            return when {
+                labels.contains("direction=\"in\"") -> status.copy(bytesIn = value)
+                labels.contains("direction=\"out\"") -> status.copy(bytesOut = value)
+                else -> status
+            }
         }
         return status
     }
+
+    /** "a=1 b=2" as a map. */
+    private fun fields(text: String): Map<String, String> =
+        text.split(' ').mapNotNull { p -> p.indexOf('=').takeIf { it > 0 }?.let { p.substring(0, it) to p.substring(it + 1) } }.toMap()
 
     /** The line with the node key replaced, so it can't reach the log even if the library prints it. */
     fun redact(line: String, key: String?) = if (key != null && key.isNotEmpty()) line.replace(key, "<nodekey>") else line
@@ -259,6 +274,7 @@ class MessagingSupervisor(
     fun start() {
         if (worker?.isAlive == true) return
         stopRequested = false
+        debugAbandon = false
         worker = thread(name = "messaging-supervisor", isDaemon = true) {
             try {
                 loop()
@@ -336,7 +352,14 @@ class MessagingSupervisor(
         }
     }
 
+    /** Debug builds, for the orphan-guard test: the supervisor dies and leaves its runner unwatched. */
+    @Volatile var debugAbandon = false
+
     private fun onLine(raw: String) {
+        if (debugAbandon) {
+            process = null
+            throw IllegalStateException("supervisor broken on purpose (debug test)")
+        }
         val line = RunnerLines.redact(raw, key)
         appendCapped(line)
         val next = RunnerLines.apply(status, line)

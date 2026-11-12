@@ -90,7 +90,17 @@ class NodeService : Service() {
         messaging = sup
         messagingUsage = usage
         messagingController = MessagingController(usage, { sup.running }, { sup.start() }, { sup.stop(it) })
+        messagingWork.execute { killUnownedRunners() }               // nothing runs yet: anything found is an orphan
+        guard = thread(name = "messaging-orphan-guard", isDaemon = true) {
+            while (true) {
+                try { Thread.sleep(60_000) } catch (_: InterruptedException) { return@thread }
+                // orphans out, then the switches again (a broken supervisor is started afresh if still wanted)
+                main.post { if (messaging != null) evaluateMessaging() }
+            }
+        }
     }
+
+    private var guard: Thread? = null
 
     private fun runnerPids(): List<Int> =
         File("/proc").listFiles { f -> f.name.all(Char::isDigit) }.orEmpty().mapNotNull { dir ->
@@ -111,8 +121,26 @@ class NodeService : Service() {
             } catch (e: Exception) {
                 log.app("messaging: $e")
             }
+            killUnownedRunners()
             main.post { stopIfIdle() }
         }
+    }
+
+    /**
+     * The orphan guard: a runner nothing watches costs gigabytes an hour. Whenever the supervisor isn't
+     * running (switched off, stopped for a reason, or broken), every messaging runner process is killed:
+     * SIGTERM, then SIGKILL after a few seconds. Called at service start, on every switch change, and
+     * once a minute.
+     */
+    private fun killUnownedRunners() {
+        if (messaging?.running == true) return
+        val pids = runnerPids()
+        if (pids.isEmpty()) return
+        log.app("messaging: stopping ${pids.size} runner process(es) that nothing supervises: $pids")
+        pids.forEach { android.os.Process.sendSignal(it, 15) }
+        val until = System.currentTimeMillis() + 5_000
+        while (runnerPids().isNotEmpty() && System.currentTimeMillis() < until) Thread.sleep(250)
+        runnerPids().forEach { android.os.Process.sendSignal(it, 9) }
     }
 
     private fun watchNetwork() {
@@ -206,11 +234,17 @@ class NodeService : Service() {
                 return START_STICKY
             }
             ACTION_MESSAGING -> {
-                // debug builds: the switches can be set from adb (--ez enabled true|false, --ez mobile true|false)
+                // debug builds: the switches can be set from adb (--ez enabled true|false, --ez mobile true|false),
+                // and --ez break true breaks the supervisor on purpose, leaving its runner unwatched (orphan-guard test)
                 if (BuildConfig.DEBUG) {
                     val edit = messagingPrefs(this).edit()
                     for (key in listOf("enabled", "mobile")) if (intent.hasExtra(key)) edit.putBoolean(key, intent.getBooleanExtra(key, false))
-                    edit.apply()
+                    edit.commit()
+                    if (intent.getBooleanExtra("break", false)) {
+                        messaging?.debugAbandon = true
+                        log.app("messaging: debug: supervisor will break at the runner's next line")
+                        return START_STICKY
+                    }
                 }
                 goForeground(if (supervisor?.isAlive == true) status else "Messaging node")
                 evaluateMessaging()

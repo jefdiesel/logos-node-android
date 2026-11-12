@@ -30,8 +30,8 @@ android {
         applicationId = "io.github.jefdiesel.logosnode"
         minSdk = 28 // the node binary is built for API 28
         targetSdk = 36
-        versionCode = 5
-        versionName = "0.4.0"
+        versionCode = 6
+        versionName = "0.4.1"
         ndk { abiFilters += "arm64-v8a" }
         buildConfigField("String", "NODE_VERSION", "\"$nodeVersion\"")
         buildConfigField("String", "NODE_SHA256", "\"$nodeSha256\"")
