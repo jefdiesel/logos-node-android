@@ -96,7 +96,7 @@ Notes:
 
 A small Python program (`app/server.py`, standard library only) and one page (`app/index.html`), served on port 8090 of the device itself. Version 0.7.4 at the time of writing.
 
-- **Node status:** in plain words: how many blocks are on this device (and where the network is while it catches up), the state (for example Online), how many nodes it is connected to and how many new blocks arrive a minute.
+- **Node status:** in plain words: how many blocks are on this device (and where the network is while it catches up), the state (Online, or Catching up), how many nodes it is connected to and how many new blocks arrive a minute.
 - **PIN.** You choose a PIN (6 to 12 digits) on first use; it can't be recovered. Five wrong PINs pause unlocking for 5 minutes.
 - **Auto-lock.** The wallet locks after 5 minutes without you using it (1, 5 or 15 in Settings), and one minute after you leave the page (switch to another app or turn the screen off), or when you tap **Lock wallet**. Only what you do counts as use: the page's own background refreshes don't keep it open.
 - **Fingerprint unlock**, using a passkey (a login key the phone keeps and only releases after your fingerprint or screen lock). It only works when the page is opened as `http://localhost:8090`, and you need the PIN to turn it on. The PIN keeps working as a fallback.

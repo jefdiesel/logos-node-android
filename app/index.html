@@ -484,7 +484,7 @@ function lockUi() {
   const fpKey = $("k-fp"); if (fpKey) fpKey.style.visibility = !fpUsable() || fpUp ? "hidden" : "";    // keeps its cell
   const d = $("pin-dots"); d.replaceChildren(...Array.from(pinBuf, () => document.createElement("span")));
   d.classList.toggle("empty", !pinBuf.length);
-  // screen readers hear only how many digits are in, never which (the dots themselves are hidden from them)
+  // after each key, screen readers are told how many digits are in (the dots themselves are hidden from them)
   $("pin-count").textContent = pinBuf.length ? pinBuf.length + " digit" + (pinBuf.length === 1 ? "" : "s") + " entered" : "No digits entered";
   $("b-pin").disabled = pinBusy || !pinOk(pinBuf);
   for (const b of $("keypad").querySelectorAll("button")) b.disabled = pinBusy;
@@ -644,7 +644,7 @@ async function tickStatus() {
     $("syncline").textContent = sy.line; $("syncline").className = "syncline " + sy.cls;
     $("height").textContent = Number(n.height).toLocaleString("en-US");
     $("nodeline").textContent = "blocks on this device";
-    $("state").textContent = n.state || "-";
+    $("state").textContent = n.state === "Bootstrapping" ? "Catching up" : n.state || "-";
     $("peers").textContent = n.peers == null ? "-" : n.peers;
     const now = Date.now();
     if (prev && now - prev.t >= 20000) { rateNow = Math.max(0, (n.height - prev.h) / ((now - prev.t) / 60000)); $("rate").textContent = Math.round(rateNow).toLocaleString("en-US"); prev = { h: n.height, t: now }; }

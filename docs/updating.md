@@ -45,9 +45,9 @@ this: it keeps running and is never restarted by an update.
 - 0.9.6: Messages settings no longer read as if your LNS name can't take coins: the messaging address is
   for messages, coins go to your wallet address (Wallet, then Receive), and your LNS name can take both
   once it is set up for each. With the balance hidden, the Received pop-up and Send's "not enough" error
-  no longer show amounts. On the keypad, Enter on a key reached with Tab presses that key, and screen
-  readers hear how many digits are in, not which. Settings > Node says it in plain words: blocks on this
-  device, nodes connected, new blocks a minute, and where the network is.
+  no longer show amounts. On the keypad, Enter on a key reached with Tab presses that key, and after each
+  key screen readers are told how many digits are in. Settings > Node says it in plain words: blocks on
+  this device, nodes connected, new blocks a minute, and where the network is.
 
 ## Going back to the previous version by hand
 

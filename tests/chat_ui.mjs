@@ -129,7 +129,7 @@ await js(`[...document.querySelectorAll("#keypad button")].find(b => b.textConte
 for (const type of ["keyDown", "keyUp"]) await cdp("Input.dispatchKeyEvent", { type, key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, ...(type === "keyDown" ? { text: "\r" } : {}) });
 await sleep(200);
 check("Enter on a focused keypad key enters that digit and doesn't submit", await js(`document.querySelectorAll("#pin-dots span").length === 1 && document.getElementById("m-locked").textContent === "" && document.activeElement.textContent === "5"`));
-check("screen readers hear the count, not the digits", await js(`document.getElementById("pin-count").textContent === "1 digit entered" && document.getElementById("pin-count").getAttribute("aria-live") === "polite" && document.getElementById("pin-dots").getAttribute("aria-hidden") === "true" && !document.getElementById("pin-count").textContent.includes("5")`));
+check("after a key, screen readers are told the count of digits (a polite live region), the dots are hidden from them", await js(`document.getElementById("pin-count").textContent === "1 digit entered" && document.getElementById("pin-count").getAttribute("aria-live") === "polite" && document.getElementById("pin-dots").getAttribute("aria-hidden") === "true" && !document.getElementById("pin-count").textContent.includes("5")`));
 await pressKey("Backspace");
 check("and Backspace takes it out again", await js(`document.querySelectorAll("#pin-dots span").length === 0 && document.getElementById("pin-count").textContent === "No digits entered"`));
 await unlock();
@@ -168,6 +168,9 @@ for (const width of [360, 412]) {
 await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
 await setBal(null, 12500); await js(`loadAccounts(); true`);
 await waitFor("back to the usual balance", `/75,000/.test(document.getElementById("bal-total").textContent)`);
+const popDone = async () => { if (await js(`!document.getElementById("pop").hidden`)) { await click("#pop-ok"); await js(`scrollTo(0, 0); true`); } };    // OK scrolls to Activity
+const settle = async () => { await sleep(2500); await js(`checkReceipts().then(() => true)`); await popDone(); };    // the history polls every second
+await settle();         // receipts left from the balance-size checks (notes that came back) are taken and closed
 // the eye beside the balance hides the amounts on the home screen, and the choice stays on this device
 check("the balance shows by default, with a Hide balance eye", await js(`document.getElementById("b-eye").getAttribute("aria-label") === "Hide balance"`));
 await click("#b-eye");
@@ -182,9 +185,6 @@ await click("#b-eye");
 await waitFor("shown again", `/75,000/.test(document.getElementById("bal-total").textContent) && document.getElementById("b-eye").getAttribute("aria-label") === "Hide balance" && localStorage.getItem("balance-hidden") === null`);
 // the eye hides amounts everywhere the balance could show: the Received pop-up and Send's "not enough" error.
 // Each is checked shown first, so "no amount" can't pass just because nothing showed.
-const popDone = async () => { if (await js(`!document.getElementById("pop").hidden`)) await click("#pop-ok"); };
-const settle = async () => { await sleep(2500); await js(`checkReceipts().then(() => true)`); await popDone(); };    // the history polls every second
-await settle();         // receipts left from the balance-size checks (notes that came back) are taken and closed
 const receive = async (...ns) => {
   for (const n of ns) await fetch(`http://127.0.0.1:${NODE_PORT}/receive/${key0}/${n}`, { method: "POST" });
   await waitFor(`the app records ${ns.join(" and ")} received`, `api("/api/wallet/history?limit=20").then(r => ${JSON.stringify(ns.map(String))}.every(n => r.data.entries.some(e => e.kind === "received" && e.amount === n)))`, 15000);
