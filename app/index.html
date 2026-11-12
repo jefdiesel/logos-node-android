@@ -37,8 +37,9 @@ h3{font-size:15px;font-weight:650;margin:16px 0 6px}
 @media (prefers-reduced-motion:reduce){.st-ic.sync svg{animation:none}}
 .hero{text-align:center;padding:10px 0 4px}
 .hero-label{font-size:14px;color:var(--dim)}
-.hero-amt{font-size:44px;font-weight:680;letter-spacing:-.03em;line-height:1.1;font-variant-numeric:tabular-nums;margin-top:4px;overflow-wrap:anywhere}
-.hero-amt .unit{font-size:18px;font-weight:550;color:var(--dim);letter-spacing:0;margin-left:6px}
+/* the balance: a normal size, always one line; fitHero() makes the font smaller as the digits grow */
+.hero-amt{font-size:34px;font-weight:680;letter-spacing:-.03em;line-height:1.15;font-variant-numeric:tabular-nums;margin-top:4px;white-space:nowrap;overflow:hidden}
+.hero-amt .unit{font-size:max(12px,.45em);font-weight:550;color:var(--dim);letter-spacing:0;margin-left:.25em}
 .hero-note{font-size:14px;color:var(--dim);margin:10px 0 0}.hero-note:empty{display:none}
 .ph{color:var(--dim);font-weight:500}
 .acts{margin-top:18px}.acts button{min-height:50px}
@@ -72,8 +73,8 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .fpline{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:12px;font-size:14px;color:var(--dim)}
 .fpline span{display:flex;align-items:center;gap:8px}.fpline button{min-height:44px;padding:4px 12px;font-size:14px;font-weight:550;color:var(--ink)}
 .acct{padding:14px 0;border-top:1px solid var(--line)}.acct:first-child{border-top:0;padding-top:0}
-.acct .top{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
-.acct .name{font-weight:600}.acct .bal{font-size:24px;font-weight:650;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.acct .top{display:flex;justify-content:space-between;align-items:baseline;gap:4px 10px;flex-wrap:wrap}
+.acct .name{font-weight:600}.acct .bal{font-size:20px;overflow-wrap:anywhere;font-weight:650;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
 .acct .bal .unit{font-size:14px;font-weight:500;color:var(--dim);letter-spacing:0;margin-left:5px}
 .acct .bal .ph{font-size:20px}
 .acct .addr{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:6px}
@@ -82,7 +83,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .msg{font-size:14px;margin:12px 0 0;min-height:1px}.msg.bad{color:var(--bad)}.msg.ok{color:var(--ok)}.msg.warn{color:var(--warn)}
 dl{margin:0}dl div{display:flex;justify-content:space-between;gap:14px;padding:9px 0;border-top:1px solid var(--line)}dl div:first-child{border-top:0}
 dt{color:var(--dim);font-size:14px;flex:none}dd{margin:0;text-align:right;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
-details{margin-top:8px;border-top:1px solid var(--line);padding-top:10px}summary{cursor:pointer;color:var(--dim);font-size:14px}
+details{margin-top:8px;border-top:1px solid var(--line);padding-top:10px}summary{cursor:pointer;color:var(--dim);font-size:14px;padding:12px 0}
 hr{border:0;border-top:1px solid var(--line);margin:18px 0 6px}
 .hrow{padding:10px 0;border-top:1px solid var(--line)}.hrow:first-child{border-top:0}
 .hrow .top{display:flex;justify-content:space-between;align-items:baseline;gap:10px}.hrow .kind{font-weight:600}
@@ -179,7 +180,7 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
         <label for="from" id="l-from">From</label>
         <select id="from"></select>
         <label for="to">To: an address or a name</label>
-        <input id="to" class="mono" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="70" required>
+        <input id="to" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="70" required>
         <p class="hint">Names are checked again right before sending.</p>
         <label for="amount" id="l-amount">Amount, in Logos</label>
         <input id="amount" type="text" inputmode="numeric" maxlength="24" required>
@@ -299,7 +300,7 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
       <p class="msg warn" id="bk-state" style="margin-top:0"></p>
       <div id="bk">
         <form id="f-bk" autocomplete="off">
-          <p class="note" id="bk-what">Saves this wallet's keys as an encrypted file. The file is locked with a backup password you choose here, not your PIN. Use a long one you won't forget.</p>
+          <p class="note" id="bk-what">Saves this wallet as an encrypted file. The file is locked with a backup password you choose here, not your PIN. Use a long one you won't forget.</p>
           <label for="bk-pw1">Backup password (at least 8 characters)</label>
           <div class="pwrow">
             <input id="bk-pw1" type="password" minlength="8" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" required>
@@ -330,7 +331,7 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
     <section class="card" id="s-rs" aria-labelledby="h-s-rs">
       <h2 id="h-s-rs">Restore from a backup</h2>
       <div id="rs">
-        <p class="msg warn">Restoring replaces this wallet's keys with the keys in a backup file. Coins on the keys it replaces can then only be reached through a backup of those keys.</p>
+        <p class="msg warn">Restoring replaces this wallet's accounts with the ones in a backup file. Coins on the accounts it replaces can then only be reached through a backup of them.</p>
         <label for="rs-file">Backup file (logos-node-wallet-backup-….json)</label>
         <input id="rs-file" type="file" accept=".json,application/json">
         <div id="rs-step2" hidden>
@@ -344,7 +345,7 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
           <label for="rs-pin">Your PIN</label>
           <input id="rs-pin" class="pin" type="text" inputmode="numeric" maxlength="12" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
           <p class="hint">Your PIN: 6 to 12 digits.</p>
-          <label style="display:flex;gap:10px;align-items:flex-start;color:var(--ink);font-size:14px;margin-top:14px"><input type="checkbox" id="rs-ok" style="width:auto;min-height:0;margin-top:3px"> I understand this replaces this wallet's keys with the ones in the file.</label>
+          <label style="display:flex;gap:10px;align-items:flex-start;color:var(--ink);font-size:14px;margin-top:14px"><input type="checkbox" id="rs-ok" style="width:auto;min-height:0;margin-top:3px"> I understand this replaces this wallet's accounts with the ones in the file.</label>
           <button type="button" class="primary" id="b-rs" disabled>Restore</button>
         </div>
         <p class="msg bad" id="m-rs" role="alert"></p>
@@ -581,6 +582,19 @@ function nodeIcon() {
 new MutationObserver(nodeIcon).observe($("pill"), { childList: true, characterData: true, subtree: true });
 nodeIcon();
 $("node-ic").addEventListener("click", () => openSettings("s-nodec"));
+// the balance stays on one line: from 34 px the font gets smaller until it fits the card (18 px for any
+// amount the node can hold, a u64; smaller only past that)
+function fitHero() {
+  const e = $("bal-total"); if (!e || e.offsetParent === null) return;      // hidden: done when it shows
+  e.style.fontSize = "";
+  let px = parseFloat(getComputedStyle(e).fontSize);
+  while (e.scrollWidth > e.clientWidth && px > 12) { px -= px > 18 ? 1 : 0.5; e.style.fontSize = px + "px"; }
+}
+// again when the amount changes, and when the card's width changes or it shows (another tab, Settings)
+new MutationObserver(fitHero).observe($("bal-total"), { childList: true, characterData: true, subtree: true });
+let heroW = -1;
+if (window.ResizeObserver) new ResizeObserver(es => { const w = Math.round(es[0].contentRect.width); if (w !== heroW) { heroW = w; fitHero(); } }).observe($("v-open"));
+else addEventListener("resize", fitHero);
 const phSpan = () => Object.assign(document.createElement("span"), { className: "ph", textContent: "—", title: "Waiting for the node" });
 // inside the Android app with its node screen: a way there from Settings > Node
 const ANDROID_NODE = typeof window.LogosAndroid === "object" && window.LogosAndroid !== null && typeof window.LogosAndroid.openNode === "function";
@@ -785,7 +799,7 @@ async function loadAccounts() {
   if (!accts.length || known.length < accts.length) tot.replaceChildren(phSpan());
   else { const u = document.createElement("span"); u.className = "unit"; u.textContent = UNIT; tot.replaceChildren(fmt(known.reduce((n, a) => n + BigInt(a.balance), 0n).toString()), u); }
   const rest = accts.filter(a => !main.includes(a));
-  $("accts").replaceChildren(...(main.length ? main.map(acctNode) : [Object.assign(document.createElement("p"), { className: "note", textContent: "The node hasn't reported its wallet keys yet. This can take a minute after it starts." })]));
+  $("accts").replaceChildren(...(main.length ? main.map(acctNode) : [Object.assign(document.createElement("p"), { className: "note", textContent: "The node hasn't listed this wallet's accounts yet. This can take a minute after it starts." })]));
   $("accts-more").replaceChildren(...rest.map(acctNode)); $("more").hidden = rest.length === 0;
   const sel = $("from"), keep = sel.value; sel.replaceChildren();
   for (const a of main) { const o = document.createElement("option"); o.value = a.key; o.textContent = a.label + (a.balance == null ? "" : " (" + amt(a.balance) + ")"); sel.append(o); }
@@ -854,9 +868,9 @@ $("rs-file").addEventListener("change", async () => {
   const fileSet = new Set(file.map(a => a.key)), nowSet = new Set(now.map(a => a.key));
   $("rs-compare").replaceChildren(addrList("In the backup file", file, nowSet), addrList("In this wallet now", now, fileSet));
   const same = file.length && file.length === now.length && file.every(a => nowSet.has(a.key));
-  $("rs-warn").textContent = same ? "This backup holds the keys this wallet already uses. Restoring it changes nothing."
-    : !lastBackup ? "This wallet's current keys have never been backed up. If you restore now, they can't be recovered, and any coins on them are lost. Back them up first with Back up wallet."
-    : "This wallet's current keys were last backed up " + when(lastBackup) + ". Keep that file: it is the only way back to them.";
+  $("rs-warn").textContent = same ? "This backup holds the accounts this wallet already uses. Restoring it changes nothing."
+    : !lastBackup ? "This wallet's current accounts have never been backed up. If you restore now, they can't be recovered, and any coins on them are lost. Back them up first in Back up."
+    : "This wallet's current accounts were last backed up " + when(lastBackup) + ". Keep that file: it is the only way back to them.";
   $("rs-step2").hidden = false;
 });
 $("rs-ok").addEventListener("change", pinButtons);
@@ -868,7 +882,7 @@ $("b-rs").addEventListener("click", async () => {
   if (r.status === 401) { setToken(null); resetRestore(); return show("v-locked"); }
   if (!r.ok) return void (m.className = "msg bad", m.textContent = r.data.error || "The restore didn't work. Nothing was changed.");
   const msg = (r.data.unchanged ? r.data.message
-    : "Restored: the wallet now has the " + r.data.addresses + " keys from the backup. " + (r.data.restarted ? "The node is restarting with them." : r.data.manual))
+    : "Restored: the wallet now has the " + r.data.addresses + " accounts from the backup. " + (r.data.restarted ? "The node is restarting with them." : r.data.manual))
     + (r.data.messages_restored ? " Messages: " + r.data.messages_restored + " restored." : "");
   resetRestore(); m.className = "msg ok"; m.textContent = msg; loadAccounts(); loadHistory();
 });
@@ -917,7 +931,7 @@ $("f-send").addEventListener("submit", async e => {
   e.preventDefault(); const m = $("m-send"); m.className = "msg bad"; m.textContent = "";
   const raw = $("amount").value.replace(/[,\s]/g, "");
   const from = $("from").value || (accts[0] && accts[0].key), acct = accts.find(a => a.key === from);
-  if (!acct) return void (m.textContent = "The wallet has no key to send from yet.");
+  if (!acct) return void (m.textContent = "The wallet has no account to send from yet.");
   if (!/^\d+$/.test(raw) || BigInt(raw) <= 0n) return void (m.textContent = "The amount must be a whole number above zero.");
   if (acct.balance != null && BigInt(raw) > BigInt(acct.balance)) return void (m.textContent = acct.label + " holds " + amt(acct.balance) + ", less than " + amt(raw) + ".");
   let lib;
@@ -935,7 +949,7 @@ $("f-send").addEventListener("submit", async e => {
     if (r.error) return void (m.textContent = r.error);
     to = r.address;
   }
-  if (to === from) return void (m.textContent = "That would send to the same key it comes from.");
+  if (to === from) return void (m.textContent = "That would send to the same account it comes from.");
   pending = { from, to, amount: raw, ...(name ? { name } : {}) };
   $("r-amount").textContent = amt(raw); $("r-to").textContent = to; $("r-from").textContent = acct.label + " (" + short(from) + ")";
   $("r-name").textContent = name || ""; $("r-name-row").hidden = !name; $("r-name-note").hidden = !name;

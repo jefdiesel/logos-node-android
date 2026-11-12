@@ -4,11 +4,13 @@
   python3 tests/fake_node_api.py <port> [online|syncing]
 
 Answers /cryptarchia/info, /network/info and /wallet/<key>/balance (every key holds 12,500, in two notes).
-POST /mode/online or /mode/syncing switches the state the node reports.
+POST /mode/online or /mode/syncing switches the state the node reports. POST /balance/<n> sets what every key
+holds, and POST /balance/<key>/<n> what one key holds (for the balance-size checks).
 """
 import http.server, json, re, sys
 
 mode = {"state": sys.argv[2] if len(sys.argv) > 2 else "online"}
+balances = {"*": 12500}
 
 
 class H(http.server.BaseHTTPRequestHandler):
@@ -26,7 +28,8 @@ class H(http.server.BaseHTTPRequestHandler):
             return self.out(200, {"connected_peers": ["p1", "p2", "p3", "p4", "p5", "p6"]})
         m = re.match(r"^/wallet/([0-9a-f]{64})/balance$", self.path)
         if m:
-            return self.out(200, {"balance": 12500, "notes": {"n1": 10000, "n2": 2500}})
+            b = balances.get(m.group(1), balances["*"])
+            return self.out(200, {"balance": b, "notes": {"n1": 10000, "n2": 2500} if b == 12500 else {"n1": b}})
         return self.out(404, {"code": 404, "message": "not here"})
 
     def do_POST(self):
@@ -34,6 +37,12 @@ class H(http.server.BaseHTTPRequestHandler):
         if m:
             mode["state"] = m.group(1)
             return self.out(200, {"state": mode["state"]})
+        m = re.match(r"^/balance/(?:([0-9a-f]{64})/)?([0-9]+)$", self.path)
+        if m:
+            if m.group(1) is None:
+                balances.clear()
+            balances[m.group(1) or "*"] = int(m.group(2))
+            return self.out(200, {})
         return self.out(404, {"code": 404})
 
     def log_message(self, *a):

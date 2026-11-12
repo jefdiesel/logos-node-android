@@ -47,6 +47,7 @@ const cdp = (method, params = {}) => new Promise((ok) => { const id = ++seq; wai
 await cdp("Runtime.enable"); await cdp("Log.enable"); await cdp("Page.enable");
 await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
 await cdp("Emulation.setTouchEmulationEnabled", { enabled: true });
+await cdp("Emulation.setFocusEmulationEnabled", { enabled: true });      // focus events as in a focused window
 const js = async (expr) => { const r = await cdp("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }); if (r.result.exceptionDetails) throw new Error(expr + ": " + JSON.stringify(r.result.exceptionDetails)); return r.result.result.value; };
 const click = (sel) => js(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) throw new Error("no ${sel}"); e.click(); return true; })()`);
 const text = (sel) => js(`(document.querySelector(${JSON.stringify(sel)}) || {}).innerText || ""`);
@@ -57,7 +58,21 @@ const waitFor = async (name, expr, ms = 10000) => {
   check(name, false, { errors, page: (await js(`(document.querySelector(".ov") || document.getElementById("page-msg")).innerText`).catch(() => "")).slice(0, 400) });
 };
 // the old header's words must never show again, on any screen
-const noOldHeader = async (where) => check(`${where}: no "Logos node" or "running on this device"`, !/logos node|running on this device/i.test(await js(`document.body.innerText`)));
+const noOldHeader = async (where) => {
+  check(`${where}: no "Logos node" or "running on this device"`, !/logos node|running on this device/i.test(await js(`document.body.innerText`)));
+  await bigTargets(where);
+};
+// every control on screen is at least 44 x 44 px; exceptions: message bubbles (the text itself), a link inside
+// a sentence, and a switch whose whole row (44 px or more) toggles it
+const bigTargets = async (where) => {
+  const small = await js(`[...document.querySelectorAll("button, input:not([type=checkbox]):not([type=file]), select, summary")].filter(e => {
+    const r = e.getBoundingClientRect(); if (!r.width || !r.height) return false;
+    if (e.closest(".bub, .lnk") || e.classList.contains("bub") || e.classList.contains("lnk")) return false;
+    if (e.classList.contains("sw") && e.closest(".tg") && e.closest(".tg").getBoundingClientRect().height >= 44) return false;
+    return r.height < 43.5 || r.width < 43.5;
+  }).map(e => (e.id || e.className || e.tagName) + " " + Math.round(e.getBoundingClientRect().width) + "x" + Math.round(e.getBoundingClientRect().height))`);
+  check(`${where}: every control is at least 44 px`, small.length === 0, small);
+};
 let shotN = 0;
 async function shot(name) {
   if (!SHOTS) return;
@@ -97,6 +112,29 @@ await nodeMode("online");
 await waitFor("online: up to date, the balance as the hero", `document.getElementById("node-ic").dataset.kind === "ok" && /75,000/.test(document.getElementById("bal-total").textContent)`, 20000);
 check("no addresses on the wallet home until Receive", await js(`document.getElementById("p-recv").hidden && !/[0-9a-f]{10}…/.test(document.getElementById("page-main").innerText)`));
 await shot("wallet-home");
+// the balance: a normal size, on one line inside the card at any amount, on small and large phones
+const setBal = async (key, n) => (await fetch(`http://127.0.0.1:${NODE_PORT}/balance/${key ? key + "/" : ""}${n}`, { method: "POST" })).text();
+const key0 = await js(`accts[0].key`);
+for (const width of [360, 412]) {
+  await cdp("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 2, mobile: true });
+  for (const n of ["0", "111111111", "1000000000", "100000000000", "18446744073709551615"]) {
+    await setBal(null, 0); await setBal(key0, n);
+    const want = BigInt(n).toLocaleString("en-US");
+    await js(`loadAccounts(); true`);
+    await waitFor(`${width} px: the balance shows ${want}`, `document.getElementById("bal-total").firstChild && document.getElementById("bal-total").firstChild.textContent === ${JSON.stringify(want)}`);
+    await sleep(100);
+    const m = await js(`(() => { const e = document.getElementById("bal-total"), c = e.closest(".card").getBoundingClientRect(), r = e.getBoundingClientRect(), u = e.querySelector(".unit").getBoundingClientRect();
+      return { px: parseFloat(getComputedStyle(e).fontSize), fits: e.scrollWidth <= e.clientWidth, inCard: r.left >= c.left && r.right <= c.right && u.right <= c.right,
+               oneLine: Math.abs(u.top - r.top) < parseFloat(getComputedStyle(e).fontSize) && r.height < parseFloat(getComputedStyle(e).fontSize) * 1.6,
+               pageFits: document.documentElement.scrollWidth <= innerWidth }; })()`);
+    console.log(`     ${width} px, ${want}: ${m.px} px`);
+    check(`${width} px, ${want}: one line, inside the card, no sideways scroll, 18 to 34 px`, m.fits && m.inCard && m.oneLine && m.pageFits && m.px >= 18 && m.px <= 34, m);
+    if (width === 360 && n === "18446744073709551615") await shot("wallet-home-big-balance");
+  }
+}
+await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+await setBal(null, 12500); await js(`loadAccounts(); true`);
+await waitFor("back to the usual balance", `/75,000/.test(document.getElementById("bal-total").textContent)`);
 await noOldHeader("the wallet home");
 await click("#t-recv");
 await waitFor("Receive shows the address with Copy", `!document.getElementById("p-recv").hidden && document.getElementById("p-recv").innerText.includes("Copy address")`);
@@ -104,6 +142,11 @@ await shot("wallet-receive");
 await click("#t-send");
 await waitFor("Send", `!document.getElementById("p-send").hidden && !document.getElementById("b-review").disabled`);
 await shot("wallet-send");
+await bigTargets("Send");
+await js(`document.getElementById("to").focus(); true`);
+await waitFor("while typing, the bar steps aside for the keyboard", `getComputedStyle(document.getElementById("nav")).display === "none"`);
+await js(`document.getElementById("to").blur(); true`);
+await waitFor("and comes back after", `getComputedStyle(document.getElementById("nav")).display !== "none"`);
 await click("#t-send");
 await click("#node-ic");
 await waitFor("the node icon opens Settings > Node", `!document.getElementById("page-settings").hidden && document.getElementById("s-nodec").innerText.includes("Peers")`);
@@ -138,6 +181,9 @@ await shot("my-messaging-address");
 await click("#mg-addr-show");
 await js(`window.scrollTo(0, 0); document.getElementById("mg-link").open = true; true`);
 await shot("link-your-name");
+await js(`document.getElementById("mg-cmd-d").open = true; true`);
+await bigTargets("Settings > Messages, link your name");
+await js(`document.getElementById("mg-cmd-d").open = false; true`);
 await w.register("alice", { msg: key.public, color: "#2d6a4f" });
 await click("#mg-check");
 await waitFor("linked: it says messages come here", `document.getElementById("mg-check-m").textContent.includes("linked to this phone")`);
@@ -158,6 +204,7 @@ for (const [name, want] of [["zed", "isn't a registered name"], ["dave", "hasn't
   if (name === "dave") await shot("new-chat-nokey");
 }
 await shot("new-chat-by-name");
+await noOldHeader("New chat");
 await js(`[...document.querySelectorAll("#mg-found button")].find(b => b.textContent === "Start chat").click(); true`);
 await waitFor("the chat opens", `!!document.querySelector(".ov .cmp")`);
 await shot("chat-new");
@@ -194,6 +241,9 @@ await noOldHeader("a chat");
 await js(`document.querySelector(".bub.out").click(); true`);
 await waitFor("details of my message", `!!document.querySelector(".sheet") && document.querySelector(".sheet").innerText.includes("To bob")`);
 await shot("message-details");
+{ const t = await text(".sheet");
+  check("details say what the app knows, never delivered or read", t.includes("can't tell when bob reads it") && !/Stored|delivered/i.test(t), t); }
+await bigTargets("message details");
 await js(`history.back(); true`);
 await waitFor("the sheet closes", `!document.querySelector(".sheet")`);
 
@@ -206,6 +256,7 @@ await js(`(() => { const n = document.getElementById("pv-note"); n.value = "Runs
 await waitFor("note saved", `document.querySelector(".saved").textContent.includes("Saved")`);
 await shot("profile");
 await noOldHeader("a profile");
+check("a fine profile says nothing about verification", !/verified/i.test(await text(".pv-in")));
 await js(`history.back(); true`); await sleep(200);
 await js(`history.back(); true`);
 await waitFor("back on the list", `document.querySelectorAll("#mg-rows .crow").length >= 1 && !document.querySelector(".ov")`);
@@ -261,6 +312,7 @@ await waitFor("carol's chat shows up, unread", `document.getElementById("mg-rows
 await waitFor("and the one claiming to be dave, marked", `document.getElementById("mg-rows").innerText.includes("Not verified")`, 15000);
 await waitFor("the bar has an unread count", `!document.querySelector("#nav .badge").hidden`);
 await shot("list");
+await bigTargets("the chat list");
 const C2 = MC.newKeyPair();
 await w.register("carol", { msg: hex(C2.publicKey) });
 const sealedNew = MC.sealMessage({ to: MC.fromHex(key.public), from: "carol", fromSecret: C2.secretKey, text: "New phone, new address." });
@@ -270,6 +322,7 @@ await waitFor("carol's address changed: the banner", `!!document.querySelector("
 await waitFor("her message from the new address is marked", `document.querySelector(".cv-in").innerText.includes("new messaging address, not accepted")`, 10000);
 check("and there's no composer until it's accepted", await js(`document.querySelector(".cmp").hidden`));
 await shot("key-changed");
+await bigTargets("a chat with a changed address");
 await js(`[...document.querySelectorAll(".cv-ban button")].find(b => b.textContent === "Accept the change").click(); true`);
 await waitFor("accepted: the composer is back", `!document.querySelector(".cmp").hidden`);
 check("her earlier message is marked as from the earlier address", (await text(".cv-in")).includes("earlier messaging address"));

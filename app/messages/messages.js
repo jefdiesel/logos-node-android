@@ -56,12 +56,6 @@ body.kb #nav{display:none}body.kb.has-nav main{padding-bottom:24px}
 .av{display:inline-block;border-radius:50%;overflow:hidden;flex:none;background:var(--line)}
 .av img,.av svg{display:block;width:100%;height:100%;object-fit:cover}
 #page-msg h2.top{margin:0}
-.me{display:flex;gap:12px;align-items:center;width:100%;text-align:left;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin:0 0 14px;font-weight:400;min-height:64px}
-.me .t{flex:1;min-width:0}.me b{display:block;font-size:16px}.me small{display:block;font-size:13px;color:var(--dim)}
-.me small.ok{color:var(--ok)}.me small.warn{color:var(--warn)}.me .ic{color:var(--dim)}
-.me.todo{border-color:var(--warn)}
-.chats-top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:-2px 0 6px}
-.chats-top button{min-height:38px;padding:6px 14px 6px 10px;font-size:14px;display:inline-flex;align-items:center;gap:4px;color:var(--accent);border-color:var(--accent)}
 .crow{display:flex;gap:12px;align-items:center;width:100%;text-align:left;border:0;border-radius:10px;background:none;padding:0;font-weight:400;min-height:68px;color:var(--ink)}
 .crow:active{background:var(--field)}
 .crow .cb{flex:1;min-width:0;align-self:stretch;display:flex;flex-direction:column;justify-content:center;gap:2px;border-top:1px solid var(--line);padding:10px 0}
@@ -75,7 +69,6 @@ body.kb #nav{display:none}body.kb.has-nav main{padding-bottom:24px}
 .empty h3{font-size:18px;margin:14px 0 4px;letter-spacing:-.01em}.empty p{color:var(--dim);font-size:14px;margin:0 auto 4px;max-width:300px}
 .empty button{width:auto;padding-left:22px;padding-right:22px}
 .hero h3{font-size:21px;margin:14px 0 6px;letter-spacing:-.015em}.hero ul{margin:10px 0 0;padding-left:20px;color:var(--dim);font-size:14px}.hero li{margin:4px 0}
-.backrow{display:flex;align-items:center;gap:6px;margin:0 2px 12px}.backrow button{min-height:40px;padding:6px 12px 6px 6px;display:inline-flex;align-items:center;gap:2px}
 .found{display:flex;gap:14px;align-items:center;margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
 .found b{display:block;font-size:18px}.found small{display:block;font-size:13.5px;color:var(--dim)}
 .cmd{display:block;font-family:var(--mono);font-size:13px;background:var(--field);border:1px solid var(--line);border-radius:10px;padding:10px;overflow-wrap:anywhere;margin-top:8px}
@@ -86,7 +79,7 @@ body.kb #nav{display:none}body.kb.has-nav main{padding-bottom:24px}
 .who .t{min-width:0}.who b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:16.5px}
 .who small{display:block;font-size:12.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.who small.ok{color:var(--ok)}.who small.warn{color:var(--warn)}
 .cv-ban{flex:none;margin:10px 12px 0;padding:12px 14px;border:1px solid var(--warn);border-radius:12px;background:var(--card);font-size:14px}
-.cv-ban p{margin:0}.cv-ban .row{margin-top:10px}.cv-ban button{min-height:40px;font-size:14px}
+.cv-ban p{margin:0}.cv-ban .row{margin-top:10px}.cv-ban button{min-height:44px;font-size:14px}
 .cv-scroll{flex:1;overflow-y:auto;padding:6px 12px 10px;overscroll-behavior:contain}
 .cv-in{max-width:640px;margin:0 auto;display:flex;flex-direction:column;min-height:100%;justify-content:flex-end}
 .day{align-self:center;font-size:12px;font-weight:600;color:var(--dim);background:var(--card);border:1px solid var(--line);border-radius:999px;padding:3px 11px;margin:14px 0 6px}
@@ -110,7 +103,7 @@ body.kb #nav{display:none}body.kb.has-nav main{padding-bottom:24px}
 .cmp .go:disabled{background:var(--field);border-color:var(--line);color:var(--dim);opacity:1}
 .cmp .count{font-size:11.5px;color:var(--dim);align-self:center}
 .cmp-note{flex:none;padding:14px 16px calc(14px + env(safe-area-inset-bottom));background:var(--card);border-top:1px solid var(--line);font-size:14px;color:var(--dim);text-align:center}
-.cmp-note button{margin-left:8px;min-height:34px;font-size:13px;padding:4px 12px}
+.cmp-note button{margin-left:8px;min-height:44px;font-size:13px;padding:4px 14px}
 .pv-scroll{flex:1;overflow-y:auto;padding:16px 16px 40px}.pv-in{max-width:520px;margin:0 auto}
 .pv-head{text-align:center;padding:6px 0 18px}.pv-head .av{margin:0 auto}
 .pv-head h3{font-size:24px;margin:12px 0 2px;letter-spacing:-.02em;overflow-wrap:anywhere}.pv-head p{margin:2px 0 0;color:var(--dim);font-size:14px}
@@ -119,7 +112,7 @@ body.kb #nav{display:none}body.kb.has-nav main{padding-bottom:24px}
 .fp{font-family:var(--mono);font-size:13px;color:var(--dim);overflow-wrap:anywhere}
 #page-msg textarea,.ov textarea.note-f{width:100%;font:inherit;color:var(--ink);background:var(--field);border:1.5px solid var(--field-line);border-radius:10px;padding:12px;min-height:110px;resize:vertical}
 .ov textarea.note-f:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
-.tg{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line)}.tg:first-child{border-top:0;padding-top:0}
+.tg{cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line)}.tg:first-child{border-top:0;padding-top:0}
 .tg span{flex:1}.tg small{display:block;color:var(--dim);font-size:13px}
 .sw{width:52px;min-height:32px;height:32px;border-radius:999px;padding:0;border:1.5px solid var(--field-line);background:var(--field);position:relative;flex:none}
 .sw::after{content:"";position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:var(--dim);transition:left .15s}
@@ -134,7 +127,6 @@ body.kb #nav{display:none}body.kb.has-nav main{padding-bottom:24px}
 .mtop{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:4px 2px 16px;min-height:44px}
 .mtop h1{font-size:24px;margin:0;letter-spacing:-.02em}
 .mtop .acts{display:flex;gap:8px;align-items:center}
-.mtop .new{min-height:40px;padding:6px 14px 6px 10px;font-size:14px;display:inline-flex;align-items:center;gap:4px;color:var(--accent);border-color:var(--accent)}
 .mtop .ic-b{width:44px;min-height:44px;padding:0;display:inline-flex;align-items:center;justify-content:center;border:0}
 .mtop .mnode{margin:2px 0 0;font-size:13px;color:var(--dim)}
 .rows{margin:0 -16px;padding:0 16px}
@@ -143,18 +135,20 @@ body.kb #nav{display:none}body.kb.has-nav main{padding-bottom:24px}
 .mnode button{min-height:44px;font-size:13px;padding:4px 12px;flex:none}
 .hint-card{display:flex;gap:10px;align-items:flex-start;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 8px 12px 14px;margin:0 0 14px;font-size:14px}
 .hint-card p{margin:0;flex:1}.hint-card .lnk{border:0;background:none;padding:0;min-height:0;color:var(--accent);font-weight:600;font-size:14px}
-.hint-card .x{width:32px;min-height:32px;padding:0;border:0;display:inline-flex;align-items:center;justify-content:center;color:var(--dim);flex:none}
+.hint-card .x{width:44px;min-height:44px;padding:0;border:0;display:inline-flex;align-items:center;justify-content:center;color:var(--dim);flex:none}
 @media (prefers-reduced-motion:reduce){.sw::after{transition:none}}
 ` }));
 const vp = document.querySelector('meta[name="viewport"]');               // keep the composer above the keyboard
 if (vp && !/interactive-widget/.test(vp.content)) vp.content += ",interactive-widget=resizes-content";
 if (window.visualViewport) {
-  const fit = () => {
-    document.documentElement.style.setProperty("--vvh", Math.round(visualViewport.height) + "px");
-    document.body.classList.toggle("kb", visualViewport.height < window.innerHeight * 0.78);    // a keyboard is up
-  };
+  const fit = () => document.documentElement.style.setProperty("--vvh", Math.round(visualViewport.height) + "px");
   visualViewport.addEventListener("resize", fit); fit();
 }
+// while a text field has the focus (the keyboard is up on a phone), the Wallet / Messages bar steps aside
+const typing = t => !!t && t.matches && t.matches("textarea, input:not([type=checkbox]):not([type=radio]):not([type=file])");
+const kbSync = () => document.body.classList.toggle("kb", typing(document.activeElement) && document.activeElement.offsetParent !== null);
+document.addEventListener("focusin", kbSync);
+document.addEventListener("focusout", () => setTimeout(kbSync, 0));
 
 // ---- the bar: Wallet / Messages ----------------------------------------------------------------------
 const badge = el("span", { className: "badge", hidden: true });
@@ -172,7 +166,7 @@ function setTab(t) {
   pageHeader.hidden = t === "msg";               // Messages has its own top; the node's header is the wallet's
   navWallet.removeAttribute("aria-current"); navMsg.removeAttribute("aria-current");
   (t === "wallet" ? navWallet : navMsg).setAttribute("aria-current", "page");
-  window.scrollTo(0, 0);
+  window.scrollTo(0, 0); kbSync();
   if (t === "msg") { home(); refresh(); }
 }
 navWallet.addEventListener("click", () => setTab("wallet"));
@@ -235,9 +229,12 @@ msgSettings.innerHTML = `
   <p class="msg" id="mg-name-m" role="status"></p>
   <p class="hint">Without a name you can still write and get messages: people use your messaging address, and see your messages as from it.</p>
   <details id="mg-link"><summary>Link your name to this phone</summary>
-    <p class="note">Link it in the Names app where you registered it, by setting its msg entry to this phone's messaging address. On the computer that holds the name, this does it:</p>
-    <code class="cmd" id="mg-cmd"></code>
-    <div class="row"><button type="button" id="mg-copy">Copy command</button><button type="button" id="mg-check">I've linked it</button></div>
+    <p class="note">Link your name to this phone's messaging address in the Names app where you registered it. Then tap I've linked it.</p>
+    <button type="button" id="mg-check" style="width:100%;margin-top:12px">I've linked it</button>
+    <details id="mg-cmd-d"><summary>Show command for the terminal</summary>
+      <code class="cmd" id="mg-cmd"></code>
+      <button type="button" id="mg-copy" style="width:100%;margin-top:10px">Copy command</button>
+    </details>
   </details>
   <h3>Your messaging address</h3>
   <p class="note" style="margin-top:0">Anyone can write to this phone at this address, with or without an LNS name. It isn't a wallet address: coins can't be sent to it.</p>
@@ -268,7 +265,7 @@ const pageShow = window.show;
 let resume = null, reopen = null;
 window.show = v => {
   if (v !== "v-open" && !resume && (chat || tab === "msg")) resume = { tab, convo: cv.id };
-  pageShow(v);
+  pageShow(v); setTimeout(kbSync, 0);
   if (v !== "v-open") forget();
   else if (resume) { const r = resume; resume = null; reopen = r.convo; setTab(r.tab); return; }
   if (tab === "msg") render();
@@ -340,7 +337,7 @@ if ($("rs-warn")) $("rs-warn").after(rsMsg);
 const BK_WHAT = $("bk-what") ? $("bk-what").textContent : "", BK_WHO = $("bk-who") ? $("bk-who").textContent : "";
 function renderBackupCopy() {
   const on = !!(status && status.key);
-  if ($("bk-what")) $("bk-what").textContent = on ? "Saves this wallet's keys, your messaging address and your chats as an encrypted file. The file is locked with a backup password you choose here, not your PIN. Use a long one you won't forget." : BK_WHAT;
+  if ($("bk-what")) $("bk-what").textContent = on ? "Saves this wallet, your messaging address and your chats as an encrypted file. The file is locked with a backup password you choose here, not your PIN. Use a long one you won't forget." : BK_WHAT;
   if ($("bk-who")) $("bk-who").textContent = on ? "Anyone with the file and its password controls this wallet, can read your chats and can send messages as you." : BK_WHO;
   rsMsg.hidden = !on;
 }
@@ -363,7 +360,7 @@ function updateBadge() {
 $("mg-me").addEventListener("click", openMsgSettings);
 const cardOf = pid => { const c = chat && !isAddressId(pid) && chat.chainOf(pid); return c ? { avatar: c.avatar, color: c.color } : {}; };
 /** A conversation's icon; a grey "?" for messages that didn't come from the name they claim. */
-const convoIcon = (c, size) => c.unverified ? icon("", { key: "", size, letters: "?", color: "#8a8476" })
+const convoIcon = (c, size) => c.unverified ? icon("", { key: "", size, letters: "?", color: "#6d6960" })
   : c.kind === "direct" ? iconOf(chat.peer(c), size) : icon(c.title, { key: c.id, size });
 /** A person's icon: generated from the name (or address) and the pinned key, or the name's own picture. */
 const iconOf = (pid, size, key) => isAddressId(pid)
@@ -389,7 +386,7 @@ function preview(c) {
   }
   const trust = chat.trust(m);
   if (c.convo.unverified) return { text: t, warn: true };         // the title already says it
-  if (trust === "unverified") return { text: "⚠ Not verified: " + t, warn: true };
+  if (trust === "unverified") return { text: "Not verified: " + t, warn: true };
   if (c.convo.kind !== "direct") return { text: chat.label(m.sender) + ": " + t, warn: false };
   return { text: t, warn: false };
 }
@@ -766,9 +763,15 @@ function details(m) {
     const del = el("button", { type: "button", className: "danger", textContent: "Delete" });
     del.style.marginTop = "0";
     del.addEventListener("click", async () => { close(); await chat.deleteMessage(m); renderConvo(); });
-    const to1 = m.dir === "out" && m.to.length === 1 ? chat.label(m.to[0].name || "k:" + m.to[0].key) : "they";
-    const help = m.dir === "out" ? "Sent. The network holds it so " + to1 + " gets it next time they're online. This app can't tell when " + to1 + " reads it. Deleting removes it from this phone only."
-                                 : "Deleting removes it from this phone only.";
+    let help = "Deleting removes it from this phone only.";
+    if (m.dir === "out") {        // what the app knows, and nothing more: never that it was delivered or read
+      const one = m.to.length === 1, who = one ? chat.label(m.to[0].name || "k:" + m.to[0].key) : "they", st = sendState(m);
+      const reads = " This app can't tell when " + who + (one ? " reads" : " read") + " it.";
+      help = (st.bad ? "Not sent."
+        : st.done && m.sends.every(x => x.state === "sent") ? "Sent. The network holds it so " + who + (one ? " gets" : " get") + " it next time they're online." + reads
+        : st.done ? "Sent: it reached the network." + reads
+        : status && status.node.reachable === false ? "Not sent yet. It goes when you're back online." : "Sending.") + " " + help;
+    }
     card.append(el("h2", { textContent: m.dir === "out" ? "Your message" : "Message from " + chat.label(m.sender) }),
       el("div", { className: "quote", textContent: m.text }), el("dl", {}, ...rows), el("p", { className: "note", textContent: help }),
       el("div", { className: "row" }, copy, del));
@@ -801,8 +804,7 @@ function renderProfile() {
     if (!c.registered) state = ["bad", "Not a registered name"];
     else if (st.changed) state = ["warn", "Address changed"];
     else if (!c.key) state = ["warn", "Messages off"];
-    else if (!(st.pinned && st.pinned === c.key)) state = ["warn", "Not verified"];
-  }
+  }                               // all fine: nothing is said (problems only)
   const head = el("div", { className: "pv-head" }, iconOf(pid, 96),
     el("h3", { textContent: label }),
     !addr && p.nickname ? el("p", { textContent: pid }) : null,
@@ -811,7 +813,7 @@ function renderProfile() {
     state[1] ? el("span", { className: "state " + state[0], textContent: state[1] }) : null);
   const parts = [head];
   if (st.changed) {
-    const acc = el("button", { type: "button", className: "primary", textContent: "Accept the change" });
+    const acc = el("button", { type: "button", textContent: "Accept the change", style: "width:100%;margin-top:14px" });
     acc.addEventListener("click", async () => { acc.disabled = true; await chat.acceptKey(pid).catch(() => {}); renderProfile(); if (cv.id) checkSend(true); });
     parts.push(el("section", { className: "card" }, el("p", { className: "msg warn", style: "margin:0", textContent: pid + "'s messaging address changed. That happens with a new phone, or when someone else took over the name. Check with them another way if you can." }), acc));
   }
@@ -841,11 +843,11 @@ function renderProfile() {
   const det = el("details", { className: "card", style: "padding:14px 16px" }, el("summary", { textContent: "Details" }),
     el("dl", { style: "margin-top:8px" },
       el("div", {}, el("dt", { textContent: "Messaging address" }), el("dd", { className: "fp", textContent: st.pinned ? shortFp(st.pinned) : "none yet" })),
-      st.changed ? el("div", {}, el("dt", { textContent: "New one on the chain" }), el("dd", { className: "fp", textContent: shortFp(st.chain) })) : null),
+      st.changed ? el("div", {}, el("dt", { textContent: "New messaging address" }), el("dd", { className: "fp", textContent: shortFp(st.chain) })) : null),
     st.pinned ? reveal : null, full,
     el("p", { className: "note", textContent: addr
       ? "Messages from this address prove they hold it; there's no name to check it against. Compare the short code with them if it matters."
-      : "Kept from your first contact. If " + pid + "'s msg entry ever changes, the chat asks you to accept the change before anything is sent to it." }));
+      : "Kept from your first contact. If " + pid + "'s messaging address ever changes, the chat asks you to accept the change before anything is sent to it." }));
   parts.push(det);
   const delChat = el("button", { type: "button", className: "danger", textContent: "Delete chat" });
   delChat.addEventListener("click", () => confirmSheet("Delete the chat with " + label + "?", "Its messages are removed from this phone. The profile and note stay.", "Delete chat", true,

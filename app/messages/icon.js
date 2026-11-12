@@ -8,8 +8,9 @@ import { sha256 } from "./noble-hashes/sha2.js";
 const NS = "http://www.w3.org/2000/svg";
 const svgEl = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
 
-// muted colours that hold white letters in light and dark mode
-const PALETTE = ["#2b6cb0", "#2f855a", "#805ad5", "#c53030", "#b7791f", "#0b7a83", "#b83280", "#4a5568"];
+// eight well-separated hues (blue, green, purple, red, amber, teal, magenta, olive); white letters on each
+// are at least 4.5:1, and none is the grey of the "?" shown for a sender who isn't who they say
+const PALETTE = ["#2b6cb0", "#2f855a", "#805ad5", "#c53030", "#a16207", "#0b7a83", "#b83280", "#4d7c0f"];
 const light = c => { const v = [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16) / 255).map(x => x <= .04045 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4);
   return .2126 * v[0] + .7152 * v[1] + .0722 * v[2] > .32; };
 
