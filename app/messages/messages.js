@@ -73,8 +73,7 @@ body.kb #nav{display:none}body.kb.has-nav main{padding-bottom:24px}
 .found b{display:block;font-size:18px}.found small{display:block;font-size:13.5px;color:var(--dim)}
 .cmd{display:block;font-family:var(--mono);font-size:13px;background:var(--field);border:1px solid var(--line);border-radius:10px;padding:10px;overflow-wrap:anywhere;margin-top:8px}
 .ov,#mg-newv{position:fixed;left:0;right:0;top:0;height:var(--vvh,100dvh);z-index:20;background:var(--bg);display:flex;flex-direction:column}
-.ov-top{display:flex;align-items:center;gap:6px;padding:6px 8px;padding-top:calc(6px + env(safe-area-inset-top));background:var(--card);border-bottom:1px solid var(--line);min-height:62px;flex:none}
-.ov-top .back{width:44px;min-height:44px;padding:0;border:0;display:inline-flex;align-items:center;justify-content:center;flex:none}
+.ov-top{padding-top:calc(6px + env(safe-area-inset-top));flex:none}
 .who{flex:1;min-width:0;display:flex;align-items:center;gap:10px;border:0;background:none;padding:4px 6px;text-align:left;font-weight:400;min-height:48px;color:var(--ink)}
 .who .t{min-width:0}.who b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:16.5px}
 .who small{display:block;font-size:12.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.who small.ok{color:var(--ok)}.who small.warn{color:var(--warn)}
@@ -130,7 +129,6 @@ body.kb #nav{display:none}body.kb.has-nav main{padding-bottom:24px}
 .mtop .ic-b{width:44px;min-height:44px;padding:0;display:inline-flex;align-items:center;justify-content:center;border:0}
 .mtop .mnode{margin:2px 0 0;font-size:13px;color:var(--dim)}
 .rows{margin:0 -16px;padding:0 16px}
-.ov-title{font-size:16.5px}
 .mnode{display:flex;align-items:center;gap:10px}
 .mnode button{min-height:44px;font-size:13px;padding:4px 12px;flex:none}
 .hint-card{display:flex;gap:10px;align-items:flex-start;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 8px 12px 14px;margin:0 0 14px;font-size:14px}
@@ -175,8 +173,7 @@ setTab("wallet");
 // Settings is its own view; going back returns to the screen it came from
 const pageOpenSettings = window.openSettings, pageCloseSettings = window.closeSettings;
 window.openSettings = (...a) => {
-  msgSettings.hidden = !(chat && me);
-  if (chat && me) openMe();
+  msgSettingsUi(true);
   pageOpenSettings(...a); page.hidden = true; nav.hidden = true; document.body.classList.remove("has-nav");
 };
 window.closeSettings = () => { pageCloseSettings(); nav.hidden = false; document.body.classList.add("has-nav"); setTab(tab); };
@@ -208,7 +205,7 @@ page.innerHTML = `
     <div id="mg-rows" class="rows"></div>
   </div>
   <div id="mg-newv" role="dialog" aria-modal="true" aria-labelledby="h-new" hidden>
-    <div class="ov-top"><button type="button" class="back mg-home" aria-label="Back"></button><b id="h-new" class="ov-title">New chat</b></div>
+    <div class="ov-top bar"><button type="button" class="back mg-home" aria-label="Back" title="Back"></button><h2 id="h-new" class="bar-t">New chat</h2></div>
     <div class="pv-scroll"><div class="pv-in">
       <form id="mg-find" autocomplete="off">
         <label for="mg-to" style="margin-top:0">An LNS name or a messaging address</label>
@@ -243,7 +240,26 @@ msgSettings.innerHTML = `
   <div class="row"><button type="button" id="mg-addr-show" aria-controls="mg-addr" aria-expanded="false">Show</button><button type="button" id="mg-addr-copy">Copy</button></div>
   <p class="msg" id="mg-addr-m" role="status"></p>`;
 $("s-slot").append(msgSettings);
+// Settings > Messages and the gear on Messages open this same page (Settings' Messages group)
 const openMsgSettings = () => { openSettings("s-msg"); };
+/** Shows the Messages section while messages are on and loaded; fills it again when asked (`fresh`) or when
+ *  the messaging identity changed, so a refresh never clears what is being typed. */
+let meShown = null;
+function msgSettingsUi(fresh = false) {
+  const on = !!(chat && me);
+  msgSettings.hidden = !on;
+  if (!on) { meShown = null; return; }
+  if (fresh || meShown !== me) { meShown = me; openMe(); }
+}
+/** Settings' Messages row: one line on your LNS name; "linked" only once the name service said so. */
+window.msgSettingsState = () => {
+  if (!chat || !me) return "";
+  if (!me.name) return "On · no LNS name yet";
+  const c = chat.chainOf(me.name);
+  if (!c) return "On · " + me.name;
+  if (c.key === me.public) return "On · linked to " + me.name;
+  return [c.registered ? "On · " + me.name + " isn't linked yet" : "On · " + me.name + " isn't registered", "warn"];
+};
 for (const b of page.querySelectorAll(".mg-home")) { b.append(svg(P.back)); b.addEventListener("click", () => popOv()); }
 $("mg-new").append(svg(P.plus, 24));
 $("mg-me").append(svg(P.gear, 22));
@@ -255,20 +271,24 @@ const forget = () => {        // nothing of the chats stays in the page while it
   for (const id of ["mg-rows", "mg-found", "mg-hint", "mg-addr-qr"]) $(id).replaceChildren();
   for (const id of ["mg-to", "mg-name"]) $(id).value = "";
   for (const id of ["mg-cmd", "mg-addr", "mg-check-m", "mg-name-m", "mg-addr-m"]) $(id).textContent = "";
-  badge.hidden = true;
+  badge.hidden = true; msgSettingsUi();
 };
 function home() { if (view === "new" && stack.length && stack[stack.length - 1].name === "new") popOv(); view = "home"; $("mg-newv").hidden = true; render(); }
 
 // everything goes when the wallet locks
 const pageShow = window.show;
 // The lock screen covers everything (the page's own); after unlocking, back to where the user was: the
-// same tab, and the same chat if one was open.
+// same tab, and the same chat if one was open, or the same Settings page.
 let resume = null, reopen = null;
 window.show = v => {
-  if (v !== "v-open" && !resume && (chat || tab === "msg")) resume = { tab, convo: cv.id };
+  if (v !== "v-open" && !resume && (chat || tab === "msg")) resume = { tab, convo: cv.id, settings: !$("page-settings").hidden };
   pageShow(v); setTimeout(kbSync, 0);
   if (v !== "v-open") forget();
-  else if (resume) { const r = resume; resume = null; reopen = r.convo; setTab(r.tab); return; }
+  else if (resume) {
+    const r = resume; resume = null;
+    if (r.settings && !$("page-settings").hidden) { tab = r.tab; refresh(); return; }    // Settings stays as it was
+    reopen = r.convo; setTab(r.tab); return;
+  }
   if (tab === "msg") render();
 };
 
@@ -294,7 +314,7 @@ async function refresh() {
   if (loading) { await loading; loading = null; }
   if (reopen && chat && chat.convo(reopen)) { const id = reopen; reopen = null; render(); openConvo(id); }
   else if (chat) { try { if (await chat.sync()) changed(); } catch (e) { if (e.status === 401) return lockedNow(); } }
-  render();
+  render(); msgSettingsUi();
 }
 function changed() { if (cv.id) renderConvo(); }       // a profile isn't redrawn under someone typing a note
 
@@ -597,7 +617,7 @@ const cv = { id: null, node: null };
 function openConvo(id, fromNew = false) {
   if (cv.id) popOv();
   cv.id = id;
-  const back = el("button", { type: "button", className: "back", ariaLabel: "Back to chats" }, svg(P.back));
+  const back = el("button", { type: "button", className: "back", ariaLabel: "Back", title: "Back" }, svg(P.back));
   back.addEventListener("click", () => popOv());
   const who = el("button", { type: "button", className: "who" });
   who.addEventListener("click", () => { const c = chat.convo(cv.id); if (c && c.kind === "direct" && !c.unverified) openProfile(chat.peer(c)); });
@@ -610,7 +630,7 @@ function openConvo(id, fromNew = false) {
   const count = el("span", { className: "count", hidden: true });
   const cmp = el("form", { className: "cmp" }, el("div", { className: "wrap" }, ta, count, go));
   const note = el("div", { className: "cmp-note", hidden: true });
-  const box = el("div", { className: "ov", role: "dialog", ariaModal: "true" }, el("div", { className: "ov-top" }, back, who), ban, scroll, cmp, note);
+  const box = el("div", { className: "ov", role: "dialog", ariaModal: "true" }, el("div", { className: "ov-top bar" }, back, who), ban, scroll, cmp, note);
   cv.node = { box, who, ban, inner, scroll, ta, go, cmp, note, count, blocker: null };
   const grow = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight + 3, 150) + "px";
     go.disabled = !ta.value.trim() || !!cv.node.blocker; const left = MAX_TEXT - ta.value.length;
@@ -807,11 +827,11 @@ const pv = { name: null, node: null };
 function openProfile(name) {
   if (pv.name) popOv();
   pv.name = name;
-  const back = el("button", { type: "button", className: "back", ariaLabel: "Back" }, svg(P.back));
+  const back = el("button", { type: "button", className: "back", ariaLabel: "Back", title: "Back" }, svg(P.back));
   back.addEventListener("click", () => popOv());
   const inner = el("div", { className: "pv-in" });
-  const box = el("div", { className: "ov", role: "dialog", ariaModal: "true" },
-    el("div", { className: "ov-top" }, back, el("b", { style: "font-size:16.5px", textContent: "Profile" })), el("div", { className: "pv-scroll" }, inner));
+  const box = el("div", { className: "ov", role: "dialog", ariaModal: "true", ariaLabel: "Profile" },
+    el("div", { className: "ov-top bar" }, back, el("h2", { className: "bar-t", textContent: "Profile" })), el("div", { className: "pv-scroll" }, inner));
   pv.node = { box, inner };
   document.body.append(box);
   pushOv("pv", () => { box.remove(); pv.name = null; pv.node = null; });

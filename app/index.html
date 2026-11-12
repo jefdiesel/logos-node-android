@@ -46,9 +46,24 @@ h3{font-size:15px;font-weight:650;margin:16px 0 6px}
 .ph{color:var(--dim);font-weight:500}
 .acts{margin-top:18px}.acts button{min-height:50px}
 .acts button[aria-expanded="true"]{box-shadow:inset 0 0 0 2px var(--ink)}
-.topbar{display:flex;align-items:center;gap:6px;margin:0 0 16px;min-height:48px}
-.topbar h1{font-size:22px}
-button.back{border:0;background:none;min-height:44px;padding:0 10px 0 2px;display:inline-flex;align-items:center;gap:2px;color:var(--ink)}
+/* the one top bar of every screen with a Back: a chevron (44 px) and the title beside it, on one line */
+.bar{display:flex;align-items:center;gap:4px;min-height:56px;padding:6px 8px;background:var(--card);border-bottom:1px solid var(--line)}
+.bar .back{width:44px;height:44px;min-height:44px;padding:0;border:0;border-radius:50%;background:none;display:inline-flex;align-items:center;justify-content:center;flex:none;color:var(--ink)}
+.bar .back:active{background:var(--field)}
+.bar-t{font-size:17px;font-weight:620;line-height:1.3;letter-spacing:-.01em;margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
+#page-settings .bar{position:sticky;top:0;z-index:4;margin:-20px -16px 16px;padding-top:calc(6px + env(safe-area-inset-top))}
+/* Settings home: one row per group, each opening its own page */
+.card.groups{padding:0;overflow:hidden}
+.grow{display:flex;align-items:center;gap:14px;width:100%;min-height:66px;margin-top:-1px;padding:10px 10px 10px 14px;border:0;border-top:1px solid var(--line);border-radius:0;background:none;text-align:left;font-weight:400;color:var(--ink)}
+.grow:active{background:var(--field)}
+.grow .gi{flex:none;width:38px;height:38px;border-radius:11px;background:var(--field);border:1px solid var(--line);display:inline-flex;align-items:center;justify-content:center;color:var(--ink)}
+.grow .gt{flex:1;min-width:0}
+.grow .gt b{display:block;font-size:16px;font-weight:600;line-height:1.3}
+.grow .gt small{display:block;font-size:13.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.grow .gt small:empty{display:none}.grow .gt small.warn{color:var(--warn)}
+.grow .gc{flex:none;color:var(--dim);display:inline-flex}
+#page-settings section{scroll-margin-top:72px}
+#page-settings h2.vh + div > h3:first-child{margin-top:0}
 .pill{font-size:13px;font-weight:600;padding:4px 10px;border-radius:999px;border:1px solid var(--line);white-space:nowrap}
 .pill.ok{color:var(--ok)}.pill.warn{color:var(--warn)}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 16px;margin-bottom:14px}
@@ -252,12 +267,15 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
   </div>
 
   <div id="page-settings" hidden>
-    <div class="topbar">
-      <button type="button" id="b-settings-back" class="back" aria-label="Back"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Back</span></button>
-      <h1 id="h-settings">Settings</h1>
+    <div class="bar">
+      <button type="button" id="b-settings-back" class="back" aria-label="Back" title="Back"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" focusable="false"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      <h1 id="h-settings" class="bar-t">Settings</h1>
+    </div>
+    <div id="s-home">
+      <p class="card note" id="s-locked" hidden style="margin:0 0 14px">Unlock the wallet to change settings.</p>
+      <div class="card groups" id="s-groups"></div>
     </div>
     <div id="s-slot"></div>
-    <p class="card note" id="s-locked" hidden style="margin:0 0 14px">Unlock the wallet to change settings.</p>
 
     <section class="card" id="s-nodec" aria-labelledby="h-node">
       <h2 id="h-node">Node</h2>
@@ -579,11 +597,118 @@ function settingsUi() {
   for (const id of ["s-upd", "s-bk", "s-rs", "s-sec", "s-nodec"]) $(id).hidden = !open;
   $("s-locked").hidden = open; aboutUpdate();
   if (!open) { resetBackup(); resetRestore(); $("upd-pin").value = ""; $("nfp-pin").value = ""; pinButtons(); }
+  stRows();
 }
+// The groups of Settings, in the order the home list shows them. Each is one row there and its own page,
+// which holds the sections listed (moved there as they are, ids kept). A group shows only while one of its
+// sections is in the page and not hidden. To add a group, add one line here (and its section to the page).
+const GI = d => '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">' + d + "</g></svg>";
+const ST_GROUPS = [
+  { id: "msg", label: "Messages", sections: ["s-msg"], state: () => typeof window.msgSettingsState === "function" ? window.msgSettingsState() : "",
+    icon: GI('<path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.2 3.2c-.5.4-1.3 0-1.3-.6V17A2.5 2.5 0 0 1 4 14.5z"/>') },
+  // (a "Your name" group goes here, after Messages: { id: "name", label: "Your name", sections: ["s-name"], state: () => "…", icon: GI("…") },)
+  { id: "node", label: "Node", sections: ["s-nodec"], state: nodeState1,
+    icon: GI('<path d="M12 3.5l7.5 4.2v8.6L12 20.5l-7.5-4.2V7.7z"/><path d="M4.5 7.7L12 12l7.5-4.3M12 12v8.5"/>') },
+  { id: "sec", label: "Security", sections: ["s-sec"], state: secState1,
+    icon: GI('<rect x="5" y="10.5" width="14" height="9.5" rx="2.2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/>') },
+  { id: "upd", label: "Updates", sections: ["s-upd"], state: updState1,
+    icon: GI('<path d="M12 4v11M7 10.5l5 5 5-5M5 19.5h14"/>') },
+  { id: "bk", label: "Backup & restore", sections: ["s-bk", "s-rs"], state: bkState1,
+    icon: GI('<rect x="3.5" y="4.5" width="17" height="4.5" rx="1.2"/><path d="M5 9v9.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V9M10 13h4"/>') },
+  { id: "about", label: "About", sections: ["s-about"], state: () => "Version " + (PAGE_VERSION || "-") + " · Testnet",
+    icon: GI('<circle cx="12" cy="12" r="8.6"/><path d="M12 11v5.5M12 7.8v.1"/>') },
+];
+// one short line of where each group stands; [text, "warn"] for something to look at
+function nodeState1() {
+  const w = $("pill").textContent.trim();
+  return w ? w.charAt(0).toUpperCase() + w.slice(1) + (nodeInfo && nodeInfo.height != null ? " · block " + nfmt(nodeInfo.height) : "") : "";
+}
+function secState1() {
+  const fp = EMBEDDED ? nativeFp : passkeys > 0, m = Number($("al-min").value);
+  return (fp ? "Fingerprint on" : "PIN") + " · locks after " + m + " minute" + (m === 1 ? "" : "s");
+}
+function updState1() {
+  if (EMBEDDED) return "Version " + (PAGE_VERSION || "-") + " · comes with the Android app";
+  return lastAvailable ? ["Version " + lastAvailable + " is available", "warn"] : "Version " + (PAGE_VERSION || "-");
+}
+function bkState1() {
+  if (!$("bk-state").textContent) return "";                 // not read yet
+  if (!lastBackup) return ["No backup yet", "warn"];
+  const t = new Date(lastBackup).getTime();
+  return isNaN(t) ? "Last backup " + when(lastBackup) : "Last backup " + ago((Date.now() - t) / 1000) + " ago";
+}
+let stLevel = "home", stDeep = false, stIgnore = 0;
+const stGroupOf = id => ST_GROUPS.find(g => g.sections.includes(id));
+const stAvail = g => g.sections.some(id => $(id) && !$(id).hidden);
+/** A group's page: made the first time, with the group's sections moved into it in order. */
+function stBox(g) {
+  let box = $("st-" + g.id);
+  if (!box) { box = document.createElement("div"); box.id = "st-" + g.id; box.hidden = true; $("page-settings").append(box); }
+  for (const id of g.sections) {
+    const s = $(id); if (!s) continue;
+    if (s.parentNode !== box) box.append(s);
+    const h = s.querySelector("h2");           // a group of one: the bar's title already says it (kept for screen readers)
+    if (h) h.classList.toggle("vh", g.sections.length === 1);
+  }
+  return box;
+}
+/** The home list: made once, then each row's state line and whether it shows. */
+function stRows() {
+  for (const g of ST_GROUPS) {
+    if (!g.row) {
+      const b = document.createElement("button"); b.type = "button"; b.className = "grow"; b.id = "go-" + g.id;
+      b.innerHTML = '<span class="gi"></span><span class="gt"><b></b><small></small></span><span class="gc"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>';
+      b.querySelector(".gi").innerHTML = g.icon || ""; b.querySelector("b").textContent = g.label;
+      b.addEventListener("click", () => openSettings(g.sections.find(id => $(id) && !$(id).hidden)));
+      $("s-groups").append(b); g.row = b;
+    }
+    const on = stAvail(g); g.row.hidden = !on;
+    if (!on) continue;
+    let st = ""; try { st = g.state ? g.state() : ""; } catch (e) {}
+    const [text, cls] = Array.isArray(st) ? st : [st, ""], sm = g.row.querySelector("small");
+    if (sm.textContent !== text) sm.textContent = text;
+    sm.className = cls || "";
+    g.row.setAttribute("aria-label", g.label + (text ? ". " + text : ""));
+  }
+}
+/** Shows Settings' home list ("home") or one group's page. */
+function stShow(level) {
+  const g = ST_GROUPS.find(x => x.id === level) || null;
+  stLevel = g ? g.id : "home";
+  $("s-home").hidden = !!g;
+  $("h-settings").textContent = g ? g.label : "Settings";
+  for (const x of ST_GROUPS) stBox(x).hidden = x !== g;
+  stRows();
+}
+// the state lines follow the app while the home list shows
+setInterval(() => { if (!$("page-settings").hidden && stLevel === "home") stRows(); }, 1000);
+// Back, on screen or the phone's: up one level. Settings opened at a group from elsewhere (the node icon, a
+// notice, the Messages gear) goes back there; from the home list, back to the list. Each level is a history
+// step, so the Android app's Back (which goes back in the page's history) does the same.
+try { if (history.state && history.state.st) history.replaceState(null, ""); } catch (e) {}   // left from before a reload
+try { history.scrollRestoration = "manual"; } catch (e) {}      // each level starts at its top; the browser doesn't move it
+function stUp() { if (stLevel !== "home" && !stDeep) { stShow("home"); window.scrollTo(0, 0); } else closeSettings(); }
+function settingsBack() {
+  if (history.state && history.state.st) { stIgnore++; history.back(); }
+  stUp();
+}
+addEventListener("popstate", e => {
+  if (stIgnore) { stIgnore--; return; }
+  if ($("page-settings").hidden) return;
+  const s = e.state && e.state.st;
+  if (!s) return closeSettings();
+  if (s !== stLevel) { stShow(s); window.scrollTo(0, 0); }
+});
 function openSettings(section, focusId) {
+  const wasOpen = !$("page-settings").hidden, g = section ? stGroupOf(section) : null, level = g ? g.id : "home";
   $("page-main").hidden = true; $("page-settings").hidden = false; $("hdr").hidden = true; settingsUi();
+  if (!wasOpen) { stDeep = level !== "home"; history.pushState({ st: level }, ""); }
+  else if (level !== stLevel) {
+    if (stLevel === "home") history.pushState({ st: level }, ""); else history.replaceState({ st: level }, "");
+  }
+  stShow(level);
   const el = section && !$(section).hidden ? $(section) : null;
-  if (!el) return window.scrollTo(0, 0);
+  if (!el || !focusId) return window.scrollTo(0, 0);
   // bring the section to the top and put the cursor where the action starts; again on the next frame,
   // once the view switch has been laid out (a phone's keyboard can move things too)
   const go = () => {
@@ -595,7 +720,7 @@ function openSettings(section, focusId) {
 }
 function closeSettings() { $("page-settings").hidden = true; $("page-main").hidden = false; $("hdr").hidden = false; window.scrollTo(0, 0); }
 $("b-gear").addEventListener("click", () => $("page-settings").hidden ? openSettings() : closeSettings());
-$("b-settings-back").addEventListener("click", () => closeSettings());   // (late-bound: Messages wraps it)
+$("b-settings-back").addEventListener("click", () => settingsBack());   // (closeSettings is late-bound: Messages wraps it)
 $("n-bk").addEventListener("click", () => openSettings("s-bk", "bk-pw1"));
 $("n-upd").addEventListener("click", () => openSettings("s-upd", $("b-upd-fp").hidden ? "upd-pin" : "b-upd-fp"));
 // PIN-confirmed buttons stay off until the field holds something that can be a PIN

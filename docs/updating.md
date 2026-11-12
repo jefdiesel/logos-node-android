@@ -52,6 +52,12 @@ this: it keeps running and is never restarted by an update.
   (after Show). Inside the Android app, **Scan** in Send and in New chat fills in an address from a code;
   a messaging address scanned in Send, or a wallet address scanned in New chat, is explained instead of
   filled in. A "locked" answer to a request sent before an unlock no longer locks the new session.
+- 0.9.8: Settings is a short list: Messages, Node, Security, Updates, Backup & restore, About. Each row
+  says where it stands in one line ("On · linked to alice", "PIN · locks after 5 minutes", "Last backup
+  3 days ago") and opens its own page with the same controls as before. Every screen with a Back has the
+  same top bar: a back arrow and the title beside it, at a normal size. The phone's Back goes up one level
+  (a Settings page to the list, the list to where you were), and unlocking brings you back to the Settings
+  page you were on. The gear on Messages opens Settings > Messages.
 
 ## Going back to the previous version by hand
 
