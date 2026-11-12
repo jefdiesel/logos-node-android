@@ -35,7 +35,8 @@ app and its page are exactly as before.
   Show. Codes are drawn in the page by a vendored encoder (app/qr), with no network requests. No amounts are
   in them.
 - Inside the Android app, Send and New chat have **Scan**, which opens the phone's camera
-  (`window.LogosAndroid.scanQr()`; the app answers `window.logosScanned(text)` or `window.logosScanFailed(msg)`).
+  (`window.LogosAndroid.scanQr()`; the app answers `window.logosScanned(text)`, or `window.logosScanFailed(msg)`,
+  with no message for a cancel).
   The camera permission is asked the first time Scan is tapped. A scan only fills the box it was started
   from, and only with the kind of address that box takes; it never sends anything. A messaging address
   scanned in Send, or a wallet address scanned in New chat, is not filled in: a message says what it is.

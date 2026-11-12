@@ -697,7 +697,8 @@ function startScan(handler) {
   try { window.LogosAndroid.scanQr(); return true; } catch (e) { scanHandler = null; return false; }
 }
 window.logosScanned = text => { const h = scanHandler; scanHandler = null; if (h) h.ok(typeof text === "string" ? text : ""); };
-window.logosScanFailed = msg => { const h = scanHandler; scanHandler = null; if (h) h.fail(typeof msg === "string" && msg ? msg.slice(0, 200) : "The scan didn't work. Try again, or type it in."); };
+// no message: the scan was cancelled (Cancel, Back, or no to the camera question), so nothing to say
+window.logosScanFailed = msg => { const h = scanHandler; scanHandler = null; if (h && typeof msg === "string" && msg) h.fail(msg.slice(0, 200)); };
 const SCAN_BAD = "That code isn't a wallet address or a messaging address.";
 /** What a scanned code holds: { kind: "wallet" | "msg", value: 64 hex } or { error }. */
 function parseScan(text) {
