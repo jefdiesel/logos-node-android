@@ -174,6 +174,7 @@ setTab("wallet");
 const pageOpenSettings = window.openSettings, pageCloseSettings = window.closeSettings;
 window.openSettings = (...a) => {
   msgSettingsUi(true);
+  if (a[0] === "s-msg") mgsShow("list");
   pageOpenSettings(...a); page.hidden = true; nav.hidden = true; document.body.classList.remove("has-nav");
 };
 window.closeSettings = () => { pageCloseSettings(); nav.hidden = false; document.body.classList.add("has-nav"); setTab(tab); };
@@ -217,10 +218,12 @@ page.innerHTML = `
 `;
 
 // ---- Messages in the one Settings page: your name and how to link it, your messaging address ----
-const msgSettings = el("section", { className: "card", id: "s-msg", ariaLabelledby: "h-s-msg", hidden: true });
+const msgSettings = el("section", { id: "s-msg", ariaLabelledby: "h-s-msg", hidden: true });
 msgSettings.innerHTML = `
   <h2 id="h-s-msg">Messages</h2>
-  <h3 style="margin-top:0">Your name</h3>
+  <div class="card groups" id="mgs-list"></div>
+  <div class="card" id="mgs-name" hidden>
+  <h3 class="vh">Your name</h3>
   <p class="msg" id="mg-check-m" role="status" style="margin-top:0"></p>
   <div class="pwrow"><input id="mg-name" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="40" placeholder="yourname" aria-label="Your LNS name"><button type="button" id="mg-name-save">Save</button></div>
   <p class="msg" id="mg-name-m" role="status"></p>
@@ -233,14 +236,72 @@ msgSettings.innerHTML = `
       <button type="button" id="mg-copy" style="width:100%;margin-top:10px">Copy command</button>
     </details>
   </details>
-  <h3>Your messaging address</h3>
+  </div>
+  <div class="card" id="mgs-addr" hidden>
+  <h3 class="vh">Your messaging address</h3>
   <p class="note" style="margin-top:0">Anyone can write to this phone at this address, with or without an LNS name. This address is for messages. Coins go to your wallet address (Wallet → Receive). Your LNS name can take both: coins once it has a wallet address set, messages once it's linked to this phone.</p>
   <code class="cmd" id="mg-addr" hidden></code>
   <div class="qr-wrap" id="mg-addr-qr" hidden></div>
   <div class="row"><button type="button" id="mg-addr-show" aria-controls="mg-addr" aria-expanded="false">Show</button><button type="button" id="mg-addr-copy">Copy</button></div>
-  <p class="msg" id="mg-addr-m" role="status"></p>`;
+  <p class="msg" id="mg-addr-m" role="status"></p>
+  </div>`;
 $("s-slot").append(msgSettings);
-// Settings > Messages and the gear on Messages open this same page (Settings' Messages group)
+// Settings > Messages and the gear on Messages open this same page (Settings' Messages group): a short list,
+// each row opening its own page inside it. Each page is a history step, so Back (on screen or the phone's)
+// goes from a page to the list, and from the list to where Settings > Messages was opened from.
+// To add a group: one line here, and a <div class="card" id="mgs-ID" hidden> with its controls above.
+const MSG_GROUPS = [
+  { id: "name", label: "Name", icon: '<circle cx="12" cy="8.5" r="3.6"/><path d="M5 19.5c.9-3.4 3.7-5.3 7-5.3s6.1 1.9 7 5.3"/>', state: nameState1 },
+  { id: "addr", label: "Address", icon: '<rect x="4" y="4" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1"/><path d="M13.5 13.5h2.5v2.5M20 13.5v.1M16 20h4v-3.5"/>',
+    state: () => "Show it, copy it, or let them scan it" },
+];
+function nameState1() {         // "linked" only once the name service said so
+  if (!me) return "";
+  if (!me.name) return "None yet";
+  const c = chat && chat.chainOf(me.name);
+  if (!c) return me.name;
+  if (c.key === me.public) return me.name + " · linked to this phone";
+  return [me.name + (c.registered ? " · not linked yet" : " · not registered"), "warn"];
+}
+let mgsSub = "list", mgsIgnore = 0;
+function msgRows() {
+  for (const g of MSG_GROUPS) {
+    if (!g.row) {
+      const b = el("button", { type: "button", className: "grow", id: "mgs-go-" + g.id });
+      b.innerHTML = '<span class="gi"></span><span class="gt"><b></b><small></small></span><span class="gc"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>';
+      b.querySelector(".gi").innerHTML = GI(g.icon); b.querySelector("b").textContent = g.label;
+      b.addEventListener("click", () => mgsOpen(g.id));
+      $("mgs-list").append(b); g.row = b;
+    }
+    let st = ""; try { st = me ? g.state() : ""; } catch (e) {}     // locked: nothing kept
+    const [text, cls] = Array.isArray(st) ? st : [st, ""], sm = g.row.querySelector("small");
+    if (sm.textContent !== text) sm.textContent = text;
+    sm.className = cls || ""; g.row.setAttribute("aria-label", g.label + (text ? ". " + text : ""));
+  }
+}
+/** Shows the list ("list") or one page of Settings > Messages, with its title in the bar. */
+function mgsShow(sub) {
+  const g = MSG_GROUPS.find(x => x.id === sub) || null;
+  mgsSub = g ? g.id : "list";
+  $("mgs-list").hidden = !!g;
+  for (const x of MSG_GROUPS) $("mgs-" + x.id).hidden = x !== g;
+  if (!$("page-settings").hidden && $("st-msg") && !$("st-msg").hidden) $("h-settings").textContent = g ? g.label : "Messages";
+  msgRows();
+}
+function mgsOpen(sub) { history.pushState({ st: "msg", sub }, ""); mgsShow(sub); window.scrollTo(0, 0); }
+const mgsHere = () => !$("page-settings").hidden && !!$("st-msg") && !$("st-msg").hidden;
+window.stSubBack = () => {      // the bar's Back on a page of Settings > Messages: up to the list
+  if (!mgsHere() || mgsSub === "list") return false;
+  if (history.state && history.state.sub) { mgsIgnore++; history.back(); }
+  mgsShow("list"); window.scrollTo(0, 0); return true;
+};
+addEventListener("popstate", e => {    // the phone's Back
+  if (mgsIgnore) { mgsIgnore--; return; }
+  if (!mgsHere()) return;
+  const sub = (e.state && e.state.st === "msg" && e.state.sub) || "list";
+  if (sub !== mgsSub) { mgsShow(sub); window.scrollTo(0, 0); }
+});
+setInterval(() => { if (mgsHere() && mgsSub === "list") msgRows(); }, 1000);
 const openMsgSettings = () => { openSettings("s-msg"); };
 /** Shows the Messages section while messages are on and loaded; fills it again when asked (`fresh`) or when
  *  the messaging identity changed, so a refresh never clears what is being typed. */
@@ -250,7 +311,7 @@ function msgSettingsUi(fresh = false) {
   msgSettings.hidden = !on;
   if (!on) meShown = null;
   else if (fresh || meShown !== me) { meShown = me; openMe(); }
-  stRows();                              // Settings' Messages row follows (and forgets the name on a lock)
+  msgRows(); stRows();                              // Settings' Messages row follows (and forgets the name on a lock)
 }
 /** Settings' Messages row: one line on your LNS name; "linked" only once the name service said so. */
 window.msgSettingsState = () => {
@@ -369,7 +430,7 @@ function renderHint() {
   h.hidden = !!me.name || !!ui.nameHint || view !== "home";
   if (h.hidden) return;
   const go = el("button", { type: "button", className: "lnk", textContent: "Messages settings" });
-  go.addEventListener("click", openMsgSettings);
+  go.addEventListener("click", () => { openMsgSettings(); mgsOpen("name"); });
   const x = el("button", { type: "button", className: "x", ariaLabel: "Close the hint" }, svg(P.close, 18));
   x.addEventListener("click", async () => { h.hidden = true; try { await chat.mutate(st => { st.ui = Object.assign({}, st.ui, { nameHint: true }); }); } catch (e) {} });
   h.replaceChildren(el("p", {}, "People can write to you at your messaging address. To be found by your LNS name, link it in ", go, "."), x);

@@ -318,8 +318,19 @@ await click("#mg-on");
 await waitFor("turned on: the chat list, empty", `!document.getElementById("mg-home").hidden && !!document.querySelector("#mg-rows .empty")`);
 check("home says no key", !/\bkey\b/i.test(await js(`document.getElementById("page-msg").innerText`)));
 await shot("home-no-name");
+// Settings > Messages: a short list (Name, Address), each row opening its own page inside it
+const mgsAt = () => js(`(() => { if (!document.getElementById("s-msg") || document.getElementById("s-msg").offsetParent === null) return "-";
+  if (!document.getElementById("mgs-list").hidden) return "list"; const p = [...document.querySelectorAll("#s-msg > [id^=mgs-]")].filter(e => !e.hidden && e.id !== "mgs-list"); return p.length === 1 ? p[0].id.slice(4) : "?" + p.length; })()`);
+const mgsWait = (name, want) => waitFor(name, `!document.getElementById("page-settings").hidden && !document.getElementById("s-msg").hidden && (${JSON.stringify(want)} === "list" ? !document.getElementById("mgs-list").hidden : !document.getElementById("mgs-" + ${JSON.stringify(want)}).hidden && document.getElementById("mgs-list").hidden)`);
 await click("#mg-me");
 await waitFor("Settings, at Messages", `!document.getElementById("page-settings").hidden && !document.getElementById("s-msg").hidden`);
+check("the gear opens Settings > Messages at its list", await mgsAt() === "list" && (await text("#h-settings")) === "Messages");
+check("the list: Name, then Address", JSON.stringify(await js(`[...document.querySelectorAll("#mgs-list .grow")].filter(b => !b.hidden).map(b => b.querySelector("b").textContent)`)) === '["Name","Address"]');
+await shot("settings-messages");
+await click("#mgs-go-name");
+await mgsWait("Name opens its own page", "name");
+check("its title is Name", (await text("#h-settings")) === "Name");
+await barOk("Settings > Messages > Name", "#page-settings .bar");
 const key = (await A.call("/api/messages/key")).d;
 check("the page made a seeded identity", key.version === 2 && /^[0-9a-f]{64}$/.test(key.seed) && key.groups === true, key);
 await w.register("alice", { color: "#2d6a4f" });                // registered, no msg entry yet
@@ -329,9 +340,24 @@ await waitFor("not linked on chain yet: it says so", `document.getElementById("m
 check("the link command is folded away until asked for", await js(`!document.getElementById("mg-link").open`));
 check("the messaging address is hidden until Show", await js(`document.getElementById("mg-addr").hidden`));
 check("no address or key shows in Settings", !/[0-9a-f]{20,}/.test(await js(`document.getElementById("page-settings").innerText`)));
-check("the gear on Messages opens Settings' Messages page", await stAt() === "msg" && (await text("#h-settings")) === "Messages" && await js(`document.getElementById("st-msg").contains(document.getElementById("s-msg"))`));
-await barOk("Settings > Messages", "#page-settings .bar");
-await shot("settings-messages");
+check("the gear on Messages opens Settings' Messages page", await stAt() === "msg" && await js(`document.getElementById("st-msg").contains(document.getElementById("s-msg"))`));
+await js(`window.scrollTo(0, 0); document.getElementById("mg-link").open = true; true`);
+await shot("link-your-name");
+await js(`document.getElementById("mg-cmd-d").open = true; true`);
+await bigTargets("Settings > Messages > Name, link your name");
+await js(`document.getElementById("mg-cmd-d").open = false; true`);
+await w.register("alice", { msg: key.public, color: "#2d6a4f" });
+await click("#mg-check");
+await waitFor("linked: it says messages come here", `document.getElementById("mg-check-m").textContent.includes("linked to this phone")`);
+await click("#b-settings-back");
+await mgsWait("Back from Name returns to the list", "list");
+check("the list's title is Messages again", (await text("#h-settings")) === "Messages");
+await waitFor("the Name row says alice is linked", `document.querySelector("#mgs-go-name small").textContent === "alice · linked to this phone"`);
+await click("#mgs-go-addr");
+await mgsWait("Address opens its own page", "addr");
+check("its title is Address", (await text("#h-settings")) === "Address");
+await barOk("Settings > Messages > Address", "#page-settings .bar");
+check("the messaging address is hidden until Show", await js(`document.getElementById("mg-addr").hidden`));
 await click("#mg-addr-show");
 check("Show reveals the shareable address", (await text("#mg-addr")).startsWith("msg:" + key.public));
 await waitFor("and its QR code", `!!document.querySelector("#mg-addr-qr .qr svg path")`);
@@ -339,15 +365,10 @@ check("the QR code in Messages settings reads as msg: and the messaging address,
 await js(`document.getElementById("mg-addr").scrollIntoView({ block: "center" }); true`);
 await shot("my-messaging-address");
 await click("#mg-addr-show");
-await js(`window.scrollTo(0, 0); document.getElementById("mg-link").open = true; true`);
-await shot("link-your-name");
-await js(`document.getElementById("mg-cmd-d").open = true; true`);
-await bigTargets("Settings > Messages, link your name");
-await js(`document.getElementById("mg-cmd-d").open = false; true`);
-await w.register("alice", { msg: key.public, color: "#2d6a4f" });
-await click("#mg-check");
-await waitFor("linked: it says messages come here", `document.getElementById("mg-check-m").textContent.includes("linked to this phone")`);
+await js(`history.back(); true`);
+await mgsWait("the phone's Back from Address returns to the list", "list");
 await click("#b-settings-back");
+await stWait("and Back from the list returns to Messages, where it was opened", "closed");
 await waitFor("the empty chat list", `!!document.querySelector("#mg-rows .empty")`);
 check("home shows names and icons only: no address", !/[0-9a-f]{20,}/.test(await js(`document.getElementById("page-msg").innerText`)));
 await shot("empty-list");
@@ -363,7 +384,7 @@ const LINUX_GROUPS = GROUPS.filter(g => !ANDROID_ONLY.has(g[0]));
 // (the rest come and go with the state: fingerprint on or off, an update available, a file picked...).
 const INVENTORY = {
   msg: { all: ["s-msg", "h-s-msg", "mg-check-m", "mg-name", "mg-name-save", "mg-name-m", "mg-link", "mg-check", "mg-cmd-d", "mg-cmd", "mg-copy", "mg-addr", "mg-addr-qr", "mg-addr-show", "mg-addr-copy", "mg-addr-m"],
-         show: ["mg-name", "mg-name-save", "mg-link", "mg-addr-show", "mg-addr-copy"] },
+         show: ["mgs-go-name", "mgs-go-addr"] },
   node: { all: ["s-nodec", "h-node", "height", "nodeline", "syncline", "state", "peers", "rate", "b-open-node"], show: ["height", "nodeline", "state", "peers", "rate"] },
   sec: { all: ["s-sec", "h-s-sec", "s-fp", "h-s-fp", "fp-off", "b-fp-set", "fp-on", "b-fp-off", "fp-confirm", "b-fp-yes", "b-fp-no", "nfp-on-form", "nfp-pin", "b-nfp-on", "fp-host", "m-fp", "s-lock", "h-s-lock", "al-min", "al-grace", "m-al", "b-lock"],
          show: ["h-s-fp", "h-s-lock", "al-min", "al-grace", "b-lock"] },
@@ -379,7 +400,7 @@ const INVENTORY = {
 };
 // and the words, as they were (a few from each)
 const WORDS = {
-  msg: ["Your name", "Without a name you can still write", "Link your name to this phone", "Your messaging address", "Anyone can write to this phone at this address"],
+  msg: ["Name", "alice · linked to this phone", "Address", "Show it, copy it, or let them scan it"],
   node: ["blocks on this device", "State", "Nodes connected", "New blocks a minute"],
   sec: ["Fingerprint unlock", "Auto-lock", "Locks after this long without use", "after you leave the app", "Lock now"],
   upd: ["Installed version", "Check for updates", "Updates come from the project's GitHub repository"],
@@ -414,6 +435,40 @@ await noOldHeader("Settings home");
 check("the reload notice (after an update) shows above Settings' bar, not under it", await js(`(() => { const r = document.getElementById("reload"); r.hidden = false;
   const ok = document.querySelector("#page-settings .bar").getBoundingClientRect().top >= r.getBoundingClientRect().bottom - 0.5; r.hidden = true; return ok; })()`));
 const seenIds = new Set();
+// Settings > Messages' own pages: what 0.9.8's one Messages page had, each id on exactly one of them
+const MSG_SUB = [
+  ["name", "Name", { all: ["mg-check-m", "mg-name", "mg-name-save", "mg-name-m", "mg-link", "mg-check", "mg-cmd-d", "mg-cmd", "mg-copy"], show: ["mg-check-m", "mg-name", "mg-name-save", "mg-link"],
+    words: ["Your name", "alice, linked to this phone", "Without a name you can still write and get messages", "Link your name to this phone"] }],
+  ["addr", "Address", { all: ["mg-addr", "mg-addr-qr", "mg-addr-show", "mg-addr-copy", "mg-addr-m"], show: ["mg-addr-show", "mg-addr-copy"],
+    words: ["Your messaging address", "Anyone can write to this phone at this address", "Coins go to your wallet address"] }],
+];
+async function msgSubPages() {
+  const seen = new Set(["s-msg", "h-s-msg"]);
+  for (const [sub, label, inv] of MSG_SUB) {
+    await click(`#mgs-go-${sub}`);
+    await mgsWait(`Messages > ${label} opens its own page`, sub);
+    check(`Messages > ${label}: the title is ${label}`, (await text("#h-settings")) === label);
+    await barOk(`Settings > Messages > ${label}`, "#page-settings .bar");
+    await noOldHeader(`Settings > Messages > ${label}`);
+    const where = await js(`${JSON.stringify(inv.all)}.map(x => { const n = document.querySelectorAll("#" + x); const b = n.length === 1 && n[0].closest("#s-msg > [id^=mgs-]"); return n.length + ":" + (b ? b.id : "-"); })`);
+    check(`Messages > ${label}: each of its ${inv.all.length} controls and texts is on this page, once`, where.every(x => x === "1:mgs-" + sub), inv.all.map((x, i) => x + " " + where[i]).filter(x => !x.endsWith("1:mgs-" + sub)));
+    const hid = await js(`${JSON.stringify(inv.show)}.filter(x => { const e = document.getElementById(x); return !e || e.offsetParent === null; })`);
+    check(`Messages > ${label}: and what is always there shows`, hid.length === 0, hid);
+    if (sub === "name") await waitFor("the name check answers", `document.getElementById("mg-check-m").textContent.includes("linked to this phone")`);
+    const words = await js(`document.getElementById("mgs-${sub}").textContent.replace(/\\s+/g, " ")`);
+    const lost = inv.words.filter(w => !words.includes(w));
+    check(`Messages > ${label}: its words are all there`, lost.length === 0, lost);
+    check(`Messages > ${label}: only this page shows`, await js(`[...document.querySelectorAll("#s-msg > [id^=mgs-]")].filter(e => !e.hidden).length === 1`));
+    for (const x of inv.all) seen.add(x);
+    await click("#b-settings-back");
+    await mgsWait(`Back from Messages > ${label} returns to Messages' list`, "list");
+    check("titled Messages", (await text("#h-settings")) === "Messages");
+    await click(`#mgs-go-${sub}`); await mgsWait(`Messages > ${label} again`, sub);
+    await js(`history.back(); true`);
+    await mgsWait(`the phone's Back from Messages > ${label} returns to Messages' list too`, "list");
+  }
+  check(`nothing from 0.9.8's Messages page is lost: ${seen.size} ids, each on one page`, JSON.stringify([...seen].sort()) === JSON.stringify([...INVENTORY.msg.all].sort()));
+}
 async function groupPage(id, label) {
   await click(`#go-${id}`);
   await stWait(`${label} opens its own page`, id);
@@ -443,7 +498,11 @@ async function groupPage(id, label) {
     await click("#b-upd-check");
     await waitFor("Check for updates answers from Settings > Updates", `document.getElementById("m-upd-check").textContent.length > 0 && document.getElementById("m-upd-check").textContent !== "Checking GitHub…"`, 20000);
   }
-  if (id === "msg") check("Settings > Messages is the same page as the gear's", await js(`document.getElementById("st-msg").contains(document.getElementById("s-msg")) && document.querySelectorAll("#s-msg").length === 1`));
+  if (id === "msg") {
+    check("Settings > Messages is the same page as the gear's", await js(`document.getElementById("st-msg").contains(document.getElementById("s-msg")) && document.querySelectorAll("#s-msg").length === 1`));
+    check("and it opens at its list", await mgsAt() === "list");
+    await msgSubPages();
+  }
   await click("#b-settings-back");
   await stWait(`Back from ${label} returns to the list`, "home");
   await click(`#go-${id}`);
@@ -470,22 +529,35 @@ await click("#nav-msg");
 await waitFor("Messages home", `!document.getElementById("mg-home").hidden`);
 await click("#mg-me");
 await stWait("the gear on Messages opens Settings > Messages", "msg");
+check("at its list", await mgsAt() === "list");
+await click("#mgs-go-name");
+await mgsWait("Name", "name");
 await waitFor("filled in", `document.getElementById("mg-name").value === "alice"`);
 await click("#b-settings-back");
-await stWait("Back returns to Messages", "closed");
+await mgsWait("Back: Messages' list", "list");
+await click("#b-settings-back");
+await stWait("Back again returns to Messages", "closed");
 check("Messages, as it was", await js(`!document.getElementById("page-msg").hidden && !document.getElementById("mg-home").hidden`));
 // a lock (auto-lock) and unlock comes back to the same Settings page
 for (const [id, label] of [["sec", "Security"], ["msg", "Messages"]]) {
   await click("#nav-wallet"); await click("#b-gear"); await stWait("Settings", "home");
   await click(`#go-${id}`); await stWait(label, id);
+  if (id === "msg") { await click("#mgs-go-name"); await mgsWait("Messages > Name", "name"); }
   await js(`lockedNow(); true`);
   await waitFor("locked", `!document.getElementById("lock").hidden`);
   check(`locked on Settings > ${label}: nothing of it shows`, !/Auto-lock|alice|Your messaging address/.test(await js(`document.body.innerText`)));
   check(`locked: the Settings rows keep no name, not even hidden`, !/alice/.test(await js(`document.getElementById("s-groups").textContent + [...document.querySelectorAll("#s-groups [aria-label]")].map(e => e.getAttribute("aria-label")).join()`)));
+  check(`locked: Settings > Messages keeps none of it, not even hidden (no name, no messaging address)`, await js(`(() => { const m = document.getElementById("s-msg"), t = m.textContent + [...m.querySelectorAll("[aria-label]")].map(e => e.getAttribute("aria-label")).join() + [...m.querySelectorAll("input")].map(i => i.value).join();
+    return !/alice/.test(t) && !/[0-9a-f]{20,}/.test(t) && !m.querySelector(".qr"); })()`));
   await unlock();
   await stWait(`unlocked: back on Settings > ${label}`, id);
-  check(`with its title, ${label}`, (await text("#h-settings")) === label);
-  if (id === "msg") await waitFor("and Messages filled in again", `!document.getElementById("s-msg").hidden && document.getElementById("mg-name").value === "alice"`, 15000);
+  const want = id === "msg" ? "Name" : label;
+  check(`with its title, ${want}`, (await text("#h-settings")) === want);
+  if (id === "msg") {
+    await waitFor("back on Messages > Name, filled in again", `!document.getElementById("s-msg").hidden && !document.getElementById("mgs-name").hidden && document.getElementById("mg-name").value === "alice"`, 15000);
+    await js(`history.back(); true`);
+    await mgsWait("the phone's Back: Messages' list", "list");
+  }
   await js(`history.back(); true`);
   await stWait("the phone's Back still goes up one level", "home");
   await click("#b-settings-back");
