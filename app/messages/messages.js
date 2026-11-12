@@ -218,7 +218,7 @@ page.innerHTML = `
     <div class="pv-scroll"><div class="pv-in">
       <form id="mg-find" autocomplete="off">
         <label for="mg-to" style="margin-top:0">An LNS name or a messaging address</label>
-        <div class="pwrow"><input id="mg-to" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="100" placeholder="alice, or a messaging address" enterkeyhint="search"><button type="submit" id="mg-look">Look up</button></div>
+        <div class="pwrow"><input id="mg-to" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="100" placeholder="alice, or a messaging address" enterkeyhint="search"><button type="submit" id="mg-look">Look up</button><button type="button" id="mg-scan" hidden>Scan</button></div>
       </form>
       <div id="mg-found"></div>
     </div></div>
@@ -242,6 +242,7 @@ msgSettings.innerHTML = `
   <h3>Your messaging address</h3>
   <p class="note" style="margin-top:0">Anyone can write to this phone at this address, with or without an LNS name. It isn't a wallet address: coins can't be sent to it.</p>
   <code class="cmd" id="mg-addr" hidden></code>
+  <div class="qr-wrap" id="mg-addr-qr" hidden></div>
   <div class="row"><button type="button" id="mg-addr-show" aria-controls="mg-addr" aria-expanded="false">Show</button><button type="button" id="mg-addr-copy">Copy</button></div>
   <p class="msg" id="mg-addr-m" role="status"></p>`;
 $("s-slot").append(msgSettings);
@@ -254,7 +255,7 @@ $("mg-me").append(svg(P.gear, 22));
 let chat = null, me = null, status = null, view = "home", loading = null;
 const forget = () => {        // nothing of the chats stays in the page while it is locked
   chat = null; me = null; loading = null; closeAll();
-  for (const id of ["mg-rows", "mg-found", "mg-hint"]) $(id).replaceChildren();
+  for (const id of ["mg-rows", "mg-found", "mg-hint", "mg-addr-qr"]) $(id).replaceChildren();
   for (const id of ["mg-to", "mg-name"]) $(id).value = "";
   for (const id of ["mg-cmd", "mg-addr", "mg-check-m", "mg-name-m", "mg-addr-m"]) $(id).textContent = "";
   badge.hidden = true;
@@ -430,9 +431,25 @@ function openNew() {
   pushOv("new", () => { view = "home"; $("mg-newv").hidden = true; render(); });
 }
 $("mg-new").addEventListener("click", openNew);
+// Scan (inside the Android app): fills the box and looks it up, as if typed; never sends
+const findNow = text => { $("mg-to").value = text; $("mg-find").requestSubmit(); };
+$("mg-scan").hidden = !SCAN;
+$("mg-scan").addEventListener("click", () => startScan({
+  ok: text => {
+    const p = parseScan(text), box = $("mg-found");
+    findSeq++;                                                     // a lookup still running doesn't overwrite this
+    if (p.error) return box.replaceChildren(el("p", { className: "msg bad", textContent: p.error }));
+    if (p.kind === "wallet") return box.replaceChildren(el("p", { className: "msg bad", textContent: "That's a wallet address, not a messaging address. To pay them, use Send in the wallet." }));
+    findNow(p.kind === "msg" ? "msg:" + p.value : p.value);       // bare hex goes through the same checks as typed
+  },
+  fail: msg => { findSeq++; $("mg-found").replaceChildren(el("p", { className: "msg bad", textContent: msg })); } }));
+window.logosOpenNewChat = async text => { setTab("msg"); await refresh(); if (chat && chat.ready) { openNew(); findNow(text); } };
+let findSeq = 0;                      // only the latest lookup may fill the result
 $("mg-find").addEventListener("submit", async e => {
   e.preventDefault();
-  const lib = await namesLib(), box = $("mg-found");
+  const seq = ++findSeq;
+  const lib = await namesLib(), real = $("mg-found");
+  const box = { replaceChildren: (...k) => { if (seq === findSeq) real.replaceChildren(...k); }, append: (...k) => { if (seq === findSeq) real.append(...k); } };
   const say = (cls, text) => box.replaceChildren(el("p", { className: "msg " + cls, textContent: text }));
   const typed = $("mg-to").value;
   // a messaging address (not a wallet address)
@@ -524,7 +541,9 @@ async function checkMine(fresh) {
 }
 $("mg-addr-show").addEventListener("click", () => {
   const show = $("mg-addr").hidden;
-  $("mg-addr").hidden = !show; $("mg-addr-show").textContent = show ? "Hide" : "Show"; $("mg-addr-show").setAttribute("aria-expanded", String(show));
+  $("mg-addr").hidden = !show; $("mg-addr-qr").hidden = !show;
+  if (show) qrSvg(shareable(me.public)).then(q => $("mg-addr-qr").replaceChildren(q)).catch(() => {});
+  else $("mg-addr-qr").replaceChildren(); $("mg-addr-show").textContent = show ? "Hide" : "Show"; $("mg-addr-show").setAttribute("aria-expanded", String(show));
 });
 $("mg-addr-copy").addEventListener("click", async () => {
   const m = $("mg-addr-m");

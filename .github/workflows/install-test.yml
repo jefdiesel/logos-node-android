@@ -110,9 +110,9 @@ jobs:
         run: python3 tests/autolock_test.py
       - name: Inside the Android app (APP_EMBEDDED=android) and unchanged without it
         run: python3 tests/embedded_test.py
-      - name: Apps already on phones (0.7.7, 0.8.0, 0.8.1 and 0.9.2, as released) update themselves to this release
+      - name: Apps already on phones (0.7.7, 0.8.0, 0.8.1, 0.9.2 and 0.9.4, as released) update themselves to this release
         run: |
-          for rel in 0.7.7:152b0cb7fb692bc6bcb11a0808ae3cd3879aa51a 0.8.0:dfd0c0fda1541c438102991ba2e9ecac969192f1 0.8.1:5dbcfdf3dc52d9f487a2bf5be2ff389a224f78ee 0.9.2:bede7a313e35e38e9bd64d2b27105e63737b6db4; do
+          for rel in 0.7.7:152b0cb7fb692bc6bcb11a0808ae3cd3879aa51a 0.8.0:dfd0c0fda1541c438102991ba2e9ecac969192f1 0.8.1:5dbcfdf3dc52d9f487a2bf5be2ff389a224f78ee 0.9.2:bede7a313e35e38e9bd64d2b27105e63737b6db4 0.9.4:1fa85487585aba671f5a76eb38fe0f2982ed7c3e; do
             OLD="$RUNNER_TEMP/app-${rel%%:*}"; base=https://raw.githubusercontent.com/jefdiesel/logos-node-android/${rel#*:}/app
             mkdir -p "$OLD" && curl -fsSL -o "$OLD/release.json" "$base/release.json"
             for f in $(python3 -c "import json,sys; print(' '.join(json.load(open(sys.argv[1]))['files']))" "$OLD/release.json"); do

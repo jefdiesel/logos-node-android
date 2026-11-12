@@ -1,0 +1,6 @@
+qrcode.js is dist/qrcode.mjs from the npm package qrcode-generator 2.0.4 (Kazuhiko Arase, MIT licence, see
+the header of the file), unchanged except the file name. Downloaded from
+https://registry.npmjs.org/qrcode-generator/-/qrcode-generator-2.0.4.tgz and checked against the registry's
+integrity sha512-mZSiP6RnbHl4xL2Ap5HfkjLnmxfKcPWpWe/c+5XxCuetEenqmNFf1FH/ftXPCtFG5/TDobjsjz6sSNL0Sr8Z9g==
+It only draws QR codes, in the page; it makes no network requests. To re-vendor: download the same version,
+check the integrity, copy dist/qrcode.mjs here as qrcode.js, then run python3 tools/release.py write.

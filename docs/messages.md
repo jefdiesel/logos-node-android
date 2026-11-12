@@ -26,6 +26,18 @@ app and its page are exactly as before.
   the phone and in the backup), mute, block, and deleting the chat or the whole profile. The short form of
   their messaging address is under **Details**, the full one only on a further tap.
 
+## QR codes
+
+- Receive (in the wallet) shows your wallet address as a QR code (`logos:<address>`), and Settings > Messages
+  shows your messaging address as one (`msg:<address>`) when you tap Show. Codes are drawn in the page by a
+  vendored encoder (app/qr), with no network requests.
+- Inside the Android app, Send and New chat have **Scan**, which opens the phone's scanner
+  (`window.LogosAndroid.scanQr()`; the app answers `window.logosScanned(text)` or `window.logosScanFailed(msg)`).
+  A scan only fills the box it was started from, and the box is checked as if typed. A messaging address
+  scanned in Send, or a wallet address scanned in New chat, is pointed to the right place instead. Codes the
+  app reads: `msg:<64 hex>`, `logos:<64 hex>` or bare 64 hex, and `lns:alice` or `alice`; anything else, or
+  over 200 characters, is refused.
+
 ## Names, addresses and trust
 
 - A name's messaging address is its `msg` text entry on the chain. The first time you talk with a name, the

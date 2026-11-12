@@ -27,6 +27,8 @@ this: it keeps running and is never restarted by an update.
 - 0.9.3: the wallet's look changes: a "Wallet" header with the node's state as one icon, the balance first
   with Send and Receive, recent activity below, your addresses behind Receive, and one Settings page (Node,
   Security with Lock now, Backup, Restore, Updates, About). Stronger contrast in dark mode.
+- 0.9.5: QR codes: your wallet address on Receive and your messaging address in Settings; inside the Android
+  app, Scan in Send and New chat.
 
 ## Going back to the previous version by hand
 
