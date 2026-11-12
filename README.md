@@ -1,6 +1,6 @@
 # Logos node on an Android phone
 
-The official [Logos blockchain node](https://github.com/logos-blockchain/logos-blockchain), unmodified, running and fully synced on an Android phone (after starting from a copy of a synced node's database, [see below](#what-works-today)). It comes with a local web app that shows the node's status and is a wallet: unlock with a PIN or your fingerprint, receive, send to an address or a name, see your history, back up and restore your keys, and update the app itself. You can add it to the home screen.
+The official [Logos blockchain node](https://github.com/logos-blockchain/logos-blockchain), unmodified, running and fully synced on an Android phone (after starting from a copy of a synced node's database, [see below](#what-works-today)). It comes with a local web app that shows the node's status and is a wallet: unlock with a PIN or your fingerprint (it locks itself again when you stop using it), receive, send to an address or a name, see your history, back up and restore your keys, and update the app itself. You can add it to the home screen.
 
 Nothing is cross-compiled: what runs on the phone is the unmodified `linux-aarch64` release binary of `logos-blockchain-node` 0.3.4, inside Android's built-in Linux Terminal. A *node* is the program that keeps a copy of the blockchain, checks every new *block* (a batch of transactions) and passes them on to other nodes.
 
@@ -18,9 +18,12 @@ Unofficial community work. Testnet only (the *testnet* is the public test networ
 On the test phone (Pixel 8, 8 GB RAM, Android 17, Linux Terminal):
 
 - The node is fully synced and **Online**, following the tip of the chain: block 82,869 in the screenshot above, the same height as a desktop reference node, with 130+ peers (other nodes it is connected to).
-- The wallet received real transfers, and the phone's node reported them. The first was 100,000 Logos sent from another node's wallet; the sender paid a fee of 2,298.
-- The web app updated itself from version 0.7.0 to 0.7.1 and then to 0.7.2 through its update prompt, keeping the PIN, the fingerprint key, the history and the event log.
-- A name lookup ran on the phone and correctly reported a registered name that has no Logos Blockchain address set.
+- The wallet received real transfers, and the phone's node reported them. The first was 100,000 Logos sent from another node's wallet.
+- The phone paid an LNS name (see [LNS names](#lns-names)): it looked the name up itself, showed the address, and its own node signed and sent 1,111 Logos. The receiving node, a separate desktop node, reported exactly that amount, and the phone's history recorded the send with the name and the fee.
+- The fee was 2,298 for that payment, and also 2,298 for transfers of 100,000 and of about 111 million earlier the same day. On this testnet the fee did not depend on the amount.
+- Name lookups on the phone gave the right answers: a registered name with no Logos Blockchain address set was reported as such, and a name pointing at the phone's own wallet resolved correctly; the app then refused to send, because the address was the same key the payment would come from.
+- The web app updated itself four times through its update prompt, 0.7.0 → 0.7.1 → 0.7.2 → 0.7.3 → 0.7.4, keeping the PIN, the fingerprint key, the history and the event log each time.
+- Fingerprint unlock is in daily use.
 
 **The catch: the node got there by starting from a copy of an already-synced node's database, not by syncing from the first block.** Syncing from the first block ran out of memory on the phone (see [Why not sync from the first block](#why-not-sync-from-the-first-block)). This repo does not publish such a copy; [Starting from a synced node's database](docs/start-from-a-synced-database.md) describes the method, and what you have to trust to use it.
 
@@ -32,9 +35,9 @@ On the test phone (Pixel 8, 8 GB RAM, Android 17, Linux Terminal):
 | Synced and Online, following the chain tip | works on the test phone, after a start from a synced node's database |
 | Receives real transfers | works on the test phone |
 | Web app: status, PIN, fingerprint unlock, history, home-screen icon | works on the test phone |
-| Web app updates itself | works on the test phone (0.7.0 → 0.7.1 → 0.7.2) |
-| Name lookup | ran on the test phone (a name without an address) |
-| Send to a name | passes in CI against a stand-in name service. **Not yet verified on the phone** |
+| Name lookup and send to a name | works on the test phone |
+| Web app updates itself | works on the test phone (0.7.0 → 0.7.4, four updates) |
+| Auto-lock (new in 0.7.4) | passes in CI. **Not yet verified on the phone** |
 | Wallet backup and restore | pass in CI. **Not yet verified on the phone** |
 | Full sync from the first block on a phone | **not done**: Android stopped the Linux box each time, see [below](#why-not-sync-from-the-first-block) |
 | `install.sh` | passes in CI on a clean arm64 Linux machine. **Not yet run on a freshly reset phone** |
@@ -91,17 +94,18 @@ Notes:
 
 ## The web app
 
-A small Python program (`app/server.py`, standard library only) and one page (`app/index.html`), served on port 8090 of the device itself. Version 0.7.2 at the time of writing.
+A small Python program (`app/server.py`, standard library only) and one page (`app/index.html`), served on port 8090 of the device itself. Version 0.7.4 at the time of writing.
 
 - **Node status:** block height, state (for example Online), peers and blocks per minute.
-- **PIN.** You choose a PIN (6 to 12 digits) on first use; it can't be recovered. Five wrong PINs pause unlocking for 5 minutes. The wallet locks again after 10 minutes without use, or when you tap **Lock wallet**.
+- **PIN.** You choose a PIN (6 to 12 digits) on first use; it can't be recovered. Five wrong PINs pause unlocking for 5 minutes.
+- **Auto-lock.** The wallet locks after 5 minutes without you using it (1, 5 or 15 in Settings), and one minute after you leave the page (switch to another app or turn the screen off), or when you tap **Lock wallet**. Only what you do counts as use: the page's own background refreshes don't keep it open.
 - **Fingerprint unlock**, using a passkey (a login key the phone keeps and only releases after your fingerprint or screen lock). It only works when the page is opened as `http://localhost:8090`, and you need the PIN to turn it on. The PIN keeps working as a fallback.
 - **Receive:** each of the wallet's keys is an address with a **Copy address** button, to give to whoever pays you. A popup tells you when coins arrive.
-- **Send** to a 64-character address or to an LNS name, with a review step. It won't send until the node is Online, and shows the fee once the transfer is in a block.
-- **History** of what came in and went out. The node keeps no history, so the app records it itself from the moment it first sees the node online; earlier activity isn't listed.
-- **Settings** (the gear at the top): Updates, Back up wallet, Restore from a backup file, Fingerprint unlock, About.
+- **Send** (a button under the balances that opens the form) to a 64-character address or to an LNS name, with a review step. It won't send until the node is Online, won't send to the same key the coins come from, and shows the fee once the transfer is in a block.
+- **History** (the button next to Send) of what came in and went out. The node keeps no history, so the app records it itself from the moment it first sees the node online; earlier activity isn't listed.
+- **Settings** (the gear at the top): Updates, Back up wallet, Restore from a backup file, Fingerprint unlock, Auto-lock, About. The "No backup yet" and "Version … is available" notices open Settings at the right place. While the wallet is locked, only About is shown, and it says when a newer version exists.
 - **Add to Home screen** in Chrome's menu, from `http://localhost:8090`. It gets its own lambda icon and opens without the browser bars.
-- **Security event log:** unlocks and failed unlocks, PIN and fingerprint changes, locks, sent transfers, backups, restores and updates are written to `wallet-events.log` next to the app, readable only by its owner and not over the web. It records which page asked, and never the PIN or keys.
+- **Security event log:** unlocks and failed unlocks, PIN and fingerprint changes, locks (and why: by you, idle, or the page was left), auto-lock changes, sent transfers, backups, restores and updates are written to `wallet-events.log` next to the app, readable only by its owner and not over the web. It records which page asked, and never the PIN or keys.
 
 Amounts are shown with "Logos" after them; they are the node's own whole numbers, not converted.
 
@@ -111,7 +115,7 @@ An LNS name is a short name like `alice`, registered with Logos Names on the Log
 
 ### Backup, restore and updates
 
-- **Backup.** There is no seed phrase: the wallet holds several independent keys, so an encrypted backup file takes its place. **Back up wallet** saves the node's key file, locked with a backup password you choose (not your PIN), to Downloads. Until you make one, the wallet shows "No backup yet". The file can be opened without the app, with [`tools/decrypt-backup.py`](tools/decrypt-backup.py). **Restore from a backup file** replaces the node's keys with the ones in a file. Details, risks and the file format: [docs/backup.md](docs/backup.md).
+- **Backup.** There is no seed phrase: the wallet holds several independent keys, so an encrypted backup file takes its place. **Back up wallet** saves the node's key file, locked with a backup password you choose (not your PIN; at least 8 characters, and the app advises 12 or more, or four random words; **Show** lets you see it while typing), to Downloads. Until you make one, the wallet shows "No backup yet". The file can be opened without the app, with [`tools/decrypt-backup.py`](tools/decrypt-backup.py). **Restore from a backup file** replaces the node's keys with the ones in a file. Details, risks and the file format: [docs/backup.md](docs/backup.md).
 - **Updates.** The app checks this repository's `release` branch when it starts, every 6 hours, and when you tap **Check for updates**. That branch only moves to a version after every CI job has passed. Updating needs the wallet unlocked and your PIN, or a fresh fingerprint confirmation. The app checks every downloaded file against the release list before using it, keeps the previous version for going back by hand, and never restarts the node. Details: [docs/updating.md](docs/updating.md).
 
 The wallet's keys live in the node, not in the web app: the app reads the public keys from the node's config and asks the node to make transfers. The wallet only answers requests addressed to the device itself (`localhost` or `127.0.0.1`), and it only accepts changes from its own page.
@@ -157,7 +161,7 @@ What to expect on a real phone. These are known Termux behaviours, not things me
 - By default the node's own API answers any website (`access-control-allow-origin: *`), including its wallet endpoints. Both installers start the node with `--http-cors-origin http://127.0.0.1:8090`, so browsers let no other website read it. CI checks this.
 - On the Linux Terminal route the node's API is on port 880, which the Terminal app never offers to open; don't open it under Port control. On the Termux route there is no Port control: the API sits on the phone's own `127.0.0.1:8080`.
 - The web app listens on `127.0.0.1` only. Besides its own page and the wallet calls, it passes on just two read-only node calls (`/cryptarchia/info`, `/network/info`).
-- The web app itself reaches out to exactly two places, over HTTPS: this repository's `release` branch on GitHub, for updates, and the name service, for one read per name lookup.
+- The web app itself reaches out to exactly two places, over HTTPS: this repository's `release` branch on GitHub, for updates, and the name service, for one read per name lookup. The page's footer and Settings → About say the same.
 - The scripts make new keys on the phone. Don't copy keys from another node onto it, except your own through **Restore from a backup file**.
 - If you start from someone else's database, you rely on them for the chain history up to that point. See [the trust note](docs/start-from-a-synced-database.md#what-you-are-trusting).
 
@@ -166,12 +170,12 @@ What to expect on a real phone. These are known Termux behaviours, not things me
 None of these run on a phone. The [`install-test`](.github/workflows/install-test.yml) workflow runs on arm64 Linux machines:
 
 - `fresh-install`: runs `install.sh` on a clean machine and checks both services, the page, that the node syncs blocks from the testnet, that the node's API is on port 880 and refuses other websites, the wallet's locks, the backup and its independent opener, a restore on the real node, and an in-app update under systemd.
-- `app-update`: the release list matches the app files and both installers, the page's script parses, and an update applies in place.
+- `app-update`: the release list matches the app files and both installers, the page's script parses, an update applies in place, and auto-lock works (idle time, leaving the page, the setting; with the timings shortened to seconds).
 - `wallet-send`: a real transfer through the web app on a private one-node chain, checking both balances; then the name resolver against the names project's test vectors, and lookups and a send to a name through the app, against a stand-in name service.
 - `termux`: runs `install-termux.sh` inside the Termux Docker image and checks that the node syncs blocks and the page answers.
 - `promote`: once all four pass on `main`, moves the `release` branch (where phones get updates) to that commit.
 
-The latest `install-test` run on `main`, for app version 0.7.2, passed all five jobs, and `release` now points at that commit. Several earlier runs on 11 November 2026 failed while these changes were being made, the last of them for the installer change. The latest `native-build` run on `main` passed.
+The latest `install-test` run on `main`, for app version 0.7.4, passed all five jobs, and `release` points at that commit. The runs for 0.7.2 and 0.7.3 passed too. Several earlier runs on 11 November 2026 failed while the app and installers were being changed, the last of them for the installer change. The latest finished `native-build` run on `main` passed.
 
 ## Native build (experimental)
 
@@ -186,7 +190,7 @@ Not verified: running inside an app, proof generation on the phone, a long run, 
 - The installers have not been run on a freshly reset phone.
 - The Termux route has never run on a real phone.
 - A full sync from the first block has not completed on a phone. The test phone's node started from a copy of a synced node's database.
-- Backup export, restore and sending to a name have not been done on the phone yet (they pass in CI).
+- On the phone, these have not been done yet (they pass in CI where CI covers them): exporting a backup, restoring from one, confirming an update with the fingerprint, auto-lock when the page is left or the screen turns off, and Show/Hide on the backup password.
 - Nothing here is a one-tap app; setup is by hand in a terminal.
 - The native build has only run for a few minutes, from a developer shell, on one phone. It is not an app and not a download.
 - Why memory grows during the first catch-up is our inference, not confirmed in the node's source.
