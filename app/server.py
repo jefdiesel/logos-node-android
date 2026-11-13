@@ -3179,11 +3179,56 @@ def accounts():
     return out
 
 
-# A transfer the node gave no answer about (a timeout, or an answer cut short) may still have gone through. Until
-# the key's balance shows a change, or SEND_UNSURE_HOLD seconds pass, the next send from that key is refused rather
-# than risk sending twice (review E5). key -> {"before": balance then, "at": time}
-SEND_UNSURE_HOLD = float(os.environ.get("SEND_UNSURE_HOLD_SECONDS", "180"))
-send_unsure = {}
+# Sends that may still land (review E5, F1). A hold is set for the account BEFORE its transfer goes to the node, and
+# only a definite answer drops it: the node's hash (sent) or a refusal it did answer. With no answer (a timeout, an
+# answer cut short, a 2xx without a hash) the hold stays: every send from that account is refused until its balance
+# has dropped by the held amount (and no more than SEND_FEE_MAX beyond it, so an odd read such as 0 doesn't count),
+# or SEND_UNSURE_HOLD seconds have passed (30 minutes, as the bridge waits). Incoming coins never lift it. Kept in
+# memory and in DATA_DIR (it survives a restart); timed on the monotonic clock while the app runs, and after a
+# restart from the stored wall time, counted from now once if the clock was set back.
+SEND_UNSURE_HOLD = float(os.environ.get("SEND_UNSURE_HOLD_SECONDS", "1800"))
+SEND_FEE_MAX = 1000000
+SEND_UNSURE_FILE = os.path.join(DATA_DIR, "wallet-send-unsure.json")
+send_unsure = {}            # key -> {"before", "amount", "at" (wall), "mono" (this process only)}
+send_unsure_loaded = [False]
+
+
+def send_holds():
+    """The holds, loaded from disk once per process (call with `lock` held)."""
+    if not send_unsure_loaded[0]:
+        send_unsure_loaded[0] = True
+        try:
+            with open(SEND_UNSURE_FILE) as f:
+                d = json.load(f)
+            now = time.time()
+            for k, h in (d.items() if isinstance(d, dict) else []):
+                if KEY_RE.match(str(k)) and isinstance(h, dict) and k not in send_unsure:
+                    at = float(h.get("at", 0))
+                    at = min(at, now)                 # a clock set back: count from now, once
+                    send_unsure[k] = {"before": int(h.get("before", 0)), "amount": int(h.get("amount", 0)), "at": at,
+                                      "mono": time.monotonic() - (now - at)}
+        except Exception:
+            pass
+    return send_unsure
+
+
+def send_holds_save():
+    """Writes the holds (call with `lock` held). A disk that can't take it leaves the hold in memory."""
+    try:
+        tmp = SEND_UNSURE_FILE + ".tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump({k: {"before": h["before"], "amount": h["amount"], "at": h["at"]} for k, h in send_unsure.items()}, f)
+        os.replace(tmp, SEND_UNSURE_FILE)
+    except Exception:
+        pass
+
+
+def send_hold_left(h, balance):
+    """Seconds the hold `h` still holds against a send at `balance`; 0 when it is over."""
+    left = SEND_UNSURE_HOLD - (time.monotonic() - h["mono"])
+    landed = h["before"] - h["amount"] - SEND_FEE_MAX <= balance <= h["before"] - h["amount"]
+    return 0 if left <= 0 or landed else left
 
 
 def send(body):
@@ -3209,28 +3254,35 @@ def send(body):
     if bal is None:
         return 502, {"error": "The node didn't return a balance for that key."}
     before = bal[0]
-    with lock:
-        hold = send_unsure.get(frm)
-        if hold and (time.time() - hold["at"] > SEND_UNSURE_HOLD or before != hold["before"]):
-            send_unsure.pop(frm, None)             # it landed (the balance moved) or it's long enough: free
-            hold = None
-    if hold:
-        return 409, {"error": "The last transfer from this account got no answer from the node and may still go through. "
-                              "Check Activity; you can send again once its balance changes or in about %d minutes."
-                              % max(1, round((SEND_UNSURE_HOLD - (time.time() - hold["at"])) / 60)), "unsure": True}
     if before < amount:
         return 400, {"error": "That key holds %d, less than %d." % (before, amount)}
+    with lock:
+        holds = send_holds()
+        h = holds.get(frm)
+        left = send_hold_left(h, before) if h else 0
+        if h and not left:
+            holds.pop(frm, None)               # it landed (the balance dropped by its amount), or it's long enough
+            send_holds_save()
+        elif h:
+            return 409, {"error": "The last transfer from this account may still go through: the node gave no answer about "
+                                  "it. Check Activity; you can send again once the balance shows it, or in about %d minutes."
+                                  % max(1, round(left / 60)), "unsure": True}
+        # held from now until the node answers: a second send meanwhile (a reload, another tab) is refused
+        holds[frm] = {"before": before, "amount": amount, "at": time.time(), "mono": time.monotonic()}
+        send_holds_save()
     code, reply = node("/wallet/transactions/transfer-funds", {
         "tip": None, "change_public_key": frm, "funding_public_keys": [frm],
         "recipient_public_key": to, "amount": amount}, timeout=60)
     # the node answers an accepted transfer with 201 Created
-    if code == 0:
-        # no answer, or one cut short: the transfer may have gone through, so don't invite a second one
-        with lock:
-            send_unsure[frm] = {"before": before, "at": time.time()}
-        return 502, {"error": "No answer from the node about this transfer: it may have been sent. Check Activity and "
-                              "the balance before sending again.", "unsure": True}
-    if not 200 <= code < 300 or not isinstance(reply, dict) or not reply.get("hash"):
+    accepted = 200 <= code < 300 and isinstance(reply, dict) and bool(reply.get("hash"))
+    if code == 0 or (200 <= code < 300 and not accepted):
+        # no answer, one cut short, or an accepted one without a hash: it may have gone through; the hold stays
+        return 502, {"error": "No clear answer from the node about this transfer: it may have been sent. Check Activity "
+                              "and the balance before sending again.", "unsure": True}
+    with lock:
+        send_holds().pop(frm, None)            # a definite answer: sent, or refused by the node
+        send_holds_save()
+    if not accepted:
         detail = reply if isinstance(reply, str) else json.dumps(reply)
         return 502, {"error": "The node refused the transfer: %s" % (detail or "no answer")[:300]}
     with lock:

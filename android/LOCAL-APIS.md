@@ -376,8 +376,20 @@ After 0.5.20 (branch `sockets-e`, versions unchanged; review of 503b141, E1 to E
   environment variables before creating the node; the app writes all five network keys as `false` and checks them.
 - E3: `getTcp` (TCP builds only) reads the whole answer, status line and headers included, through one size cap and
   one deadline over a plain socket. Test: `theTcpPathGivesUpOnDrippingHeaders`.
-- E5: a transfer the node gave no answer about (status 0: a timeout or an answer cut short) says it may have been
-  sent; the next send from that account is refused until its balance moves or three minutes pass; the page doesn't
-  re-enable Send on that review. Test: `tests/send_unsure_test.py`.
+- E5, F1, F5: a send that may still land is never sent twice. A hold is set for the account before its transfer
+  goes to the node, and only a definite answer drops it (the node's hash, or a refusal the node answered). With no
+  clear answer (a timeout, an answer cut short, or a 2xx without a hash) it says the transfer may have been sent,
+  and every send from that account is refused until the balance has dropped by the held amount (and by no more
+  than the amount plus the largest fee, so an odd read such as 0 doesn't count; incoming coins never lift it), or
+  30 minutes have passed (as the bridge waits). The hold is kept on disk (`wallet-send-unsure.json`, owner-only)
+  so it survives a restart; within the app it runs on the monotonic clock, and a stored time from before a clock
+  was set back counts from now. The page treats no answer from the app itself the same way, and doesn't
+  re-enable Send on that review. Test: `tests/send_unsure_test.py`, one case per bypass the review found (an
+  incoming payment, a second send while the first waits on the node, an odd balance read, a restart, the clock),
+  failing on the code before.
 - `tests/node_socket_test.py` now counts connections to the old TCP port (with `NODE_TCP_GUARD` set as 0.5.17-0.5.19
   set it): zero; it fails on the 0.5.17 server.py.
+- F2: the guard's ten-minute fallback runs on the monotonic clock (`NodeApi.ServicesStart`, tested: line match,
+  reset per node process, fallback). F3: the runner also removes an environment option named exactly the suffix,
+  and names of any length. F4: `getTcp`'s deadline is total: each read may wait only for the time left (test
+  `theTcpPathsDeadlineIsTotal`); the network tests have their own timeouts.

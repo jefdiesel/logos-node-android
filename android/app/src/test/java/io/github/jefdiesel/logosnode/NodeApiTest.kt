@@ -1,6 +1,7 @@
 package io.github.jefdiesel.logosnode
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -56,6 +57,34 @@ class NodeApiTest {
         assertEquals(NodeApi.TcpGuard.Verdict.STOP, g.observe(true, false))
     }
 
+    @Test fun servicesStartFollowsTheNodesLineAndResetsPerRun() {
+        // review F2: the NodeService wiring (line match, reset per node process, ten-minute fallback), on a fake clock
+        val s = NodeApi.ServicesStart(600_000)
+        s.reset(1_000)
+        assertFalse(s.counting(1_000))
+        s.line("2026-11-13T10:00:00Z INFO logos_blockchain: Starting services")
+        s.line("Running chainX")                                 // not the line
+        assertFalse(s.counting(500_000))
+        s.line("2026-11-13T10:00:03Z  INFO logos_blockchain::node: Running chain c0ffee on fork 01.")
+        assertTrue(s.counting(2_000))
+        s.reset(3_000)                                          // the next node process starts over
+        assertFalse(s.counting(3_000))
+        assertFalse(s.counting(3_000 + 599_999))
+        assertTrue(s.counting(3_000 + 600_000))                 // no line for ten minutes: count anyway
+    }
+
+    @Test fun theTcpPathsDeadlineIsTotal() {
+        // review F4: one byte just under the read timeout each time; the deadline (twice the timeout) still holds
+        val slow = hostile { out -> out.write("HTTP/1.1 200 OK\r\n".toByteArray()); while (true) { Thread.sleep(950); out.write('x'.code); out.flush() } }
+        try {
+            val t0 = System.currentTimeMillis()
+            assertNull(NodeApi.getTcp("/cryptarchia/info", 1000, slow.localPort))
+            assertTrue("took ${System.currentTimeMillis() - t0} ms", System.currentTimeMillis() - t0 < 2600)
+        } finally {
+            slow.close()
+        }
+    }
+
     @Test fun noStrikesBeforeTheNodeHasStartedItsServices() {
         // review E1: before "Running chain" the node's API may not be bound yet; a stranger on TCP proves nothing
         val g = NodeApi.TcpGuard()
@@ -65,7 +94,7 @@ class NodeApiTest {
         assertEquals(NodeApi.TcpGuard.Verdict.STOP, g.observe(true, false, counting = true))
     }
 
-    @Test fun theGuardNeverWritesToOrReadsFromTheTcpPort() {
+    @Test(timeout = 15_000) fun theGuardNeverWritesToOrReadsFromTheTcpPort() {
         // review M1 and its follow-up: one guard round against a listener that streams endless bytes. The listener
         // sees the connection closed at once with not one byte sent to it, and the round returns in well under 2 s.
         val got = java.util.concurrent.atomic.AtomicLong(-1)
@@ -100,7 +129,7 @@ class NodeApiTest {
         }
     }
 
-    @Test fun theTcpPathGivesUpOnDrippingHeaders() {
+    @Test(timeout = 15_000) fun theTcpPathGivesUpOnDrippingHeaders() {
         // review E3: a status line, then a header line every 200 ms, never ending: the deadline covers headers too
         val drip = hostile { out -> out.write("HTTP/1.1 200 OK\r\n".toByteArray()); var i = 0; while (true) { out.write("X-$i: y\r\n".toByteArray()); out.flush(); i++; Thread.sleep(200) } }
         val endless = hostile { out -> out.write("HTTP/1.1 200 OK\r\n".toByteArray()); val h = "X: ${"y".repeat(1000)}\r\n".toByteArray(); while (true) out.write(h) }
@@ -127,7 +156,7 @@ class NodeApiTest {
         return server
     }
 
-    @Test fun anAppStreamingEndlessBytesOnTheTcpPortChangesNothing() {
+    @Test(timeout = 15_000) fun anAppStreamingEndlessBytesOnTheTcpPortChangesNothing() {
         // review M1: an app listening on 18180 that answers with endless bytes made the guard read until the heap ran out
         val endless = hostile { out -> out.write("HTTP/1.1 200 OK\r\n\r\n".toByteArray()); val zeros = ByteArray(65536); while (true) out.write(zeros) }
         try {
@@ -144,7 +173,7 @@ class NodeApiTest {
         }
     }
 
-    @Test fun theTcpPathFollowsNoRedirectAndGivesUpOnADrip() {
+    @Test(timeout = 15_000) fun theTcpPathFollowsNoRedirectAndGivesUpOnADrip() {
         val redirect = hostile { out -> out.write("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/elsewhere\r\nContent-Length: 0\r\n\r\n".toByteArray()) }
         val drip = hostile { out -> out.write("HTTP/1.1 200 OK\r\n\r\n".toByteArray()); while (true) { out.write('x'.code); out.flush(); Thread.sleep(200) } }
         try {
