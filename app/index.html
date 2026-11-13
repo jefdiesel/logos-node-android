@@ -532,6 +532,9 @@ async function api(path, body) {
   try {
     const r = await fetch(path, opt);
     let data = null; try { data = await r.json(); } catch (e) {}
+    // a read made under a session that has ended since (a lock came in between) shows nothing: whatever it would
+    // render belongs behind the lock
+    if (body === undefined && sent && sent !== token) return { ok: false, status: 0, data: { error: "Try again." } };
     // a "locked" answer to a request made with an older session (before an unlock) must not lock the new one
     if (r.status === 401 && sent !== token) return { ok: false, status: 0, data: { error: "Try again." } };
     return { ok: r.ok, status: r.status, data: data || {} };

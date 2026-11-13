@@ -911,12 +911,19 @@ await stWait("and out of Settings", "closed");
 await click("#nav-wallet");
 await waitFor("the wallet screen has its header back", `!document.querySelector("main > header").hidden`);
 check("the status pill is one icon", await js(`document.getElementById("pill").hidden && !!document.getElementById("node-ic")`));
+// The pill's words and the icon, read in one go: the words are set and the icon read before any other task runs (the
+// icon follows the words in a MutationObserver, a microtask), so the page's own status poll, every 5 s, can't come
+// in between and put its words back.
+const pillSays = (words) => js(`(async () => { const p = document.getElementById("pill"), b = document.getElementById("node-ic");
+  p.textContent = ${JSON.stringify(words)}; await Promise.resolve();
+  return { words: p.textContent, kind: b.dataset.kind, label: b.getAttribute("aria-label") }; })()`);
 for (const [words, kind] of [["catching up", "sync"], ["stopped", "stop"], ["up to date", "ok"]]) {   // the page's own words, as tickStatus sets them
-  await js(`document.getElementById("pill").textContent = ${JSON.stringify(words)}; true`);
-  await waitFor(`"${words}" shows the ${kind} icon`, `document.getElementById("node-ic").dataset.kind === ${JSON.stringify(kind)}`);
+  const got = await pillSays(words);
+  check(`"${words}" shows the ${kind} icon`, got.words === words && got.kind === kind, got);
   await shot("wallet-header-" + kind);
 }
-check("stopped is labelled", (await js(`(document.getElementById("pill").textContent = "stopped", new Promise(r => setTimeout(() => r(document.getElementById("node-ic").getAttribute("aria-label")), 50)))`)).startsWith("Node stopped"));
+const stopped = await pillSays("stopped");
+check("stopped is labelled", stopped.words === "stopped" && stopped.label.startsWith("Node stopped"), stopped);
 await click("#b-gear");
 await stWait("Settings", "home");
 await click("#go-node");
