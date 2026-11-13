@@ -83,7 +83,6 @@ It is a debug build for testing, not something to publish.
   |---|---|
   | `APP_EMBEDDED` | `android`: the web app's Android mode (0.7.6 and later) |
   | `NODE_API` | `unix:files/node/api/api.sock` (full path) with the `api` variant; `http://127.0.0.1:18180` otherwise |
-  | `NODE_TCP_GUARD` | `127.0.0.1:18180` with the `api` variant: nothing is sent to the node while something answers there |
   | `APP_KEY` | a random key made at each start, also given to the WebView as a cookie (`LOCAL-APIS.md`) |
   | `NODE_BIN` | the link above |
   | `NODE_CFG` | `files/node/user_config.yaml` |

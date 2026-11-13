@@ -42,12 +42,20 @@ object NodeApi {
         null
     }
 
-    private fun getTcp(path: String, timeoutMs: Int): Pair<Int, String>? = try {
-        val c = java.net.URL("http://127.0.0.1:${NodeFiles.API_PORT}$path").openConnection() as java.net.HttpURLConnection
+    /**
+     * GET over TCP, for builds whose node is on TCP (not the "api" variant). Whoever listens on the port answers,
+     * so the answer is read with a size cap ([MAX_BYTES]) and an overall deadline (twice [timeoutMs]), and a
+     * redirect is not followed. Never used in socket mode.
+     */
+    internal fun getTcp(path: String, timeoutMs: Int, port: Int = NodeFiles.API_PORT): Pair<Int, String>? = try {
+        val c = java.net.URL("http://127.0.0.1:$port$path").openConnection() as java.net.HttpURLConnection
         c.connectTimeout = minOf(timeoutMs, 3000); c.readTimeout = timeoutMs
+        c.instanceFollowRedirects = false
         try {
+            val deadline = System.nanoTime() + 2L * timeoutMs * 1_000_000L
             val code = c.responseCode
-            code to ((if (code < 400) c.inputStream else c.errorStream)?.bufferedReader()?.readText() ?: "")
+            val body = (if (code < 400) c.inputStream else c.errorStream)?.let { readAll(it, deadline) } ?: ByteArray(0)
+            code to String(body, Charsets.UTF_8)
         } finally {
             c.disconnect()
         }
@@ -56,33 +64,41 @@ object NodeApi {
     }
 
     /**
-     * Whether anything accepts a TCP connection on 127.0.0.1:[NodeFiles.API_PORT]. With the node on its socket
-     * nothing of ours should. Any app can listen there, so this alone never stops anything ([TcpGuard]).
+     * Whether anything accepts a TCP connection on 127.0.0.1:[port] (connect, then close: nothing is sent or read,
+     * so whatever listens there can't feed us anything). With the node on its socket nothing of ours listens there;
+     * any app can, so this alone never stops anything ([TcpGuard]).
      */
-    fun tcpAnswers(timeoutMs: Int = 1000): Boolean = try {
-        Socket().use { it.connect(InetSocketAddress("127.0.0.1", NodeFiles.API_PORT), timeoutMs) }
+    fun tcpAnswers(timeoutMs: Int = 1000, port: Int = NodeFiles.API_PORT): Boolean = try {
+        Socket().use { it.connect(InetSocketAddress("127.0.0.1", port), timeoutMs) }
         true
     } catch (_: Exception) {
         false
     }
 
-    /** Whether what answers on TCP [NodeFiles.API_PORT] speaks the node's API (a 200 with the chain's info). */
-    fun tcpLooksLikeNode(): Boolean = try {
-        val r = getTcp("/cryptarchia/info", 3000)
-        r != null && r.first == 200 && org.json.JSONObject(r.second).let { it.has("cryptarchia_info") || it.has("height") }
+    /**
+     * Whether the node's own Unix socket accepts a connection (connect, then close). A socket that accepts proves
+     * patch 0002 is serving the API there, and the patch never binds TCP then. Blocks only if the node is wedged
+     * with a full backlog; called on the guard thread only.
+     */
+    fun socketAccepts(files: NodeFiles): Boolean = try {
+        android.net.LocalSocket().use { s ->
+            s.connect(android.net.LocalSocketAddress(files.apiSocket.path, android.net.LocalSocketAddress.Namespace.FILESYSTEM))
+        }
+        true
     } catch (_: Exception) {
         false
     }
 
     /** The one line to show when [TcpGuard] stops the node. */
-    const val TCP_BLOCK_LINE = "Node stopped: its API answered on 127.0.0.1:18180 (TCP, which other apps can reach) instead of " +
-        "its private socket. It stays off; start it again from the Node screen."
+    const val TCP_BLOCK_LINE = "Node stopped: something accepts connections on 127.0.0.1:18180 and the node's private socket " +
+        "doesn't, so its API may be on TCP, where other apps can reach it. It stays off; start it again from the Node screen."
 
     /**
-     * Whether to stop the node because its API is on TCP (review S1). Any app can listen on 127.0.0.1:18180, and
-     * nothing of ours connects there in socket mode, so a stranger on that port is ignored (it would otherwise be
-     * a way for any app to stop the node). The node is stopped only when, [STRIKES] checks in a row, TCP answers
-     * as a node does while the node's own socket doesn't answer: the node is running without its socket.
+     * Whether to stop the node because its API may be on TCP. Nothing is ever read from the TCP port: whoever
+     * listens there decides nothing beyond "a connection is accepted" (review M1/D1). The proof that the node is
+     * on its socket is that the socket accepts a connection. So: something accepts on 127.0.0.1:18180 while the
+     * node's socket doesn't, [STRIKES] checks in a row (about a minute), means the node may be running without its
+     * socket, and it is stopped. Anything accepting there while the socket accepts is a stranger, ignored.
      */
     class TcpGuard {
         enum class Verdict { FINE, STRANGER_IGNORED, SUSPECT, STOP }
@@ -90,9 +106,9 @@ object NodeApi {
         var strikes = 0
             private set
 
-        fun observe(tcpAnswers: Boolean, tcpLooksLikeNode: Boolean, socketAnswers: Boolean): Verdict {
+        fun observe(tcpAnswers: Boolean, socketAccepts: Boolean): Verdict {
             if (!tcpAnswers) { strikes = 0; return Verdict.FINE }
-            if (socketAnswers || !tcpLooksLikeNode) { strikes = 0; return Verdict.STRANGER_IGNORED }
+            if (socketAccepts) { strikes = 0; return Verdict.STRANGER_IGNORED }
             strikes++
             return if (strikes >= STRIKES) Verdict.STOP else Verdict.SUSPECT
         }
@@ -107,7 +123,8 @@ object NodeApi {
         return "GET $path HTTP/1.1\r\nHost: localhost\r\nAccept: application/json\r\nConnection: close\r\n\r\n".toByteArray()
     }
 
-    private fun readAll(input: java.io.InputStream): ByteArray {
+    /** Reads to the end, at most [MAX_BYTES], and (with [deadline], System.nanoTime) no later than that. */
+    internal fun readAll(input: java.io.InputStream, deadline: Long = Long.MAX_VALUE): ByteArray {
         val out = ByteArrayOutputStream()
         val buf = ByteArray(16 * 1024)
         while (true) {
@@ -115,6 +132,7 @@ object NodeApi {
             if (n < 0) break
             out.write(buf, 0, n)
             if (out.size() > MAX_BYTES) throw IllegalStateException("answer too large")
+            if (System.nanoTime() > deadline) throw IllegalStateException("answer too slow")
         }
         return out.toByteArray()
     }

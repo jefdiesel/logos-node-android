@@ -199,21 +199,26 @@ with `LOGOS_API_UNIX_SOCKET=<path>` set, the node serves its API on that socket 
 3. The Kotlin status calls (NodeService, Battery's open timer, NodeActivity) go through `NodeApi`: a
    small HTTP/1.1 client over `android.net.LocalSocket` in the **file-system** namespace (never the
    abstract one).
-4. **The node's API must not be on 127.0.0.1:18180** (since 0.5.17, review S1). Any app can listen on
-   that port, and nothing of ours connects there in socket mode, so a stranger there gets nothing and is
-   **not** a reason to stop: an earlier version (0.5.16) stopped the node whenever anything answered
-   there, which let any app stop the node and block sends at will, a denial of service. Now:
-   - before a start, something answering there is only logged;
-   - while the node runs (10 s after the start, then every 15 s, `NodeApi.TcpGuard`), the node is stopped
-     only if, four checks in a row, the TCP answer is a node's (`/cryptarchia/info` answers 200 with the
-     chain's info) **and** the node's own socket doesn't answer: the node is running without its socket.
-     Then it is not restarted, and the notification and Node screen show one line saying why; it starts
-     again only when started by hand. Another program on the port is logged once and ignored.
-   - `server.py` refuses to send anything to the node (every POST: transfers, deposits) only while
-     something answers on that port **and** the node's socket doesn't (`NODE_TCP_GUARD`), and logs it.
-   - What remains: an app that imitates the node's answer on 18180 while the node's socket is down (the
-     node restarting, or not yet up) could get the node stopped after a minute: deliberate, visible, and
-     only while the node is down anyway.
+4. **The node's API must not be on 127.0.0.1:18180.** Any app can listen on that port, and nothing of ours
+   connects there in socket mode, so whoever is there gets nothing from us. Since 0.5.20 the app **never reads
+   anything from that port**: it only checks whether a connection is accepted (connect, then close).
+   - Before a start, something accepting there is only logged.
+   - While the node runs (10 s after the start, then every 15 s, `NodeApi.TcpGuard`): if something accepts on
+     18180, the app tries to connect to the node's own socket. A socket that accepts proves patch 0002 serves
+     the API there, and the patch never binds TCP then, so whatever is on 18180 is a stranger: logged once,
+     ignored. Only if the socket accepts nothing, four checks in a row (about a minute), is the node stopped
+     (it may be running without its socket); then it is not restarted, and the notification and Node screen
+     show one line saying why. The thread catches everything, so nothing on it can take the process down.
+   - `server.py` sends everything over the socket and never looks at TCP.
+   - History, so it is not repeated: 0.5.16 stopped the node whenever anything answered there (any app could
+     stop the node and block sends). 0.5.17 to 0.5.19 read the answer on that port to judge it: any app could
+     then crash the app's main process (node and messaging) by streaming endless bytes there (review M1), and
+     an app imitating the node's answer could get the node stopped on any start whose block replay runs past
+     about a minute (review D1). 0.5.17 to 0.5.19 also refused sends while a stranger was on that port and the
+     node was slow (review D3). None of these builds reached the phone.
+   - What remains: a stranger on 18180 while the node's socket accepts nothing for a minute (the node not yet
+     serving its API, or wedged) gets the node stopped. The node binds its socket as soon as its API service
+     starts, before the block replay (PHONE: check when the socket first accepts).
 5. `cors_origins` stays in the config: harmless, and it matters again if the app ever goes back to
    a TCP node.
 
@@ -237,8 +242,8 @@ own runner (`messaging/runner/waku_runner.c`), which drives the library's C API 
   `GET /messaging/v1/events/received`, `GET /messaging/v1/events/send/<id>`, with the same paths and
   answers as the library's REST API at the pinned commit, evict-after-poll included (with a byte bound:
   the runner keeps at most 256 received messages and at most 2 MiB of them, oldest dropped first and
-  counted as missed, so an answer always fits what `server.py` reads; `server.py` reads every answer
-  whole or not at all, never cut short), built from the
+  counted as missed, so an answer always fits what `server.py` reads; since 0.5.20 `server.py` takes an
+  answer only whole: one that ends short of its Content-Length or chunked end is no answer), built from the
   library's events as the REST API's own buffers are (`messaging/runner/api_socket.h`,
   `messaging/README.md`). The socket must be in a private directory; a live socket is never taken
   over; if the socket can't be opened the runner stops the node and exits.
@@ -278,8 +283,11 @@ job `node-socket`). To check on the phone, in this order:
 - `.WalletDebug` starts from `adb shell am start` and not from another app.
 - With another app holding 18190 before the wallet starts: the cover's text, and the page opening by
   itself once that app lets the port go.
-- With another program listening on 127.0.0.1:18180 (`nc`): the node starts and keeps running, the log
-  says once "another program holds 127.0.0.1:18180; ignored", and sends work (review S1).
+- With another program listening on 127.0.0.1:18180 (`nc`), even one answering every connection with endless
+  bytes: the node starts and keeps running, the app doesn't crash, the log says once "another program holds
+  127.0.0.1:18180; ignored", and sends work, also in the first minute after a start (review S1, M1, D3).
+- When the node's socket first accepts a connection after a start, and when `/cryptarchia/info` first answers
+  (how long the block replay takes with the `api` variant): the guard depends on the first (review D1).
 - Many messages in a short time: they keep arriving, and the runner keeps up with concurrent calls
   (review S8: up to 16 connections call the library at once; if anything stalls, serialize the calls).
 - Chrome on Android's local-network rules (whether a website can reach 127.0.0.1 at all): not relied on.
@@ -313,12 +321,12 @@ patch helps Termux only if Termux runs the patched node with `LOGOS_API_UNIX_SOC
 
 - `android/node.properties`: variant `api`.
 - `NodeApi.kt` (new): `onSocket`, `get`, `json`, `getUnix` (LocalSocket, file-system namespace),
-  `getTcp`, `tcpAnswers`, `tcpLooksLikeNode` and `TcpGuard` (0.5.17), `TCP_BLOCK_LINE`, `request`, `parse`, `dechunk`.
+  `getTcp` (bounded, no redirects, 0.5.20), `tcpAnswers`, `socketAccepts` and `TcpGuard` (0.5.20), `TCP_BLOCK_LINE`, `request`, `parse`, `dechunk`.
 - `NodeFiles.kt`: `apiDir`, `apiSocket`, `privateApiDir()`.
 - `NodeService.kt`: `nodeJson` through `NodeApi`; in `supervise()` the check before the start; in
   `runNode()` the socket folder and `LOGOS_API_UNIX_SOCKET`, then `watchTcp`; `watchTcp()`, `blockApi()`.
 - `Battery.kt` (`OpenTimer.get`, `probe`) and `NodeActivity.kt` (`get`, the info line) through `NodeApi`.
-- `LogosApp.kt`: `NODE_API`/`NODE_TCP_GUARD` for `server.py`; `serving()`, `portTaken()`,
+- `LogosApp.kt`: `NODE_API` for `server.py`; `serving()`, `portTaken()`,
   `stateFile()`, `watchPortState()`, `recordedState()`, `describe()`.
 - `WalletActivity.kt`: the cover's text when another app holds the port; `walletSetting()` only when
   `ours()`; `debugAllowed()` (the `.WalletDebug` alias) for the debug extras.
@@ -340,8 +348,17 @@ patch helps Termux only if Termux runs the patched node with `LOGOS_API_UNIX_SOC
 
 0.5.17 (branch `sockets-on-0514`, merged onto the phone's build `android-app` 9893d61): review S1 (the
 guard above), S2 (`build.gradle.kts` fails unless `-PnodeVariant` is api, patched or unpatched; CI checks
-it), S3 (runner buffer bounded to 2 MiB; `unix_http` reads whole answers, up to 16 MiB, or fails;
+it), S3 (runner buffer bounded to 2 MiB; `unix_http` reads up to 16 MiB;
 `tests/messaging_batch_test.py`), S4 (the runner refuses a config that turns on REST, its admin routes,
 the metrics server or websockets), S5 (`--locked` for the Android node build), S6 (install-test job
 `node-socket`: the real node with patch 0002, built for Linux from the same commit, on its socket; bad
 socket settings stop it and nothing opens on TCP; a real transfer through the web app over the socket).
+
+0.5.20 (branch `sockets-on-0518`, the phone's msg-hotfix merged in): review M1 and D1 (the TCP guard never
+reads from TCP; the proof is that the node's socket accepts a connection; the guard thread catches
+everything; `getTcp`, used only by TCP builds, reads at most 4 MiB within a deadline and follows no
+redirect; unit tests with a listener streaming endless bytes, a redirect and a drip), D3 (`server.py`'s
+send guard and `NODE_TCP_GUARD` removed), D4 (`unix_http` takes an answer only whole; test with a node that
+dies mid-answer), D2 (the runner's config refusal compares keys as the library reads them and refuses any
+value but false or null), D5 (these docs), D6 (Gradle also refuses a variant that doesn't match the bundled
+binary's patches; CI checks it).

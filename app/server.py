@@ -8,7 +8,7 @@ Python standard library only. Wallet calls need a PIN that is set on first use.
 import base64, calendar, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.9.20"
+APP_VERSION = "0.9.21"
 # APP_EMBEDDED=android: this app runs inside the Android app (embedded Python, page in a WebView).
 # Then it never updates or restarts itself (the Android app brings new versions), and fingerprint
 # unlock goes through the phone's own fingerprint check instead of a passkey. Unset: nothing changes.
@@ -59,9 +59,7 @@ keys_cache = {"keys": [], "at": 0.0}
 # ---- node API -------------------------------------------------------------------------------
 
 # NODE_API "unix:<path>": the node serves its API on that Unix socket and on no TCP port (the Android app with
-# node patch 0002, android/LOCAL-APIS.md). Then NODE_TCP_GUARD ("127.0.0.1:18180") names the node's old TCP
-# address: nothing is sent to the node while something answers there AND the node's own socket doesn't (a node
-# running without its socket). Another app merely holding that port is ignored: any app can listen there.
+# node patch 0002, android/LOCAL-APIS.md). Every call then goes over the socket; nothing here ever uses TCP.
 import errno, http.client, socket  # noqa: E402
 
 
@@ -81,57 +79,32 @@ class _UnixHTTPConnection(http.client.HTTPConnection):
         self.sock = s
 
 
-def node_tcp_taken():
-    """With the node on its socket: whether something answers on NODE_TCP_GUARD, where nothing should."""
-    host, _, port = os.environ.get("NODE_TCP_GUARD", "").rpartition(":")
-    if not host or not port.isdigit():
-        return False
-    try:
-        socket.create_connection((host, int(port)), timeout=1).close()
-        return True
-    except OSError:
-        return False
-
-
-_tcp_warned = {"at": 0.0}
-
-
 def unix_http(sock_path, method, path, data=None, headers=None, timeout=8, limit=16 * 1024 * 1024):
-    """One HTTP request over a Unix socket: (status, the whole body). Raises when there is no answer, or when the
-    answer is larger than `limit`: it is never cut short, since an answer that empties a buffer on the other side
-    (the runner's received messages) would then be lost. The runner keeps its buffer below 2 MiB."""
+    """One HTTP request over a Unix socket: (status, the whole body). Raises when there is no answer, when the
+    answer is larger than `limit`, or when it ends before its Content-Length or chunked end: an answer is never
+    taken cut short. (One with neither a length nor chunks ends when the connection closes, so it can't be told
+    from a cut one; the node and the runner always send a length.) The runner keeps its buffer below 2 MiB."""
     conn = _UnixHTTPConnection(sock_path, timeout)
     try:
         conn.request(method, path, body=data, headers=headers or {})
         r = conn.getresponse()
-        if r.length is not None and r.length > limit:
-            raise ValueError("answer too large")
-        raw = r.read(limit + 1)
-        if len(raw) > limit:
-            raise ValueError("answer too large")
+        if r.length is not None:
+            if r.length > limit:
+                raise ValueError("answer too large")
+            raw = r.read()                      # raises IncompleteRead if the body ends short of its length
+        else:
+            raw = r.read(limit + 1)             # chunked: raises IncompleteRead if cut
+            if len(raw) > limit:
+                raise ValueError("answer too large")
         return r.status, raw
     finally:
         conn.close()
-
-
-def node_socket_answers():
-    """Whether the node answers on its Unix socket (any HTTP answer)."""
-    try:
-        unix_http(NODE_API[len("unix:"):], "GET", "/cryptarchia/info", timeout=3)
-        return True
-    except Exception:
-        return False
 
 
 def node(path, body=None, timeout=8):
     """Calls the node. Returns (http status, parsed JSON or text). Status 0 means no answer."""
     data = None if body is None else json.dumps(body).encode()
     if NODE_API.startswith("unix:"):
-        if data is not None and node_tcp_taken() and not node_socket_answers():
-            if time.time() - _tcp_warned["at"] > 60:
-                _tcp_warned["at"] = time.time()
-                event("node call refused: the node's old TCP port answers and its socket doesn't", guard=os.environ.get("NODE_TCP_GUARD", ""))
-            return 0, None
         try:
             code, raw = unix_http(NODE_API[len("unix:"):], "GET" if data is None else "POST", path, data,
                                   {"Content-Type": "application/json"} if data is not None else {}, timeout)

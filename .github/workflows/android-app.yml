@@ -106,6 +106,14 @@ jobs:
             grep -q "nodeVariant must be api, patched or unpatched" "$RUNNER_TEMP/variant.log" || { cat "$RUNNER_TEMP/variant.log"; exit 1; }
             echo "nodeVariant='$v': refused, as it should be"
           done
+          # a known variant that isn't what the bundled binary is (review D6)
+          for v in unpatched patched; do
+            if gradle --no-daemon -q help -PnodeVariant=$v > "$RUNNER_TEMP/variant.log" 2>&1; then
+              echo "::error::the build accepted nodeVariant=$v with the api node bundled"; exit 1
+            fi
+            grep -q "doesn't match the bundled node" "$RUNNER_TEMP/variant.log" || { cat "$RUNNER_TEMP/variant.log"; exit 1; }
+            echo "nodeVariant=$v with the api node: refused, as it should be"
+          done
       - name: Check the APK
         run: |
           set -o pipefail

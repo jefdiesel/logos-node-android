@@ -14,6 +14,30 @@ val nodeVariant = (findProperty("nodeVariant") as String?)?.trim().orEmpty()
 if (nodeVariant !in setOf("api", "patched", "unpatched")) {
     throw GradleException("-PnodeVariant must be api, patched or unpatched (android/node.properties), not '$nodeVariant'")
 }
+// ...and it must say what the bundled binary is: each patched node names its patches in its own bytes
+// (native/check-binary.sh does the same check in the native build). Skipped when no binary is in place yet.
+run {
+    val bin = file("src/main/jniLibs/arm64-v8a/liblogosnode.so")
+    if (bin.isFile) {
+        val bytes = bin.readBytes()
+        fun has(name: String): Boolean {
+            val pat = name.toByteArray()
+            outer@ for (i in 0..bytes.size - pat.size) {
+                for (j in pat.indices) if (bytes[i + j] != pat[j]) continue@outer
+                return true
+            }
+            return false
+        }
+        val has0001 = has("0001-fast-replay-from-own-storage")
+        val has0002 = has("0002-api-unix-socket")
+        val ok = when (nodeVariant) {
+            "api" -> has0002 && !has0001
+            "patched" -> has0001
+            else -> !has0001 && !has0002
+        }
+        if (!ok) throw GradleException("-PnodeVariant=$nodeVariant doesn't match the bundled node (patch 0001: $has0001, patch 0002: $has0002)")
+    }
+}
 
 // The wallet is the repository's own web app (app/: server.py, index.html, names/), taken as it is at
 // build time and shipped as assets. It is never copied by hand into this project.
@@ -37,8 +61,8 @@ android {
         applicationId = "io.github.jefdiesel.logosnode"
         minSdk = 28 // the node binary is built for API 28
         targetSdk = 36
-        versionCode = 30
-        versionName = "0.5.19"
+        versionCode = 31
+        versionName = "0.5.20"
         ndk { abiFilters += "arm64-v8a" }
         buildConfigField("String", "NODE_VERSION", "\"$nodeVersion\"")
         buildConfigField("String", "NODE_SHA256", "\"$nodeSha256\"")

@@ -951,9 +951,10 @@ class NodeService : Service() {
     @Volatile private var lastRunProfile: NodeProfile? = null
 
     /**
-     * While [p] runs: 10 s after the start and then every 15 s, NodeApi.TcpGuard: the node is stopped only if its
-     * API answers on TCP 127.0.0.1:18180 while its own socket doesn't, four checks in a row (it runs without its
-     * socket). Another program on that port is noted once and ignored.
+     * While [p] runs: 10 s after the start and then every 15 s, NodeApi.TcpGuard. Nothing is read from TCP: if
+     * something accepts on 127.0.0.1:18180, the node's own socket is tried; only if it accepts nothing, four checks
+     * in a row, is the node stopped (it may be running without its socket). Another program on that port while
+     * the socket accepts is noted once and ignored. Nothing on this thread may take the process down.
      */
     private fun watchTcp(p: Process) = thread(name = "node-tcp-guard", isDaemon = true) {
         val guard = NodeApi.TcpGuard()
@@ -962,26 +963,25 @@ class NodeService : Service() {
             Thread.sleep(10_000)
             while (p.isAlive && !stopRequested) {
                 val tcp = NodeApi.tcpAnswers()
-                val verdict = if (!tcp) guard.observe(false, false, false)
-                else guard.observe(true, NodeApi.tcpLooksLikeNode(), NodeApi.get(files, "/cryptarchia/info", 3000) != null)
+                val verdict = guard.observe(tcp, tcp && NodeApi.socketAccepts(files))
                 when (verdict) {
                     NodeApi.TcpGuard.Verdict.STOP -> { blockApi("while it ran"); return@thread }
                     NodeApi.TcpGuard.Verdict.STRANGER_IGNORED -> if (!noted) {
                         noted = true
                         log.app("another program holds 127.0.0.1:${NodeFiles.API_PORT}; ignored (the node's API is on its socket)")
                     }
-                    NodeApi.TcpGuard.Verdict.SUSPECT -> log.app("the node's API seems to answer on 127.0.0.1:${NodeFiles.API_PORT} and not on its socket (${guard.strikes}/${NodeApi.TcpGuard.STRIKES})")
+                    NodeApi.TcpGuard.Verdict.SUSPECT -> log.app("something accepts on 127.0.0.1:${NodeFiles.API_PORT} and the node's socket doesn't (${guard.strikes}/${NodeApi.TcpGuard.STRIKES})")
                     NodeApi.TcpGuard.Verdict.FINE -> {}
                 }
                 Thread.sleep(15_000)
             }
-        } catch (_: InterruptedException) {
+        } catch (_: Throwable) {
         }
     }
 
-    /** The node's API is on TCP 127.0.0.1:18180 and not on its socket: stop the node, say so in one line, don't restart it. */
+    /** Something accepts on 127.0.0.1:18180 and the node's socket doesn't: stop the node, say so in one line, don't restart it. */
     private fun blockApi(moment: String) {
-        log.app("the node's API answers on 127.0.0.1:${NodeFiles.API_PORT} and not on its socket ($moment); the node is stopped and not restarted")
+        log.app("something accepts on 127.0.0.1:${NodeFiles.API_PORT} and the node's socket doesn't ($moment); the node is stopped and not restarted")
         setStatus(NodeApi.TCP_BLOCK_LINE)
         stopRequested = true
         killNode()

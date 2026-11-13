@@ -81,7 +81,6 @@ object WalletServer {
                         "APP_DATA" to dataDir(app).path,
                         // with node patch 0002 the API is a Unix socket and must not answer on TCP (NodeApi)
                         "NODE_API" to (if (NodeApi.onSocket) "unix:${files.apiSocket.path}" else "http://127.0.0.1:${NodeFiles.API_PORT}"),
-                        "NODE_TCP_GUARD" to (if (NodeApi.onSocket) "127.0.0.1:${NodeFiles.API_PORT}" else ""),
                         "NODE_BIN" to files.launcher.path,
                         "NODE_CFG" to files.config.path,
                         // the node's service restarts the node when it exits, so stopping it is a restart
