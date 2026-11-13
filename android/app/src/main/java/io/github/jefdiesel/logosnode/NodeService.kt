@@ -781,13 +781,12 @@ class NodeService : Service() {
                 val started = System.currentTimeMillis()
                 val exit = try {
                     prepare()                                // also stops a node left over from an earlier run
-                    // the node's API must not be on a TCP port other apps can reach (android/LOCAL-APIS.md)
+                    // only a note: before the start nothing of ours can answer, and any app may hold that port; the
+                    // node's API goes to its socket, so whoever is there gets nothing from us (watchTcp, review S1)
                     if (NodeApi.onSocket && NodeApi.tcpAnswers()) {
-                        blockApi("before the start")
-                        null
-                    } else {
-                        runNode()
+                        log.app("another program answers on 127.0.0.1:${NodeFiles.API_PORT}; the node's API is on its socket, starting anyway")
                     }
+                    runNode()
                 } catch (e: InterruptedException) {
                     break
                 } catch (e: Exception) {
@@ -952,16 +951,27 @@ class NodeService : Service() {
     @Volatile private var lastRunProfile: NodeProfile? = null
 
     /**
-     * While [p] runs: 10 s after the start and then every 15 s, check that nothing answers on 127.0.0.1:18180.
-     * With the API on its socket nothing should; if something does, the node is stopped and stays off.
+     * While [p] runs: 10 s after the start and then every 15 s, NodeApi.TcpGuard: the node is stopped only if its
+     * API answers on TCP 127.0.0.1:18180 while its own socket doesn't, four checks in a row (it runs without its
+     * socket). Another program on that port is noted once and ignored.
      */
     private fun watchTcp(p: Process) = thread(name = "node-tcp-guard", isDaemon = true) {
+        val guard = NodeApi.TcpGuard()
+        var noted = false
         try {
             Thread.sleep(10_000)
             while (p.isAlive && !stopRequested) {
-                if (NodeApi.tcpAnswers()) {
-                    blockApi("while it ran")
-                    return@thread
+                val tcp = NodeApi.tcpAnswers()
+                val verdict = if (!tcp) guard.observe(false, false, false)
+                else guard.observe(true, NodeApi.tcpLooksLikeNode(), NodeApi.get(files, "/cryptarchia/info", 3000) != null)
+                when (verdict) {
+                    NodeApi.TcpGuard.Verdict.STOP -> { blockApi("while it ran"); return@thread }
+                    NodeApi.TcpGuard.Verdict.STRANGER_IGNORED -> if (!noted) {
+                        noted = true
+                        log.app("another program holds 127.0.0.1:${NodeFiles.API_PORT}; ignored (the node's API is on its socket)")
+                    }
+                    NodeApi.TcpGuard.Verdict.SUSPECT -> log.app("the node's API seems to answer on 127.0.0.1:${NodeFiles.API_PORT} and not on its socket (${guard.strikes}/${NodeApi.TcpGuard.STRIKES})")
+                    NodeApi.TcpGuard.Verdict.FINE -> {}
                 }
                 Thread.sleep(15_000)
             }
@@ -969,9 +979,9 @@ class NodeService : Service() {
         }
     }
 
-    /** Something answers on 127.0.0.1:18180 in socket mode: stop the node, say so in one line, don't restart it. */
+    /** The node's API is on TCP 127.0.0.1:18180 and not on its socket: stop the node, say so in one line, don't restart it. */
     private fun blockApi(moment: String) {
-        log.app("something answers on 127.0.0.1:${NodeFiles.API_PORT} ($moment); the node is stopped and not restarted")
+        log.app("the node's API answers on 127.0.0.1:${NodeFiles.API_PORT} and not on its socket ($moment); the node is stopped and not restarted")
         setStatus(NodeApi.TCP_BLOCK_LINE)
         stopRequested = true
         killNode()

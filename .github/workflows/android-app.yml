@@ -96,6 +96,16 @@ jobs:
           # unit tests first: the snapshot import's tar reader, RocksDB check and state swap
           gradle --no-daemon testDebugUnitTest assembleDebug \
             -PnodeVersion=${{ steps.node.outputs.version }} -PnodeSha256=${{ steps.node.outputs.sha }} -PnodeVariant=${{ steps.node.outputs.variant }}
+      - name: A build that doesn't say which node variant it packages fails (it could ship the socket node on TCP)
+        working-directory: android
+        run: |
+          for v in "" unknown TCP; do
+            if gradle --no-daemon -q help ${v:+-PnodeVariant=$v} > "$RUNNER_TEMP/variant.log" 2>&1; then
+              echo "::error::the build accepted nodeVariant='$v'"; exit 1
+            fi
+            grep -q "nodeVariant must be api, patched or unpatched" "$RUNNER_TEMP/variant.log" || { cat "$RUNNER_TEMP/variant.log"; exit 1; }
+            echo "nodeVariant='$v': refused, as it should be"
+          done
       - name: Check the APK
         run: |
           set -o pipefail

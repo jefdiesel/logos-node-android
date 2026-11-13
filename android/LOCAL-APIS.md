@@ -199,13 +199,21 @@ with `LOGOS_API_UNIX_SOCKET=<path>` set, the node serves its API on that socket 
 3. The Kotlin status calls (NodeService, Battery's open timer, NodeActivity) go through `NodeApi`: a
    small HTTP/1.1 client over `android.net.LocalSocket` in the **file-system** namespace (never the
    abstract one).
-4. **Nothing may answer on 127.0.0.1:18180.** NodeService checks just before each start (after
-   stopping any node left over from an earlier run), 10 s after it, and every 15 s while the node runs.
-   If something answers (the node opened TCP after all, or another app is there), the node is stopped,
-   not restarted, and the notification and Node screen show one line saying why; it starts again only
-   when started by hand, and the check runs again then. `server.py` independently refuses to send
-   anything to the node (every POST: transfers, deposits) while something answers there
-   (`NODE_TCP_GUARD`), and logs it.
+4. **The node's API must not be on 127.0.0.1:18180** (since 0.5.17, review S1). Any app can listen on
+   that port, and nothing of ours connects there in socket mode, so a stranger there gets nothing and is
+   **not** a reason to stop: an earlier version (0.5.16) stopped the node whenever anything answered
+   there, which let any app stop the node and block sends at will, a denial of service. Now:
+   - before a start, something answering there is only logged;
+   - while the node runs (10 s after the start, then every 15 s, `NodeApi.TcpGuard`), the node is stopped
+     only if, four checks in a row, the TCP answer is a node's (`/cryptarchia/info` answers 200 with the
+     chain's info) **and** the node's own socket doesn't answer: the node is running without its socket.
+     Then it is not restarted, and the notification and Node screen show one line saying why; it starts
+     again only when started by hand. Another program on the port is logged once and ignored.
+   - `server.py` refuses to send anything to the node (every POST: transfers, deposits) only while
+     something answers on that port **and** the node's socket doesn't (`NODE_TCP_GUARD`), and logs it.
+   - What remains: an app that imitates the node's answer on 18180 while the node's socket is down (the
+     node restarting, or not yet up) could get the node stopped after a minute: deliberate, visible, and
+     only while the node is down anyway.
 5. `cors_origins` stays in the config: harmless, and it matters again if the app ever goes back to
    a TCP node.
 
@@ -227,7 +235,10 @@ own runner (`messaging/runner/waku_runner.c`), which drives the library's C API 
   a file-system Unix socket `files/waku/api/api.sock` (folder 0700, socket 0600):** `GET /health`,
   `GET`/`POST`/`DELETE /messaging/v1/subscriptions`, `POST /messaging/v1/messages`,
   `GET /messaging/v1/events/received`, `GET /messaging/v1/events/send/<id>`, with the same paths and
-  answers as the library's REST API at the pinned commit, evict-after-poll included, built from the
+  answers as the library's REST API at the pinned commit, evict-after-poll included (with a byte bound:
+  the runner keeps at most 256 received messages and at most 2 MiB of them, oldest dropped first and
+  counted as missed, so an answer always fits what `server.py` reads; `server.py` reads every answer
+  whole or not at all, never cut short), built from the
   library's events as the REST API's own buffers are (`messaging/runner/api_socket.h`,
   `messaging/README.md`). The socket must be in a private directory; a live socket is never taken
   over; if the socket can't be opened the runner stops the node and exits.
@@ -246,7 +257,8 @@ own runner (`messaging/runner/waku_runner.c`), which drives the library's C API 
 
 ## Unverified until tried on the phone
 
-None of this has run on a device yet. To check there, in this order:
+None of this has run on a device yet (the real node with patch 0002 does run in CI on Linux, install-test
+job `node-socket`). To check on the phone, in this order:
 
 - The node starts with the socket: the log line `logos-node-android patched node: the HTTP API listens on
   this Unix socket only`, `files/node/api` is 0700 and `api.sock` is 0600, and nothing listens on
@@ -266,6 +278,10 @@ None of this has run on a device yet. To check there, in this order:
 - `.WalletDebug` starts from `adb shell am start` and not from another app.
 - With another app holding 18190 before the wallet starts: the cover's text, and the page opening by
   itself once that app lets the port go.
+- With another program listening on 127.0.0.1:18180 (`nc`): the node starts and keeps running, the log
+  says once "another program holds 127.0.0.1:18180; ignored", and sends work (review S1).
+- Many messages in a short time: they keep arriving, and the runner keeps up with concurrent calls
+  (review S8: up to 16 connections call the library at once; if anything stalls, serialize the calls).
 - Chrome on Android's local-network rules (whether a website can reach 127.0.0.1 at all): not relied on.
 
 ## Linux and Termux
@@ -297,7 +313,7 @@ patch helps Termux only if Termux runs the patched node with `LOGOS_API_UNIX_SOC
 
 - `android/node.properties`: variant `api`.
 - `NodeApi.kt` (new): `onSocket`, `get`, `json`, `getUnix` (LocalSocket, file-system namespace),
-  `getTcp`, `tcpAnswers`, `TCP_BLOCK_LINE`, `request`, `parse`, `dechunk`.
+  `getTcp`, `tcpAnswers`, `tcpLooksLikeNode` and `TcpGuard` (0.5.17), `TCP_BLOCK_LINE`, `request`, `parse`, `dechunk`.
 - `NodeFiles.kt`: `apiDir`, `apiSocket`, `privateApiDir()`.
 - `NodeService.kt`: `nodeJson` through `NodeApi`; in `supervise()` the check before the start; in
   `runNode()` the socket folder and `LOGOS_API_UNIX_SOCKET`, then `watchTcp`; `watchTcp()`, `blockApi()`.
@@ -321,3 +337,11 @@ patch helps Termux only if Termux runs the patched node with `LOGOS_API_UNIX_SOC
   `messaging.sha256`: waku-build run 43445078866 (branch `waku-socket`), runner sha256
   `ebe88149ecc2ea0df0327d7c6fe244974d69d96d85a76a7cffdfe11fbc65dc7e`, library unchanged and byte-identical
   to the earlier build (`c2a6b96c…e340`); tests `tests/messaging_socket_test.py`, `MessagingTest`.
+
+0.5.17 (branch `sockets-on-0514`, merged onto the phone's build `android-app` 9893d61): review S1 (the
+guard above), S2 (`build.gradle.kts` fails unless `-PnodeVariant` is api, patched or unpatched; CI checks
+it), S3 (runner buffer bounded to 2 MiB; `unix_http` reads whole answers, up to 16 MiB, or fails;
+`tests/messaging_batch_test.py`), S4 (the runner refuses a config that turns on REST, its admin routes,
+the metrics server or websockets), S5 (`--locked` for the Android node build), S6 (install-test job
+`node-socket`: the real node with patch 0002, built for Linux from the same commit, on its socket; bad
+socket settings stop it and nothing opens on TCP; a real transfer through the web app over the socket).

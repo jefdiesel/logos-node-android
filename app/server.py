@@ -59,8 +59,9 @@ keys_cache = {"keys": [], "at": 0.0}
 # ---- node API -------------------------------------------------------------------------------
 
 # NODE_API "unix:<path>": the node serves its API on that Unix socket and on no TCP port (the Android app with
-# node patch 0002, android/LOCAL-APIS.md). Then NODE_TCP_GUARD ("127.0.0.1:18180") names the TCP address where
-# nothing may answer: if something does, nothing is sent to the node (another app, or a node that opened TCP).
+# node patch 0002, android/LOCAL-APIS.md). Then NODE_TCP_GUARD ("127.0.0.1:18180") names the node's old TCP
+# address: nothing is sent to the node while something answers there AND the node's own socket doesn't (a node
+# running without its socket). Another app merely holding that port is ignored: any app can listen there.
 import errno, http.client, socket  # noqa: E402
 
 
@@ -95,25 +96,41 @@ def node_tcp_taken():
 _tcp_warned = {"at": 0.0}
 
 
-def unix_http(sock_path, method, path, data=None, headers=None, timeout=8, limit=4 * 1024 * 1024):
-    """One HTTP request over a Unix socket: (status, body bytes). Raises when there is no answer."""
+def unix_http(sock_path, method, path, data=None, headers=None, timeout=8, limit=16 * 1024 * 1024):
+    """One HTTP request over a Unix socket: (status, the whole body). Raises when there is no answer, or when the
+    answer is larger than `limit`: it is never cut short, since an answer that empties a buffer on the other side
+    (the runner's received messages) would then be lost. The runner keeps its buffer below 2 MiB."""
     conn = _UnixHTTPConnection(sock_path, timeout)
     try:
         conn.request(method, path, body=data, headers=headers or {})
         r = conn.getresponse()
-        return r.status, r.read(limit + 1)
+        if r.length is not None and r.length > limit:
+            raise ValueError("answer too large")
+        raw = r.read(limit + 1)
+        if len(raw) > limit:
+            raise ValueError("answer too large")
+        return r.status, raw
     finally:
         conn.close()
+
+
+def node_socket_answers():
+    """Whether the node answers on its Unix socket (any HTTP answer)."""
+    try:
+        unix_http(NODE_API[len("unix:"):], "GET", "/cryptarchia/info", timeout=3)
+        return True
+    except Exception:
+        return False
 
 
 def node(path, body=None, timeout=8):
     """Calls the node. Returns (http status, parsed JSON or text). Status 0 means no answer."""
     data = None if body is None else json.dumps(body).encode()
     if NODE_API.startswith("unix:"):
-        if data is not None and node_tcp_taken():
+        if data is not None and node_tcp_taken() and not node_socket_answers():
             if time.time() - _tcp_warned["at"] > 60:
                 _tcp_warned["at"] = time.time()
-                event("node call refused: something answers on the node's old TCP port", guard=os.environ.get("NODE_TCP_GUARD", ""))
+                event("node call refused: the node's old TCP port answers and its socket doesn't", guard=os.environ.get("NODE_TCP_GUARD", ""))
             return 0, None
         try:
             code, raw = unix_http(NODE_API[len("unix:"):], "GET" if data is None else "POST", path, data,

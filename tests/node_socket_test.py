@@ -4,9 +4,9 @@
   python3 tests/node_socket_test.py
 
 A stand-in node answers HTTP on a Unix socket only. Part 1 calls server.py's node() in-process: GETs and POSTs
-go over the socket; with NODE_TCP_GUARD naming a TCP address where something answers, POSTs are refused and
-never reach the node. Part 2 runs the app as the Android app does (APP_EMBEDDED, APP_KEY, NODE_API=unix:...) and
-reads the node's state through it.
+go over the socket; another program holding the old TCP port (NODE_TCP_GUARD) doesn't block sends while the node's
+socket answers (review S1); with TCP answering and no socket, POSTs are refused. Part 2 runs the app as the Android
+app does (APP_EMBEDDED, APP_KEY, NODE_API=unix:...) and reads the node's state through it.
 """
 import http.server, json, os, secrets, shutil, socket, socketserver, subprocess, sys, tempfile, threading, time
 
@@ -73,11 +73,12 @@ out["get"] = server.node("/cryptarchia/info")
 out["missing"] = server.node("/nothing")
 out["post"] = server.node("/wallet/transactions/transfer-funds", {"amount": 5})
 l = socket.socket(); l.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); l.bind(("127.0.0.1", int(sys.argv[2]))); l.listen(1)
-out["post_guarded"] = server.node("/wallet/transactions/transfer-funds", {"amount": 6})
+out["post_squatted"] = server.node("/wallet/transactions/transfer-funds", {"amount": 6})
 out["get_guarded"] = server.node("/cryptarchia/info")
-l.close()
 server.NODE_API = "unix:" + sys.argv[1] + ".none"
 out["no_socket"] = server.node("/cryptarchia/info")
+out["post_no_socket_tcp"] = server.node("/wallet/transactions/transfer-funds", {"amount": 7})
+l.close()
 print(json.dumps(out))
 """
 r = subprocess.run([sys.executable, "-B", "-c", probe, sock, str(guard_port), tempfile.mkdtemp(), APP],
@@ -90,8 +91,9 @@ except Exception:
 check("a GET goes over the Unix socket", out.get("get") == [200, {"cryptarchia_info": {"height": 4242, "slot": 9000, "state": "Online"}}], out.get("get"))
 check("the node's 404 comes back as such", (out.get("missing") or [0])[0] == 404, out.get("missing"))
 check("a POST goes over the Unix socket, as JSON", out.get("post") == [201, {"hash": "ab" * 32, "amount": 5}], out.get("post"))
-check("with something answering on the guarded TCP address, a POST is refused (status 0)", out.get("post_guarded") == [0, None], out.get("post_guarded"))
-check("and never reaches the node", [p for p in seen if p[0] == "POST"] == [("POST", "/wallet/transactions/transfer-funds")], seen)
+check("another app holding the guarded TCP port doesn't block sends: the socket answers (review S1)", out.get("post_squatted") == [201, {"hash": "ab" * 32, "amount": 6}], out.get("post_squatted"))
+check("TCP answering while the node's socket doesn't: the POST is refused (status 0)", out.get("post_no_socket_tcp") == [0, None], out.get("post_no_socket_tcp"))
+check("so the node got exactly the two POSTs that were allowed", [p for p in seen if p[0] == "POST"] == [("POST", "/wallet/transactions/transfer-funds")] * 2, seen)
 check("reading still works meanwhile", (out.get("get_guarded") or [0])[0] == 200, out.get("get_guarded"))
 check("no socket: no answer (status 0)", out.get("no_socket") == [0, None], out.get("no_socket"))
 

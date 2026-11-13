@@ -7,8 +7,13 @@ plugins {
 // Which node binary is packaged; set by the build (-PnodeVersion=... -PnodeSha256=...).
 val nodeVersion = (findProperty("nodeVersion") as String?) ?: "unknown"
 val nodeSha256 = (findProperty("nodeSha256") as String?) ?: "unknown"
-// "patched" or "unpatched" (android/node.properties chooses; CI passes it)
-val nodeVariant = (findProperty("nodeVariant") as String?) ?: "unknown"
+// "api", "patched" or "unpatched" (android/node.properties chooses; CI passes it). Required: the variant decides
+// whether the app runs the node's API on its private socket ("api") or on TCP, so a build that doesn't know it
+// must not produce an APK that could ship a socket-patched node on TCP (android/LOCAL-APIS.md, review S2).
+val nodeVariant = (findProperty("nodeVariant") as String?)?.trim().orEmpty()
+if (nodeVariant !in setOf("api", "patched", "unpatched")) {
+    throw GradleException("-PnodeVariant must be api, patched or unpatched (android/node.properties), not '$nodeVariant'")
+}
 
 // The wallet is the repository's own web app (app/: server.py, index.html, names/), taken as it is at
 // build time and shipped as assets. It is never copied by hand into this project.

@@ -56,9 +56,8 @@ object NodeApi {
     }
 
     /**
-     * Whether anything accepts a TCP connection on 127.0.0.1:[NodeFiles.API_PORT]. With the node on its
-     * socket nothing should: if something does, either the node opened its API on TCP after all or
-     * another app is there, and the node is stopped (NodeService).
+     * Whether anything accepts a TCP connection on 127.0.0.1:[NodeFiles.API_PORT]. With the node on its socket
+     * nothing of ours should. Any app can listen there, so this alone never stops anything ([TcpGuard]).
      */
     fun tcpAnswers(timeoutMs: Int = 1000): Boolean = try {
         Socket().use { it.connect(InetSocketAddress("127.0.0.1", NodeFiles.API_PORT), timeoutMs) }
@@ -67,9 +66,41 @@ object NodeApi {
         false
     }
 
-    /** The one line to show when [tcpAnswers] is true in socket mode. */
-    const val TCP_BLOCK_LINE = "Node stopped: something answers on 127.0.0.1:18180, where other apps could reach the node's API. " +
-        "It stays off until that port is free; start it again from the Node screen."
+    /** Whether what answers on TCP [NodeFiles.API_PORT] speaks the node's API (a 200 with the chain's info). */
+    fun tcpLooksLikeNode(): Boolean = try {
+        val r = getTcp("/cryptarchia/info", 3000)
+        r != null && r.first == 200 && org.json.JSONObject(r.second).let { it.has("cryptarchia_info") || it.has("height") }
+    } catch (_: Exception) {
+        false
+    }
+
+    /** The one line to show when [TcpGuard] stops the node. */
+    const val TCP_BLOCK_LINE = "Node stopped: its API answered on 127.0.0.1:18180 (TCP, which other apps can reach) instead of " +
+        "its private socket. It stays off; start it again from the Node screen."
+
+    /**
+     * Whether to stop the node because its API is on TCP (review S1). Any app can listen on 127.0.0.1:18180, and
+     * nothing of ours connects there in socket mode, so a stranger on that port is ignored (it would otherwise be
+     * a way for any app to stop the node). The node is stopped only when, [STRIKES] checks in a row, TCP answers
+     * as a node does while the node's own socket doesn't answer: the node is running without its socket.
+     */
+    class TcpGuard {
+        enum class Verdict { FINE, STRANGER_IGNORED, SUSPECT, STOP }
+
+        var strikes = 0
+            private set
+
+        fun observe(tcpAnswers: Boolean, tcpLooksLikeNode: Boolean, socketAnswers: Boolean): Verdict {
+            if (!tcpAnswers) { strikes = 0; return Verdict.FINE }
+            if (socketAnswers || !tcpLooksLikeNode) { strikes = 0; return Verdict.STRANGER_IGNORED }
+            strikes++
+            return if (strikes >= STRIKES) Verdict.STOP else Verdict.SUSPECT
+        }
+
+        companion object {
+            const val STRIKES = 4
+        }
+    }
 
     fun request(path: String): ByteArray {
         require(path.startsWith("/") && path.none { it == '\r' || it == '\n' || it == ' ' }) { "bad path" }

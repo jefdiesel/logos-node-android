@@ -117,6 +117,8 @@ jobs:
         run: python3 tests/node_socket_test.py
       - name: Messages through the messaging runner's own Unix socket (REST off) - the runner's socket code with a stand-in library
         run: python3 tests/messaging_socket_test.py
+      - name: A flood of large messages doesn't lose the batch (runner buffer bounded in bytes, answers read whole)
+        run: python3 tests/messaging_batch_test.py
       - name: The phone's own LNS name (Android app only), with a stand-in signer and sequencer
         run: python3 tests/lns_test.py
       - name: Getting LEZ for the phone's name account (faucet, bridge through the node's API), with stand-ins
@@ -202,6 +204,78 @@ jobs:
       - name: Logs, if something failed
         if: failure()
         run: tail -40 chain/node.log; cat chain/app.log
+  node-socket:
+    # The real node with patch 0002 (the app's "api" variant, built for Linux arm64 from the same commit in the
+    # native-build run pinned in android/node.properties): its API on a Unix socket and on no TCP port, a bad socket
+    # setting stops it instead of opening TCP, and the web app works over the socket, a real transfer included.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: The node with patch 0002, built for Linux from the pinned commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prop() { sed -n "s/^$1=//p" android/node.properties | tr -d '[:space:]'; }
+          RUN=$(prop run); V=$(prop version); COMMIT=$(prop commit); SHA=$(prop linux-api.sha256)
+          gh run download "$RUN" -R "$GITHUB_REPOSITORY" -n "logos-blockchain-node-linux-arm64-$V-api" -D nd
+          [ "$(sha256sum nd/logos-blockchain-node | cut -d' ' -f1)" = "$SHA" ] || { echo "::error::not the pinned binary"; exit 1; }
+          cat nd/SOURCE.txt nd/PATCHES.txt
+          grep -q " commit $COMMIT, variant api," nd/SOURCE.txt
+          mkdir chain && cp nd/logos-blockchain-node chain/ && chmod +x chain/logos-blockchain-node
+          for f in standalone-node-config.yaml standalone-deployment-config.yaml; do
+            curl -fsSL -o chain/$f "https://raw.githubusercontent.com/logos-blockchain/logos-blockchain/$V/nodes/node/$f"
+          done
+          grep -q "listen_address: 127.0.0.1:8080" chain/standalone-node-config.yaml
+      - name: A bad socket setting stops the node; it never opens its API on TCP
+        working-directory: chain
+        run: |
+          mkdir -m 755 shared; mkdir -m 700 private; touch private/file.sock
+          try() {   # $1: what, $2: LOGOS_API_UNIX_SOCKET value
+            rm -rf state; LOGOS_API_UNIX_SOCKET="$2" ./logos-blockchain-node --deployment standalone-deployment-config.yaml standalone-node-config.yaml > bad.log 2>&1 &
+            P=$!
+            for i in $(seq 1 120); do
+              if ss -ltn | grep -q "127.0.0.1:8080 "; then echo "::error::$1: the API opened on TCP"; kill $P; exit 1; fi
+              kill -0 $P 2>/dev/null || break
+              sleep 1
+            done
+            if kill -0 $P 2>/dev/null; then echo "::error::$1: the node kept running"; kill $P; exit 1; fi
+            wait $P && { echo "::error::$1: exit code 0"; exit 1; }
+            grep -q "the node stops rather than open the API on TCP" bad.log || { tail -20 bad.log; exit 1; }
+            echo "$1: stopped, nothing on TCP 8080"
+          }
+          try "empty value" ""
+          try "relative path" "api.sock"
+          try "a directory others can enter" "$PWD/shared/api.sock"
+          try "a file that isn't a socket" "$PWD/private/file.sock"
+          rm -rf state
+      - name: Start the node on its socket and the web app over it
+        working-directory: chain
+        run: |
+          mkdir -m 700 api
+          LOGOS_API_UNIX_SOCKET="$PWD/api/api.sock" nohup ./logos-blockchain-node --deployment standalone-deployment-config.yaml standalone-node-config.yaml > node.log 2>&1 &
+          for i in $(seq 1 120); do [ -S api/api.sock ] && curl -fsS --unix-socket api/api.sock http://node/cryptarchia/info >/dev/null 2>&1 && break; sleep 1; done
+          curl -fsS --unix-socket api/api.sock http://node/cryptarchia/info; echo
+          [ "$(stat -c %a api/api.sock)" = 600 ] || { echo "::error::the socket isn't 0600"; exit 1; }
+          if ss -ltn | grep -q "127.0.0.1:8080 "; then echo "::error::the API is also on TCP"; exit 1; fi
+          grep -h "listens on this Unix socket only" node.log logs/* 2>/dev/null | tail -1 || true
+          NODE_API="unix:$PWD/api/api.sock" NODE_BIN="$PWD/logos-blockchain-node" NODE_CFG="$PWD/standalone-node-config.yaml" \
+          NODE_DEPLOYMENT="$PWD/standalone-deployment-config.yaml" APP_DATA="$PWD" \
+          NAMES_RPC_URL=http://127.0.0.1:18545 NAMES_PROGRAM=US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx \
+            nohup python3 ../app/server.py > app.log 2>&1 &
+          sleep 5
+      - name: A real transfer through the web app, over the node's socket
+        run: python3 tests/wallet_test.py send
+      - name: Still nothing on TCP
+        run: |
+          ss -ltn
+          if ss -ltn | grep -q "127.0.0.1:8080 "; then echo "::error::the API is on TCP"; exit 1; fi
+      - name: Logs, if something failed
+        if: failure()
+        run: tail -60 chain/node.log; cat chain/app.log; tail -30 chain/bad.log || true
   termux:
     # Runs install-termux.sh inside the official Termux Docker image (Termux userland on arm64).
     # Not a real phone: it tests the script and that the node runs under proot.
