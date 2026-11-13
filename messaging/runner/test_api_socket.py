@@ -84,15 +84,31 @@ try:
     # ---- the runner refuses a config that turns the library's network APIs on (review S4) ----------------------
     cfg = os.path.join(tmp, "config.json")
     base = {"mode": "Core", "preset": "logos.test", "rest": False, "nodekey": "ab" * 32}
-    for name, conf, want in (("REST off", base, 0), ("no REST key at all", {k: v for k, v in base.items() if k != "rest"}, 0),
-                             ("REST on", dict(base, rest=True), 4), ("rest-admin on", dict(base, **{"rest-admin": True}), 4),
-                             ("metrics server on", dict(base, **{"metrics-server": True}), 4),
-                             ("websockets on", dict(base, **{"websocket-support": True}), 4),
-                             ("REST as a string", dict(base, rest="true"), 4), ("rest-port alone (REST still off)", dict(base, **{"rest-port": 18645}), 0)):
+    cases = [("REST off", base, 0), ("no REST key at all", {k: v for k, v in base.items() if k != "rest"}, 0),
+             ("REST null", dict(base, rest=None), 0), ("rest-port alone (REST still off)", dict(base, **{"rest-port": 18645}), 0),
+             ("REST on", dict(base, rest=True), 4), ("rest-admin on", dict(base, **{"rest-admin": True}), 4),
+             ("metrics server on", dict(base, **{"metrics-server": True}), 4),
+             ("websockets on", dict(base, **{"websocket-support": True}), 4),
+             ("REST as a string", dict(base, rest="true"), 4),
+             # the review's bypasses (D2): the library reads keys case-insensitively, by field name too, and 1 as true
+             ("REST", dict(base, REST=True), 4), ("Rest", dict(base, Rest=True), 4),
+             ("restAdmin", dict(base, restAdmin=True), 4), ("metricsServer", dict(base, metricsServer=True), 4),
+             ("metricsserver", dict(base, metricsserver=True), 4), ("websocketSupport", dict(base, websocketSupport=True), 4),
+             ("websocketSecureSupport", dict(base, websocketSecureSupport=True), 4), ("metrics_server", dict(base, metrics_server=True), 4),
+             ("rest: 1", dict(base, rest=1), 4), ("rest: yes", dict(base, rest="yes"), 4), ("rest: on", dict(base, rest="on"), 4)]
+    for name, conf, want in cases:
         with open(cfg, "w") as f:
             json.dump(conf, f, indent=1)
         r = subprocess.run([exe, "--config", cfg], capture_output=True, text=True, timeout=10)
         check("config with %s: %s" % (name, "taken" if want == 0 else "refused"), r.returncode == want and ("ab" * 32) not in r.stdout + r.stderr, (r.returncode, r.stdout))
+
+    for name, raw, want in (("a key spelled with an escape (re\\u0073t)", '{"mode":"Core","re\\u0073t":true}', 4),
+                            ("a value like true in a string elsewhere", '{"mode":"Core","nodekey":"x\\"rest\\":true","rest":false}', 0),
+                            ("rest: false with spaces", '{"rest"  :  false  }', 0), ("rest: falsey", '{"rest":falsey}', 4)):
+        with open(cfg, "w") as f:
+            f.write(raw)
+        r = subprocess.run([exe, "--config", cfg], capture_output=True, text=True, timeout=10)
+        check("config with %s: %s" % (name, "taken" if want == 0 else "refused"), r.returncode == want, (r.returncode, r.stdout))
 
     p = subprocess.Popen([exe, sock], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
