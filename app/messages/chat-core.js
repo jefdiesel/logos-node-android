@@ -736,17 +736,24 @@ export class Chat {
     } catch (e) { for (const m of g.list) this.bad.add(m.n); return []; } });
     reqs.sort((a, b) => b.rank - a.rank || b.first - a.first);
     // Ranks: a request the user opened (or the server keeps) 3, a proven name 2, any other that proves its
-    // address 1, the rest 0; within a rank the newest first. A claimed name never read on chain ranks 1, but up to
-    // REQ.HOLD of those (one per name: the oldest half and the newest half) are never dropped by the caps before
-    // one read (lazyCheck in the background, checkRequests when Requests is opened). A name read once never
-    // comes back into the hold, so junk claims can fill it only until they are read. What this can't stop: more
-    // than REQ.HOLD / 2 fresh claims sent after a real new name, then a burst of free keys, before it is read.
+    // address 1, the rest 0; within a rank the newest first. Requests claiming a name that hasn't been read for
+    // them are held: never dropped by the caps before one read (lazyCheck reads held names first, in the
+    // background; checkRequests when Requests is opened). "Read for them" means an answer that names an address,
+    // or a "no address" answer newer than the request: one a stranger caused before she wrote doesn't count, so
+    // claiming her name first costs her nothing. Held: up to REQ.HOLD names (the oldest half and the newest
+    // half), up to 3 senders each (the first and the 2 newest). What this can't stop: REQ.HOLD / 2 other claimed
+    // names on each side of hers, or 3 more senders claiming her name around her, then a burst, before a read.
     const names = dict((this.store.req || {}).names);
-    const neverRead = g => g.authentic && g.proof === "claim" && !g.chainRead && !this.chain.has(g.claimed) && own(names, g.claimed) === undefined;
+    const answer = name => { const c = this.chain.get(name), w = own(names, name);
+      return c ? { k: c.key || "", at: c.at } : w && typeof w === "object" ? w : undefined; };
+    const holdable = g => { if (!(g.authentic && g.proof === "claim")) return false;
+      const a = answer(g.claimed); return !a || (a.k === "" && a.at < g.list[0].received); };
     const byName = new Map();
-    for (const g of reqs.filter(neverRead).sort((a, b) => a.first - b.first)) if (!byName.has(g.claimed)) byName.set(g.claimed, g);
-    const elig = [...byName.values()], half = Math.ceil(REQ.HOLD / 2);
-    const hold = new Set([...elig.slice(0, half), ...elig.slice(Math.max(half, elig.length - (REQ.HOLD - half)))]);
+    for (const g of reqs.filter(holdable).sort((a, b) => a.first - b.first)) (byName.get(g.claimed) || byName.set(g.claimed, []).get(g.claimed)).push(g);
+    const nameList = [...byName.values()], half = Math.ceil(REQ.HOLD / 2);
+    const heldNames = [...nameList.slice(0, half), ...nameList.slice(Math.max(half, nameList.length - (REQ.HOLD - half)))];
+    const hold = new Set(heldNames.flatMap(gs => gs.length <= 3 ? gs : [gs[0], ...gs.slice(-2)]));
+    this.holdIds = new Set([...hold].map(g => g.id));
     let bytes = 0, counted = 0;
     this.reqs = [];
     for (const g of reqs) {
@@ -842,7 +849,9 @@ export class Chat {
     const today = new Date(now).toISOString().slice(0, 10), q = this.store.req || {};
     const used = q.lookups && q.lookups.day === today ? q.lookups.n : 0;
     if (used >= this.lazy.PER_DAY) return false;
-    const g = this.reqs.filter(x => x.authentic && x.proof === "claim" && !x.chainRead).sort((a, b) => a.first - b.first)[0];
+    const held = this.holdIds || new Set();
+    const g = this.reqs.filter(x => x.authentic && x.proof === "claim" && (!x.chainRead || held.has(x.id)))
+      .sort((a, b) => (held.has(b.id) - held.has(a.id)) || a.first - b.first)[0];  // held ones first, then the oldest
     if (!g) return false;
     this.lazyAt = now + jitter(this.lazy.GAP);
     try { await this.mutate(s => { s.req = Object.assign({}, s.req, { lookups: { day: today, n: used + 1 } }); }, true); } catch (e) { return false; }

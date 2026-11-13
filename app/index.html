@@ -1304,12 +1304,13 @@ $("b-rs").addEventListener("click", async () => {
   const msg = (r.data.unchanged ? r.data.message
     : "Restored: the wallet now has the " + r.data.addresses + " accounts from the backup. " + (r.data.restarted ? "The node is restarting with them." : r.data.manual))
     + (r.data.messages_restored ? " Messages: " + r.data.messages_restored + " restored." : "")
+    + (r.data.messaging_message ? " " + r.data.messaging_message : "")
     + (r.data.lns_message ? " Name account: " + r.data.lns_message : "");
   if (r.data.lns === "kept") {           // a different name account is here: keep the file loaded so they can choose
     m.className = "msg warn"; m.textContent = msg; $("rs-lns-row").hidden = false; $("rs-lns").checked = false;
     loadAccounts(); return;
   }
-  resetRestore(); m.className = r.data.lns === "failed" ? "msg bad" : r.data.lns === "busy" || r.data.lns === "unchecked" ? "msg warn" : "msg ok"; m.textContent = msg;
+  resetRestore(); m.className = r.data.lns === "failed" ? "msg bad" : r.data.lns === "busy" || r.data.lns === "unchecked" || r.data.messaging_key_restored === false ? "msg warn" : "msg ok"; m.textContent = msg;
   if (window.LNS) window.LNS.refresh();        // the account Your name shows follows what the restore did
   loadAccounts(); loadHistory(); if (window.LNS) window.LNS.refresh();
 });

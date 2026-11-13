@@ -943,7 +943,7 @@ print(sorted(json.load(open(os.path.join(os.path.dirname(server.STORE_FILE), f))
   err = null; try { await v1.mutate(s => { s.ui = Object.assign({}, s.ui, { y: 1 }); }, true); } catch (e) { err = e; }
   check("a page that began empty and saved chats since refuses to write onto the store set aside under it", err && err.code === "store-changed" && (await V.call("/api/messages/store")).d.blob === null, err && err.code);
   // SF-D1: 10 junk claims sent first can't keep a real new name out of the hold
-  const v2 = mk(); await v2.loadStore(); await v2.sync();
+  let v2 = mk(); await v2.loadStore(); await v2.sync();
   for (let i = 0; i < 10; i++) await vin(toV(MC.newKeyPair(), "junk claim", "junkname" + i));
   await until("10 junk claims", async () => { await v2.sync(); return v2.requests().length === 10; });
   const nell = ID.newIdentity(); await w.register("nellv", { msg: hex(nell.publicKey) });
@@ -956,13 +956,14 @@ print(sorted(json.load(open(os.path.join(os.path.dirname(server.STORE_FILE), f))
   await v2.checkRequests(100);
   await v2.mutate(s => { for (const k of Object.keys(s.req.names)) s.req.names[k].at = 0; }, true);
   for (const r of [...v2.requests()]) if (r.claimed !== "nellv") await v2.deleteRequest(r.id);
+  const v2old = v2; v2 = mk(); await v2.loadStore(); await v2.sync();   // a new session: no answer from this one in memory
   for (let i = 0; i < 10; i++) await vin(toV(MC.newKeyPair(), "junk again", "junkname" + i));
   const nora = ID.newIdentity(); await w.register("norav", { msg: hex(nora.publicKey) });
   await vin(MC.sealMessage({ to: V.id.publicKey, from: "norav", fromSecret: nora.secretKey, text: "nora here" }));
   await until("nora's request (after the junk)", async () => { await v2.sync(); return v2.requests().some(g => g.claimed === "norav") && v2.requests().filter(g => /^junkname/.test(g.claimed || "")).length === 10; });
   for (let i = 0; i < 55; i++) { await vin(toV(MC.newKeyPair(), "free again " + i)); if (i % 20 === 19) { await sleep(700); await v2.sync(); } }
   await until("sorted again", async () => { await v2.sync(); return !(await vitems()).some(i => !i.k) && v2.requests().some(g => g.list[0].text === "free again 54"); }, 20000);
-  check("junk names read once (answers since expired) don't take the hold again: the new real name keeps it", v2.requests().some(g => g.claimed === "norav"));
+  check("junk names read once, answers expired, claimed again (in a new session): the new real name is still held", v2.requests().some(g => g.claimed === "norav"));
   for (const r of [...v2.requests()]) await v2.deleteRequest(r.id);
   // T-2: a sender's drops behind more than 300 others come back (loadDropped reads every page)
   await v2.setOnlyKnown(true);
@@ -983,13 +984,17 @@ print(sorted(json.load(open(os.path.join(os.path.dirname(server.STORE_FILE), f))
   await w.control("down/3");
   await until("node off", async () => (await V.call("/api/messages/status")).d.node.reachable === false, 8000);
   await v3.send("d:zoev", "queued for zoe");
-  const real = v3.resolveRaw;
-  v3.resolveRaw = async (name) => { if (name === "zoev") { await sleep(3000); return null; } return real(name); };   // a slow "not registered"
+  const real = v3.resolveRaw; let slowReads = 0;
+  v3.resolveRaw = async (name) => { if (name === "zoev") { slowReads++; await sleep(3000); return null; } return real(name); };   // a slow "not registered"
+  while (v3.guarding) await v3.guarding;          // a guard from the send's own sync ends first
   v3.guarded.clear();
   const t1 = Date.now(); await v3.sync(); const took = Date.now() - t1;
-  await sleep(3500); await v3.sync();
+  check("(the sync started a guard that reads zoe)", !!v3.guarding);
+  while (v3.guarding) await v3.guarding;          // and this guard read the slow answer to its end
+  await v3.sync();
   const zq = [...v3.outbox.values()].find(m => m.text === "queued for zoe");
-  check("a slow \"not registered\" answer: the inbox read doesn't wait for it, and nothing is cancelled", took < 2000 && zq.sends[0].state === "queued", [took, zq.sends[0].state]);
+  check("a slow \"not registered\" answer: the inbox read doesn't wait for it, and once read to its end it cancels nothing",
+    took < 2000 && slowReads >= 1 && zq.sends[0].state === "queued", [took, slowReads, zq.sends[0].state]);
   // T-2: a cancel that didn't go through is tried again
   v3.resolveRaw = real;
   await w.register("zoev", { msg: hex(ID.newIdentity().publicKey) });
@@ -1018,6 +1023,123 @@ print(sorted(json.load(open(os.path.join(os.path.dirname(server.STORE_FILE), f))
   const d = (await U2.call("/api/messages/inbox")).d;
   check("an unreadable inbox with no good copy: after a restart the numbers go on above the old ones, never from 1", d.next > 1e9 && d.sort_from > 1e9, [d.next, d.sort_from]);
   U2.proc.kill();
+}
+
+// ---- 11. from the fifth review ------------------------------------------------------------------------------
+{
+  // SF-E1: on a full disk, setting the saved chats aside (Start fresh, a restore with another key) and Use the
+  // last copy change nothing: the new file is written before the old one moves
+  const T = mkdtempSync(join(tmpdir(), "full-"));
+  const out = pyIn(T, `import json, os, errno
+d = os.path.dirname(server.STORE_FILE)
+assert hasattr(server, "msg_key_restore_with_store") and hasattr(server, "store_replace_keeping_aside")
+real_tmp = server._fsync_tmp
+def full(path, data):
+    raise OSError(errno.ENOSPC, "No space left on device")
+res = []
+# 1. Start fresh (store_aside) on a full disk
+json.dump({"rev": 3, "blob": "QUJD"}, open(server.STORE_FILE, "w"))
+server._fsync_tmp = full
+try: server.store_aside("aside"); res.append("no error")
+except OSError: res.append("refused")
+res.append(json.load(open(server.STORE_FILE))["blob"]); res.append(len([f for f in os.listdir(d) if ".aside-" in f]))
+# 2. a restore with another key and no saved chats, on a full disk: the key isn't changed, the chats stay
+calls = []
+server.msg_key_load = lambda: {"secret": "11" * 32, "public": "22" * 32}
+server.msg_key_restore = lambda k: calls.append(1) or True
+try: server.msg_key_restore_with_store({"secret": "33" * 32, "public": "44" * 32}, None); res.append("no error")
+except server.MsgKeyNotRestored: res.append("not restored")
+res.append(len(calls)); res.append(json.load(open(server.STORE_FILE))["blob"]); res.append(len([f for f in os.listdir(d) if ".other-key-" in f]))
+# 3. the key write fails after the chats were set aside: they are put back
+server._fsync_tmp = real_tmp
+def boom(k): raise OSError(errno.ENOSPC, "No space left on device")
+server.msg_key_restore = boom
+try: server.msg_key_restore_with_store({"secret": "33" * 32, "public": "44" * 32}, None); res.append("no error")
+except server.MsgKeyNotRestored: res.append("not restored")
+res.append(json.load(open(server.STORE_FILE))["blob"]); res.append(len([f for f in os.listdir(d) if ".other-key-" in f]))
+# 4. Use the last copy on a full disk: the bad file stays where it is, and so does .prev, the only good copy
+open(server.STORE_FILE, "w").write("garbage")
+json.dump({"rev": 2, "blob": "R09PRA=="}, open(server.STORE_FILE + ".prev", "w"))
+server._fsync_tmp = full
+try: server.store_replace_keeping_aside("unreadable", "R09PRA=="); res.append("no error")
+except OSError: res.append("refused")
+res.append(open(server.STORE_FILE).read()); res.append(json.load(open(server.STORE_FILE + ".prev"))["blob"]); res.append(len([f for f in os.listdir(d) if ".unreadable-" in f]))
+print(json.dumps(res))`);
+  rmSync(T, { recursive: true, force: true });
+  check("a full disk: Start fresh, a restore with another key, a failed key write and Use the last copy each leave the saved chats (and the last copy) where they were",
+    out === JSON.stringify(["refused", "QUJD", 0, "not restored", 0, "QUJD", 0, "not restored", "QUJD", 0, "refused", "garbage", "R09PRA==", 0]).replace(/,/g, ", "), out);
+}
+{
+  // SF-E2: a restore whose messaging key can't be written answers, says so, and logs it
+  const K = await app(w, 8156 + PS, w.NODES[3]);
+  await person(w, K, "kira", "121289");
+  const kk = (await K.call("/api/messages/key")).d;
+  const kc = new CORE.Chat({ me: { secret: unhex(kk.secret), public: kk.public, name: kk.name }, api: K.api, resolve: w.resolve });
+  await kc.loadStore(); await kc.startDirect("bob");
+  const G = await app(w, 8157 + PS, w.NODES[4]);
+  await person(w, G, "gus", "565689");
+  const bk = (await G.call("/api/wallet/backup", { password: "yet another long password", pin: G.pin })).d.backup;
+  G.proc.kill();
+  const storeBefore = (await K.call("/api/messages/store")).d.blob;
+  writeFileSync(join(K.data, "FAILKEY"), "");
+  const rs = await K.call("/api/wallet/restore", { backup: bk, password: "yet another long password", pin: K.pin });
+  rmSync(join(K.data, "FAILKEY"));
+  const key = JSON.parse(readFileSync(join(K.data, "wallet-msgkey.json"), "utf8"));
+  const log = readFileSync(join(K.data, "wallet-events.log"), "utf8");
+  K.session = (await K.call("/api/wallet/unlock", { pin: K.pin })).d.session;
+  check("the messaging key can't be written: the restore still answers (wallet restored, messaging key not), and says why",
+    rs.code === 200 && rs.d.ok && rs.d.messaging_key_restored === false && /couldn't be written/.test(rs.d.messaging_message || ""), [rs.code, rs.d]);
+  check("the key and the saved chats are as they were, and the event log has both lines",
+    key.public === kk.public && (await K.call("/api/messages/store")).d.blob === storeBefore && / wallet restored /.test(log) && /messaging key not restored/.test(log));
+  K.proc.kill();
+}
+{
+  const H = await app(w, 8158 + PS, w.NODES[2], { MESSAGING_DROP_GRACE_SECONDS: "3600" });
+  await person(w, H, "hana", "343489");
+  const ht = MC.inboxTopic(H.id.publicKey), hitems = async () => (await H.call("/api/messages/inbox")).d.items;
+  const hin = p => w.control("inject/2", { topic: ht, payload: b64(p) });
+  const toH = (kp, text, from = null) => MC.sealMessage({ to: H.id.publicKey, from: from || "msg-" + hex(kp.publicKey).slice(0, 16), fromSecret: kp.secretKey, text });
+  const kH = (await H.call("/api/messages/key")).d;
+  const mk = () => new CORE.Chat({ me: { secret: unhex(kH.secret), public: kH.public, name: kH.name }, api: H.api, resolve: w.resolve });
+  const burst = async (c, tag) => {
+    for (let i = 0; i < 50; i++) { await hin(toH(MC.newKeyPair(), tag + " " + i)); if (i % 20 === 19) { await sleep(700); await c.sync(); } }
+    await until("the burst " + tag + " is sorted", async () => { await c.sync(); return !(await hitems()).some(i => !i.k) && c.requests().some(g => g.list[0].text === tag + " 49"); }, 20000);
+  };
+  // SF-E3 h1: a stranger claims her name first, then she writes, then 50 free keys
+  const h = mk(); await h.loadStore(); await h.sync();
+  const nell = ID.newIdentity(); await w.register("nellh1", { msg: hex(nell.publicKey) });
+  await hin(toH(MC.newKeyPair(), "it's nell (not)", "nellh1"));
+  await until("the stranger's claim", async () => { await h.sync(); return h.requests().some(g => g.claimed === "nellh1"); });
+  await hin(MC.sealMessage({ to: H.id.publicKey, from: "nellh1", fromSecret: nell.secretKey, text: "the real nell" }));
+  await until("the real nell's request", async () => { await h.sync(); return h.requests().some(g => g.key === hex(nell.publicKey)); });
+  await burst(h, "free a");
+  check("a stranger claiming her name before she writes costs her nothing: her first message is still there after a burst",
+    h.requests().some(g => g.key === hex(nell.publicKey)), h.requests().filter(g => g.claimed === "nellh1").length);
+  for (const r of [...h.requests()]) await h.deleteRequest(r.id);
+  // SF-E3 q7: a stranger made the phone read her name while it had no address; she registers and writes later
+  const S = MC.newKeyPair();
+  await hin(toH(S, "it's pia", "piaq"));
+  await until("a claim of piaq", async () => { await h.sync(); return h.requests().some(g => g.claimed === "piaq"); });
+  await h.checkRequests();
+  check("(read while it had no address)", h.requests().find(g => g.claimed === "piaq").chainRead);
+  for (const r of [...h.requests()]) await h.deleteRequest(r.id);
+  await sleep(1100);
+  const pia = ID.newIdentity(); await w.register("piaq", { msg: hex(pia.publicKey) });
+  await hin(MC.sealMessage({ to: H.id.publicKey, from: "piaq", fromSecret: pia.secretKey, text: "the real pia" }));
+  await until("the real pia's request", async () => { await h.sync(); return h.requests().some(g => g.key === hex(pia.publicKey)); });
+  await burst(h, "free b");
+  check("a \"no address\" answer a stranger caused before she wrote doesn't count for her: she is held through a burst",
+    h.requests().some(g => g.key === hex(pia.publicKey)));
+  // SF-E4: the one-hour "no address" answer
+  const hg = h.requests().find(g => g.key === hex(pia.publicKey));
+  await h.mutate(s => { s.req.names.piaq = { k: "", at: Date.now() - 30 * 60000 }; }, true);
+  let h2 = mk(); await h2.loadStore(); await h2.sync();
+  const a1 = h2.requests().find(g => g.key === hex(pia.publicKey));
+  await h2.mutate(s => { s.req.names.piaq = { k: "", at: Date.now() - 2 * 3600000 }; }, true);
+  h2 = mk(); await h2.loadStore(); await h2.sync();
+  const a2 = h2.requests().find(g => g.key === hex(pia.publicKey));
+  check("a \"no address\" answer counts for an hour: read at 30 minutes, not read at 2 hours", a1 && a1.chainRead && a2 && !a2.chainRead, [a1 && a1.chainRead, a2 && a2.chainRead, !!hg]);
+  H.proc.kill();
 }
 
 stopAll();

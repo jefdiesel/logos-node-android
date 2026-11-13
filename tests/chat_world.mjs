@@ -91,7 +91,10 @@ export async function app(w, port, node, extra = {}, data = null, serverPy = joi
                 NAMES_RPC_URL: `http://127.0.0.1:${w.SEQ}`, NAMES_PROGRAM: w.PROGRAM, WAKU_API: node ? `http://127.0.0.1:${node}` : "",
                 MESSAGING_POLL_SECONDS: "0.3", MESSAGING_HEALTH_SECONDS: "0.5", MESSAGING_SEND_GAP_SECONDS: "0.2", ...extra };
   for (const k of Object.keys(extra)) if (extra[k] === null) delete env[k];
-  const p = spawn("python3", [serverPy], { env, stdio: "ignore" });
+  // every app runs with hard links refused, as Android refuses them to apps (tests/nolink_server.py)
+  const wrapped = serverPy.endsWith("nolink_server.py") ? serverPy : join(here, "nolink_server.py");
+  if (!serverPy.endsWith("nolink_server.py")) env.REAL_SERVER_PY = serverPy;
+  const p = spawn("python3", [wrapped], { env, stdio: "ignore" });
   procs.push(p);
   const base = `http://127.0.0.1:${port}`;
   for (let i = 0; i < 100; i++) { try { const r = await fetch(base + "/api/wallet"); await r.text(); if (r.ok) break; } catch {} await sleep(100); }

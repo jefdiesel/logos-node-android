@@ -18,7 +18,9 @@ phone. Unofficial community work, testnet only.
 - `messaging/`: the messaging (Waku) node runner and its configs. See `messaging/README.md`.
 - `install.sh`, `install-termux.sh`: install the node and the web app on Linux (Android's Terminal app) or
   in Termux. See `README.md`.
-- `tests/`: every test the CI runs (below). `tools/`: `release.py`, `decrypt-backup.py`, `msg-peer.mjs`.
+- `tests/`: the tests and their stand-ins (a fake node, a fake messaging network, fake LNS signer). CI runs
+  them from `.github/workflows/install-test.yml`, about 25 steps; a few are listed below. `tools/`:
+  `release.py`, `decrypt-backup.py`, `msg-peer.mjs`.
 - `docs/`: user-facing notes (`messages.md`, `backup.md`, `updating.md`, `sync-on-a-phone.md`,
   `start-from-a-synced-database.md`).
 
@@ -55,7 +57,8 @@ gradle --no-daemon assembleDebug -PnodeVersion=0.3.4 -PnodeSha256=<sha256 of the
 
 ## Tests
 
-The tests need Python 3 and Node.js (22 or later); a few need more, as noted.
+Some of the tests, as examples (the full list is the `run:` lines in `install-test.yml`). They need Python 3
+and Node.js (22 or later); a few need more, as noted.
 
 ```sh
 python3 tests/crypto_test.py              # the app's ChaCha20-Poly1305 against RFC 8439
@@ -80,8 +83,10 @@ CHROME=/path/to/chrome node tests/chat_ui.mjs   # the Messages screen in headles
 
 ## Rules
 
-- **No secrets in the repository.** No keys, tokens, PINs or seeds, in files, commit messages or test data.
-  Tests make their own keys at run time.
+- **No real secrets in the repository**: no real keys, tokens, PINs, seeds or passwords, in files or commit
+  messages. Throwaway test material is fine and is there on purpose: test vectors with fixed keys
+  (`tests/msg_vectors.json`), fixed test PINs and passwords in the tests and in `install-test.yml`. Most tests
+  make their own keys at run time.
 - **`android/debug.keystore` is public on purpose.** It is the standard throwaway Android debug key,
   committed so every build has the same signature and installs over the previous one. It protects
   nothing and is not a release key.
@@ -91,12 +96,18 @@ CHROME=/path/to/chrome node tests/chat_ui.mjs   # the Messages screen in headles
   `android/names.properties` (the LNS signer). To change a pin, run the build workflow, then put the new
   run id and the sha256 from its `SHA256SUMS` in those files, in one commit, and let `android-app` check
   it. Never edit a sha256 by hand to make a check pass.
-- **Never weaken the local-API auth.** The node and the messaging node listen on private Unix sockets, and
-  every wallet request needs the app key cookie, the right Host and Origin, and (for the wallet and
-  messages) an unlocked session. Read `android/LOCAL-APIS.md` before touching any of it.
+- **Never weaken the local-API auth.** In the Android app the node and the messaging node listen on private
+  Unix sockets, and every request to the wallet server except the page's own public files needs the app key
+  cookie (set by the app, `APP_KEY`). Wallet and messages requests also need the right Host (a POST, the
+  right Origin too) and, for their data, an unlocked session (a few reads, like the lock state at
+  `GET /api/wallet`, don't). On Linux and in Termux there is no app key (`APP_KEY` unset): Host, Origin and
+  the session are the checks, and the node's API is on TCP on 127.0.0.1. Read `android/LOCAL-APIS.md` before
+  touching any of it.
 - **Vendored code** is changed only by re-vendoring from its source, never edited in place (see the
   `VENDORED.txt` files).
-- **Android limits apply to the app's own Python:** no hard links, no files outside the app's own folders.
+- **Android limits apply to the app's own Python:** no hard links (the tests run the server with them
+  refused: `tests/nolink_server.py`), no files outside the app's own folders, and no running programs from
+  the data folders: only the native libraries bundled in the APK run (see `android/README.md`).
 - Plain words in the user interface; keys are "messaging address", LNS names are bare like `alice`.
 
 ## Where the docs are

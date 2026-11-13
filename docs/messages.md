@@ -62,11 +62,14 @@ or the message comes from a messaging address one of your contacts uses.
   requests in all, plus up to 10 held (below). Kept first: a request you opened, or one the app keeps (a proven
   LNS name's); then a proven LNS name, then an address, then an unproven message; within each, the oldest go
   first. 1 MiB of sealed messages in all; nothing older than 30 days.
-- A request that names a name the name service has never been asked about counts like an address, except that
-  up to 10 such requests (one per name: the 5 oldest and the 5 newest) are held: never dropped by the limits
-  before their name has been asked about once. A name asked about once never goes back into the hold, so junk
-  claims hold it only until they are read. What this can't stop: more than 5 fresh claimed names sent after a
-  real new one, then a burst of other senders, before the app has asked about it.
+- A request that names a name the name service hasn't been asked about for it counts like an address, except
+  that such requests are held: never dropped by the limits before their name has been asked about once. Held:
+  up to 10 names (the 5 oldest and the 5 newest), up to 3 senders each (the first and the 2 newest). "Asked
+  about for it" means an answer that gives an address, or a "no address" answer newer than the request: a
+  stranger who claims someone's name before she writes, or makes the app ask about it before she registered,
+  costs her nothing. The app asks about held names first. What this can't stop: 5 other claimed names before
+  hers and 5 after, or 3 more senders claiming her name around her, then a burst of other senders, all before
+  the app has asked about it.
 - The app asks in the background only while the requests near the limit: at most 20 a day, the first a random
   1 to 5 minutes after it first sees them near the limit, then each a fresh random 1 to 5 minutes after the one
   before. An answer counts for a day ("this name has no messaging address" for an hour); after that, or when
@@ -97,7 +100,11 @@ or the message comes from a messaging address one of your contacts uses.
 - The inbox and outbox files (all the chats' history) are written the same way as the saved chats: synced, with
   the copy each write replaces kept. A file that can't be read is kept aside, never written over, and the last
   copy is used. With no readable last copy, the history starts empty (the numbers go on above the old ones);
-  the app's event log records it, and Messages doesn't say so yet.
+  the app's event log records it (for the inbox and the outbox), and Messages doesn't say so yet.
+- Setting saved chats aside (Start fresh, a restore with another messaging address) and Use the last saved copy
+  write the new file first and only then move the old one, so a full phone changes nothing. A restore whose
+  messaging key can't be written still restores the wallet, says so ("Messages still uses this phone's
+  address"), leaves the saved chats as they were, and is in the event log.
 - Apart from those background asks, the app looks up a name a request claims when you open Requests (one at a time, stopping
   when you leave), so a stranger's message doesn't make the phone ask the name service (or do the work a
   lookup takes) on its own.
