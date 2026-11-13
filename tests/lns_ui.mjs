@@ -91,7 +91,8 @@ check("Logos is picked, the tabs are Send, Receive, Activity, and Activity shows
   && document.getElementById("t-act").getAttribute("aria-selected") === "true" && !document.getElementById("p-hist").hidden && document.getElementById("p-send").hidden`));
 check("Your name isn't on the Wallet", !(await shown("#s-lns")));
 await click("#t-recv");
-check("Logos Receive: the QR, the address in full, Copy, and no balance", await js(`!document.getElementById("p-recv").hidden && /${"a1".repeat(32)}/.test(document.getElementById("p-recv").innerText) && /Copy/.test(document.getElementById("p-recv").innerText) && !/Logos|[0-9],[0-9]{3}/.test(document.getElementById("p-recv").innerText)`));
+check("Logos Receive: which network, the QR, the address in full, Copy, and no balance", await js(`(() => { const p = document.getElementById("p-recv"), runs = p.querySelector(".runs"), t = p.innerText.replace(runs ? runs.innerText : "", "");
+  return !p.hidden && !!runs && runs.innerText === "Logos on the public Logos testnet." && new RegExp("${"a1".repeat(32)}").test(t) && /Copy/.test(t) && !/Logos|[0-9],[0-9]{3}/.test(t); })()`));
 await click("#t-act");
 await click("#tok-lez");
 await waitFor("Add LEZ leads to making the name account", `!document.getElementById("page-settings").hidden && document.getElementById("h-settings").textContent === "Your name"`);
@@ -236,7 +237,7 @@ check("and Logos' own Activity is hidden", await js(`document.getElementById("p-
 await click("#t-recv");
 const acct = (await (await fetch(BASE + "/api/wallet/lns/balance", { headers: { "X-Session": session } })).json()).account;
 await waitFor("LEZ Receive: the QR, Public/ and the account in full, Copy", `!document.getElementById("lez-recv").hidden && document.getElementById("lez-addr").textContent === "Public/${acct}" && !!document.querySelector("#lez-qr svg path") && document.getElementById("b-lez-copy").textContent === "Copy"`);
-check("no balance on Receive", !/[0-9],[0-9]{3}|LEZ [0-9]/.test(await text("#lez-recv")), await text("#lez-recv"));
+check("no balance on Receive (the network's name, LEZ 0.3, aside)", !/[0-9],[0-9]{3}|LEZ [0-9]/.test((await text("#lez-recv")).replace("(LEZ 0.3)", "")) && /on the public Logos testnet \(LEZ 0\.3\)/.test(await text("#lez-recv")), await text("#lez-recv"));
 check("the QR holds Public/ and the account", await js(`document.querySelector("#lez-qr .qr").dataset.text === "Public/${acct}"`));
 await shot("lez-receive");
 
