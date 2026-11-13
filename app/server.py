@@ -765,6 +765,31 @@ def lns_balance(account, timeout=8):
         return None
 
 
+lns_view_bal = {"account": None, "value": None, "at": 0.0, "done": None}
+
+
+def lns_view_balance(account):
+    """The balance for the page's poll: read fresh, but the poll waits at most a second for it. A sequencer that
+    hangs leaves the last value (at most a minute old) or None; one read runs at a time."""
+    c = lns_view_bal
+    if c["account"] != account:
+        c.update(account=account, value=None, at=0.0, done=None)
+    if c["done"] is None or c["done"].is_set():
+        done = threading.Event()
+        c["done"] = done
+
+        def read():
+            try:
+                v = lns_balance(account, timeout=5)
+                if c["account"] == account:
+                    c.update(value=v, at=time.time())
+            finally:
+                done.set()
+        threading.Thread(target=read, daemon=True).start()
+    c["done"].wait(1.0)
+    return c["value"] if time.time() - c["at"] < 60 else None
+
+
 def lns_view():
     with lns_lock:
         job = {k: lns_job.get(k) for k in ("kind", "state", "name", "entry", "progress", "error", "started", "finished", "to",
@@ -779,7 +804,7 @@ def lns_view():
         notes.append("The name account's file can't be read, but a saved copy is on this phone. Put it back first.")
     elif st["account"] and not os.path.isfile(lns_storage()):
         notes.append("The name account's file is missing from this phone. Restore a backup that has it.")
-    return {"account": st["account"], "balance": lns_balance(st["account"]) if st["account"] else None,
+    return {"account": st["account"], "balance": lns_view_balance(st["account"]) if st["account"] else None,
             "name": st["name"], "job": job, "last_backup": last_backup(), "notes": notes,
             # the last backup doesn't hold the account as it is now (or there is none)
             "backup_needed": bool(st["account"]) and lns_fingerprint() != lns_backed_up(),
@@ -1991,11 +2016,14 @@ def lns_flow_stopped_view(fl):
 
         def read():
             try:
-                c.update(spent=lns_flow_spent(fl), next_max=lns_flow_next_max(fl), at=time.time())
-                if c["next_max"] is not None:
-                    c["last_max"] = c["next_max"]
+                spent, nm = lns_flow_spent(fl), lns_flow_next_max(fl)
+                if c.get("key") == key:       # another flow's read never lands under this one
+                    c.update(spent=spent, next_max=nm, at=time.time())
+                    if nm is not None:
+                        c["last_max"] = nm
             finally:
-                c["reading"] = False
+                if c.get("key") == key:
+                    c["reading"] = False
         threading.Thread(target=read, daemon=True).start()
     return c.get("spent") or {"reading": True}, c.get("next_max") or c.get("last_max")
 

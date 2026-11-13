@@ -204,12 +204,14 @@ Then the page shows one line and **Try again**.
     its button says the most it may cost.
 - **A stop shows what it did**: its transactions in blocks, the most they were billed, and the balance
   change since the first paid send; then "Start over (up to N LEZ more)". It is read in the background
-  (at most every 30 s, 5 s timeouts), so the page never waits on the chain. When the chain can't be read
+  (at most every 30 s, 5 s timeouts), so the page never waits on the chain; the page's balance line waits a
+  second at most, then shows the last value read. When the chain can't be read
   it says so, with the transactions seen so far and their most, never "0"; when the maximum isn't known
   yet, Start over waits ("cost not known yet").
 - **Stop while a change is being sent** says until when (up to 95 minutes for a register). "Stop now" is
   offered only while a register waits out the 15 minutes between its steps, and only within 20 s of the
-  signer's own "waiting N s" line with more than 35 s left (checked and stopped under one lock): its
+  signer's own "waiting N s" line with more than 35 s left (checked and stopped under one lock; the CLI
+  prints that line every 30 s, so the button shows for about 20 s of each 30): its
   commit is in a block and saved, and nothing is being sent, so the next register resumes it.
 - **Waits** are all counted and spaced out; a `names resolve` (Argon2) runs at most once a minute, and
   after five with no step taken, once every ten minutes. The day's wait for LEZ and the two-day limit

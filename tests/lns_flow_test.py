@@ -111,9 +111,11 @@ def chain():
 
 
 def poke(**kw):
-    """Changes the flow's file as a test, and drops the pause this process holds (as a restart would)."""
-    server.lns_flow_save(dict(server.lns_flow_load(), **kw))
-    server.lns_flow_mem["next_mono"] = 0.0
+    """Changes the flow's file as a test, and drops the pause this process holds (as a restart would). Under the
+    flow's lock, so a round running meanwhile can't save over it."""
+    with server.lns_flow_lock:
+        server.lns_flow_save(dict(server.lns_flow_load(), **kw))
+        server.lns_flow_mem["next_mono"] = 0.0
 
 
 s = call("/api/wallet/setup", {"pin": PIN})[1]["session"]
@@ -610,10 +612,12 @@ check("S-1: the worst case shown is the transaction cap at the ceiling: 6 x 2,26
 # S-2 and S-3: a stopped flow's view, with the chain not answering: nothing blocks, nothing reads 0
 real_nonce, real_bal = server.lez_nonce, server.lns_balance
 server.lez_nonce = lambda account, timeout=10: (time.sleep(3), None)[1]
-server.lns_balance = lambda account, timeout=8: None    # (the page's own balance line reads on each poll, as before)
+server.lns_balance = lambda account, timeout=8: (time.sleep(3), None)[1]
 server.lns_flow_stopped_cache.clear()
 t0 = time.time(); d = call("/api/wallet/lns", session=s)[1]
-check("S-3: the page's poll doesn't wait on the chain (under a second)", time.time() - t0 < 1.0, time.time() - t0)
+check("S-3: the page's poll doesn't wait on the chain (the balance line waits a second at most)", time.time() - t0 < 1.8, time.time() - t0)
+t0 = time.time(); call("/api/wallet/lns", session=s)
+check("S-3: and the next poll neither", time.time() - t0 < 1.8, time.time() - t0)
 until("the background read finishes", lambda: not server.lns_flow_stopped_cache.get("reading") and server.lns_flow_stopped_cache.get("at"), tries=100)
 sp = call("/api/wallet/lns", session=s)[1]["flow"]["spent"]
 check("S-2: not readable: no billed figure, but the transactions seen so far", sp["billed_max"] is None and sp["tx_seen"] >= 1 and sp.get("billed_seen") not in (None, "0"), sp)
@@ -634,14 +638,21 @@ fl_ = {"fee_ceil": [9, 9], "nonce_seen": 10, "billed": 0, "billing_kind": "text"
 server.lns_flow_settle(fl_, 12)
 check("S-6: one entry and one more (a late register transaction): 1,093,500 + 2,263,500", fl_["billed"] == T + R, fl_["billed"])
 # S-6: a background read begun before a change ended doesn't put older entries back
+server.lns_entries_cache.pop("pam", None)
+server.lns_entries_read("pam")
+check("S-6 (control): a read with no change since is kept", "pam" in server.lns_entries_cache, list(server.lns_entries_cache))
 server.lns_entries_cut["pam"] = time.time() + 1
 server.lns_entries_cache.pop("pam", None)
 server.lns_entries_read("pam")
 check("S-6: a read begun before the last change ended isn't kept", "pam" not in server.lns_entries_cache)
 server.lns_entries_cut.pop("pam", None)
 # S-6: a damaged hold file doesn't break LEZ Send
-json.dump({"at": "not a number"}, open(server.LNS_SEND_UNSURE_FILE, "w"))
-check("S-6: an unreadable hold reads as none", isinstance(server.lns_unsure_load(), dict))
+mem_was = dict(server.lns_unsure_mem)
+server.lns_unsure_mem.clear(); server.lns_unsure_mem.update({"at": 5.0, "to": "x"})
+with open(server.LNS_SEND_UNSURE_FILE, "w") as f:
+    json.dump({"at": "not a number", "to": "y"}, f)
+check("S-6: a hold file with a damaged time doesn't throw; the one in memory stands", server.lns_unsure_load() == {"at": 5.0, "to": "x"}, server.lns_unsure_load())
+server.lns_unsure_mem.clear(); server.lns_unsure_mem.update(mem_was)
 os.remove(server.LNS_SEND_UNSURE_FILE)
 # a flow saved by an older version (no counted time; 0.9.13 counted about a sixth): judged by the wall clock
 call("/api/wallet/lns/get/stop", {}, session=s)
