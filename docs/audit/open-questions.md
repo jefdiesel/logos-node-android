@@ -11,9 +11,11 @@ The node API listens on `127.0.0.1:18180` (`android/app/src/main/java/io/github/
 `server.py` calls it with no authentication (`app/server.py:51-56`), including
 `POST /wallet/transactions/transfer-funds` (`app/server.py:2812-2814`) and `POST /channel/deposit`
 (`app/server.py:1537`). Loopback TCP is open to every app with the `INTERNET` permission, so whatever the
-node does for the wallet server it does for any app. *Not determinable here:* whether the node's API has
-access control of its own (the config the app writes sets none, `NodeFiles.kt:82-97`). If it has none, the
-PIN does not protect the coins from other installed apps. This is the first thing to settle.
+node does for the wallet server it does for any app. CI's `wallet-send` job shows a real node (0.3.4 for
+Linux) making a transfer for `server.py`, which sends no credential (`tests/wallet_test.py:283-315`).
+*Not determinable here:* whether the Android build pinned in `android/node.properties` behaves differently;
+the config the app writes sets no access control (`NodeFiles.kt:82-97`). If it doesn't, the PIN does not
+protect the coins from other installed apps. This is the first thing to settle.
 
 **A2. The same for the messaging node's REST API** (`127.0.0.1:18645`, `android/app/src/main/java/io/github/jefdiesel/logosnode/Messaging.kt:23-24`;
 called without a credential, `app/server.py:3331-3348`). Another app can publish, subscribe and unsubscribe,
@@ -33,7 +35,8 @@ Node keystore (`NodeFiles.kt:18`), messaging key (`app/server.py:3163, 3271-3275
 only APK built is a debug build (`.github/workflows/android-app.yml:88, 152`), signed with the committed
 debug keystore whose passwords are `android` (`android/app/build.gradle.kts:48-59`; `android/debug.keystore`).
 Consequences: `run-as` over USB debugging reads all keys without the PIN; anyone can build an APK that
-installs as an update of this app and reads its data; WebView remote debugging is on. `wallet-pin.json` is
+installs as an update of this app and reads its data; WebView remote debugging is probably on (platform
+behaviour for debuggable apps, not verified here). `wallet-pin.json` is
 scrypt N=2^14 of a 6 to 12 digit PIN (`app/server.py:2655-2667`): a read copy is brute-forced offline quickly.
 
 **A5. The messaging secret can be exported with a session alone.** `GET /api/messages/key` returns the
@@ -47,7 +50,7 @@ the design (the page does the cryptography), but it should be stated.
 program that sends the right `Host` and `Origin` headers can set it and receives a session
 (`app/server.py:4480-4489`).
 
-**A7. The one-tap job signs while the wallet is locked, for up to 48 hours** (`app/server.py:1723, 2035-2036`;
+**A7. *(d00ee0f; `7c858ee` says it addresses this: check again.)* The one-tap job signs while the wallet is locked, for up to 48 hours** (`app/server.py:1723, 2035-2036`;
 `android/NAMES.md:181` makes this a design decision). The brakes that bound it have gaps:
 - the spend ceiling is set only if balance, fees and deposit are all known at the first paid send; otherwise
   that send starts with no spend check at all (`app/server.py:1921, 1963-1978`), although the docstring says
@@ -60,7 +63,7 @@ program that sends the right `Host` and `Origin` headers can set it and receives
 - `last_send_at` and `started` use the wall clock; a clock set back makes the 60 s gap and the 48 h limit
   wait longer, a clock set forward ends them early; only `next_at` is guarded (`app/server.py:1919, 2029-2030, 2035`).
 
-**A8. A LEZ Send is not refused while the one-tap job is at its register step.** `lns_send` checks only for a
+**A8. *(d00ee0f; `7c858ee` says it addresses this: check again.)* A LEZ Send is not refused while the one-tap job is at its register step.** `lns_send` checks only for a
 running job (`app/server.py:1410-1471`, via `lns_start` 849-854), not `lns_flow_busy()`; a failed register
 clears `reg_pending` (`app/server.py:837-841`), so the floor that keeps the registration's LEZ is gone. A send
 then moves the account's nonce and the flow stops with "an earlier commit may have landed"
@@ -112,16 +115,16 @@ account doesn't hold fail on chain and may be billed.
 
 ## C. Robustness
 
-**C1. Try again cannot recover three stops.** Retry resets tries, counts and the ceiling
+**C1. *(d00ee0f; `7c858ee` says it addresses this: check again.)* Try again cannot recover three stops.** Retry resets tries, counts and the ceiling
 (`app/server.py:1816`) but not `started` (48 h limit, 2035), `fund_since` (24 h, 2068-2070) or the saved job
 nonce (2100-2109). After those stops only Stop and a new tap move on.
 
-**C2. Job timeouts are shorter than the signer's own wait.** The signer waits up to 60 rounds 30 s apart for
+**C2. *(d00ee0f; `7c858ee` says it addresses this: check again.)* Job timeouts are shorter than the signer's own wait.** The signer waits up to 60 rounds 30 s apart for
 a block (`app/server.py:650-652`), 30 minutes; the app kills a `set-text` after 20 minutes and a send after
 10 (`app/server.py:306`). On a slow chain a text change is killed and retried, and a LEZ send ends as "may
 have been sent".
 
-**C3. Smaller flow items.** An "already" answer resets `last_send_at` to 0 (`app/server.py:2005`);
+**C3. *(d00ee0f; `7c858ee` says it addresses this: check again.)* Smaller flow items.** An "already" answer resets `last_send_at` to 0 (`app/server.py:2005`);
 `read_waits` is reset only at the entry steps, not after a good read at register (`app/server.py:2088-2093,
 2128`); the 10-minute refusal of a repeated identical LEZ send is in memory and lost on restart
 (`app/server.py:309, 1444-1446`); `lns_commit_saved` checks only that a commitment for the name exists, not

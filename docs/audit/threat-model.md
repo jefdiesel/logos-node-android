@@ -119,9 +119,11 @@ connections to `127.0.0.1`, and can send any headers it likes.
   calls it with no credential (`server.py:51-56`), including `POST /wallet/transactions/transfer-funds`
   (`server.py:2812-2814`) and `POST /channel/deposit` (`server.py:1537`). The node cannot tell those calls
   from the same calls made by another app. **If the node signs for the wallet server, it signs for any
-  local app: the PIN does not protect the coins from other apps.** Whether the node's API has any access
-  control of its own is not determinable from this repository; the config the app writes sets none
-  (`kt/NodeFiles.kt:82-97`). This is the most serious open item; see [open-questions.md](open-questions.md).
+  local app: the PIN does not protect the coins from other apps.** CI shows the node signing for a caller with
+  no credential: the `wallet-send` job runs a real node (release 0.3.4 for Linux) and a transfer through
+  `server.py` (`.github/workflows/install-test.yml`, job `wallet-send`; `tests/wallet_test.py:283-315`). Not
+  determinable here: whether the Android build pinned in `android/node.properties` differs; the config the
+  app writes sets no access control (`kt/NodeFiles.kt:82-97`). This is the most serious open item; see [open-questions.md](open-questions.md).
 - **Can reach the messaging node's REST API on `127.0.0.1:18645`** (`kt/Messaging.kt:23-24`): publish on
   any topic, change subscriptions, read received events (sealed payloads and topics). Whether reading
   events takes them away from the wallet server is not determinable here.
@@ -150,7 +152,8 @@ Everything a session allows, without typing the PIN again:
 - set the first messaging key, change the linked name, turn messages on (`server.py:3703-3734`).
 
 The PIN is asked again for: backup export, restore, replacing an existing messaging key, turning on
-fingerprint unlock, applying an update (`server.py:4496-4528, 3710-3717, 4597-4614, 4626-4638`).
+fingerprint unlock (`server.py:4496-4528, 3710-3717, 4597-4614`). In-app updates, which also need it
+elsewhere, are refused inside the Android app (`server.py:4595-4596`).
 
 ### 4.6 Someone holding the phone, unlocked, with the wallet locked
 
@@ -191,8 +194,10 @@ fingerprint unlock, applying an update (`server.py:4496-4528, 3710-3717, 4597-46
 - **Can** use non-canonical spellings of its own key (upper-case hex, bit 255 set) to appear as a different
   address ([spec §9 step 8](messages-v1-spec.md#9-opening-what-a-receiver-checks-in-order);
   vectors `fromKey-*-accepted`).
-- **Can** send avatars as inline `data:` images up to 64 KiB, shown in the page; the CSP allows `data:`
-  images only when messages are on (`chat-core.js:94-99`, `server.py:4304-4306`).
+- Avatars do not come from messages: they come from a name's chain record (`avatar` entry), read through
+  `lookup()` (`chat-core.js:149-161`), so the name's holder or the name endpoint (§4.3) chooses them. Only
+  inline `data:` images of PNG, JPEG, GIF or WebP up to 64 KiB are used, and the CSP allows `data:` images
+  only when messages are on (`chat-core.js:94-99`, `server.py:4304-4306`).
 - **Cannot** make a message authentic under a key whose secret it lacks
   ([spec §6](messages-v1-spec.md#6-sender-authentication-auth)).
 - Text is shown by the page; how it is inserted into the DOM was not audited here (see open questions).
@@ -210,8 +215,11 @@ fingerprint unlock, applying an update (`server.py:4496-4528, 3710-3717, 4597-46
      two entries, signing with the name-account key, **for up to 48 hours from the tap**
      (`LNS_FLOW_MAX`, `server.py:1723, 2035-2036`), with no session. `android/NAMES.md:181` states this as a
      design decision: the tap is the consent. A job already running when the 48 hours end is not stopped.
-  2. **A bridge** started while unlocked keeps going: it splits a note from a wallet key and deposits it,
-     through the node's API, after the wallet locks (`server.py:1362-1404, 1486-1694`).
+  2. **A bridge** confirmed while unlocked keeps going: the split (a transfer from a wallet key to itself) is
+     sent at the tap (`server.py:1387-1390`); the deposit of that note through the node's API
+     (`POST /channel/deposit`) is made later by the background loop, with no session check, once the note is
+     in the wallet, unless more than 10 minutes have passed since the note appeared (then it is cancelled)
+     (`server.py:975, 1560-1612, 1486-1557, 1675-1694`).
   3. A `names` job already started (any kind) runs to its end or its timeout (`server.py:306, 770-842`).
   4. Messages are received and queued sends are posted (`server.py:3509-3612`).
 - **What does not need the PIN at all**, locked or not: the blockchain node's own API and the messaging
@@ -224,7 +232,7 @@ fingerprint unlock, applying an update (`server.py:4496-4528, 3710-3717, 4597-46
 | Only a debug APK is built and distributed | `.github/workflows/android-app.yml:88, 152` | `debuggable` (Android Gradle Plugin default for debug builds; not set in the repo) |
 | Signed with the committed debug keystore, passwords `android`/`android` | `android/debug.keystore`; `android/app/build.gradle.kts:51-56` | anyone can sign an APK that installs as an update of this app and gets its data |
 | `run-as` works (debuggable) | AGP default | over USB debugging, every file of the app can be read without the PIN: `keystore.yaml`, `wallet-msgkey.json`, `.lns-wallet/storage.json`, `wallet-pin.json` (a 6-digit PIN under scrypt N=2^14 is brute-forced offline in minutes to hours) |
-| WebView debugging is on for debuggable apps | platform default; the repo never calls `setWebContentsDebuggingEnabled` | over USB, `chrome://inspect` can run code in the page, including an unlocked page's session |
+| WebView debugging for debuggable apps | platform behaviour, **not verified here**; the repo never calls `setWebContentsDebuggingEnabled` | if on, over USB, `chrome://inspect` can run code in the page, including an unlocked page's session |
 | `NodeService` accepts actions from adb (DUMP) | `AndroidManifest.xml:66-77`; `kt/NodeService.kt:487-560` | over adb: start, stop, `IMPORT` a node state from any content URI with no integrity check (`kt/NodeService.kt:608-633`), `REVERT`, mobile mode; debug-only extras `fullreplay`, messaging switches, `break` (`kt/NodeService.kt:506-514, 545-547`) |
 | An unknown or missing action starts the node | `kt/NodeService.kt:544-559` | minor |
 | `allowBackup="false"`, no `dataExtractionRules` | `AndroidManifest.xml:24` | on Android 12+, device-to-device transfer rules are not set explicitly; behaviour not determinable from the repo |

@@ -315,10 +315,10 @@ People are identified by a *pid*: an LNS name (`alice`), or `k:<64 hex>` for an 
   (`chat-core.js:241-251, 202-206`).
 - Starting a chat with an address pins that address (`chat-core.js:253-262`).
 - Sending pins each named recipient's key if it has no pin yet (`chat-core.js:449-450`).
-- When someone writes first: a named sender's chat is made and its key pinned only if the message is
-  authentic **and** the chain's `msg` entry for that name equals `fromKey`; otherwise the chat is made with
-  nothing pinned. An address-only sender gets a chat (and a pin) only if the message is authentic
-  (`chat-core.js:314-332`).
+- When someone writes first, a chat is made only from a message whose trust (below) is not `unverified`
+  (`chat-core.js:314`). For a named sender with nothing pinned that means: authentic, and the chain's `msg`
+  entry for the name equals `fromKey`; that key is then pinned (`chat-core.js:326-328`). An address-only
+  sender gets a chat, and its address is pinned, only if the message is authentic (`chat-core.js:322-325`).
 
 **Trust levels** of an incoming message (`chat-core.js:382-393`), in order:
 
@@ -378,8 +378,9 @@ The older `tests/msg_vectors.json` holds two payloads sealed by the names projec
 ## 14. What is stored where, and how
 
 All in the app's data folder (`APP_DATA`; on Android `files/wallet`,
-`android/app/src/main/java/io/github/jefdiesel/logosnode/LogosApp.kt:40`). Every file is written mode 0600
-through a temporary file and a rename (`server.py:3271-3275, 3312-3319, 3472-3476`).
+`android/app/src/main/java/io/github/jefdiesel/logosnode/LogosApp.kt:40`). The files below are written
+mode 0600 through a temporary file and a rename (`server.py:3271-3275, 3312-3319, 3472-3476`), except the
+event log, which is appended to (0600, `server.py:2606-2610`).
 
 | file | content | protection |
 |---|---|---|

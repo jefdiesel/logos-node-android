@@ -3,6 +3,9 @@
 Commit `d00ee0f`, `app/server.py` unless another file is named. The design notes are in `android/NAMES.md`;
 this document follows the code, and lists where the two differ at the end.
 
+**Superseded in part.** `android-app` commit `7c858ee`, made after `d00ee0f`, rewrote the one-tap job's
+brakes and job timeouts (§4 timeouts, §7.2). Those parts describe `d00ee0f` only; see the README.
+
 ## 1. What it is
 
 The Android app can hold one **public LEZ account** (the "name account") and use it to register one LNS

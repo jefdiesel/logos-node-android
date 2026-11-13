@@ -8,6 +8,14 @@ older documents disagree, these documents follow the code and say so.
 `app/server.py:11`). The branch carrying this package adds only `docs/audit/`, `tests/vectors/`,
 `tests/messages_v1_vectors.mjs` and one CI step; it changes no app code.
 
+**Changed since.** While this was written, `android-app` gained `7c858ee` (the one-tap job's brakes rewritten:
+spend counted by nonce and fee ceiling, every wait counted, monotonic clocks, Try again resets everything,
+LEZ Send waits for the job, longer job timeouts), then `ca8eca3` and `2168c5f` (page layout, app name).
+`7c858ee` says it addresses open questions A7, A8, C1, C2 and C3. Those items, and
+[name-account.md §4 and §7](name-account.md#7-the-one-tap-job-get-this-name), describe `d00ee0f` and must be
+checked again against the newer commit. The message format, the threat model's other findings and the
+vectors are unaffected (`app/messages/` did not change).
+
 ## Documents
 
 | document | what it is |
@@ -56,8 +64,9 @@ library only). Inside the Android app the same file runs under Chaquopy with `AP
 
 ## Running the tests
 
-CI runs all of them (`.github/workflows/install-test.yml`, `android-app.yml`). The ones that need neither a
-running node nor a browser, from the repository root:
+CI runs all of them (`.github/workflows/install-test.yml`, `android-app.yml`); the workflow shows the
+environment each one is given. For this package only the first command below was run locally; the others are
+listed as CI runs them. The ones that need neither a running node nor a browser, from the repository root:
 
 ```sh
 node tests/messages_v1_vectors.mjs        # the message format against its spec and test vectors
@@ -90,11 +99,12 @@ These are the most important findings from writing this down. Each is detailed, 
    files protected only by Android's app sandbox. The PIN guards the app's API, not the files. No key uses
    the Android Keystore.
 3. **The app is shipped as a debug build signed with a public key.** USB debugging gives `run-as` access to
-   every key file and WebView debugging; anyone can sign an "update" that would get the app's data.
+   every key file (and, by platform default, probably WebView debugging); anyone can sign an "update" that
+   would get the app's data.
 4. **Names are resolved from one server's answer, unverified.** The LEZ sequencer endpoint decides what
    address "Send to a name" pays and which messaging key a first contact pins.
 5. **The one-tap name job signs with the name account's key while the wallet is locked**, for up to 48 hours
-   after the tap. Its spending brake has gaps.
+   after the tap. At `d00ee0f` its spending brake has gaps (rewritten in `7c858ee`, not reviewed here).
 6. **Messages have no forward secrecy and no replay protection** beyond an 8000-entry duplicate memory, and
    anyone can push real messages out of an inbox by sending 2000 junk payloads to its public topic.
 7. **The messaging secret key is handed to any unlocked page** (the page does the cryptography), while
