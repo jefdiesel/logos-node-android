@@ -128,6 +128,8 @@ jobs:
             echo "from ${rel%%:*}"
             python3 tests/upgrade_test.py "$OLD"
           done
+      - name: Names Messages v1 test vectors (docs/audit/messages-v1-spec.md) - a reference from the spec and the app's own code, byte for byte
+        run: node tests/messages_v1_vectors.mjs
       - name: Messages between LNS names - interop with the names project, two apps through a fake messaging node, nothing new without one
         run: |
           python3 -c "import cryptography" 2>/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq python3-cryptography; }
