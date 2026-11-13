@@ -1438,7 +1438,7 @@ function histRow(e) {
     sub.append(span(e.status === "pending" ? "Confirming…" : e.status === "in block" ? (e.fee != null ? "fee " + amtH(e.fee) : "in a block") : "not in a block"));
   } else if (e.kind === "sent") {
     sub.append(span("from " + e.label + " to " + (e.name ? e.name + " " : "") + (e.to_label ? e.to_label + " " : "") + "(" + short(e.to) + ")"), copyBtn(e.to, "Copy address"));
-    sub.append(span(e.status === "in block" ? "fee " + amtH(e.fee) : e.status === "pending" ? "Confirming…" : "not in a block"));
+    sub.append(span(e.status === "in block" ? "fee " + amtH(e.fee) : e.status === "pending" ? (e.unsure ? "No clear answer from the node: may have been sent" : "Confirming…") : "not in a block"));
   } else if (e.kind === "tracking started") {
     sub.append(span("Earlier activity isn't listed."));
   } else {

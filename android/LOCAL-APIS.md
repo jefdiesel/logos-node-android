@@ -376,17 +376,19 @@ After 0.5.20 (branch `sockets-e`, versions unchanged; review of 503b141, E1 to E
   environment variables before creating the node; the app writes all five network keys as `false` and checks them.
 - E3: `getTcp` (TCP builds only) reads the whole answer, status line and headers included, through one size cap and
   one deadline over a plain socket. Test: `theTcpPathGivesUpOnDrippingHeaders`.
-- E5, F1, F5: a send that may still land is never sent twice. A hold is set for the account before its transfer
-  goes to the node, and only a definite answer drops it (the node's hash, or a refusal the node answered). With no
-  clear answer (a timeout, an answer cut short, or a 2xx without a hash) it says the transfer may have been sent,
-  and every send from that account is refused until the balance has dropped by the held amount (and by no more
-  than the amount plus the largest fee, so an odd read such as 0 doesn't count; incoming coins never lift it), or
-  30 minutes have passed (as the bridge waits). The hold is kept on disk (`wallet-send-unsure.json`, owner-only)
-  so it survives a restart; within the app it runs on the monotonic clock, and a stored time from before a clock
-  was set back counts from now. The page treats no answer from the app itself the same way, and doesn't
-  re-enable Send on that review. Test: `tests/send_unsure_test.py`, one case per bypass the review found (an
-  incoming payment, a second send while the first waits on the node, an odd balance read, a restart, the clock),
-  failing on the code before.
+- E5, F1, F5, DELTA4 M1/M2/S1-S5: sends that may still land. A hold is set for the account before its transfer goes to
+  the node, under an id of its own; only a definite answer about that same transfer drops it: the node's hash, a
+  refusal the node answered, or a connection the node never took (then nothing was sent). With no clear answer (none
+  at all, the node's own 30 s timeout 408, a 500 "Failed to add tx", or a 2xx without a hash) the send is written to
+  Activity as pending ("No clear answer from the node: may have been sent"), and every spend from that account
+  (sends, and starting a bridge) is refused for 30 minutes; nothing else lifts the hold early (not the balance, not
+  another send landing). The 30 minutes run on the system's boot clock, which doesn't move when the wall clock is set
+  and runs on through app restarts; after a reboot they count again in full. The hold is on disk (owner-only,
+  fsync'd); a file or entry that can't be read holds the accounts concerned (all of them, if it can't tell) for the
+  full time; if the hold can't be saved before a send, the send isn't made. The bridge deposit takes a 408 as "may
+  have been made" too. What this does not cover: a transfer that is still out after the 30 minutes (the node keeps
+  its notes reserved for about 10 blocks), and two devices sending from the same keys. Test:
+  `tests/send_unsure_test.py`, one case per probe of the reviews, failing on the code before.
 - `tests/node_socket_test.py` now counts connections to the old TCP port (with `NODE_TCP_GUARD` set as 0.5.17-0.5.19
   set it): zero; it fails on the 0.5.17 server.py.
 - F2: the guard's ten-minute fallback runs on the monotonic clock (`NodeApi.ServicesStart`, tested: line match,
