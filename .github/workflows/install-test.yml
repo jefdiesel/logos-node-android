@@ -86,7 +86,7 @@ jobs:
     # The in-app update with the app started the way Termux's start script starts it: in the background
     # of a shell that then execs another program. A local HTTP server stands in for the GitHub repository.
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    timeout-minutes: 20      # the messages tests grew (requests, floods, store recovery): about 10 minutes in all
     steps:
       - uses: actions/checkout@v4
       - name: release.json matches the app files, the version and both installers
