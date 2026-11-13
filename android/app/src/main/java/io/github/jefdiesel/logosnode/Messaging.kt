@@ -26,6 +26,8 @@ object MessagingSettings {
      * (--api-socket, messaging/runner/api_socket.h; android/LOCAL-APIS.md).
      */
     const val REST = false
+    /** The library's network APIs, all written as false (REST included): the runner refuses any of them on. */
+    val NETWORK_APIS_OFF = listOf("rest", "rest-admin", "metrics-server", "websocket-support", "websocket-secure-support")
     /** Seconds between the runner's status lines (traffic metrics come with every second one). */
     const val STATUS_EVERY_SECONDS = 15
     /** Stops the node for the rest of the day once its traffic (in + out) reaches this. */
@@ -122,7 +124,7 @@ object MessagingConfig {
         o.put("nat", "none")                                        // never ask the router to open ports
         o.put("tcp-port", MessagingSettings.TCP_PORT)
         o.put("discv5-udp-port", MessagingSettings.DISCV5_UDP_PORT)
-        o.put("rest", MessagingSettings.REST)
+        for (k in MessagingSettings.NETWORK_APIS_OFF) o.put(k, false)
         o.put("local-storage-path", dataPath)
         o.put("nodekey", key)
         for ((k, v) in MessagingSettings.EXTRA) o.put(k, if (v is List<*>) JSONArray(v) else v)
@@ -135,7 +137,7 @@ object MessagingConfig {
         if (o.has("messagingOverrides")) return "the messaging config isn't in the flat shape"
         if (o.optString("mode") != MessagingSettings.MODE || o.optString("preset") != MessagingSettings.PRESET) return "the messaging config has the wrong mode or preset"
         if (o.optString("nodekey") != key || !MessagingFiles.KEY.matches(key)) return "the messaging config has no valid node key"
-        if (!o.has("rest") || o.optBoolean("rest", true) != MessagingSettings.REST || o.has("rest-address") || o.has("rest-port")) return "the messaging config must keep the REST API off"
+        if (MessagingSettings.NETWORK_APIS_OFF.any { !o.has(it) || o.opt(it) != false } || o.has("rest-address") || o.has("rest-port")) return "the messaging config must keep the library's network APIs off"
         if (o.optString("local-storage-path").isEmpty()) return "the messaging config has no storage path"
         for ((k, v) in MessagingSettings.EXTRA) {
             val want = if (v is List<*>) JSONArray(v).toString() else v.toString()

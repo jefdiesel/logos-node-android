@@ -56,6 +56,64 @@ class NodeApiTest {
         assertEquals(NodeApi.TcpGuard.Verdict.STOP, g.observe(true, false))
     }
 
+    @Test fun noStrikesBeforeTheNodeHasStartedItsServices() {
+        // review E1: before "Running chain" the node's API may not be bound yet; a stranger on TCP proves nothing
+        val g = NodeApi.TcpGuard()
+        repeat(50) { assertEquals(NodeApi.TcpGuard.Verdict.WAITING, g.observe(true, false, counting = false)) }
+        assertEquals(0, g.strikes)
+        repeat(NodeApi.TcpGuard.STRIKES - 1) { assertEquals(NodeApi.TcpGuard.Verdict.SUSPECT, g.observe(true, false, counting = true)) }
+        assertEquals(NodeApi.TcpGuard.Verdict.STOP, g.observe(true, false, counting = true))
+    }
+
+    @Test fun theGuardNeverWritesToOrReadsFromTheTcpPort() {
+        // review M1 and its follow-up: one guard round against a listener that streams endless bytes. The listener
+        // sees the connection closed at once with not one byte sent to it, and the round returns in well under 2 s.
+        val got = java.util.concurrent.atomic.AtomicLong(-1)
+        val closedAfterMs = java.util.concurrent.atomic.AtomicLong(-1)
+        val server = java.net.ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1"))
+        val t = Thread {
+            try {
+                server.accept().use { c ->
+                    val t0 = System.currentTimeMillis()
+                    c.soTimeout = 5000
+                    // push bytes at the guard while counting what it sends us; a closed peer ends both
+                    val writer = Thread { try { val z = ByteArray(65536); while (true) c.getOutputStream().write(z) } catch (_: Exception) {} }
+                    writer.isDaemon = true; writer.start()
+                    var n = 0L
+                    try { while (true) { val r = c.getInputStream().read(); if (r < 0) break; n++ } } catch (_: Exception) {}
+                    got.set(n); closedAfterMs.set(System.currentTimeMillis() - t0)
+                }
+            } catch (_: Exception) {}
+        }.apply { isDaemon = true; start() }
+        try {
+            var socketAsked = false
+            val t0 = System.currentTimeMillis()
+            val v = NodeApi.guardRound(NodeApi.TcpGuard(), true, { socketAsked = true; false }, server.localPort)
+            assertTrue(System.currentTimeMillis() - t0 < 2000)
+            assertEquals(NodeApi.TcpGuard.Verdict.SUSPECT, v)
+            assertTrue(socketAsked)
+            t.join(6000)
+            assertEquals("bytes the guard sent", 0L, got.get())
+            assertTrue("the guard closed after ${closedAfterMs.get()} ms", closedAfterMs.get() in 0..2000)
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test fun theTcpPathGivesUpOnDrippingHeaders() {
+        // review E3: a status line, then a header line every 200 ms, never ending: the deadline covers headers too
+        val drip = hostile { out -> out.write("HTTP/1.1 200 OK\r\n".toByteArray()); var i = 0; while (true) { out.write("X-$i: y\r\n".toByteArray()); out.flush(); i++; Thread.sleep(200) } }
+        val endless = hostile { out -> out.write("HTTP/1.1 200 OK\r\n".toByteArray()); val h = "X: ${"y".repeat(1000)}\r\n".toByteArray(); while (true) out.write(h) }
+        try {
+            val t0 = System.currentTimeMillis()
+            assertNull(NodeApi.getTcp("/cryptarchia/info", 1000, drip.localPort))
+            assertTrue("took ${System.currentTimeMillis() - t0} ms", System.currentTimeMillis() - t0 < 4000)
+            assertNull(NodeApi.getTcp("/cryptarchia/info", 3000, endless.localPort))     // endless headers: the size cap
+        } finally {
+            drip.close(); endless.close()
+        }
+    }
+
     /** A listener on a free port that answers every connection with [answer] (run on its own thread). */
     private fun hostile(answer: (java.io.OutputStream) -> Unit): java.net.ServerSocket {
         val server = java.net.ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1"))

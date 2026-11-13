@@ -31,6 +31,7 @@ class MessagingTest {
         assertEquals("Core", o.getString("mode")); assertEquals("logos.test", o.getString("preset"))
         // the library's REST API (TCP, reachable by any app) stays off: the runner's own socket instead
         assertEquals(false, o.getBoolean("rest")); assertFalse(o.has("rest-address")); assertFalse(o.has("rest-port"))
+        for (k in listOf("rest-admin", "metrics-server", "websocket-support", "websocket-secure-support")) assertEquals(false, o.getBoolean(k))
         assertEquals("none", o.getString("nat"))
         assertEquals(key, o.getString("nodekey"))
         assertEquals(f.data.absolutePath, o.getString("local-storage-path"))
@@ -48,6 +49,7 @@ class MessagingTest {
         for (bad in listOf(good.dropLast(3), "{\"mode\":\"Core\",\"preset\":\"logos.test\",\"messagingOverrides\":{\"nodekey\":\"$key\"}}",
             good.replace("logos.test", "logos.dev"), good.replace(key, "cd".repeat(32)), JSONObject(good).apply { put("rest", true) }.toString(),
             JSONObject(good).apply { remove("rest") }.toString(), JSONObject(good).apply { put("rest-port", 18645) }.toString(),
+            JSONObject(good).apply { put("metrics-server", true) }.toString(), JSONObject(good).apply { remove("websocket-support") }.toString(),
             JSONObject(good).apply { remove("shard") }.toString(), JSONObject(good).apply { put("filter", true) }.toString())) {
             val p = MessagingConfig.problem(bad, key)
             assertNotNull(p)

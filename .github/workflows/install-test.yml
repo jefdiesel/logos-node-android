@@ -113,8 +113,10 @@ jobs:
         run: python3 tests/embedded_test.py
       - name: Android app key - other apps on the phone get only the page's public files (android/LOCAL-APIS.md)
         run: python3 tests/app_key_test.py
-      - name: The node API on a Unix socket (node patch 0002) - server.py's transport, and no sends while something answers on its old TCP port
+      - name: The node API on a Unix socket (node patch 0002) - server.py's transport; it never touches the old TCP port, and takes answers only whole
         run: python3 tests/node_socket_test.py
+      - name: A transfer the node gave no answer about is not invited twice (it may have gone through)
+        run: python3 tests/send_unsure_test.py
       - name: Messages through the messaging runner's own Unix socket (REST off) - the runner's socket code with a stand-in library
         run: python3 tests/messaging_socket_test.py
       - name: A flood of large messages doesn't lose the batch (runner buffer bounded in bytes, answers read whole)

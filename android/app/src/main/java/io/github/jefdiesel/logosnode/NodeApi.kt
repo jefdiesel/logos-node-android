@@ -44,20 +44,16 @@ object NodeApi {
 
     /**
      * GET over TCP, for builds whose node is on TCP (not the "api" variant). Whoever listens on the port answers,
-     * so the answer is read with a size cap ([MAX_BYTES]) and an overall deadline (twice [timeoutMs]), and a
-     * redirect is not followed. Never used in socket mode.
+     * so the whole answer, status line and headers included, is read with a size cap ([MAX_BYTES]) and one overall
+     * deadline (twice [timeoutMs]), over a plain socket: no redirect is followed. Never used in socket mode.
      */
     internal fun getTcp(path: String, timeoutMs: Int, port: Int = NodeFiles.API_PORT): Pair<Int, String>? = try {
-        val c = java.net.URL("http://127.0.0.1:$port$path").openConnection() as java.net.HttpURLConnection
-        c.connectTimeout = minOf(timeoutMs, 3000); c.readTimeout = timeoutMs
-        c.instanceFollowRedirects = false
-        try {
-            val deadline = System.nanoTime() + 2L * timeoutMs * 1_000_000L
-            val code = c.responseCode
-            val body = (if (code < 400) c.inputStream else c.errorStream)?.let { readAll(it, deadline) } ?: ByteArray(0)
-            code to String(body, Charsets.UTF_8)
-        } finally {
-            c.disconnect()
+        val deadline = System.nanoTime() + 2L * timeoutMs * 1_000_000L
+        Socket().use { s ->
+            s.connect(InetSocketAddress("127.0.0.1", port), minOf(timeoutMs, 3000))
+            s.soTimeout = timeoutMs
+            s.getOutputStream().apply { write(request(path)); flush() }
+            parse(readAll(s.getInputStream(), deadline))
         }
     } catch (_: Exception) {
         null
@@ -100,15 +96,30 @@ object NodeApi {
      * node's socket doesn't, [STRIKES] checks in a row (about a minute), means the node may be running without its
      * socket, and it is stopped. Anything accepting there while the socket accepts is a stranger, ignored.
      */
+    /**
+     * One round of the guard: connect to 127.0.0.1:[port] and close (nothing written, nothing read), and only if
+     * that connects, ask [socketAccepts]. Kept apart from NodeService so a test can show it never reads from TCP.
+     */
+    fun guardRound(guard: TcpGuard, counting: Boolean, socketAccepts: () -> Boolean, port: Int = NodeFiles.API_PORT): TcpGuard.Verdict {
+        val tcp = tcpAnswers(1000, port)
+        return guard.observe(tcp, tcp && socketAccepts(), counting)
+    }
+
     class TcpGuard {
-        enum class Verdict { FINE, STRANGER_IGNORED, SUSPECT, STOP }
+        enum class Verdict { FINE, STRANGER_IGNORED, WAITING, SUSPECT, STOP }
 
         var strikes = 0
             private set
 
-        fun observe(tcpAnswers: Boolean, socketAccepts: Boolean): Verdict {
+        /**
+         * [counting]: whether the node has started its services (it printed "Running chain", or ten minutes have
+         * passed). Before that its API may not be bound yet, so a stranger on TCP proves nothing and no strike is
+         * counted (review E1): the node's socket is bound as soon as its API service starts.
+         */
+        fun observe(tcpAnswers: Boolean, socketAccepts: Boolean, counting: Boolean = true): Verdict {
             if (!tcpAnswers) { strikes = 0; return Verdict.FINE }
             if (socketAccepts) { strikes = 0; return Verdict.STRANGER_IGNORED }
+            if (!counting) { strikes = 0; return Verdict.WAITING }
             strikes++
             return if (strikes >= STRIKES) Verdict.STOP else Verdict.SUSPECT
         }

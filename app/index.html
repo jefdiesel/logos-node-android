@@ -1382,7 +1382,7 @@ $("f-send").addEventListener("submit", async e => {
   pending = { from, to, amount: raw, ...(name ? { name } : {}) };
   $("r-amount").textContent = amt(raw); $("r-to").textContent = to; $("r-from").textContent = acct.label + " (" + short(from) + ")";
   $("r-name").textContent = name || ""; $("r-name-row").hidden = !name; $("r-name-note").hidden = !name;
-  $("f-send").hidden = true; $("v-review").hidden = false;
+  $("f-send").hidden = true; $("v-review").hidden = false; $("b-go").disabled = false; $("m-review").textContent = "";
 });
 $("b-back").addEventListener("click", () => { $("v-review").hidden = true; $("f-send").hidden = false; });
 $("b-go").addEventListener("click", async () => {
@@ -1395,6 +1395,10 @@ $("b-go").addEventListener("click", async () => {
   b.textContent = "Sending…";
   const r = await api("/api/wallet/send", pending); b.disabled = false; b.textContent = "Send now";
   if (r.status === 401) { setToken(null); resetSend(); return show("v-locked"); }
+  if (!r.ok && r.data.unsure) {        // no answer: it may have gone through, so no second click on the same review
+    b.disabled = true; loadAccounts(); loadHistory();
+    return void (m.textContent = r.data.error);
+  }
   if (!r.ok) return void (m.textContent = r.data.error || "The transfer failed.");
   const hash = r.data.hash; $("s-hash").textContent = hash; $("s-state").textContent = "Confirming…"; $("s-fee").textContent = "-";
   $("v-review").hidden = true; $("v-sent").hidden = false; $("to").value = ""; $("amount").value = "";
