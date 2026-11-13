@@ -712,7 +712,7 @@ class NodeService : Service() {
             this, 1, Intent(this, NodeService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE
         )
         return Notification.Builder(this, CHANNEL)
-            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setSmallIcon(R.drawable.ic_stat_names)                     // the eta mark
             .setContentTitle("Names Wallet")
             .setContentText(text)
             .setOngoing(true)

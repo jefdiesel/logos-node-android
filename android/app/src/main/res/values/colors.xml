@@ -2,5 +2,7 @@
 <resources>
     <!-- the web app's colours: cream disc, near-black ink, page background -->
     <color name="icon_cream">#F3EAD7</color>
+    <!-- the Names Wallet mark's tile (android-node/names-mark, names-mark-orange.svg) -->
+    <color name="icon_orange">#E8662F</color>
     <color name="page_dark">#11110F</color>
 </resources>

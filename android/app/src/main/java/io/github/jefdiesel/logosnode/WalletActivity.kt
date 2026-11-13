@@ -158,7 +158,7 @@ class WalletActivity : Activity() {
             setBackgroundColor(cream)
             isClickable = true                                   // the page under it can't be touched meanwhile
             addView(android.widget.ImageView(this@WalletActivity).apply {
-                setImageResource(R.drawable.ic_launcher_foreground)
+                setImageResource(R.drawable.ic_names_tile)              // the mark on its orange tile
             }, LinearLayout.LayoutParams((160 * dp).toInt(), (160 * dp).toInt()))
             addView(coverText)
             addView(Button(this@WalletActivity).apply {

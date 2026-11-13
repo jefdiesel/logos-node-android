@@ -1,15 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The web app's mark (server.py icon_png, LAMBDA): a black lambda of three round-ended strokes,
-     at the same size relative to the visible icon as the web app's maskable icon. -->
+<!-- The Names Wallet mark: the Greek letter eta from Inter Bold, white, dead centre on its ink (android-node/
+     names-mark, names-mark-orange.svg). The 256 tile maps to the 72 dp visible icon (scale 72/256), so the glyph
+     (ink 150 of 256) sits well inside the 66 dp safe zone. Also the monochrome (themed) layer: only its shape counts. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
     <path
-        android:pathData="M47.34,40.95 L62.79,67.05 M54.43,52.93 L45.21,67.05 M44.14,42.01 L47.34,40.95"
-        android:strokeWidth="4.8"
-        android:strokeColor="#141311"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
+        android:fillColor="#FFFFFF"
+        android:pathData="M48.285,46.108 V63.717 H40.12 V33.286 H47.821 L47.931,39.575 Q49.21,36.391 51.55,34.647 Q53.89,32.906 57.403,32.906 Q62.139,32.906 65.011,35.955 Q67.88,39.004 67.88,44.364 V75.094 H59.69 V45.779 Q59.69,42.95 58.233,41.344 Q56.776,39.738 54.191,39.738 Q51.578,39.738 49.93,41.411 Q48.285,43.085 48.285,46.108 Z" />
 </vector>

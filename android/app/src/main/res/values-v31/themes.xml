@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Android 12+: the system's start-up screen too is cream, with the lambda -->
+    <!-- Android 12+: the system's start-up screen is the mark: the white eta on the orange of its tile -->
     <style name="Theme.Logos.Wallet" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar">
         <item name="android:windowBackground">@color/icon_cream</item>
         <item name="android:colorBackground">@color/icon_cream</item>
-        <item name="android:windowSplashScreenBackground">@color/icon_cream</item>
+        <item name="android:windowSplashScreenBackground">@color/icon_orange</item>
         <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
     </style>
 </resources>

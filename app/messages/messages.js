@@ -20,7 +20,7 @@ const P = {      // icon paths (constants)
   back: '<path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>',
   send: '<path d="M5 12h12M12 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>',
   chat: '<path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.2 3.2c-.5.4-1.3 0-1.3-.6V17.0A2.5 2.5 0 0 1 4 14.5z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/>',
-  lambda: '<path d="M8.6 5.1l7.9 13.8M12.1 10.9L7 18.9M6.9 5.6L8.6 5.1" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>',
+  eta: '<path d="M9.291 8.259V16.607H5.42V2.18H9.071L9.123 5.161Q9.729 3.652 10.839 2.825Q11.948 2 13.613 2Q15.859 2 17.22 3.445Q18.58 4.891 18.58 7.432V22H14.697V8.103Q14.697 6.761 14.007 6Q13.316 5.239 12.091 5.239Q10.852 5.239 10.071 6.032Q9.291 6.825 9.291 8.259Z" fill="currentColor"/>',   // the Names Wallet mark (Inter Bold eta)
   plus: '<path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>',
   mute: '<path d="M6 9h3l4-4v14l-4-4H6zM16.5 9.5l4 4M20.5 9.5l-4 4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>',
   lock: '<rect x="5" y="10.5" width="14" height="9.5" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5" fill="none" stroke="currentColor" stroke-width="1.9"/>',
@@ -150,7 +150,7 @@ document.addEventListener("focusout", () => setTimeout(kbSync, 0));
 
 // ---- the bar: Wallet / Messages ----------------------------------------------------------------------
 const badge = el("span", { className: "badge", hidden: true });
-const navWallet = el("button", { type: "button", id: "nav-wallet" }, svg(P.lambda), "Wallet");
+const navWallet = el("button", { type: "button", id: "nav-wallet" }, svg(P.eta), "Wallet");
 const navMsg = el("button", { type: "button", id: "nav-msg" }, svg(P.chat), "Messages", badge);
 const nav = el("nav", { id: "nav", ariaLabel: "Screens" }, el("div", { className: "in" }, navWallet, navMsg));
 document.body.append(nav); document.body.classList.add("has-nav");

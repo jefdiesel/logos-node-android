@@ -5,8 +5,8 @@ The official [Logos blockchain node](https://github.com/logos-blockchain/logos-b
 Nothing is cross-compiled: what runs on the phone is the unmodified `linux-aarch64` release binary of `logos-blockchain-node` 0.3.4, inside Android's built-in Linux Terminal. A *node* is the program that keeps a copy of the blockchain, checks every new *block* (a batch of transactions) and passes them on to other nodes.
 
 <p>
-<img src="docs/img/app-icon-on-home-screen.png" alt="A row of Android app icons; the middle one is the web app's black lambda on a cream circle" width="420"><br>
-<img src="docs/img/lock-screen.png" alt="The app's lock screen in dark mode: the lambda mark, Enter PIN, an empty PIN row and a number keypad with a fingerprint key and a delete key" width="260">
+<img src="docs/img/app-icon.png" alt="The Names Wallet icon: a white eta on an orange tile" width="96"><br>
+<img src="docs/img/lock-screen.png" alt="The app's lock screen in dark mode: the eta mark on its orange tile, the PIN dots and a number keypad with a fingerprint key and a delete key" width="260">
 </p>
 
 Unofficial community work. Testnet only (the *testnet* is the public test network; its coins have no value).

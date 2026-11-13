@@ -76,6 +76,14 @@ await waitFor("unlocked", `!document.getElementById("v-open").hidden`);
 // ---- the Wallet: tokens, then Send / Receive / Activity ----
 const rows = () => js(`[...document.querySelectorAll("#tokens .tok")].map(b => b.querySelector("b").textContent)`);
 await waitFor("the token list: Logos, and a quiet Add LEZ row (no name account yet)", `JSON.stringify([...document.querySelectorAll("#tokens .tok")].map(b => b.querySelector("b").textContent)) === '["Logos","Add LEZ"]'`);
+// the Names Wallet mark (the Inter Bold eta) stands for the app; the lambda only for the Logos coin
+const ETA = "M9.291 8.259V16.607";
+check("the mark: the eta beside Wallet (filled, in the text's colour)", await js(`(() => { const p = document.querySelector("#hdr .brand svg path"); return !!p && p.getAttribute("d").startsWith(${JSON.stringify(ETA)}) && p.getAttribute("fill") === "currentColor"; })()`));
+check("the lock screen's mark: the eta on its orange tile, no disc", await js(`(() => { const m = document.querySelector("#lock .lock-mark"); return m.querySelector("rect").getAttribute("fill") === "#e8662f" && m.querySelector("path").getAttribute("fill") === "#fff" && getComputedStyle(m).borderRadius === "0px"; })()`));
+check("the favicon and the home-screen icons are the mark's", await js(`document.querySelector("link[rel=icon]").getAttribute("href") === "/names-192.png"`)
+  && (await (await fetch(BASE + "/manifest.webmanifest")).json()).icons.every(i => /^\/names-/.test(i.src))
+  && (await fetch(BASE + "/names-192.png")).headers.get("content-type") === "image/png");
+check("the Logos coin keeps the lambda", await js(`document.querySelector("#tok-logos .tok-ic svg path").getAttribute("d").startsWith("M8.6 5.1")`));
 check("Logos has the lambda mark, on the left", await js(`(() => { const r = document.getElementById("tok-logos"); return !!r.querySelector(".tok-ic svg path") && r.firstElementChild.classList.contains("tok-ic"); })()`));
 check("Logos is picked, the tabs are Send, Receive, Activity, and Activity shows", await js(`document.getElementById("tok-logos").getAttribute("aria-checked") === "true"
   && [...document.querySelectorAll(".wtabs [role=tab]")].map(b => b.textContent).join() === "Send,Receive,Activity"

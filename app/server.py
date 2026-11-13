@@ -4279,40 +4279,76 @@ def backup_export(password, history=True):
 MANIFEST = json.dumps({
     "name": "Names Wallet", "short_name": "Names Wallet", "start_url": "/", "scope": "/", "display": "standalone",
     "background_color": "#11110f", "theme_color": "#11110f",
-    "icons": [{"src": "/lambda-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
-              {"src": "/lambda-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
-              {"src": "/lambda-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}]}).encode()
+    "icons": [{"src": "/names-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+              {"src": "/names-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+              {"src": "/names-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}]}).encode()
 _icons = {}
 # the lambda, as thick round-ended strokes on a unit square: the long leg, the short leg, the top hook
-LAMBDA = (((0.375, 0.255), (0.665, 0.745)), ((0.508, 0.480), (0.335, 0.745)), ((0.315, 0.275), (0.375, 0.255)))
+# The Names Wallet mark (android-node/names-mark, names-mark-orange.svg): the Greek letter eta from Inter Bold, white,
+# dead centre on its ink, on an orange tile (256 box, corner radius 58). The outline below is the SVG's, with its
+# translate(0,10) baked in.
+ETA_256 = "M107.68 99.94V162.55H78.65V54.35H106.03L106.42 76.71Q110.97 65.39 119.29 59.19Q127.61 53.00 140.10 53.00Q156.94 53.00 167.15 63.84Q177.35 74.68 177.35 93.74V203.00H148.23V98.77Q148.23 88.71 143.05 83.00Q137.87 77.29 128.68 77.29Q119.39 77.29 113.53 83.24Q107.68 89.19 107.68 99.94Z"
+ORANGE = (0xe8, 0x66, 0x2f)
+
+
+def eta_polygon():
+    """The outline as one polygon in the 256 box (each quadratic curve in 8 straight pieces)."""
+    pts, cur = [], (0.0, 0.0)
+    for cmd, args in re.findall(r"([MVHLQZ])([^MVHLQZ]*)", ETA_256):
+        n = [float(v) for v in re.findall(r"-?[0-9.]+", args)]
+        if cmd in "ML":
+            cur = (n[0], n[1]); pts.append(cur)
+        elif cmd == "V":
+            cur = (cur[0], n[0]); pts.append(cur)
+        elif cmd == "H":
+            cur = (n[0], cur[1]); pts.append(cur)
+        elif cmd == "Q":
+            (x0, y0), (cx, cy), (x1, y1) = cur, (n[0], n[1]), (n[2], n[3])
+            for k in range(1, 9):
+                t = k / 8.0
+                pts.append(((1 - t) ** 2 * x0 + 2 * (1 - t) * t * cx + t * t * x1, (1 - t) ** 2 * y0 + 2 * (1 - t) * t * cy + t * t * y1))
+            cur = (x1, y1)
+    return pts
+
+
+def eta_coverage(n, scale):
+    """How much of each pixel of an n x n image the glyph covers (0..1), the 256 box mapped onto the image and
+    scaled by `scale` about its centre: a scanline fill, 4 sub-rows a pixel, exact along each sub-row."""
+    pts = [((x - 128) * scale * n / 256 + n / 2, (y - 128) * scale * n / 256 + n / 2) for x, y in eta_polygon()]
+    edges = list(zip(pts, pts[1:] + pts[:1]))
+    cov = [[0.0] * n for _ in range(n)]
+    sub = 4
+    for py in range(n):
+        for k in range(sub):
+            y = py + (k + 0.5) / sub
+            xs = sorted(ax + (y - ay) * (bx - ax) / (by - ay) for (ax, ay), (bx, by) in edges if (ay <= y < by) or (by <= y < ay))
+            for a, b in zip(xs[::2], xs[1::2]):          # inside between pairs (the outline is one simple contour)
+                for px in range(max(0, int(a)), min(n, int(b) + 1)):
+                    cov[py][px] += max(0.0, min(px + 1, b) - max(px, a)) / sub
+    return cov
 
 
 def icon_png(n, maskable=False):
-    """The app icon, drawn in code: a black lambda on a cream circle. `maskable` fills the whole square with
-    cream and shrinks the lambda into the safe zone, for launchers that cut their own shape."""
+    """The app icon: the white eta on its orange tile (rounded corners, transparent outside). `maskable` fills the
+    whole square with orange and keeps the glyph inside the safe zone, for launchers that cut their own shape."""
     if (n, maskable) in _icons:
         return _icons[(n, maskable)]
     import struct, zlib
-    cream, black = (0xf3, 0xea, 0xd7), (0x14, 0x13, 0x11)
-    c, radius = (n - 1) / 2.0, n / 2.0 - 0.5
-    scale = 0.74 if maskable else 1.0
-    half = 0.045 * n * scale
-    segs = [tuple((c + (x - 0.5) * n * scale, c + (y - 0.5) * n * scale) for x, y in seg) for seg in LAMBDA]
+    cov = eta_coverage(n, 0.8 if maskable else 1.0)
+    r = 58.0 * n / 256
 
-    def stroke(px, py):
-        best = 1e9
-        for (ax, ay), (bx, by) in segs:
-            dx, dy = bx - ax, by - ay
-            t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)))
-            best = min(best, ((px - ax - t * dx) ** 2 + (py - ay - t * dy) ** 2) ** 0.5)
-        return max(0.0, min(1.0, half - best + 0.5))
+    def tile(x, y):                           # how much of the pixel the rounded tile covers
+        if maskable:
+            return 1.0
+        cx, cy = min(max(x + 0.5, r), n - r), min(max(y + 0.5, r), n - r)
+        d = ((x + 0.5 - cx) ** 2 + (y + 0.5 - cy) ** 2) ** 0.5
+        return max(0.0, min(1.0, r - d + 0.5))
     rows = []
     for y in range(n):
         row = bytearray([0])
         for x in range(n):
-            disc = 1.0 if maskable else max(0.0, min(1.0, radius - ((x - c) ** 2 + (y - c) ** 2) ** 0.5 + 0.5))
-            ink = stroke(x, y) if disc > 0 else 0.0
-            row += bytes(int(round(a + (b - a) * ink)) for a, b in zip(cream, black)) + bytes([int(round(255 * disc))])
+            a, ink = tile(x, y), min(1.0, cov[y][x])
+            row += bytes(int(round(c + (255 - c) * ink)) for c in ORANGE) + bytes([int(round(255 * a))])
         rows.append(bytes(row))
 
     def chunk(tag, data):
@@ -4600,7 +4636,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply(404, {"error": "not found"})
         if path == "/manifest.webmanifest":
             return self.reply(200, raw=MANIFEST, ctype="application/manifest+json")
-        if path in ("/lambda-192.png", "/lambda-512.png", "/lambda-maskable-512.png"):
+        # the old names too, for home-screen icons made before the mark changed
+        if path in ("/names-192.png", "/names-512.png", "/names-maskable-512.png",
+                    "/lambda-192.png", "/lambda-512.png", "/lambda-maskable-512.png"):
             return self.reply(200, raw=icon_png(192 if "192" in path else 512, "maskable" in path), ctype="image/png")
         if path == "/api/status":
             st = node_status()
