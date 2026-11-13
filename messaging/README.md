@@ -82,7 +82,7 @@ These are the same paths and answers as the library's REST API at the pinned com
 changes only its transport. Between polls the runner keeps up to 256 request ids, and up to 256
 received messages **and at most 2 MiB of them** (their JSON records), dropping the oldest first (the
 gap shows in `seq`). The byte bound keeps every answer to `GET /messaging/v1/events/received` below
-what the wallet reads in one go (4 MiB): an answer it had to cut short would lose the whole batch,
+what the wallet reads in one go (16 MiB over the socket; 4 MiB on the old TCP path): an answer it had to cut short would lose the whole batch,
 already dropped here. A message on logos.test is at most 150 KiB (about 200 KB as base64 JSON), so
 at least 10 of the largest fit. A flood of large messages to the inbox topic can still push older
 ones out before a poll (as upstream's own 50-message cache can); they are counted as missed.
@@ -92,10 +92,13 @@ ones out before a poll (as upstream's own 50-message cache can); they are counte
   socket left by an earlier run is removed only if nothing answers on it; a live socket (another
   runner) or any other file is left alone. If the socket can't be opened the runner stops the
   node and exits: there is no other way in.
-- **Config:** with `--api-socket` the runner refuses to start if its config turns on any of the
-  library's network APIs: `rest`, `rest-admin`, `rest-private`, `metrics-server`,
-  `websocket-support`, `websocket-secure-support` (as `true`, or as a string). The app writes
-  `"rest": false` and none of the others (all default to off).
+- **Config:** with `--api-socket` the runner refuses to start if its config could turn on any of
+  the library's network APIs: `rest`, `rest-admin`, `metrics-server`, `websocket-support`,
+  `websocket-secure-support`. Keys are compared as the library reads them (case-insensitive, by
+  option or field name, so `REST`, `restAdmin`, `metrics_server` count too), any key written with a
+  backslash escape is refused, and for those keys any value other than `false` or `null` is refused
+  (the library takes `1`, `"true"`, `"yes"`, `"on"` as true). The app writes `"rest": false` and none
+  of the others (all default to off).
 - **Limits:** headers up to 16 KB, bodies up to 1 MB, 16 connections at once, 15 s to send or
   receive, one request per connection (`Connection: close`).
 - **Logging:** with the socket, the received messages are no longer printed in full to the log,

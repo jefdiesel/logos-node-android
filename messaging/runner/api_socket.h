@@ -51,7 +51,7 @@ typedef struct {
 
 #define API_MAX_RECEIVED 256      // received messages kept between polls (upstream keeps 50)
 // ...and at most this many bytes of them (their JSON records), so one poll's answer always fits what
-// the client reads in one go (server.py reads up to 4 MiB): a client that cut an answer short would
+// the client reads in one go (server.py reads up to 16 MiB over the socket, 4 MiB over TCP): a client that cut an answer short would
 // lose the whole batch, which this side has already dropped. A message on logos.test is at most
 // 150 KiB (about 200 KB as base64 JSON), so this holds at least 10 of the largest.
 #define API_MAX_RECEIVED_BYTES (2 * 1024 * 1024)
@@ -523,25 +523,48 @@ static void *api_accept_loop(void *arg) {
     return NULL;
 }
 
-// With the api socket, the library's own network APIs must be off: the runner refuses a config that
-// turns any of them on (REST, its admin routes, the metrics server, websockets), whatever wrote it.
-// Returns the first such key, or NULL.
+// With the api socket, the library's own network APIs must be off: the runner refuses a config that could
+// turn any of them on, whatever wrote it. The library reads a key case-insensitively, by its option name
+// ("rest-admin") or its field name ("restAdmin"), with JSON escapes decoded, and takes 1, "true", "yes" or
+// "on" as true (logos-delivery 57e04dc conf_from_json.nim, cli_args.nim; nim-confutils parseCmdArg(bool)).
+// So every object key is normalised (lowercase, '-' and '_' dropped), a key with a backslash escape is
+// refused outright, and for the keys below anything other than false or null is refused.
+// Returns the first such key (normalised), or NULL.
 static const char *api_config_opens(const char *config) {
-    static const char *keys[] = {"rest", "rest-admin", "rest-private", "metrics-server", "websocket-support",
-                                 "websocket-secure-support", NULL};
-    size_t len = strlen(config);
-    const char *end = config + len;
-    for (const char **k = keys; *k; k++) {
-        char pat[64];
-        snprintf(pat, sizeof pat, "\"%s\"", *k);
-        size_t pl = strlen(pat);
-        for (const char *p = config; p + pl <= end; p++) {
-            if (memcmp(p, pat, pl) != 0) continue;
-            const char *q = api_ws(p + pl, end);
-            if (q >= end || *q != ':') continue;
-            q = api_ws(q + 1, end);
-            if ((size_t)(end - q) >= 4 && memcmp(q, "true", 4) == 0) return *k;
-            if (q < end && *q == '"') return *k;          // a string where a boolean belongs: refuse too
+    static const char *keys[] = {"rest", "restadmin", "metricsserver", "websocketsupport", "websocketsecuresupport", NULL};
+    const char *p = config, *end = config + strlen(config);
+    static char found[64];
+    while (p < end) {
+        if (*p != '"') { p++; continue; }
+        const char *s = ++p;                                   // a string token: skip it whole
+        int escaped = 0;
+        while (p < end && *p != '"') {
+            if (*p == '\\') { escaped = 1; p += (p + 1 < end) ? 2 : 1; } else p++;
+        }
+        if (p >= end) return "unterminated string";
+        const char *e = p++;
+        const char *q = api_ws(p, end);
+        if (q >= end || *q != ':') continue;                   // not a key
+        if (escaped) return "a key with an escape";
+        char norm[64];
+        size_t n = 0;
+        for (const char *c = s; c < e && n + 1 < sizeof norm; c++) {
+            if (*c == '-' || *c == '_') continue;
+            norm[n++] = (char)((*c >= 'A' && *c <= 'Z') ? *c - 'A' + 'a' : *c);
+        }
+        norm[n] = '\0';
+        for (const char **k = keys; *k; k++) {
+            if (strcmp(norm, *k) != 0) continue;
+            const char *v = api_ws(q + 1, end);
+            size_t left = (size_t)(end - v);
+            const char *after = NULL;
+            if (left >= 5 && memcmp(v, "false", 5) == 0) after = v + 5;
+            else if (left >= 4 && memcmp(v, "null", 4) == 0) after = v + 4;
+            after = after ? api_ws(after, end) : NULL;
+            if (!after || (after < end && *after != ',' && *after != '}')) {
+                snprintf(found, sizeof found, "%s", *k);
+                return found;
+            }
         }
     }
     return NULL;
