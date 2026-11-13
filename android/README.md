@@ -1,6 +1,6 @@
 # Names Wallet: Android app (test build)
 
-Names Wallet is an Android app that runs a Logos blockchain node (the official release) on the phone and
+Names Wallet is an Android app that runs a Logos blockchain node (its released source) on the phone and
 shows the project's own wallet page.
 It is a debug build for testing, not something to publish.
 
@@ -9,7 +9,7 @@ It is a debug build for testing, not something to publish.
 - **The node** is the binary from the `native-build` workflow (see `native/README.md`), bundled as it
   is, not rebuilt. The APK carries it as `lib/arm64-v8a/liblogosnode.so`. Android extracts that at
   install to the app's native library folder, the only place it lets an app run programs from.
-  **Since 0.5.16 it is the official Logos node source at a pinned commit (tag 0.3.4, commit
+  **Since 0.5.16 it is the Logos blockchain node source at a pinned commit (tag 0.3.4, commit
   `f7ab0323346d36840660908be049d5a62c905516`) plus one published patch,
   `native/patches/0002-api-unix-socket.patch`, that moves the node's local control interface (its HTTP
   API) from a network port, which every app on a phone can reach, to a private socket file in the
@@ -249,7 +249,7 @@ one, and its sha256, is set in `node.properties` (`variant=api`, `patched` or `u
 `api` since 0.5.16: patch 0002 alone, the API on a private socket, see `LOCAL-APIS.md`). CI
 checks the APK's copy byte for byte. The screen shows the variant under "Node binary".
 
-- **The patched node** applies `native/patches/` to the official 0.3.4 source;
+- **The patched node** applies `native/patches/` to the Logos blockchain node's 0.3.4 source;
   `native/patches/README.md` is the full description. At each start it replays the stored blocks
   after its last final block.
   - **The marker.** `state/db.replay-verified` holds the build id and the tip and final block that
@@ -263,7 +263,7 @@ checks the APK's copy byte for byte. The screen shows the variant under "Node bi
     ledger transition.
 - **What fast mode trusts:** that nobody but this node wrote the marker or the database's final
   state. Without a marker from this build that matches the stored final block (first start, new
-  build, other database), it replays in full, as the official node does, then writes the marker.
+  build, other database), it replays in full, as the unpatched node does, then writes the marker.
 - **Imports and swaps never carry a marker over.** A snapshot import, going back to the previous
   state, and recovery from an interrupted swap all delete the marker of the state put in place.
   The snapshot reader also drops any `db.replay-verified` found inside a tar. So the first start
@@ -287,7 +287,7 @@ checks the APK's copy byte for byte. The screen shows the variant under "Node bi
 
 ## Messaging node (Logos Messaging / Waku), off by default
 
-The app also carries the Logos Messaging node, the official `liblogosdelivery` library with a
+The app also carries the Logos Messaging node, the `liblogosdelivery` library from Logos, with a
 small runner, from the `waku-build` workflow; see `messaging/README.md`. It is not rebuilt here.
 
 **Files.** The APK holds the files listed in `messaging.sha256`, from the waku-build run whose id is

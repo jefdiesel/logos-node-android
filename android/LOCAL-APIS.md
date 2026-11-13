@@ -10,7 +10,7 @@ The app runs three local HTTP servers:
 
 ## The node the app ships
 
-The app runs the **official Logos blockchain node source at a pinned commit**, plus **one published
+The app runs the **Logos blockchain node source at a pinned commit**, plus **one published
 patch** that moves the node's local control interface (its HTTP API) from a network port to a private
 socket file. Nothing about the chain rules, block checking or peer networking is changed: the patch
 touches only how the API listens (`nodes/node/binary/src/api/unix_socket.rs`, new, and a few lines in

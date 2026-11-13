@@ -129,6 +129,8 @@ export function readSafetyScan(text) {
 export const REQ = { PER_SENDER: 3, SENDERS: 50, BYTES: 1048576, AGE_MS: 30 * 864e5, HOLD: 10 };
 /** How long a name read on chain counts for a request (then it is read again before it decides anything). */
 export const NAME_TTL = 864e5;
+/** How long a "this name has no messaging address" answer counts. */
+export const NAME_TTL_NONE = 36e5;
 export const BLOCKED_MAX = 500;
 /** Payloads opened per sync at most (a flood waits for the next syncs instead of stalling one). */
 export const OPEN_BUDGET = 300;
@@ -298,7 +300,7 @@ export class Chat {
       if (!this.storeOk) throw Object.assign(new Error("Your saved chats can't be opened on this phone, so nothing can be saved now."), { code: "store" });
       fn(this.store);
       const r = await (bg ? this.bgApi : this.api)("/api/messages/store", { rev: this.rev, blob: encryptBlob(this.key, "store", this.store) });
-      if (r.ok) { this.rev = r.data.rev; return true; }
+      if (r.ok) { this.rev = r.data.rev; this.hadBlob = true; return true; }   // this page has saved chats now (SF-7)
       if (r.status !== 409) throw Object.assign(new Error(r.data.error || "couldn't save"), { status: r.status });
       await this.loadStore();
     }
@@ -308,6 +310,7 @@ export class Chat {
   /** Starts with empty saved chats: the server keeps the ones this key can't open aside (never deletes them). */
   async startFresh() {
     const r = await this.api("/api/messages/store/fresh", { rev: this.rev });   // the store this page saw and couldn't open
+    if (r.status === 409) this.stale = true;           // changed meanwhile (another tab): the page loads it again
     if (!r.ok) throw Object.assign(new Error(r.data.error || "Couldn't start fresh."), { status: r.status });
     this.hadBlob = false;                     // the empty store is the one asked for here
     await this.loadStore();
@@ -511,7 +514,7 @@ export class Chat {
       if (m) { m.sends = m.sends.map((x, i) => Object.assign({}, x, ch.sends[i] || {})); changed = true; }
     }
     this.outSince = ro.data.rev || this.outSince;
-    try { await this.guardQueued(); } catch (e) {}
+
     const ri = await this.api("/api/messages/inbox?after=" + this.inAfter);
     if (!ri.ok) throw Object.assign(new Error("inbox"), { status: ri.status });
     const fresh = [];
@@ -533,6 +536,8 @@ export class Chat {
     }
     const top = ri.data.items.reduce((x, i) => Math.max(x, i.n), this.inAfter);
     this.inAfter = left === null ? top : Math.max(this.inAfter, left - 1);
+    // the guard's chain reads run beside the sync, never in front of the inbox
+    if (!this.guarding) this.guarding = this.guardQueued().catch(() => {}).finally(() => { this.guarding = null; });
     const unread = new Set(ri.data.unread || []);
     if (unread.size !== this.unread.size || [...unread].some(n => !this.unread.has(n))) changed = true;
     this.unread = unread;
@@ -646,7 +651,9 @@ export class Chat {
     if (isAddressId(m.sender)) return { proof: "address" };
     const c = this.chain.get(m.sender), was = own((this.store.req || {}).names, m.sender), now = Date.now();
     // a read this session, or the one kept from before, each for NAME_TTL; older answers count as not read
-    const key = c && now - c.at < NAME_TTL ? c.key : was && typeof was === "object" && now - was.at < NAME_TTL ? was.k : undefined;
+    // ("no address" answers last an hour only: a name may get its address soon after a stranger first claimed it)
+    const ttl = k => k ? NAME_TTL : NAME_TTL_NONE;
+    const key = c && now - c.at < ttl(c.key) ? c.key : was && typeof was === "object" && now - was.at < ttl(was.k) ? was.k : undefined;
     if (key && key === m.senderKey) return { proof: "name", name: m.sender, lookalike: this.lookalike(m.sender) };
     return { proof: "claim", claimed: m.sender, chainRead: key !== undefined };
   }
@@ -720,7 +727,7 @@ export class Chat {
       if (g.list.length >= REQ.PER_SENDER) { drop.set(m.n, "caps"); continue; }
       g.list.push(m);
     } catch (e) { this.bad.add(m.n); }
-    // a request shows as its first message's sender; ranked: a proven name 2, any other authentic one 1, else 0
+    // a request shows as its first message's sender (its rank is set below)
     const reqs = [...groups.values()].flatMap(g => { try {
       const pr = this.proofOf(g.list[0]);
       const kept = this.openedReq.has(g.id) || g.list.some(m => this.keptN.has(m.n));
@@ -729,11 +736,17 @@ export class Chat {
     } catch (e) { for (const m of g.list) this.bad.add(m.n); return []; } });
     reqs.sort((a, b) => b.rank - a.rank || b.first - a.first);
     // Ranks: a request the user opened (or the server keeps) 3, a proven name 2, any other that proves its
-    // address 1, the rest 0; within a rank the newest first. A claimed name not read yet ranks 1, but the oldest
-    // REQ.HOLD of those are never dropped by the caps before one read (lazyCheck reads them in the background,
-    // checkRequests when Requests is opened): a burst of free keys can't push a real new name out unread.
-    const unreadClaim = g => g.authentic && g.proof === "claim" && !g.chainRead;
-    const hold = new Set(reqs.filter(unreadClaim).sort((a, b) => a.first - b.first).slice(0, REQ.HOLD));
+    // address 1, the rest 0; within a rank the newest first. A claimed name never read on chain ranks 1, but up to
+    // REQ.HOLD of those (one per name: the oldest half and the newest half) are never dropped by the caps before
+    // one read (lazyCheck in the background, checkRequests when Requests is opened). A name read once never
+    // comes back into the hold, so junk claims can fill it only until they are read. What this can't stop: more
+    // than REQ.HOLD / 2 fresh claims sent after a real new name, then a burst of free keys, before it is read.
+    const names = dict((this.store.req || {}).names);
+    const neverRead = g => g.authentic && g.proof === "claim" && !g.chainRead && !this.chain.has(g.claimed) && own(names, g.claimed) === undefined;
+    const byName = new Map();
+    for (const g of reqs.filter(neverRead).sort((a, b) => a.first - b.first)) if (!byName.has(g.claimed)) byName.set(g.claimed, g);
+    const elig = [...byName.values()], half = Math.ceil(REQ.HOLD / 2);
+    const hold = new Set([...elig.slice(0, half), ...elig.slice(Math.max(half, elig.length - (REQ.HOLD - half)))]);
     let bytes = 0, counted = 0;
     this.reqs = [];
     for (const g of reqs) {
@@ -838,8 +851,9 @@ export class Chat {
     return true;
   }
   /**
-   * Reads a claimed name on chain once and keeps what it gave (its messaging address, or "" for none), so the
-   * same name is never read again for a request. False when the read failed (it may be tried again later).
+   * Reads a claimed name on chain and keeps what it gave (its messaging address, or "" for none) with the time,
+   * so the name isn't read again while the answer counts (NAME_TTL; NAME_TTL_NONE for ""). False when the read
+   * failed (it may be tried again later).
    */
   async readClaim(name, bg) {
     let c;
@@ -1108,15 +1122,17 @@ export class Chat {
   async guardQueued() {
     const now = Date.now(), seen = new Set();
     for (const m of this.outbox.values()) {
-      if (!m.sends.some(x => x.state === "queued" || (x.state === "failed" && x.resend))) continue;
+      // only sends that go by themselves (queued); a failed one waits for Retry, which checks sendBlocker
+      if (!m.sends.some(x => x.state === "queued")) continue;
       for (const t of m.to || []) {
-        if (!t.name || seen.has(t.name)) continue;
+        const p = t.name && this.profile(t.name);
+        if (!p || !p.checked || p.checked.key !== t.key || seen.has(t.name)) continue;
         seen.add(t.name);
-        const p = this.profile(t.name);
-        if (!p || !p.checked || p.checked.key !== t.key || now - (this.guarded.get(t.name) || 0) < 15000) continue;
+        if (now - (this.guarded.get(t.name) || 0) < 15000) continue;
         this.guarded.set(t.name, now);
         let c; try { c = await this.lookup(t.name, true, true); } catch (e) { continue; }
-        if (c.key !== t.key) { const n = await this.cancelSendsTo([t.key], true); if (n !== null) this.cancelledFor.add(t.key); }
+        // as sendBlocker: only another address on chain is a change; "not registered" or "no address" cancels nothing
+        if (c.registered && c.key && c.key !== t.key) { const n = await this.cancelSendsTo([t.key], true); if (n !== null) this.cancelledFor.add(t.key); }
       }
     }
   }

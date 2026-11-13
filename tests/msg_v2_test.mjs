@@ -1,4 +1,4 @@
-// Messages, version 2 step 1 (0.9.14), with no change to the wire format: padding, safety codes, Requests.
+// Messages, version 2 step 1 (0.9.22), with no change to the wire format: padding, safety codes, Requests.
 //
 //   [NAMES_MSG_CRYPTO=<the names project's msg-crypto.js>] [PORT_SHIFT=<n>] node tests/msg_v2_test.mjs
 //
@@ -865,6 +865,157 @@ print(json.dumps([[i.get("k"), i["read"]] for i in server.inbox["items"]]))`, jo
   const ns = (await T2.call("/api/messages/inbox")).d.items.map(i => i.n).sort().join();
   check("the ring made room from the request nobody opened, not the older unsorted message, nor the opened request", ns === "1,3,4", ns);
   T2.proc.kill();
+}
+
+// ---- 10. from the fourth review ------------------------------------------------------------------------------
+const pyIn = (data, code, ...args) => execFileSync("python3", ["-c", "import sys; sys.path.insert(0, sys.argv[1]); import server\n" + code, join(ROOT, "app"), ...args],
+  { env: { ...process.env, APP_DATA: data, WAKU_API: "http://127.0.0.1:1" } }).toString().trim();
+{
+  // MF-D1: with hard links refused (as on Android), Start fresh, the last copy and a restore with another key work
+  const L = await app(w, 8152 + PS, w.NODES[3], { REAL_SERVER_PY: join(ROOT, "app", "server.py") }, null, join(ROOT, "tests", "nolink_server.py"));
+  await person(w, L, "lino", "454545");
+  const lk = (await L.call("/api/messages/key")).d;
+  const lc = new CORE.Chat({ me: { secret: unhex(lk.secret), public: lk.public, name: lk.name }, api: L.api, resolve: w.resolve });
+  await lc.loadStore(); await lc.sync();
+  await lc.startDirect("bob"); await lc.setProfile("bob", { nickname: "b1" }); await lc.setProfile("bob", { nickname: "b2" });
+  const st = (await L.call("/api/messages/store")).d;
+  writeFileSync(join(L.data, "wallet-chat.json"), "");
+  const up = await L.call("/api/messages/store/use-prev", {});
+  check("hard links refused: Use the last saved copy works", up.code === 200 && (await L.call("/api/messages/store")).code === 200, up);
+  const st2 = (await L.call("/api/messages/store")).d;
+  const fr = await L.call("/api/messages/store/fresh", { rev: st2.rev });
+  check("hard links refused: Start fresh works, the old store kept aside", fr.code === 200 && readdirSync(L.data).some(f => f.startsWith("wallet-chat.json.aside-")), fr);
+  // a backup from a phone with another messaging key and no saved chats, restored here
+  const G = await app(w, 8153 + PS, w.NODES[4]);
+  await person(w, G, "gabe", "676734");
+  const bk = (await G.call("/api/wallet/backup", { password: "another long password", pin: G.pin })).d.backup;
+  G.proc.kill();
+  const L2c = new CORE.Chat({ me: { secret: unhex(lk.secret), public: lk.public, name: lk.name }, api: L.api, resolve: w.resolve });
+  await L2c.loadStore(); await L2c.startDirect("bob");            // saved chats under lino's key again
+  const rs = await L.call("/api/wallet/restore", { backup: bk, password: "another long password", pin: L.pin });
+  const nk = JSON.parse(readFileSync(join(L.data, "wallet-msgkey.json"), "utf8"));
+  check("hard links refused: a restore with another messaging key answers, puts the key in, and sets lino's saved chats aside",
+    rs.code === 200 && rs.d.messaging_key_restored && nk.public === hex(G.id.publicKey) && readdirSync(L.data).some(f => f.startsWith("wallet-chat.json.other-key-")), [rs.code, rs.d]);
+  L.session = (await L.call("/api/wallet/unlock", { pin: L.pin })).d.session;
+  const gc = new CORE.Chat({ me: { secret: unhex(nk.secret), public: nk.public, name: "" }, api: L.api, resolve: w.resolve });
+  await gc.loadStore();
+  check("and the new key's page opens its saved chats (empty, its own)", gc.storeOk && !gc.storeUnreadable);
+  L.proc.kill();
+}
+{
+  // MF-D1: the restore puts the store back when the key can't be put in place
+  const T = mkdtempSync(join(tmpdir(), "rk-"));
+  const out = pyIn(T, `import json, os
+a = {"secret": "11" * 32, "public": "22" * 32}
+server.msg_key_load = lambda: a
+json.dump({"rev": 5, "blob": "QUJD"}, open(server.STORE_FILE, "w"))
+def boom(d): raise OSError("disk full")
+server.msg_key_restore = boom
+try:
+    server.msg_key_restore_with_store({"secret": "33" * 32, "public": "44" * 32}, None); print("no error")
+except Exception as e:
+    print(json.dumps(json.load(open(server.STORE_FILE))), len([f for f in os.listdir(os.path.dirname(server.STORE_FILE)) if ".other-key-" in f]))`);
+  rmSync(T, { recursive: true, force: true });
+  check("a restore whose key can't be put in place puts the saved chats back (no swapped key beside a store it can't open)", out === '{"rev": 5, "blob": "QUJD"} 0', out);
+  // T-2: names of files set aside are unique, even twice in one second
+  const T2 = mkdtempSync(join(tmpdir(), "as-"));
+  const out2 = pyIn(T2, `import json, os
+json.dump({"rev": 1, "blob": "QQ=="}, open(server.STORE_FILE, "w"))
+server.store_aside("aside"); json.dump({"rev": 2, "blob": "Qg=="}, open(server.STORE_FILE, "w")); server.store_aside("aside")
+print(sorted(json.load(open(os.path.join(os.path.dirname(server.STORE_FILE), f)))["blob"] for f in os.listdir(os.path.dirname(server.STORE_FILE)) if ".aside-" in f))`);
+  rmSync(T2, { recursive: true, force: true });
+  check("two set asides in the same second keep both stores, under names of their own", out2 === "['QQ==', 'Qg==']", out2);
+}
+{
+  const V = await app(w, 8154 + PS, w.NODES[3], { MESSAGING_DROP_GRACE_SECONDS: "3600" });
+  await person(w, V, "vera", "898923");
+  const vt = MC.inboxTopic(V.id.publicKey), vitems = async (q = "") => (await V.call("/api/messages/inbox" + q)).d.items;
+  const vin = p => w.control("inject/3", { topic: vt, payload: b64(p) });
+  const toV = (kp, text, from = null) => MC.sealMessage({ to: V.id.publicKey, from: from || "msg-" + hex(kp.publicKey).slice(0, 16), fromSecret: kp.secretKey, text });
+  const kV = (await V.call("/api/messages/key")).d;
+  const mk = (extra = {}) => new CORE.Chat({ me: { secret: unhex(kV.secret), public: kV.public, name: kV.name }, api: V.api, resolve: w.resolve, ...extra });
+  // SF-D2: a page that started with no saved chats, then saved some, refuses to write onto a store set aside under it
+  const v1 = mk(); await v1.loadStore(); await v1.sync();
+  check("(a page that started with no saved chats)", !v1.hadBlob);
+  await v1.startDirect("bob");
+  const vs = (await V.call("/api/messages/store")).d;
+  await V.call("/api/messages/store/fresh", { rev: vs.rev });
+  err = null; try { await v1.mutate(s => { s.ui = Object.assign({}, s.ui, { y: 1 }); }, true); } catch (e) { err = e; }
+  check("a page that began empty and saved chats since refuses to write onto the store set aside under it", err && err.code === "store-changed" && (await V.call("/api/messages/store")).d.blob === null, err && err.code);
+  // SF-D1: 10 junk claims sent first can't keep a real new name out of the hold
+  const v2 = mk(); await v2.loadStore(); await v2.sync();
+  for (let i = 0; i < 10; i++) await vin(toV(MC.newKeyPair(), "junk claim", "junkname" + i));
+  await until("10 junk claims", async () => { await v2.sync(); return v2.requests().length === 10; });
+  const nell = ID.newIdentity(); await w.register("nellv", { msg: hex(nell.publicKey) });
+  await vin(MC.sealMessage({ to: V.id.publicKey, from: "nellv", fromSecret: nell.secretKey, text: "nell here" }));
+  await until("nell's request", async () => { await v2.sync(); return v2.requests().some(g => g.claimed === "nellv"); });
+  for (let i = 0; i < 50; i++) { await vin(toV(MC.newKeyPair(), "free " + i)); if (i % 20 === 19) { await sleep(700); await v2.sync(); } }
+  await until("the burst is sorted", async () => { await v2.sync(); return !(await vitems()).some(i => !i.k) && v2.requests().length >= 55; }, 20000);
+  check("10 junk claims sent first, then a real new name, then 50 free keys (the shipped waits): the real name is still held", v2.requests().some(g => g.claimed === "nellv"));
+  // ... and junk read once, its answers expired, doesn't come back into the hold
+  await v2.checkRequests(100);
+  await v2.mutate(s => { for (const k of Object.keys(s.req.names)) s.req.names[k].at = 0; }, true);
+  for (const r of [...v2.requests()]) if (r.claimed !== "nellv") await v2.deleteRequest(r.id);
+  for (let i = 0; i < 10; i++) await vin(toV(MC.newKeyPair(), "junk again", "junkname" + i));
+  const nora = ID.newIdentity(); await w.register("norav", { msg: hex(nora.publicKey) });
+  await vin(MC.sealMessage({ to: V.id.publicKey, from: "norav", fromSecret: nora.secretKey, text: "nora here" }));
+  await until("nora's request (after the junk)", async () => { await v2.sync(); return v2.requests().some(g => g.claimed === "norav") && v2.requests().filter(g => /^junkname/.test(g.claimed || "")).length === 10; });
+  for (let i = 0; i < 55; i++) { await vin(toV(MC.newKeyPair(), "free again " + i)); if (i % 20 === 19) { await sleep(700); await v2.sync(); } }
+  await until("sorted again", async () => { await v2.sync(); return !(await vitems()).some(i => !i.k) && v2.requests().some(g => g.list[0].text === "free again 54"); }, 20000);
+  check("junk names read once (answers since expired) don't take the hold again: the new real name keeps it", v2.requests().some(g => g.claimed === "norav"));
+  for (const r of [...v2.requests()]) await v2.deleteRequest(r.id);
+  // T-2: a sender's drops behind more than 300 others come back (loadDropped reads every page)
+  await v2.setOnlyKnown(true);
+  for (let i = 0; i < 305; i++) { await vin(toV(MC.newKeyPair(), "noise " + i)); if (i % 40 === 39) { await sleep(700); await v2.sync(); } }
+  const X5 = MC.newKeyPair();
+  for (let i = 0; i < 3; i++) await vin(toV(X5, "x5 " + i));
+  const only0 = v2.dropped().only;
+  await until("all dropped, X5's last", async () => { await v2.sync(); return !(await vitems()).some(i => !i.k) && v2.dropped().only - only0 >= 0 && (await vitems("?dropped=1")).length >= 308; }, 40000);
+  await v2.setOnlyKnown(false);
+  const v3 = mk(); await v3.loadStore(); await v3.sync();
+  const x5id = await v3.startAddress(hex(X5.publicKey));
+  check("drops sent after 305 others come back in a later session (every page of dropped messages is read)", v3.messages(x5id).length === 3, v3.messages(x5id).length);
+  // SF-D3: the guard cancels nothing on "not registered", and the inbox read doesn't wait for it
+  const zoe = ID.newIdentity(); await w.register("zoev", { msg: hex(zoe.publicKey) });
+  await v3.startDirect("zoev"); await v3.markChecked("zoev", hex(zoe.publicKey));
+  await w.control("down/3");
+  await until("node off", async () => (await V.call("/api/messages/status")).d.node.reachable === false, 8000);
+  await v3.send("d:zoev", "queued for zoe");
+  const real = v3.resolveRaw;
+  v3.resolveRaw = async (name) => { if (name === "zoev") { await sleep(3000); return null; } return real(name); };   // a slow "not registered"
+  v3.guarded.clear();
+  const t1 = Date.now(); await v3.sync(); const took = Date.now() - t1;
+  await sleep(3500); await v3.sync();
+  const zq = [...v3.outbox.values()].find(m => m.text === "queued for zoe");
+  check("a slow \"not registered\" answer: the inbox read doesn't wait for it, and nothing is cancelled", took < 2000 && zq.sends[0].state === "queued", [took, zq.sends[0].state]);
+  // T-2: a cancel that didn't go through is tried again
+  v3.resolveRaw = real;
+  await w.register("zoev", { msg: hex(ID.newIdentity().publicKey) });
+  const realBg = v3.bgApi; let refused = 0;
+  v3.bgApi = async (path, body) => { if (path === "/api/messages/outbox/cancel" && refused < 1) { refused++; return { ok: false, status: 0, data: {} }; } return realBg(path, body); };
+  await v3.lookup("zoev", true);
+  await v3.sendBlocker("d:zoev", false, true);
+  check("(the first cancel didn't go through, so it isn't counted)", refused === 1 && !v3.cancelledFor.has(hex(zoe.publicKey)));
+  await v3.sendBlocker("d:zoev", false, true);
+  v3.bgApi = realBg;
+  await v3.sync();
+  check("the cancel is tried again, and then counts", v3.cancelledFor.has(hex(zoe.publicKey)) && [...v3.outbox.values()].find(m => m.text === "queued for zoe").sends[0].state === "cancelled");
+  await w.control("up/3");
+  V.proc.kill();
+}
+{
+  // SF-D4: an inbox that can't be read, with no good last copy: numbers go on above the old ones after a restart
+  const U = await app(w, 8155 + PS, w.NODES[2]);
+  await person(w, U, "ursa", "232378");
+  const ut = MC.inboxTopic(U.id.publicKey);
+  for (let i = 0; i < 3; i++) await w.control("inject/2", { topic: ut, payload: b64(MC.sealMessage({ to: U.id.publicKey, from: "bob", fromSecret: B.id.secretKey, text: "u" + i })) });
+  await until("3 in", async () => (await U.call("/api/messages/inbox")).d.items.length === 3);
+  writeFileSync(join(U.data, "wallet-inbox.json"), "not json");
+  rmSync(join(U.data, "wallet-inbox.json.prev"), { force: true });
+  const U2 = await restart(w, U);
+  const d = (await U2.call("/api/messages/inbox")).d;
+  check("an unreadable inbox with no good copy: after a restart the numbers go on above the old ones, never from 1", d.next > 1e9 && d.sort_from > 1e9, [d.next, d.sort_from]);
+  U2.proc.kill();
 }
 
 stopAll();

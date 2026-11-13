@@ -59,18 +59,24 @@ or the message comes from a messaging address one of your contacts uses.
   names someone in your chats while the name service can't be reached waits in Requests, so a contact's new
   phone isn't lost.
 - Limits, applied each time the page reads the inbox: one request per sender with its first 3 messages; 50
-  requests in all (a request you opened kept first, then a proven LNS name, then an address, then an unproven
-  message; within each, the oldest go first); 1 MiB of sealed messages in all; nothing older than 30 days.
-- A request that names a name the name service hasn't been asked about counts like an address, except that the
-  oldest 10 such requests are never dropped by the limits before their name has been asked about once. The app
-  asks in the background only while the requests near the limit: at most 20 a day, the first a random 1 to 5
-  minutes after it first sees them near the limit, then each a fresh random 1 to 5 minutes after the one
-  before. An answer counts for a day; after that, or when you open a request whose name the name service gave
-  another address for, the name is asked about again. A name proven that way is kept before addresses.
+  requests in all, plus up to 10 held (below). Kept first: a request you opened, or one the app keeps (a proven
+  LNS name's); then a proven LNS name, then an address, then an unproven message; within each, the oldest go
+  first. 1 MiB of sealed messages in all; nothing older than 30 days.
+- A request that names a name the name service has never been asked about counts like an address, except that
+  up to 10 such requests (one per name: the 5 oldest and the 5 newest) are held: never dropped by the limits
+  before their name has been asked about once. A name asked about once never goes back into the hold, so junk
+  claims hold it only until they are read. What this can't stop: more than 5 fresh claimed names sent after a
+  real new one, then a burst of other senders, before the app has asked about it.
+- The app asks in the background only while the requests near the limit: at most 20 a day, the first a random
+  1 to 5 minutes after it first sees them near the limit, then each a fresh random 1 to 5 minutes after the one
+  before. An answer counts for a day ("this name has no messaging address" for an hour); after that, or when
+  you open a request whose name the name service gave another address for, the name is asked about again. A
+  name proven that way is kept before addresses.
 - What is dropped unread (and never shown): messages over those limits, from a blocked address, from anyone
   new while "Only people I've written to" is on, and payloads that don't open with this phone's key. Dropped
   messages are hidden at once and deleted 7 days later; within those days, the first time you start a chat with
-  the sender (or accept or unblock them), their newest 3 come back, as unread; the rest stay dropped. The page counts the first four, by number only ("Deleted unread so far: 12");
+  that messaging address (or accept or unblock it), its newest 3 come back, as unread; the rest stay dropped.
+  This happens once per messaging address: a later round of drops from the same address doesn't come back. The page counts the first four, by number only ("Deleted unread so far: 12");
   nothing about who sent them or what they said is kept.
 - A message that has been sorted into a chat stays a chat message: nothing turns it into a request or drops
   it later, and the app refuses to.
@@ -82,12 +88,16 @@ or the message comes from a messaging address one of your contacts uses.
   has them or tap **Start fresh** (they are kept aside, never deleted). If the file can't be read at all,
   Messages offers **Use the last saved copy** (each save keeps the copy it replaces, written so a power cut
   can't leave it empty) or Start fresh, and a backup made meanwhile says it carries no chats.
-- Blocking someone cancels what is still waiting to be sent to them. While something waits for a checked
-  contact, the app reads their name on chain in the background (at most every 15 seconds) and cancels it if their
-  address changed, whether or not their chat is open. Retry refuses while sending to that chat is blocked.
+- Blocking someone cancels what is still waiting to be sent to them. While a message waits in the queue for a
+  checked contact, the app reads their name in the background (at most every 15 seconds; each read is an
+  Argon2 derivation and one call to the name service, which so sees that name read from this phone) and cancels
+  the message if the name service gives another messaging address. "Not registered" or "no address" cancels
+  nothing. A message that failed waits for Retry, which checks before it sends; it isn't read in the background.
+  Retry refuses while sending to that chat is blocked.
 - The inbox and outbox files (all the chats' history) are written the same way as the saved chats: synced, with
   the copy each write replaces kept. A file that can't be read is kept aside, never written over, and the last
-  copy is used.
+  copy is used. With no readable last copy, the history starts empty (the numbers go on above the old ones);
+  the app's event log records it, and Messages doesn't say so yet.
 - Apart from those background asks, the app looks up a name a request claims when you open Requests (one at a time, stopping
   when you leave), so a stranger's message doesn't make the phone ask the name service (or do the work a
   lookup takes) on its own.
@@ -192,7 +202,7 @@ when you're back. Message details (tap a message) show the state for each recipi
 - The unread count that the Android app can show (`messaging_inbox_count()`) counts incoming messages the
   page hasn't shown yet. The app can't open messages itself, so it can't tell a request, or a muted or
   blocked person's message, from any other until the page has been open once after it came (the page then
-  marks requests read, and deletes what it drops).
+  marks requests read, and marks what it drops; dropped ones are deleted 7 days later).
 - Until then, messages wait sealed and unsorted, in room for 2,000 of them (8 MiB) besides your chats'
   messages. When that is full, the newest still gets in and the oldest waiting one goes: first a request you
   haven't opened (and that isn't a proven name), then an unsorted message, and last a request you opened or a

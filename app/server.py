@@ -3773,7 +3773,11 @@ def _durable_load(path, check):
         d = read(path + ".prev")
         if d is not None:                              # a cut between keeping .prev and putting the new file in place
             _durable_good[path] = True
-            return d, "ok"
+            return d, "prev"
+        # nothing here, but a file kept aside as unreadable: history was lost before, numbers must still go on
+        folder, base = os.path.split(path)
+        if any(f.startswith(base + ".unreadable-") for f in os.listdir(folder or ".")):
+            return None, "lost"
         return None, "missing"
     d = read(path)
     if d is not None:
@@ -3809,8 +3813,10 @@ def inbox_load():
 
 inbox = {"version": 1, "items": [], "seen": [], "next": 1, "sort_from": 1}
 _waku["feature"] = EMBEDDED or bool(waku_api())          # messages exist here at all (decided once)
+_loaded = {"inbox": False, "outbox": False}       # each loaded once per process, whatever it held
 if _waku["feature"]:
     inbox.update(inbox_load())
+    _loaded["inbox"] = True
 
 
 def inbox_save():
@@ -4045,6 +4051,7 @@ outbox = {"version": 1, "items": [], "next": 1, "rev": 0}
 outbox_wake = threading.Event()
 if _waku["feature"]:
     outbox.update(outbox_load())
+    _loaded["outbox"] = True
 
 
 def outbox_save():
@@ -4204,12 +4211,17 @@ def _aside_name(why):
             return name
 
 
-def store_aside(why):
+def store_aside(why, out=None):
     """Moves the store file (readable or not) aside under a name of its own (never over another file kept aside),
-    and starts an empty one (the caller holds msg_lock). Returns the new rev."""
+    and starts an empty one (the caller holds msg_lock). Returns the new rev; `out`, a dict, gets "aside": the
+    name it was moved to (None when there was no file)."""
+    name = None
     if os.path.exists(STORE_FILE):
-        os.link(STORE_FILE, _aside_name(why))           # fails rather than replace an existing file
-        os.unlink(STORE_FILE)
+        # a rename (never a hard link: Android forbids those to apps), under msg_lock, to a name nothing has
+        name = _aside_name(why)
+        os.rename(STORE_FILE, name)
+    if out is not None:
+        out["aside"] = name
     rev = int(time.time() * 1000)
     _fsync_write(STORE_FILE, json.dumps({"rev": rev, "blob": None}).encode())
     return rev
@@ -4225,10 +4237,12 @@ def messaging_start():
         if _waku["thread"]:
             return
         _waku["thread"] = True
-        if not inbox["items"] and not inbox["seen"]:
+        if not _loaded["inbox"]:                 # once: a second load would start numbering again at 1
             inbox.update(inbox_load())
-        if not outbox["items"]:
+            _loaded["inbox"] = True
+        if not _loaded["outbox"]:
             outbox.update(outbox_load())
+            _loaded["outbox"] = True
     threading.Thread(target=messaging_loop, daemon=True).start()
     threading.Thread(target=outbox_loop, daemon=True).start()
 
@@ -4375,8 +4389,7 @@ def messaging_post(path, body, req):
                 return 404, {"error": "There is no earlier copy of the saved chats."}
             ok, prev = _store_file_read(STORE_FILE + ".prev")
             if os.path.exists(STORE_FILE):
-                os.link(STORE_FILE, _aside_name("unreadable"))
-                os.unlink(STORE_FILE)
+                os.rename(STORE_FILE, _aside_name("unreadable"))
             rev = int(time.time() * 1000)
             _fsync_write(STORE_FILE, json.dumps({"rev": rev, "blob": prev["blob"]}).encode())
         event("saved chats put back from the last copy", req)
@@ -4638,9 +4651,8 @@ def restore_backup(doc, password, replace_lns=False):
     lns_reply = {"lns_restored": lns_done, "lns": lns_out, "lns_message": lns_msg} if lns_out else {}
     lns_why = ", lns " + lns_out if lns_out else ""
     if reported == current:
-        before = (msg_key_load() or {}).get("secret")
-        if msg_key and msg_key_restore(msg_key):
-            store_aside_for_new_key(before, msg_key, chat)
+        before, changed = msg_key_restore_with_store(msg_key, chat) if msg_key else ((msg_key_load() or {}).get("secret"), False)
+        if msg_key and changed:
             n = chat_restore(chat, before != msg_key["secret"]) if chat and messaging_on() else 0
             return 200, dict(lns_reply, unchanged=True, messaging_key_restored=True, messages_restored=n,
                              message="These are the wallet keys already in use. The messaging key from the backup is back in place."), "same keys, messaging key" + lns_why
@@ -4671,10 +4683,9 @@ def restore_backup(doc, password, replace_lns=False):
         except Exception:
             restarted = False
     reply = dict(lns_reply, ok=True, restarted=restarted, addresses=len(reported), replaced=len(current))
-    before = (msg_key_load() or {}).get("secret")
-    if msg_key and msg_key_restore(msg_key):
+    before, changed = msg_key_restore_with_store(msg_key, chat) if msg_key else ((msg_key_load() or {}).get("secret"), False)
+    if msg_key and changed:
         reply["messaging_key_restored"] = True
-        store_aside_for_new_key(before, msg_key, chat)
     if chat and messaging_on():
         reply["messages_restored"] = chat_restore(chat, before != msg_key["secret"])
     if not restarted:
@@ -4683,13 +4694,39 @@ def restore_backup(doc, password, replace_lns=False):
 
 
 def store_aside_for_new_key(before, msg_key, chat):
-    """A restore put in another messaging key and brings no saved chats: the ones here can't be opened with the
-    new key, so they are kept aside (STORE_FILE.other-key-<time>) and the page starts with empty ones."""
+    """A restore brings another messaging key and no saved chats: the ones here can't be opened with the new key,
+    so they are kept aside (STORE_FILE.other-key-<time>-<random>) and the page starts with empty ones. Returns the
+    name they were moved to, or None."""
     if not messaging_on() or not before or before == msg_key.get("secret") or (isinstance(chat, dict) and chat.get("store")):
-        return
+        return None
+    out = {}
     with msg_lock:
         if os.path.exists(STORE_FILE):
-            store_aside("other-key")
+            store_aside("other-key", out)
+    return out.get("aside")
+
+
+def msg_key_restore_with_store(msg_key, chat):
+    """Puts a backup's messaging key in place together with what that means for the saved chats, so a failure
+    half way can't leave the new key beside a store it can't open: when the key is another one and the backup
+    brings no saved chats, the store is set aside first; if putting the key in place then fails (or changes
+    nothing), the store is put back. Returns (the secret before, whether the key changed)."""
+    before = (msg_key_load() or {}).get("secret")
+    aside = None
+    try:
+        aside = store_aside_for_new_key(before, msg_key, chat)
+    except Exception:
+        event("saved chats couldn't be set aside for the restored messaging key")
+    try:
+        changed = msg_key_restore(msg_key)
+    except Exception:
+        changed = None
+    if not changed and aside:
+        with msg_lock:
+            os.replace(aside, STORE_FILE)           # the key didn't change: the saved chats are this key's still
+    if changed is None:
+        raise RuntimeError("the messaging key couldn't be put in place")
+    return before, changed
 
 
 def chat_backup(history):
