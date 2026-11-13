@@ -121,7 +121,7 @@ class NodeActivity : Activity() {
         column.addView(
             text(
                 14f,
-                "This app is Logos Names. It runs a Logos blockchain node on this phone: the official release, " +
+                "This app is Names Wallet. It runs a Logos blockchain node on this phone: the official release, " +
                     "${BuildConfig.NODE_VERSION}. A fresh install " +
                     "syncs the chain from its first block, and that cannot finish on a phone: the node's memory grows " +
                     "with the chain during the first sync. Start it from a snapshot instead: a tar of a synced node's " +

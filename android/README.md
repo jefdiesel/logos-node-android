@@ -1,10 +1,10 @@
-# Logos Names: Android app (test build)
+# Names Wallet: Android app (test build)
 
-Logos Names is an Android app that runs a Logos blockchain node (the official release) on the phone and
+Names Wallet is an Android app that runs a Logos blockchain node (the official release) on the phone and
 shows the project's own wallet page.
 It is a debug build for testing, not something to publish.
 
-- Package `io.github.jefdiesel.logosnode` (unchanged), name "Logos Names", arm64 phones only, Android 9 (API 28)
+- Package `io.github.jefdiesel.logosnode` (unchanged), name "Names Wallet", arm64 phones only, Android 9 (API 28)
   or newer.
 - **The node** is the binary from the `native-build` workflow (see `native/README.md`), bundled as it
   is, not rebuilt. The APK carries it as `lib/arm64-v8a/liblogosnode.so`. Android extracts that at
