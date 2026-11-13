@@ -8,6 +8,8 @@
 // req-1, req-2, ... and, 50 ms later, reports the message propagated and sent and delivers it back
 // as received (a node that is subscribed to its own topic); a send to a topic containing "fail" is
 // reported as an error instead, with a message that needs escaping. connection status: "Connected".
+// A line "inject <topic> <base64 payload>" on stdin delivers that message as received (another
+// sender), for the app's own tests.
 #include "api_socket.h"
 
 #include <signal.h>
@@ -70,6 +72,22 @@ static int st_send(const char *json, char **rid, char **err) {
     return 0;
 }
 
+static void *stdin_loop(void *arg) {
+    (void)arg;
+    char line[8192], topic[300], payload[7000];
+    static int n = 100000;
+    while (fgets(line, sizeof line, stdin)) {
+        if (sscanf(line, "inject %299s %6999s", topic, payload) != 2) continue;
+        char ev[8192];
+        n++;
+        snprintf(ev, sizeof ev, "{\"eventType\":\"message_received\",\"messageHash\":\"0x%064d\",\"message\":{\"payload\":\"%s\","
+                 "\"contentTopic\":\"%s\",\"version\":0,\"timestamp\":1700000000000000000,\"ephemeral\":false,\"meta\":\"\",\"proof\":\"\"},"
+                 "\"source\":\"live\"}", n, payload, topic);
+        emit("onMessageReceived", ev);
+    }
+    return NULL;
+}
+
 static const api_backend_t k_stand_in = {st_subscribe, st_unsubscribe, st_send, st_status, st_log};
 
 int main(int argc, char **argv) {
@@ -79,5 +97,8 @@ int main(int argc, char **argv) {
     if (argc != 2) { fprintf(stderr, "usage: %s [--check] <socket path>\n", argv[0]); return 2; }
     if (api_start(argv[1], &k_stand_in) != 0) return 3;
     printf("ready\n");
+    pthread_t t;
+    pthread_create(&t, NULL, stdin_loop, NULL);
+    pthread_detach(t);
     for (;;) pause();
 }
