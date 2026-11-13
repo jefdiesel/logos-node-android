@@ -5161,6 +5161,35 @@ def passkey_unlock(body):
     return 200, {"session": session_new()}
 
 
+# ---- the bridge test network (LEZ 0.4): read-only balances, from app/lez04.py ----------------------------------------
+# A second network beside the public Logos testnet (LEZ 0.3). Reads only, through the outside fetch; nothing here touches
+# keys, sends, names or 0.3 balances, and lez04 imports nothing of this file. Inside the Android app only.
+_net04 = []
+
+
+def net04():
+    """The reader (made once), or None outside the Android app or if lez04.py can't load."""
+    if not EMBEDDED:
+        return None
+    if not _net04:
+        try:
+            import lez04
+            _net04.append(lez04.Net04(DATA_DIR, APP_DIR, lambda url, body, cap, timeout: fetch_outside(url, body, cap=cap, timeout=timeout)))
+        except Exception:
+            _net04.append(None)
+    return _net04[0]
+
+
+def net04_own():
+    """The phone's own LEZ account id (base58), the same id on both networks; None without one."""
+    try:
+        import lez04
+        a = lns_state()["account"] if lns_available() else None
+        return lez04.account_id(a) if a else None
+    except Exception:
+        return None
+
+
 # ---- HTTP -----------------------------------------------------------------------------------
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -5217,7 +5246,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def public_file(path):
         """The page's own files, the same for everyone (from this repository): served without the app key, so a
         resource the WebView fetches without cookies still loads. Everything else needs it."""
-        return (path in ("/", "/manifest.webmanifest", "/lns/lns.js", QR_FILE,
+        return (path in ("/", "/manifest.webmanifest", "/lns/lns.js", "/net04/net04.js", QR_FILE,
                          "/lambda-192.png", "/lambda-512.png", "/lambda-maskable-512.png")
                 or bool(MESSAGES_FILE_RE.match(path)) or bool(NAMES_FILE_RE.match(path)))
 
@@ -5258,6 +5287,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     page = page.replace(b"</body>", b'<script type="module" src="/messages/messages.js"></script>\n</body>', 1)
                 if lns_available():               # Your name, only in the Android app with the signer
                     page = page.replace(b"</body>", b'<script src="/lns/lns.js"></script>\n</body>', 1)
+                if net04():                       # the bridge test network (LEZ 0.4), read-only, in the Android app
+                    page = page.replace(b"</body>", b'<script src="/net04/net04.js"></script>\n</body>', 1)
                 return self.reply(200, raw=page, ctype="text/html; charset=utf-8")
             except Exception:
                 return self.reply(500, {"error": "index.html is missing"})
@@ -5275,6 +5306,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply(401, {"error": "locked"})
             code, obj = messaging_get(path, self.path)
             return self.reply(code, obj)
+        if path == "/net04/net04.js":
+            if not net04():
+                return self.reply(404, {"error": "not found"})
+            try:
+                with open(os.path.join(APP_DIR, "net04", "net04.js"), "rb") as f:
+                    return self.reply(200, raw=f.read(), ctype="text/javascript; charset=utf-8")
+            except Exception:
+                return self.reply(404, {"error": "not found"})
         if path == "/lns/lns.js":
             if not lns_available():
                 return self.reply(404, {"error": "not found"})
@@ -5327,6 +5366,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not self.authed():
                 return self.reply(401, {"error": "locked"})
             return self.reply(200, lns_view())
+        if path == "/api/wallet/net04":                # the bridge test network: read-only, never the money path
+            n = net04()
+            if not n:
+                return self.reply(404, {"error": "not found"})
+            if not self.authed():
+                return self.reply(401, {"error": "locked"})
+            own = net04_own()
+            n.look(own)                                # reads again in the background, 30 s at most
+            return self.reply(200, n.view(own))
         if path == "/api/wallet/lns/balance":          # the Wallet's LEZ row: the name account and its balance only
             if not lns_available():
                 return self.reply(404, {"error": "not found"})
@@ -5566,6 +5614,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
             code, obj = send(body)
             if code == 200:
                 event("transfer sent", self, hash=obj.get("hash"))
+            return self.reply(code, obj)
+        if path == "/api/wallet/net04/watch":          # view-only addresses on the bridge test network
+            n = net04()
+            if not n:
+                return self.reply(404, {"error": "not found"})
+            if not self.authed():
+                return self.reply(401, {"error": "locked"})
+            if "remove" in body:
+                code, obj = n.unwatch(body.get("remove"))
+            else:
+                code, obj = n.watch(body.get("add"))
             return self.reply(code, obj)
         if path in self.LNS_ROUTES:
             # the phone's own LNS name: Android app only, with the signer bundled; same checks as Send
