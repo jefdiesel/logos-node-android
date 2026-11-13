@@ -104,7 +104,9 @@ class NodeH(http.server.BaseHTTPRequestHandler):
                 return self.out(201, {"hash": "11" * 32})
             if self.path == "/channel/deposit":
                 if Node.deposit_mode == "refuse":
-                    return self.out(500, "Fee exceeds maximum")
+                    return self.out(400, "Fee exceeds maximum")
+                if Node.deposit_mode == "5xx":    # the node's own error: it may have taken it all the same
+                    return self.out(500, "mempool error")
                 if Node.deposit_mode == "hang":
                     self.close_connection = True
                     return                       # no answer at all
@@ -453,6 +455,22 @@ node_include()
 until("in a block", lambda: bridge().get("state") in ("landed", "arrived"))
 until("its rows settled", lambda: not [e for e in history() if e.get("status") == "pending"])
 
+# ---- the node's own error on a deposit: it may still land, never "nothing was bridged" ----
+Node.deposit_mode = "5xx"
+Node.notes[MAIN][hexid(806)] = 333333
+time.sleep(1.5)
+until("no transfer pending", lambda: not [e for e in history() if e.get("status") == "pending"])
+code, d = call("/api/wallet/lns/bridge", {"from": MAIN, "amount": "333333", "confirm": True}, session=s)
+until("a node server error: taken as sent, unsure", lambda: bridge().get("state") in ("sent", "overdue") and bridge().get("id") == d["bridge"]["id"])
+until("then overdue, saying it may still land", lambda: bridge().get("state") == "overdue" and "may still land" in bridge()["error"], tries=80)
+Node.deposit_mode = "ok"
+Node.notes[MAIN].pop(hexid(806), None)
+with server.bridge_lock:
+    b = server.bridge_load(); b.update(state="arrived"); server.bridge_save(b)
+for e in server.history["entries"]:
+    if e.get("status") == "pending":
+        e["status"] = "not in a block"
+
 # ---- a split can be stopped before anything is deposited -----------------------------------------------------
 code, d = call("/api/wallet/lns/bridge", {"from": MAIN, "amount": "123457", "confirm": True}, session=s)
 check("splitting", code == 200 and d["bridge"]["state"] == "splitting", d)
@@ -499,6 +517,13 @@ check("LEZ arriving while a send goes out doesn't make it look failed: judged by
 code, d = call("/api/wallet/lns/send", {"to": TO, "amount": "19", "confirm": True}, session=s)
 j = until("the billed one finishes", lambda: (lambda j: j if j["state"] != "running" else None)(call("/api/wallet/lns", session=s)[1]["job"]))
 check("a send billed more than its amount but never seen in a block isn't 'Sent': it may still land", j["state"] == "failed" and j["error"] == server.LNS_SEND_UNSURE, j)
+check("S-9: it reads as unsure, and is kept as unsure", j["error"] == "May have been sent. Check before sending again." and j.get("unsure") is True
+      and call("/api/wallet/lns", session=s)[1]["activity"][0]["state"] == "unsure", j)
+code, d = call("/api/wallet/lns/send", {"to": TO, "amount": "19", "confirm": True}, session=s)
+check("S-9: the same send again is held back for a few minutes", code == 409 and "may have gone out" in d["error"], d)
+code, d = call("/api/wallet/lns/send", {"to": TO, "amount": "21", "confirm": True}, session=s)
+j = until("the timed-out one finishes", lambda: (lambda j: j if j["state"] != "running" else None)(call("/api/wallet/lns", session=s)[1]["job"]))
+check("S-9: handed to the sequencer but its answer lost (no hash printed): unsure, not 'not sent'", j["error"] == server.LNS_SEND_UNSURE and j.get("unsure") is True, j)
 server.lns_state_save(reg_pending="alice")
 Seq.lez["balance"] = 3600000
 code, d = call("/api/wallet/lns/send", {"to": TO, "amount": "200000", "confirm": True}, session=s)

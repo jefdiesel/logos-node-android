@@ -42,7 +42,10 @@ class Seq(http.server.BaseHTTPRequestHandler):
             m, r = c.get("method"), {"jsonrpc": "2.0", "id": c.get("id")}
             if m == "getRecoveryBinding":
                 r["error"] = {"code": -32601, "message": "Method not found"}
+            elif m == "getAccountsNonces":
+                r["result"] = [LEZ.get("nonce", 0)]
             elif m == "sendTransaction":
+                LEZ["nonce"] = LEZ.get("nonce", 0) + 1
                 p = (c.get("params") or [{}])[0]
                 if isinstance(p, dict) and p.get("Public") == "transfer":
                     LEZ["balance"] -= int(p["amount"]) + 3000

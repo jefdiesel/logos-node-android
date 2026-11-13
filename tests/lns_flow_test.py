@@ -26,10 +26,11 @@ class Seq(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         m = body.get("method")
-        if m == "sendTransaction" and LEZ["drain"]:      # what each change costs, for the spend brake
-            LEZ["balance"] -= LEZ["drain"]
+        if m == "sendTransaction":
+            LEZ["nonce"] = LEZ.get("nonce", 0) + 1
+            LEZ["balance"] -= LEZ["drain"]               # what each change costs, for the spend brake
         r = {"jsonrpc": "2.0", "id": body.get("id"),
-             "result": {"getAccountBalance": LEZ["balance"], "getLastBlockId": 7, "sendTransaction": "cd" * 32,
+             "result": {"getAccountsNonces": [LEZ.get("nonce", 0)], "getAccountBalance": LEZ["balance"], "getLastBlockId": 7, "sendTransaction": "cd" * 32,
                         "getFeeState": {"next_base_fee_exec_ceiling": 9, "next_base_fee_stor_ceiling": 9, "base_fee_exec": 8, "base_fee_stor": 8}}.get(m)}
         data = json.dumps(r).encode()
         self.send_response(200)
@@ -168,7 +169,10 @@ until("with Messages off it finishes without msg, and says msg comes later", lam
 check("bob: registered and pointed at this wallet; no msg entry", chain()["bob"].get("blockchain") == MAIN and "msg" not in chain()["bob"])
 server.msg_key_load = real_mk
 server.lns_flow_wake.set()
-until("Messages on: the msg entry follows by itself", lambda: chain()["bob"].get("msg") == public and flow().get("step") == "done" and not flow().get("msg_later"))
+time.sleep(2)
+check("S-7: Messages turned on later: nothing is signed by itself (it waits for a tap)", "msg" not in chain()["bob"] and flow().get("msg_later") is True)
+code, d = call("/api/wallet/lns/get", {"name": "bob", "mode": "link"}, session=s)
+until("one tap (Finish setting up): the msg entry", lambda: chain()["bob"].get("msg") == public and flow().get("step") == "done", tries=300)
 
 # ---- a passing failure is tried again after a pause; a final one stops with one line, then Try again ----
 server.lns_state_save(name="")
@@ -272,6 +276,102 @@ LEZ["drain"] = 0
 server.lns_flow_job = real_job
 code, d = call("/api/wallet/lns/get/retry", {}, session=s)
 check("Try again (the person's own tap) starts the counts over", code == 200 and not server.lns_flow_load().get("sends"))
-os.remove(server.LNS_FLOW_FILE)
+# ---- S-items (second review) ----
+def fresh(name, mode="register", balance=20000000):
+    until("no change running", lambda: server.lns_job["state"] != "running")
+    for _ in range(50):                       # the one before is stopped the person's way (Stop), not deleted
+        if server.lns_flow_load() is None:
+            break
+        r_ = call("/api/wallet/lns/get/stop", {}, session=s)
+        if r_[0] == 200:
+            break
+        time.sleep(0.1)
+    else:
+        check("the flow before stops", False, (r_, server.lns_flow_load(), server.lns_job["state"]))
+    server.lns_state_save(name="")
+    LEZ["balance"] = balance
+    code, d = call("/api/wallet/lns/get", {"name": name, "mode": mode}, session=s)
+    check("a flow for %s starts" % name, code == 200, d)
+
+
+def flag(f, on=True):
+    p_ = os.path.join(data, f)
+    open(p_, "w").close() if on else (os.path.exists(p_) and os.remove(p_))
+
+
+# S-1: an entry included but not applied (billed) stops at once
+flag("fake-settext-billed")
+fresh("lena")
+until("S-1: billed on chain: it stops", lambda: flow().get("step") == "failed", tries=300)
+check("S-1: one send only, and the line says it didn't take", len([x for x in sends("set-text") if x[1] == "lena"]) == 1 and "didn't take effect" in flow()["error"], flow())
+flag("fake-settext-billed", False)
+
+# S-2: a commit that went out but whose wait gave up before it was saved: never a second commit
+flag("fake-register-lost-commit")
+fresh("mona")
+until("S-2: it stops instead of committing again", lambda: flow().get("step") == "failed", tries=300)
+check("S-2: one register (one commit) only, and it says an earlier commit may have landed",
+      len([x for x in sends("register") if x[1] == "mona"]) == 1 and "earlier commit" in flow()["error"], (sends("register")[-3:], flow()))
+flag("fake-register-lost-commit", False)
+
+# S-3: a restart while a register runs counts as a send (and resumes, with its commitment saved)
+fresh("nina")
+until("nina done", lambda: flow().get("step") == "done", tries=300)
+fl = server.lns_flow_load()
+check("S-3: the register was counted before it was sent", fl["sends"].get("register") == 1, fl.get("sends"))
+
+# S-4 and S-5: the chain can't be read: nothing is sent, the reads back off, then it stops (Stop works meanwhile)
+real_waits = server.LNS_FLOW_READ_WAITS
+server.LNS_FLOW_READ_WAITS = [0.3, 0.3, 0.3]
+c = chain(); c["olga"] = {"_owner": FAKE.ACCOUNT, "blockchain": MAIN}; json.dump(c, open(chain_file, "w"))
+flag("fake-resolve-down")
+n_set = len(sends("set-text"))
+fresh("olga", mode="link")
+until("S-4: unreadable: it waits, then stops with Try again", lambda: flow().get("step") == "failed", tries=300)
+check("S-5: no entry was sent while the chain couldn't be read", len(sends("set-text")) == n_set, sends("set-text")[n_set:])
+resolves = [json.loads(l) for l in open(calls_file) if json.loads(l)["args"] == ["resolve", "olga"]]
+check("S-4: a few reads only, spaced out", len(resolves) <= 6, len(resolves))
+flag("fake-resolve-down", False)
+server.LNS_FLOW_READ_WAITS = real_waits
+
+# S-6: waiting for LEZ: an unknown cost never counts as enough
+fresh("pia", balance=100)
+until("waiting for LEZ", lambda: flow().get("step") == "fund")
+real_need = server.lns_flow_need
+server.lns_flow_need = lambda name: None
+server.lns_flow_save(dict(server.lns_flow_load(), started=time.time() - 3 * 3600, next_at=0))
+time.sleep(1.5)
+check("S-6: with the cost unknown it keeps waiting, nothing is sent", flow().get("step") == "fund" and not [x for x in sends() if "pia" in x])
+server.lns_flow_need = real_need
+
+# S-7: the wait for LEZ ends after a day, the whole job after two
+server.lns_flow_save(dict(server.lns_flow_load(), fund_since=time.time() - 25 * 3600, next_at=0))
+until("S-7: a day waiting for LEZ: it stops and asks for a new tap", lambda: flow().get("step") == "failed" and "waited a day" in flow()["error"])
+fresh("qing", balance=0)
+until("waiting", lambda: flow().get("step") == "fund")
+server.lns_flow_save(dict(server.lns_flow_load(), started=time.time() - 49 * 3600, fund_since=time.time(), next_at=0))
+until("S-7: two days after the tap it stops", lambda: flow().get("step") == "failed" and "two days" in flow()["error"])
+
+# S-8: the name can't be set by hand while a flow exists; a mismatch stops the flow
+code, d = call("/api/wallet/lns/name", {"name": "zed"}, session=s)
+check("S-8: setting a name by hand is refused while a flow exists", code == 409, d)
+fresh("rosa", balance=0)
+until("waiting", lambda: flow().get("step") == "fund")
+server.lns_state_save(name="zed")
+server.lns_flow_save(dict(server.lns_flow_load(), step="blockchain", account=server.lns_state()["account"], next_at=0))
+until("S-8: the state names another name: the flow stops, nothing sent", lambda: flow().get("step") == "failed" and "changed" in flow()["error"])
+check("S-8: no set-text for zed or rosa", not [x for x in sends("set-text") if x[1] in ("zed", "rosa")])
+
+# S-10: a stopped flow isn't replaced by a new tap; Stop works at any step; a clock set back doesn't strand it
+code, d = call("/api/wallet/lns/get", {"name": "sara"}, session=s)
+check("S-10: a new tap doesn't replace a stopped flow", code == 409 and "Stop it" in d["error"], d)
+check("Stop clears it", call("/api/wallet/lns/get/stop", {}, session=s)[0] == 200)
+fresh("tara", balance=0)
+until("waiting", lambda: flow().get("step") == "fund")
+server.lns_flow_save(dict(server.lns_flow_load(), next_at=time.time() + 10 * 86400))      # as if the clock went back
+server.lns_flow_round()
+check("S-10: a pause longer than any it sets is dropped (clock set back)", server.lns_flow_load()["next_at"] < time.time() + 3700)
+server.lns_flow_save(dict(server.lns_flow_load(), step="blockchain", next_at=time.time() + 30))
+check("Stop works at any step while nothing is being sent", call("/api/wallet/lns/get/stop", {}, session=s)[0] == 200)
 print("all checks passed", flush=True)
 os._exit(0)

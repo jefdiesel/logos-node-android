@@ -18,6 +18,7 @@ slot.innerHTML = `
         <input id="lns-in" type="text" maxlength="32" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="alice">
         <button type="button" class="primary" id="b-lns-get" style="width:100%;margin-top:12px" disabled>Get this name</button>
         <p class="note" id="lns-cost" hidden></p>
+        <p class="note" id="lns-locked">Keeps going while the app is locked.</p>
         <button type="button" id="b-lns-link" style="width:100%;margin-top:8px" disabled>I already hold it</button>
       </div>
       <div id="lns-flow" hidden>
@@ -34,6 +35,10 @@ slot.innerHTML = `
         <p class="note" id="lns-ent-bc"></p>
         <p class="note" id="lns-ent-msg"></p>
         <button type="button" class="primary" id="b-lns-finish" style="width:100%" hidden></button>
+        <div id="lns-finish-ok" hidden>
+          <p class="note" id="lns-finish-what"></p>
+          <div class="row"><button type="button" id="b-lns-finish-x">Cancel</button><button type="button" class="primary" id="b-lns-finish-go">Set it</button></div>
+        </div>
       </div>
       <div id="lns-bk" class="msg warn" hidden>
         <p style="margin:0">Back up now. This key has no other copy.</p>
@@ -143,7 +148,8 @@ function flowDraw(d) {
   $("lns-need").hidden = !short; $("b-lns-addlez").hidden = !short;
   if (short) $("lns-need").textContent = "Needs " + fmt(f.short) + " more LEZ.";
   const failed = f.step === "failed";
-  $("lns-flow-err").hidden = !failed; $("lns-flow-acts").hidden = !failed && f.step !== "fund";
+  // Stop is always there while it runs (the server refuses only while a change is being sent); Try again once stopped
+  $("lns-flow-err").hidden = !failed; $("lns-flow-acts").hidden = false;
   $("b-lns-retry").hidden = !failed;
   if (failed) $("lns-flow-err").textContent = "Stopped: " + f.error;
   $("lns-keep").hidden = failed || short;
@@ -192,8 +198,9 @@ function entriesDraw(d) {
   // a name held with an entry still missing (from before one tap): one button finishes it, as one tap would
   const fin = d.name && d.entries && !(d.flow && d.flow.step !== "done") && !running
     && (d.entries.blockchain !== "here" || (d.values.msg && d.entries.msg !== "here"));
-  $("b-lns-finish").hidden = !fin;
+  $("b-lns-finish").hidden = !fin || !$("lns-finish-ok").hidden;
   if (fin) $("b-lns-finish").textContent = "Finish setting up " + d.name;
+  if (!fin) $("lns-finish-ok").hidden = true;
 }
 const lnsName = () => $("lns-in").value.trim().toLowerCase();
 const nameOk = n => /^(?!-)[a-z0-9-]{1,32}(?<!-)$/.test(n);
@@ -211,14 +218,24 @@ function lnsInput() {
 $("lns-in").addEventListener("input", lnsInput);
 async function lnsDo(path, body) {
   lnsMsg("");
-  const r = await api(path, body);
+  const e = epoch, r = await api(path, body);
+  if (stale(e)) return false;
   if (r.status === 401) return lockedNow();
   if (!r.ok) { await lnsLoad(); lnsMsg(r.data.error || "That didn't work.", "bad"); return false; }
   await lnsLoad(); return true;
 }
 $("b-lns-get").addEventListener("click", () => lnsDo("/api/wallet/lns/get", { name: lnsName() }));
 $("b-lns-link").addEventListener("click", () => lnsDo("/api/wallet/lns/get", { name: lnsName(), mode: "link" }));
-$("b-lns-finish").addEventListener("click", () => lnsDo("/api/wallet/lns/get", { name: lnsLast.name, mode: "link" }));
+// what Finish sets and what it costs, before anything is sent: one entry is about 530,000 LEZ at today's fee
+$("b-lns-finish").addEventListener("click", () => {
+  const d = lnsLast || {}, e = d.entries || {}, c = d.cost_entry, sets = [];
+  if (e.blockchain !== "here") sets.push("pay to this wallet");
+  if (d.values && d.values.msg && e.msg !== "here") sets.push("messages to this phone");
+  $("lns-finish-what").textContent = "Sets " + d.name + " to " + sets.join(" and ") + ". About " + fmt(up10k(String(BigInt(c || "540000") * BigInt(sets.length)))) + " LEZ in fees.";
+  $("lns-finish-ok").hidden = false; $("b-lns-finish").hidden = true;
+});
+$("b-lns-finish-x").addEventListener("click", () => { $("lns-finish-ok").hidden = true; lnsLoad(); });
+$("b-lns-finish-go").addEventListener("click", async () => { $("lns-finish-ok").hidden = true; await lnsDo("/api/wallet/lns/get", { name: lnsLast.name, mode: "link" }); });
 $("b-lns-retry").addEventListener("click", () => lnsDo("/api/wallet/lns/get/retry", {}));
 $("b-lns-stop").addEventListener("click", () => lnsDo("/api/wallet/lns/get/stop", {}));
 $("b-lns-putback").addEventListener("click", () => lnsDo("/api/wallet/lns/putback", {}));
@@ -260,7 +277,8 @@ $("b-lns-br-x").addEventListener("click", () => { $("lns-brf").hidden = true; br
 $("b-lns-br-rev").addEventListener("click", async () => {
   const amount = $("lns-br-amt").value.replace(/,/g, "").trim();
   if (!/^[0-9]{1,24}$/.test(amount) || BigInt(amount) <= 0n) return brSay("Enter a whole amount above 0.", "bad");
-  const r = await api("/api/wallet/lns/bridge", { from: $("lns-br-from").value, amount });
+  const e = epoch, r = await api("/api/wallet/lns/bridge", { from: $("lns-br-from").value, amount });
+  if (stale(e)) return;
   if (r.status === 401) return lockedNow();
   if (!r.ok) return brSay(r.data.error || "Can't bridge now.", "bad");
   brPlan = r.data.plan;
@@ -360,7 +378,7 @@ $("b-lez-copy").addEventListener("click", async () => {
   setTimeout(() => { b.textContent = "Copy"; }, 2000);
 });
 const ACT_TEXT = { faucet: "From the faucet", bridge: "Bridged from wallet", register: "Registered", text: "Pointed", send: "Sent" };
-const ACT_STATE = { running: "running", done: "", failed: "didn't work", sent: "", arrived: "", landed: "on its way",
+const ACT_STATE = { running: "running", done: "", failed: "didn't work", unsure: "may have been sent", sent: "", arrived: "", landed: "on its way",
   splitting: "starting", ready: "starting", depositing: "starting", overdue: "not in a block yet", cancelled: "stopped" };
 function lezActRows() {
   const rows = ((lnsLast || {}).activity || []).map(a => {
@@ -408,7 +426,8 @@ async function lezFollow() {          // until the send has finished: then its r
   if (r.status === 401) return lockedNow();
   const j = (r.ok && r.data.job) || {};
   if (j.kind === "send" && j.state === "running") return void setTimeout(lezFollow, 3000);
-  if (j.kind === "send") lezSay(j.state === "done" ? "Sent " + LEZ(j.amount) + "." : "Didn't work: " + j.error, j.state === "done" ? "ok" : "bad");
+  if (j.kind === "send") lezSay(j.state === "done" ? "Sent " + LEZ(j.amount) + "." : j.unsure ? j.error : "Didn't work: " + j.error,
+                                j.state === "done" ? "ok" : j.unsure ? "warn" : "bad");
   home(true); lezLoad();
 }
 $("b-lez-scan").hidden = typeof SCAN === "undefined" || !SCAN;
@@ -446,7 +465,7 @@ window.LNS = {
   refresh() { if (!$("s-lns").hidden) lnsLoad(); },
   home,
   /** The phone's own name for Messages > Name: { name, running } (null when it can't be read). */
-  async own() { const r = await api("/api/wallet/lns"); if (!r.ok) return null; lnsLast = r.data; const j = r.data.job || {};
+  async own() { const e = epoch, r = await api("/api/wallet/lns"); if (stale(e) || !r.ok) return null; lnsLast = r.data; const j = r.data.job || {};
     return { name: r.data.name || "", running: j.state === "running" && j.kind === "text" && j.entry === "msg" }; },
   pointMsg,
   /** A scanned LEZ account from elsewhere: LEZ's Send, with it filled in. */
