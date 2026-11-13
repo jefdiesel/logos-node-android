@@ -22,7 +22,7 @@ this build.
 | Source | [logos-blockchain/logos-blockchain](https://github.com/logos-blockchain/logos-blockchain), tag `0.3.4`, commit `f7ab0323346d36840660908be049d5a62c905516` |
 | Patch | `native/patches/0002-api-unix-socket.patch` (branch `node-patches-api`), explained in `native/patches/README.md` |
 | Build | the `native-build` workflow, variant `api` (`native/apply-patches.sh node --only native/patches/0002-api-unix-socket.patch`), artifact `logos-blockchain-node-android-arm64-0.3.4-api` |
-| Pinned | `android/node.properties`: `variant=api`, the native-build run, and the binary's sha256; the APK build refuses a binary that differs, and the Node screen shows the variant and sha256 |
+| Pinned | `android/node.properties`: `variant=api`, `commit`, the native-build run (43442276482) and the binary's sha256 (`f772344c0ce03e1da7fbefaf29f61ea1480862f5a41bffc98d63b8fcbc848533`), patch-set id `a08732b12cf8e33c`. The APK build refuses a binary that differs, or whose `SOURCE.txt`/`PATCHES.txt` name another commit or any other patch; the Node screen shows the variant and sha256 |
 
 **To check a binary yourself:**
 
@@ -34,9 +34,10 @@ this build.
    checks that the binary contains patch 0002's name and that id, and not patch 0001.
 3. Compare the binary's sha256 with `android/node.properties` (`api.sha256`), with `SHA256SUMS` in
    the artifact of the run named there, and with `lib/arm64-v8a/liblogosnode.so` in the APK.
-4. To rebuild: run `native-build` (or the same steps by hand) at that commit with that patch. Whether
-   a rebuild is byte-for-byte identical was not checked; the commit, the patch file's sha256 and the
-   patch-set id identify what was built.
+4. To rebuild: run `native-build` (or the same steps by hand) at that commit with that patch. The
+   unpatched build of the same commit came out byte-identical in two separate runs (43280916866 and
+   43442276482, sha256 `454c8223…c05c2`), so a rebuild of the `api` variant is expected to match its
+   sha256 too; that was not tried for `api` itself.
 
 **Android does not keep other apps away from them.** Its own security guidance says so:
 "Some applications use localhost network ports for handling sensitive IPC. Don't use this approach,
