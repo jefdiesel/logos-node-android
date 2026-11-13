@@ -30,6 +30,8 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
+      - name: The runner's api socket (api_socket.h) with a stand-in library, on this machine
+        run: python3 -I messaging/runner/test_api_socket.py
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL /usr/local/.ghcup
@@ -127,7 +129,7 @@ jobs:
           done
           mkdir pkg
           for f in out/*; do "$TC/bin/llvm-strip" -o "pkg/$(basename "$f")" "$f"; done
-          cp lib-out/VERSION messaging/logos-test.json messaging/logos-test-rest.json pkg/
+          cp lib-out/VERSION messaging/logos-test.json messaging/logos-test-rest.json messaging/logos-test-socket.json pkg/
           cp -r lib-out/include pkg/
           (cd pkg && sha256sum waku-runner *.so > SHA256SUMS && cat SHA256SUMS && ls -l waku-runner *.so)
           du -ah pkg | sort -h | tail -20

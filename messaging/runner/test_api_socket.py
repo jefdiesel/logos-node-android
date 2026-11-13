@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""Tests api_socket.h (the runner's own API on a Unix socket) with api_socket_harness.c (a stand-in library).
+
+  python3 -I messaging/runner/test_api_socket.py      (needs a C compiler: $CC, or cc)
+
+Compiles the harness on this computer and checks: the socket is created only in a private directory and is
+owner-only; a live socket is never taken over and a dead one is replaced; and every call the wallet makes, with
+the same answers as the library's REST API (evict-after-poll included).
+"""
+import base64, json, os, shutil, socket, stat, subprocess, sys, tempfile, time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+FAILS = []
+
+
+def check(name, ok, detail=""):
+    print(("ok   " if ok else "FAIL ") + name + (" - " + str(detail)[:300] if detail != "" and not ok else ""))
+    if not ok:
+        FAILS.append(name)
+
+
+def call(path, method, url, body=None, raw=None):
+    """One HTTP/1.1 request over the socket: (status, parsed JSON or text)."""
+    data = raw if raw is not None else (b"" if body is None else json.dumps(body).encode())
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(10)
+    s.connect(path)
+    s.sendall(("%s %s HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: %d\r\n"
+               "Connection: close\r\n\r\n" % (method, url, len(data))).encode() + data)
+    out = b""
+    while True:
+        b = s.recv(65536)
+        if not b:
+            break
+        out += b
+    s.close()
+    head, _, rest = out.partition(b"\r\n\r\n")
+    code = int(head.split(b" ")[1])
+    n = int(next(l.split(b":")[1] for l in head.split(b"\r\n") if l.lower().startswith(b"content-length:")))
+    body = rest[:n]
+    try:
+        return code, json.loads(body) if body else None
+    except Exception:
+        return code, body.decode(errors="replace")
+
+
+tmp = tempfile.mkdtemp(prefix="api-")
+try:
+    exe = os.path.join(tmp, "harness")
+    cc = os.environ.get("CC", "cc")
+    r = subprocess.run([cc, "-std=gnu11", "-Wall", "-Wextra", "-Wno-unused-function", "-Werror", "-O1", "-pthread",
+                        os.path.join(HERE, "api_socket_harness.c"), "-o", exe], capture_output=True, text=True)
+    check("the harness compiles with no warnings", r.returncode == 0, r.stderr)
+    if r.returncode:
+        sys.exit(1)
+
+    # ---- where the socket may be made -------------------------------------------------------------------------
+    d = os.path.join(tmp, "d")
+    os.mkdir(d, 0o700)
+    for mode in (0o750, 0o705, 0o755, 0o777):
+        os.chmod(d, mode)
+        r = subprocess.run([exe, "--check", os.path.join(d, "api.sock")], capture_output=True, text=True, timeout=10)
+        check("a directory with mode %o is refused" % mode, r.returncode == 3 and "no group or other access" in r.stderr, r.stderr)
+    os.chmod(d, 0o700)
+    os.symlink(d, os.path.join(tmp, "link"))
+    r = subprocess.run([exe, "--check", os.path.join(tmp, "link", "api.sock")], capture_output=True, text=True, timeout=10)
+    check("a symlinked directory is refused", r.returncode == 3, r.stderr)
+    r = subprocess.run([exe, "--check", "api.sock"], capture_output=True, text=True, timeout=10)
+    check("a relative path is refused", r.returncode == 3, r.stderr)
+    sock = os.path.join(d, "api.sock")
+    with open(sock, "w") as f:
+        f.write("keep me")
+    r = subprocess.run([exe, "--check", sock], capture_output=True, text=True, timeout=10)
+    check("a file that isn't a socket is left alone and refused", r.returncode == 3 and open(sock).read() == "keep me", r.stderr)
+    os.unlink(sock)
+    live = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    live.bind(sock)
+    live.listen(1)
+    r = subprocess.run([exe, "--check", sock], capture_output=True, text=True, timeout=10)
+    check("a live socket (another runner) is never taken over", r.returncode == 3 and "already serves" in r.stderr, r.stderr)
+    live.close()                                   # now a dead socket file is left behind
+    check("(a dead socket file is left)", os.path.exists(sock))
+
+    p = subprocess.Popen([exe, sock], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        check("a dead socket is replaced and the harness serves", p.stdout.readline().strip() == "ready")
+        check("the socket is owner-only (0600)", stat.S_IMODE(os.lstat(sock).st_mode) == 0o600, oct(os.lstat(sock).st_mode))
+
+        # ---- the calls ----------------------------------------------------------------------------------------
+        check("GET /health", call(sock, "GET", "/health") == (200, {"nodeHealth": "Ready", "connectionStatus": "Connected"}))
+        check("no subscriptions yet", call(sock, "GET", "/messaging/v1/subscriptions") == (200, []))
+        topic, other = "/names/1/msg-0123456789abcdef/proto", "/names/1/msg-aaaa/proto"
+        check("subscribe", call(sock, "POST", "/messaging/v1/subscriptions", [topic, other])[0] == 200)
+        check("subscribe again (no duplicate)", call(sock, "POST", "/messaging/v1/subscriptions", [topic])[0] == 200)
+        check("the subscriptions, sorted", call(sock, "GET", "/messaging/v1/subscriptions") == (200, sorted([topic, other])))
+        check("unsubscribe", call(sock, "DELETE", "/messaging/v1/subscriptions", [other])[0] == 200)
+        check("unsubscribed", call(sock, "GET", "/messaging/v1/subscriptions") == (200, [topic]))
+        code, d2 = call(sock, "POST", "/messaging/v1/subscriptions", ["/fail/1/x/proto"])
+        check("a refused subscription is a 500 with the library's reason, as JSON", code == 500 and "Subscribe failed" in d2["error"] and '"no"' in d2["error"], d2)
+        for bad in (b"[\"a b\"]", b"[\"a\\\"b\"]", b"{\"x\":1}", b"[1]", b"[\"a\",]", b"", b"[\"" + b"x" * 300 + b"\"]"):
+            check("a bad topic list is refused: %r" % bad[:20], call(sock, "POST", "/messaging/v1/subscriptions", raw=bad)[0] == 400)
+        check("the received buffer starts empty", call(sock, "GET", "/messaging/v1/events/received") == (200, []))
+
+        payload = base64.b64encode(b"sealed bytes").decode()
+        code, d1 = call(sock, "POST", "/messaging/v1/messages", {"payload": payload, "contentTopic": topic, "ephemeral": False})
+        check("send: a request id", code == 200 and d1 == {"requestId": "req-1"}, (code, d1))
+        code, d2 = call(sock, "POST", "/messaging/v1/messages", {"payload": payload, "contentTopic": "/names/1/msg-fail/proto"})
+        check("send: a quoted request id from the library is unquoted", code == 200 and d2 == {"requestId": "req-2"}, (code, d2))
+        check("send: not a JSON object is refused", call(sock, "POST", "/messaging/v1/messages", raw=b"[1,2]")[0] == 400)
+        time.sleep(0.4)
+        code, st = call(sock, "GET", "/messaging/v1/events/send/req-1")
+        check("send status: propagated then sent", code == 200 and st == {"requestId": "req-1", "events": [{"kind": "propagated"}, {"kind": "sent"}]}, st)
+        check("send status is removed once read", call(sock, "GET", "/messaging/v1/events/send/req-1")[0] == 404)
+        code, st = call(sock, "GET", "/messaging/v1/events/send/req-2")
+        check("an error event keeps its message, as valid JSON", code == 200 and st["events"] == [{"kind": "error", "error": 'stand-in: "bad" \\ thing'}], st)
+        check("an unknown request id is a 404", call(sock, "GET", "/messaging/v1/events/send/req-99")[0] == 404)
+        check("a bad request id is a 400", call(sock, "GET", "/messaging/v1/events/send/a%22b")[0] == 400)
+        code, recs = call(sock, "GET", "/messaging/v1/events/received")
+        ok = code == 200 and len(recs) == 1 and recs[0]["seq"] == 1 and recs[0]["message"]["payload"] == payload \
+            and recs[0]["message"]["contentTopic"] == topic and recs[0]["messageHash"].startswith("0x") and recs[0]["source"] == "live"
+        check("received: the message as the library reported it, with a seq", ok, recs)
+        check("received messages are removed once read", call(sock, "GET", "/messaging/v1/events/received") == (200, []))
+        for i in range(3):
+            call(sock, "POST", "/messaging/v1/messages", {"payload": payload, "contentTopic": topic})
+        time.sleep(0.4)
+        code, recs = call(sock, "GET", "/messaging/v1/events/received")
+        check("seq keeps counting", code == 200 and [r_["seq"] for r_ in recs] == [2, 3, 4], recs)
+        check("an unknown path is a 404", call(sock, "GET", "/messaging/v1/nothing")[0] == 404)
+        check("the wrong method is a 405", call(sock, "PUT", "/messaging/v1/messages", {})[0] == 405)
+        big = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        big.settimeout(10)
+        big.connect(sock)
+        big.sendall(b"POST /messaging/v1/messages HTTP/1.1\r\nContent-Length: 2000000\r\n\r\n{")
+        answer = big.recv(200)
+        big.close()
+        check("a body over 1 MB is refused before it is read", answer.startswith(b"HTTP/1.1 413 "), answer[:40])
+        check("still serving", call(sock, "GET", "/health")[0] == 200)
+    finally:
+        p.kill(); p.wait(timeout=10)
+finally:
+    shutil.rmtree(tmp, ignore_errors=True)
+
+print("all checks passed" if not FAILS else "%d FAILED" % len(FAILS))
+sys.exit(1 if FAILS else 0)
