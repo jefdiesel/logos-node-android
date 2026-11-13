@@ -246,7 +246,7 @@ imports = {a.name for node_ in ast.walk(tree) if isinstance(node_, (ast.Import, 
           {node_.module for node_ in ast.walk(tree) if isinstance(node_, ast.ImportFrom)}
 names = {node_.id for node_ in ast.walk(tree) if isinstance(node_, ast.Name)}
 check("lez04 imports only the standard library", imports <= {"hashlib", "json", "os", "threading", "time"}, imports)
-check("lez04 names no send, node, names or 0.3 function", not (names & {"send", "node", "server", "lns_send", "lns_bridge", "names_rpc", "balance_of", "fetch_outside"}), names & {"send", "node"})
+check("lez04 names no send, node, names or 0.3 function", not (names & {"send", "node", "server", "lns_send", "lns_bridge", "names_rpc", "balance_of", "fetch_outside", "waku", "messaging_post", "outbox_save", "inbox_save", "store_write"}), names & {"send", "node"})
 
 # ---- part 2: the app, with the network as a local stand-in ------------------------------------------------------------------
 chain = Chain()
@@ -275,9 +275,15 @@ lez04.POLL = 0.2
 import server  # noqa: E402
 
 tripped = []
-for fn in ("send", "node", "lns_send", "lns_bridge", "names_rpc", "balance_of", "bridge_deposit", "history_record_send"):
+WIRES = ("send", "node", "lns_send", "lns_bridge", "names_rpc", "balance_of", "bridge_deposit", "history_record_send",
+         # the messages: their routes, the messaging node, and every file they keep
+         "messaging_post", "messaging_get", "messaging_round", "waku", "outbox_save", "inbox_save", "store_write", "msg_key_save", "msg_key_mark")
+missing = [fn for fn in WIRES if not callable(getattr(server, fn, None))]
+check("every tripwire has a function to stand in for", not missing, missing)
+for fn in WIRES:
     if hasattr(server, fn):
-        setattr(server, fn, (lambda name: lambda *a, **k: tripped.append(name) or (0, None))(fn))
+        setattr(server, fn, (lambda name: lambda *a, **k: tripped.append(name) or ((200, {}) if name.startswith("messaging_") else (0, None)))(fn))
+server._waku.update(feature=True, thread=True)  # messages on, as in the Android app, without their background loops
 threading.Thread(target=server.main, daemon=True).start()
 sys.path.insert(0, HERE)
 import wallet_test as W  # noqa: E402
@@ -296,6 +302,9 @@ check("the 0.4 routes need the session", W.call("/api/wallet/net04")[0] == 401 a
 code, d = W.call("/api/wallet/net04/watch", {"add": "Public/" + OWNER}, session=s)
 check("watching through the app", code == 200 and d["id"] == OWNER, d)
 check("a bad id is refused", W.call("/api/wallet/net04/watch", {"add": "hello"}, session=s)[0] == 400)
+W.call("/api/messages/status", session=s)
+check("the tripwires work: a message route reaches them", "messaging_get" in tripped, tripped)
+tripped.clear()
 before = list(tripped)
 W.call("/api/wallet/net04", session=s)
 time.sleep(1)
@@ -308,6 +317,6 @@ time.sleep(0.6)
 code, v = W.call("/api/wallet/net04", session=s)
 check("garbage from the network is 'can't reach', the old numbers kept", code == 200 and v["unreachable"] and v["accounts"][0].get("native") == "23,786,858", v)
 W.call("/api/wallet/net04/watch", {"remove": OWNER}, session=s)
-check("nothing on the 0.4 path reached a send, the node, the names service or the 0.3 balances", not tripped, tripped)
+check("nothing on the 0.4 path reached a send, the node, the names service, the 0.3 balances or the messages", not tripped, tripped)
 print("all checks passed" if not FAILS else "%d FAILED" % len(FAILS))
 sys.exit(1 if FAILS else 0)
