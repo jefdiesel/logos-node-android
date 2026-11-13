@@ -38,7 +38,7 @@ h1{font-size:24px;margin:0;letter-spacing:-.02em;font-weight:680}
 h2{font-size:17px;font-weight:650;letter-spacing:-.01em;color:var(--ink);margin:0 0 12px}
 h3{font-size:15px;font-weight:650;margin:16px 0 6px}
 .vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-.brand{display:flex;align-items:center;gap:8px;min-width:0}.brand h1{white-space:nowrap;font-size:min(24px,6vw)}
+.brand{display:flex;align-items:center;gap:8px;flex:1 1 auto;min-width:0;overflow:hidden}.brand h1{white-space:nowrap}.hdr{flex:none}
 .st-ic{width:44px;min-height:44px;height:44px;padding:0;border:0;background:none;display:inline-flex;align-items:center;justify-content:center;border-radius:50%}
 .st-ic.ok{color:var(--ok)}.st-ic.sync{color:var(--dim)}.st-ic.stop{color:var(--bad)}
 .st-ic.sync svg{animation:st-spin 2.4s linear infinite}
@@ -1113,6 +1113,16 @@ function fitAmt(e) {       // a token's amount stays on one line: the font gets 
   while (e.scrollWidth > e.clientWidth && px > 9) { px -= px > 18 ? 1 : 0.5; e.style.fontSize = px + "px"; }
 }
 function fitHero() { for (const e of document.querySelectorAll(".tok-amt")) fitAmt(e); }
+// the header's title stays on one line beside its icons: on a narrow screen or with large text it gets smaller
+function fitTitle() {
+  const h = document.querySelector("#hdr h1"), box = h && h.parentElement;
+  if (!h || h.offsetParent === null) return;
+  h.style.fontSize = "";
+  let px = parseFloat(getComputedStyle(h).fontSize);
+  while (h.scrollWidth > box.clientWidth && px > 13) { px -= 0.5; h.style.fontSize = px + "px"; }
+}
+if (window.ResizeObserver) new ResizeObserver(fitTitle).observe($("hdr")); else addEventListener("resize", fitTitle);
+fitTitle();
 // again when the amount changes, and when the card's width changes or it shows (another tab, Settings)
 new MutationObserver(fitHero).observe($("bal-total"), { childList: true, characterData: true, subtree: true });
 let heroW = -1;
