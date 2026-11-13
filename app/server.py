@@ -1797,6 +1797,15 @@ def lns_flow_save(fl, sync=True):
     os.replace(tmp, LNS_FLOW_FILE)
 
 
+def lns_boot_clock():
+    """Seconds since the phone started, counting deep sleep (CLOCK_BOOTTIME; on Android CLOCK_MONOTONIC stops while
+    the phone sleeps). Where there is none, the monotonic clock."""
+    try:
+        return time.clock_gettime(time.CLOCK_BOOTTIME)
+    except (AttributeError, OSError):
+        return time.monotonic()
+
+
 def lns_flow_active():
     """Whether a flow exists that isn't done (running, waiting or stopped): manual changes wait for it."""
     fl = lns_flow_load()
@@ -2081,7 +2090,7 @@ def lns_flow_brake(fl, step, nonce):
     sends = fl.setdefault("sends", {})
     if sends.get(step, 0) >= LNS_FLOW_CAPS[step]:
         return "it was sent %d times without taking; Try again to start over" % sends[step]
-    mono, now = time.monotonic(), time.time()
+    mono, now = lns_boot_clock(), time.time()
     if fl.get("last_send_at", 0) > now:      # a clock set back: the last send counts from now, once
         fl["last_send_at"] = now
         lns_flow_save(fl)
@@ -2122,7 +2131,7 @@ def lns_flow_pause(fl, secs):
     """A pause before the next look: on the monotonic clock in this process (a clock set back can't stretch it), and
     as a time on disk for after a restart."""
     fl["next_at"] = time.time() + secs
-    lns_flow_mem["next_mono"] = time.monotonic() + secs
+    lns_flow_mem["next_mono"] = lns_boot_clock() + secs
     lns_flow_save(fl)
 
 
@@ -2140,7 +2149,7 @@ def lns_flow_read_wait(fl, why, key="read_waits"):
 def lns_flow_resolve_ok():
     """Whether the flow may run another `names resolve` (Argon2) now: once a minute, and after five with no step
     taken, once every ten minutes. Kept in memory, so it holds even when nothing can be written."""
-    mono = time.monotonic()
+    mono = lns_boot_clock()
     every = LNS_FLOW_RESOLVE_EVERY[0] if lns_flow_mem["resolves"] < 5 else LNS_FLOW_RESOLVE_EVERY[1]
     if mono - lns_flow_mem["last_resolve"] < every:
         return False
@@ -2177,7 +2186,7 @@ def lns_flow_start_job(fl, kind, fn, arg):
     fl["sends"][step] = fl["sends"].get(step, 0) + 1
     fl["last_send_at"] = time.time()
     lns_flow_save(fl)                         # on disk before the signer is started
-    lns_flow_mem["last_send_mono"] = time.monotonic()
+    lns_flow_mem["last_send_mono"] = lns_boot_clock()
     code, reply = fn(arg, job_id=jid)
     if code == 409 and (reply.get("error") == LNS_BUSY or reply.get("already")):
         fl["sends"][step] -= 1                # nothing ran: the time of the last real send stays
@@ -2204,10 +2213,14 @@ def lns_flow_round_locked():
         return
     if fl["step"] in ("done", "failed"):
         return                                # done; the msg entry later is one tap (Messages > Name / Your name)
-    now, mono, mem = time.time(), time.monotonic(), lns_flow_mem
+    now, mono, mem = time.time(), lns_boot_clock(), lns_flow_mem
     # time the flow has run, on the monotonic clock, added up on disk: setting the clock back can't stretch a limit
-    # (saved every round, so none of it is lost; the wall clock isn't used for the limits at all, so a clock set back
-    # can't stretch them and one jumped forward can't end a flow early)
+    # (saved every round, so none of it is lost). It counts only while the app runs, so the wall clock is the
+    # backstop: either one past a limit stops the flow (a clock jumped forward stops it early: one more tap). A start
+    # time in the future (a clock set back) is taken as now, once, so stretching a limit needs both clocks fooled.
+    for key in ("started", "fund_since"):
+        if fl.get(key) and fl[key] > now:
+            fl[key] = now
     if mem["mono"] is not None:
         d = max(0.0, mono - mem["mono"])
         fl["elapsed"] = fl.get("elapsed", 0) + d
@@ -2216,7 +2229,14 @@ def lns_flow_round_locked():
         if d > 0:
             lns_flow_save(fl, sync=False)
     mem["mono"] = mono
-    if mem["next_mono"]:                      # a pause set in this process: the monotonic clock decides
+    with lns_lock:
+        job_running = lns_job["state"] == "running"
+    # the limits first, whatever pause is set: a flow waiting out a pause stops at its limit all the same
+    if not job_running and (fl.get("elapsed", 0) > LNS_FLOW_MAX or now - fl.get("started", now) > LNS_FLOW_MAX):
+        return lns_flow_fail(fl, fl["step"], "it has run for two days; Try again to start over", final=True)
+    if fl["step"] == "fund" and fl.get("fund_since") and (fl.get("fund_elapsed", 0) > LNS_FLOW_FUND_MAX or now - fl["fund_since"] > LNS_FLOW_FUND_MAX):
+        return lns_flow_fail(fl, "fund", "waited a day for LEZ; Try again to start over", final=True)
+    if mem["next_mono"]:                      # a pause set in this process: the boot clock decides
         if mono < mem["next_mono"]:
             return
     else:                                     # after a restart: the time on disk; one over an hour away (a clock
@@ -2224,10 +2244,6 @@ def lns_flow_round_locked():
             fl["next_at"] = 0
         if now < fl.get("next_at", 0):
             return
-    with lns_lock:
-        job_running = lns_job["state"] == "running"
-    if not job_running and fl.get("elapsed", 0) > LNS_FLOW_MAX:
-        return lns_flow_fail(fl, fl["step"], "it has run for two days; Try again to start over", final=True)
     with lns_lock:
         if lns_job["state"] == "running":
             return
@@ -2261,7 +2277,9 @@ def lns_flow_round_locked():
         return lns_flow_next(fl, "fund")
 
     if step == "fund":
-        if fl.get("fund_elapsed", 0) > LNS_FLOW_FUND_MAX:
+        if not fl.get("fund_since"):
+            fl["fund_since"] = now
+        if fl.get("fund_elapsed", 0) > LNS_FLOW_FUND_MAX or now - fl["fund_since"] > LNS_FLOW_FUND_MAX:
             return lns_flow_fail(fl, step, "waited a day for LEZ; Try again to start over", final=True)
         need, bal = lns_flow_need(fl["name"]), lns_balance(fl["account"])
         fl["checked_at"] = time.time()        # when the balance was last asked (someone looking asks again after 10 s)

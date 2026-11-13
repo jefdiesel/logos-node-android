@@ -206,8 +206,11 @@ Then the page shows one line and **Try again**.
   saved, and nothing is being sent, so the next register resumes it.
 - **Waits** are all counted and spaced out; a `names resolve` (Argon2) runs at most once a minute, and
   after five with no step taken, once every ten minutes. The day's wait for LEZ and the two-day limit
-  count only the time the app runs the flow, on the monotonic clock, saved every round: setting the clock
-  back can't stretch them, and a clock jumped forward can't end a flow (and cost a new commit).
+  stop the flow when EITHER clock says they have passed: the time the app has run it (the boot clock,
+  which counts deep sleep; saved every round) or the wall clock from the tap. The counted time alone
+  would miss days the app was dead. A start time in the future (a clock set back) is taken as now, so
+  stretching a limit needs both clocks fooled. A clock jumped forward stops the flow early: a stop and a
+  fresh tap, never a commit sent by itself.
 - **Try again** after any stop is the person's own tap: it starts every count and limit over.
 - **LEZ Send waits** while getting a name runs: the brakes count the account's transactions.
 - **The job signs after the wallet locks.** The one tap is the consent. While it is between two

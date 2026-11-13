@@ -508,9 +508,6 @@ until("waiting", lambda: flow().get("step") == "fund")
 e0 = server.lns_flow_load().get("elapsed", 0)
 time.sleep(3)
 check("N-3: 3 s waiting shows as about 3 s on disk", server.lns_flow_load().get("elapsed", 0) - e0 >= 2.5, server.lns_flow_load().get("elapsed"))
-poke(started=time.time() - 30 * 86400, fund_since=time.time() - 30 * 86400)          # a clock jumped forward a month
-time.sleep(1)
-check("N-10: a clock jumped forward doesn't end it (no new commit to pay for)", flow().get("step") == "fund")
 check("N-9: a manual entry or register is refused while it runs", call("/api/wallet/lns/text", {"entry": "blockchain"}, session=s)[0] == 409
       and call("/api/wallet/lns/register", {"name": "quin"}, session=s)[0] == 409)
 
@@ -555,5 +552,48 @@ for _ in range(3):
     call("/api/wallet/lns/text", {"entry": "blockchain"}, session=s)
 r1 = len([1 for l in open(calls_file) if json.loads(l)["args"] == ["resolve", "pam"]])
 check("N-10: three taps within a minute read the name service at most once", r1 - r0 <= 1, r1 - r0)
+# ---- the wall clock is the backstop: counted time stops while the app is dead, so either one past a limit stops it ----
+def counted_restart():
+    server.lns_flow_mem["mono"] = None                    # a new process: its clock starts afresh, the count from disk
+
+# the reviewer's case: tapped at fund with no LEZ, the app dead 30 days, then LEZ arrives
+fresh("tia", balance=0)
+until("waiting for LEZ", lambda: flow().get("step") == "fund")
+counted_restart()
+poke(started=time.time() - 30 * 86400, fund_since=time.time() - 30 * 86400, elapsed=62, fund_elapsed=60)
+LEZ["balance"] = 20000000
+until("dead 30 days, then LEZ: it stops with one line instead of going on", lambda: flow().get("step") == "failed", tries=200)
+check("nothing was sent for it", not [x for x in sends() if "tia" in x], [x for x in sends() if "tia" in x])
+check("the line asks for a fresh tap", "Try again to start over" in flow()["error"], flow()["error"])
+check("a fresh, unlocked tap goes on", call("/api/wallet/lns/get/retry", {}, session=s)[0] == 200)
+until("and finishes", lambda: flow().get("step") == "done", tries=400)
+# a clock jumped forward a month just before the register: it stops, and no commit goes out
+fresh("umi", balance=0)
+until("waiting", lambda: flow().get("step") == "fund")
+LEZ["balance"] = 20000000
+poke(step="register", started=time.time() - 31 * 86400, fund_since=None)
+until("clock forward a month: stopped", lambda: flow().get("step") == "failed", tries=200)
+check("no commit was sent by itself", not [x for x in sends("register") if x[1] == "umi"])
+# a clock set back can't stretch a limit past the counted time
+fresh("vic", balance=0)
+until("waiting", lambda: flow().get("step") == "fund")
+poke(started=time.time() + 5 * 86400)
+time.sleep(0.5)
+check("a start time in the future is taken as now", server.lns_flow_load()["started"] <= time.time())
+poke(elapsed=49 * 3600)
+until("and the counted time still stops it", lambda: flow().get("step") == "failed" and "two days" in flow()["error"])
+# a restart mid-flow: the count goes on from disk
+fresh("wyn", balance=0)
+until("waiting", lambda: flow().get("step") == "fund")
+poke(elapsed=1000.0)
+counted_restart()
+time.sleep(1.5)
+check("after a restart the counted time goes on from what was on disk", server.lns_flow_load()["elapsed"] >= 1000.0, server.lns_flow_load()["elapsed"])
+# deep sleep: the counted time is the boot clock, which goes on while the phone sleeps
+real_boot = server.lns_boot_clock
+jump = real_boot() + 3 * 86400
+server.lns_boot_clock = lambda: jump + (time.monotonic() - 0)
+until("after three days of deep sleep it stops", lambda: flow().get("step") == "failed" and "two days" in flow()["error"])
+server.lns_boot_clock = real_boot
 print("all checks passed", flush=True)
 os._exit(0)
