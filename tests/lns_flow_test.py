@@ -58,7 +58,7 @@ for src, dst in (("fake_node_bin.py", "fake_node_bin.py"), ("fake_names_bin.py",
 os.environ.update(APP_EMBEDDED="android", APP_PORT="8096", APP_DATA=data, NODE_BIN=os.path.join(bins, "fake_node_bin.py"),
                   NODE_CFG=os.path.join(node, "user_config.yaml"), UPDATE_URL="", NODE_RESTART_CMD="",
                   NAMES_BIN=os.path.join(bins, "libnames.so"), NAMES_RPC_URL="http://127.0.0.1:%d/" % seq.server_address[1],
-                  LNS_FLOW_POLL="0.2", LNS_FLOW_PAUSES="0.5,0.5,0.5,0.5", LNS_FLOW_GAP="0.3", LNS_FLOW_RESOLVE_EVERY="0.05,0.2")
+                  LNS_FLOW_POLL="0.2", LNS_FLOW_PAUSES="0.5,0.5,0.5,0.5", LNS_FLOW_GAP="0.3", LNS_FLOW_RESOLVE_EVERY="0.05,0.2", LNS_RUN2_QUIET="1")
 sys.path.insert(0, os.path.join(HERE, "..", "app"))
 import server  # noqa: E402
 
@@ -493,7 +493,7 @@ fv = call("/api/wallet/lns", session=s)[1]["flow"]
 check("worst case (N-1, N-5): 5 register transactions, billed at most 5 x 2,263,500 = 11,317,500 at ceiling 9; nothing more was sent",
       fv["spent"]["tx"] == 5 and fv["spent"]["billed_max"] == str(5 * R) and len([x for x in sends("register") if x[1] == "odd"]) == 1, fv.get("spent"))
 check("N-5: a stopped flow shows the balance change, and the most a new start may cost", fv["spent"]["balance_change"] is not None
-      and fv["next_max"] == str(5 * R), fv)
+      and fv["next_max"] == str(6 * R), fv)
 flag("fake-register-reveals-fail", False)
 
 # N-2: each transaction is priced by its own kind
@@ -595,5 +595,61 @@ jump = real_boot() + 3 * 86400
 server.lns_boot_clock = lambda: jump + (time.monotonic() - 0)
 until("after three days of deep sleep it stops", lambda: flow().get("step") == "failed" and "two days" in flow()["error"])
 server.lns_boot_clock = real_boot
+# ---- review names-next2 (S-items) ----
+# S-1: a second register run waits for a quiet chain; a transaction of the first that lands meanwhile stops it
+server.LNS_RUN2_QUIET = 4
+flag("fake-register-commit-only")
+fresh("xan")
+until("run 1 (commit only) ended; waiting for a quiet chain", lambda: (server.lns_flow_load() or {}).get("quiet") is not None, tries=300)
+LEZ["nonce"] = LEZ.get("nonce", 0) + 1                    # a reveal of run 1, pending all along, lands now
+until("S-1: something of run 1 landed during the wait: no second run", lambda: flow().get("step") == "failed", tries=300)
+check("S-1: one register only, and the line says how many it sent", len([x for x in sends("register") if x[1] == "xan"]) == 1
+      and "sent 2 transactions" in flow()["error"], (sends("register")[-2:], flow()["error"]))
+server.LNS_RUN2_QUIET = 1
+check("S-1: the worst case shown is the transaction cap at the ceiling: 6 x 2,263,500", server.lns_cost()["worst"] == str(6 * R), server.lns_cost()["worst"])
+# S-2 and S-3: a stopped flow's view, with the chain not answering: nothing blocks, nothing reads 0
+real_nonce, real_bal = server.lez_nonce, server.lns_balance
+server.lez_nonce = lambda account, timeout=10: (time.sleep(3), None)[1]
+server.lns_balance = lambda account, timeout=8: None    # (the page's own balance line reads on each poll, as before)
+server.lns_flow_stopped_cache.clear()
+t0 = time.time(); d = call("/api/wallet/lns", session=s)[1]
+check("S-3: the page's poll doesn't wait on the chain (under a second)", time.time() - t0 < 1.0, time.time() - t0)
+until("the background read finishes", lambda: not server.lns_flow_stopped_cache.get("reading") and server.lns_flow_stopped_cache.get("at"), tries=100)
+sp = call("/api/wallet/lns", session=s)[1]["flow"]["spent"]
+check("S-2: not readable: no billed figure, but the transactions seen so far", sp["billed_max"] is None and sp["tx_seen"] >= 1 and sp.get("billed_seen") not in (None, "0"), sp)
+server.lez_nonce, server.lns_balance = real_nonce, real_bal
+# S-4: Stop now only right after a "waiting N s" line with N over 35
+with server.lns_lock:
+    saved = {k: server.lns_job.get(k) for k in ("state", "kind", "phase", "progress", "progress_at")}
+    server.lns_job.update(state="running", kind="register", phase="wait", progress="waiting 900s before the second step", progress_at=time.time())
+    a = server.lns_flow_stop_safe_locked()
+    server.lns_job.update(progress_at=time.time() - 30)
+    b = server.lns_flow_stop_safe_locked()
+    server.lns_job.update(progress="waiting 20s before the second step", progress_at=time.time())
+    c_ = server.lns_flow_stop_safe_locked()
+    server.lns_job.update(**saved)
+check("S-4: safe right after \"waiting 900s\"; not 30 s later; not with 20 s left", a and not b and not c_, (a, b, c_))
+# S-6: a late register transaction during an entry job is priced at the register limit
+fl_ = {"fee_ceil": [9, 9], "nonce_seen": 10, "billed": 0, "billing_kind": "text", "texts_unsettled": 1, "mode": "register"}
+server.lns_flow_settle(fl_, 12)
+check("S-6: one entry and one more (a late register transaction): 1,093,500 + 2,263,500", fl_["billed"] == T + R, fl_["billed"])
+# S-6: a background read begun before a change ended doesn't put older entries back
+server.lns_entries_cut["pam"] = time.time() + 1
+server.lns_entries_cache.pop("pam", None)
+server.lns_entries_read("pam")
+check("S-6: a read begun before the last change ended isn't kept", "pam" not in server.lns_entries_cache)
+server.lns_entries_cut.pop("pam", None)
+# S-6: a damaged hold file doesn't break LEZ Send
+json.dump({"at": "not a number"}, open(server.LNS_SEND_UNSURE_FILE, "w"))
+check("S-6: an unreadable hold reads as none", isinstance(server.lns_unsure_load(), dict))
+os.remove(server.LNS_SEND_UNSURE_FILE)
+# a flow saved by an older version (no counted time; 0.9.13 counted about a sixth): judged by the wall clock
+call("/api/wallet/lns/get/stop", {}, session=s)
+server.lns_state_save(name="")
+server.lns_flow_save({"name": "yul", "mode": "register", "step": "fund", "account": server.lns_state()["account"], "main": MAIN,
+                      "tries": 0, "next_at": 0, "error": "", "started": time.time() - 3 * 86400, "msg_later": False, "job": None})
+counted_restart()
+until("a flow from an older version, tapped three days ago: stopped at first look", lambda: flow().get("step") == "failed", tries=100)
+check("and nothing sent for it", not [x for x in sends() if "yul" in x])
 print("all checks passed", flush=True)
 os._exit(0)

@@ -192,25 +192,33 @@ Then the page shows one line and **Try again**.
   2,263,500 for a register transaction, 1,093,500 for an entry):
   - Before 0.9.15 one tap could bill about **15.8M** (7 register transactions: a run of a commit and two
     failed reveals, then a second run of four failed reveals), against a stated 8.98M.
-  - Now one tap can bill at most **11,317,500** (5 register transactions: one run of a commit and four
-    failed reveals), plus the 1,000,000 deposit if a reveal lands (refunded on release). Any other mix is
-    stopped sooner by the budget or the 6-transaction cap. `tests/lns_flow_test.py` ("worst case") runs it:
-    5 transactions, 11,317,500 at most, then nothing more.
+  - Now one tap can bill at most **13,581,000** (6 register transactions, the cap: a first run that landed
+    only its commit, then a second run of a commit and four failed reveals), plus the 1,000,000 deposit if
+    a reveal lands (refunded on release). A second run starts only after the account's nonce has held still
+    for 31 minutes (longer than the wallet waits for any of the first run's transactions) and the name was
+    read again; anything of the first run that lands meanwhile stops it. Get (before the tap), the Start
+    over button and this figure all come from one function, `lns_flow_worst`. `tests/lns_flow_test.py`
+    ("worst case") runs one full failed run: 5 transactions, 11,317,500 billed, then nothing more.
   - Finish setting up (a name already held) at most **4,374,000** (4 entries, the transaction cap).
   - Always at most the balance at the tap plus LEZ arriving while it runs. Each Start over is the same again;
     its button says the most it may cost.
 - **A stop shows what it did**: its transactions in blocks, the most they were billed, and the balance
-  change since the first paid send; then "Start over (up to N LEZ more)".
+  change since the first paid send; then "Start over (up to N LEZ more)". It is read in the background
+  (at most every 30 s, 5 s timeouts), so the page never waits on the chain. When the chain can't be read
+  it says so, with the transactions seen so far and their most, never "0"; when the maximum isn't known
+  yet, Start over waits ("cost not known yet").
 - **Stop while a change is being sent** says until when (up to 95 minutes for a register). "Stop now" is
-  offered only while a register waits out the 15 minutes between its steps: its commit is in a block and
-  saved, and nothing is being sent, so the next register resumes it.
+  offered only while a register waits out the 15 minutes between its steps, and only within 20 s of the
+  signer's own "waiting N s" line with more than 35 s left (checked and stopped under one lock): its
+  commit is in a block and saved, and nothing is being sent, so the next register resumes it.
 - **Waits** are all counted and spaced out; a `names resolve` (Argon2) runs at most once a minute, and
   after five with no step taken, once every ten minutes. The day's wait for LEZ and the two-day limit
   stop the flow when EITHER clock says they have passed: the time the app has run it (the boot clock,
   which counts deep sleep; saved every round) or the wall clock from the tap. The counted time alone
   would miss days the app was dead. A start time in the future (a clock set back) is taken as now, so
   stretching a limit needs both clocks fooled. A clock jumped forward stops the flow early: a stop and a
-  fresh tap, never a commit sent by itself.
+  fresh tap, never a commit sent by itself. A flow saved by an older app version (no counted time) is
+  judged by the wall clock from its tap, and stops at the first look if past a limit.
 - **Try again** after any stop is the person's own tap: it starts every count and limit over.
 - **LEZ Send waits** while getting a name runs: the brakes count the account's transactions.
 - **The job signs after the wallet locks.** The one tap is the consent. While it is between two

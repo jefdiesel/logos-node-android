@@ -157,9 +157,14 @@ function flowDraw(d) {
   // before starting over: what it really did, and the most a new start may cost
   const sp = failed && f.spent;
   $("lns-spent").hidden = !sp;
-  if (sp) $("lns-spent").textContent = (sp.tx == null ? "" : sp.tx + " transaction" + (sp.tx === 1 ? "" : "s") + " in blocks · ")
-    + "billed at most " + LEZ(sp.billed_max) + (sp.balance_change == null ? "" : " · balance " + (sp.balance_change.startsWith("-") ? "−" + fmt(sp.balance_change.slice(1)) : "+" + fmt(sp.balance_change)) + " LEZ") + ".";
-  $("b-lns-retry").textContent = failed && f.next_max ? "Start over (up to " + fmt(up10k(f.next_max)) + " LEZ more)" : "Try again";
+  const txs = n => n + " transaction" + (n === 1 ? "" : "s");
+  if (sp) $("lns-spent").textContent = sp.reading ? "Reading what it did…"
+    : sp.tx == null ? "Can't read the chain right now. " + txs(sp.tx_seen) + " seen in blocks so far, billed at most " + LEZ(sp.billed_seen) + "."
+    : txs(sp.tx) + " in blocks · billed at most " + LEZ(sp.billed_max)
+      + (sp.balance_change == null ? "" : " · balance " + (sp.balance_change.startsWith("-") ? "−" + fmt(sp.balance_change.slice(1)) : "+" + fmt(sp.balance_change)) + " LEZ, net of arrivals") + ".";
+  // Start over only with the most it may cost in sight
+  $("b-lns-retry").textContent = !failed ? "Try again" : f.next_max ? "Start over (up to " + fmt(up10k(f.next_max)) + " LEZ more)" : "Start over (cost not known yet)";
+  $("b-lns-retry").disabled = failed && !f.next_max;
   $("lns-keep").hidden = failed || short;
   if (!tick) tick = setInterval(() => { if (lnsLast && !document.hidden) flowDraw(lnsLast); }, 1000);
 }
@@ -216,7 +221,8 @@ function costDraw() {
   const d = lnsLast || {}, c = d.cost || {}, n = lnsName();
   const dep = n.length === 3 ? c.deposit_three : c.deposit, fees = c.flow_fees;    // register (2) and both entries (2)
   $("lns-cost").hidden = !dep || !fees;
-  if (dep && fees) $("lns-cost").textContent = "Costs " + fmt(dep) + " LEZ deposit + about " + fmt(up10k(fees)) + " LEZ fees · about 20 minutes.";
+  if (dep && fees) $("lns-cost").textContent = "Costs " + fmt(dep) + " LEZ deposit + about " + fmt(up10k(fees)) + " LEZ fees"
+    + (c.worst ? " (at most " + fmt(up10k(c.worst)) + ")" : "") + " · about 20 minutes.";
 }
 function lnsInput() {
   const ok = nameOk(lnsName()), d = lnsLast || {}, busy = (d.flow && d.flow.step !== "done") || (d.job && d.job.state === "running");

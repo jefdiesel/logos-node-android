@@ -319,9 +319,9 @@ def lns_unsure_load():
         with open(LNS_SEND_UNSURE_FILE) as f:
             u = json.load(f)
         u = u if isinstance(u, dict) else {}
+        return u if float(u.get("at", 0)) >= float(lns_unsure_mem.get("at", 0)) else dict(lns_unsure_mem)
     except Exception:
-        u = {}
-    return u if u.get("at", 0) >= lns_unsure_mem.get("at", 0) else dict(lns_unsure_mem)
+        return dict(lns_unsure_mem)
 
 
 def lns_unsure_save(u):
@@ -754,11 +754,11 @@ def lns_make_account():
         lns_change.release()
 
 
-def lns_balance(account):
+def lns_balance(account, timeout=8):
     """The account's LEZ balance as a string, or None when the name service doesn't say."""
     try:
         code, data = fetch_outside(NAMES_RPC_URL, {"jsonrpc": "2.0", "id": 1, "method": "getAccountBalance",
-                                                   "params": [account]}, timeout=8)
+                                                   "params": [account]}, timeout=timeout)
         v = json.loads(data).get("result") if code == 200 else None
         return str(int(v)) if isinstance(v, (int, str)) and not isinstance(v, bool) and str(v).isdigit() else None
     except Exception:
@@ -867,6 +867,7 @@ def lns_watch(kind, proc, deadline, on_success):
             unsure = lns_job.get("unsure")
         lez_act_set(act, state="done" if ok else "unsure" if unsure else "failed", error=error)
     if kind == "text" and name:
+        lns_entries_cut[name] = time.time()   # reads begun before now are older than this change
         lns_entries_cache.pop(name, None)     # read again: the page shows what the name service has now
     if kind == "register" and not ok:
         try:
@@ -1192,9 +1193,14 @@ lns_entries_cache = {}                       # name -> (time read, its texts or 
 LNS_ENTRIES_FRESH = 600                       # read again on a page view after this; a change reads it right away
 
 
+lns_entries_cut = {}                         # name -> when a change to its entries last ended: older reads aren't kept
+
+
 def lns_entries_read(name):
     """The name's entries as the name service has them ({key: value}), read with `names resolve` in a throwaway
-    wallet folder (it reads the chain only); None when it couldn't be read."""
+    wallet folder (it reads the chain only); None when it couldn't be read. Kept for later only if it began after
+    the last change to the name ended, so a slow read can't put older entries back."""
+    began = time.time()
     tmp = None
     try:
         tmp = tempfile.mkdtemp(prefix=".lns-check-", dir=DATA_DIR)
@@ -1210,7 +1216,8 @@ def lns_entries_read(name):
     finally:
         if tmp:
             shutil.rmtree(tmp, ignore_errors=True)
-    lns_entries_cache[name] = (time.time(), texts)
+    if began >= lns_entries_cut.get(name, 0):
+        lns_entries_cache[name] = (began, texts)
     return texts
 
 
@@ -1239,7 +1246,8 @@ def lns_cost():
       ceiling), then, at the reveal, the deposit (or the 1-year price in fee mode) and the reserve.
     Parts not known right now are None."""
     st, fees = lns_settings(), lns_fee_state()
-    out = {"deposit": None, "deposit_three": None, "mode": None, "reserve": None, "fees": None, "flow_fees": None, "need": None, "need_three": None}
+    out = {"deposit": None, "deposit_three": None, "mode": None, "reserve": None, "fees": None, "flow_fees": None, "need": None,
+           "need_three": None, "worst": None, "worst_link": None}
     if st:
         out["mode"] = "fee" if st.get("mode") == "fee" else "deposit"
         if out["mode"] == "fee":
@@ -1253,6 +1261,9 @@ def lns_cost():
         out["fees"] = str(sum(LNS_REG_GAS) * fees[2] + 2 * LNS_REG_BYTES * fees[3])
         # getting a name all the way (register, then both entries)
         out["flow_fees"] = str((sum(LNS_REG_GAS) + 2 * LNS_TEXT_GAS_USED) * fees[2] + 4 * LNS_REG_BYTES * fees[3])
+        # the most one tap may bill (lns_flow_worst at today's ceiling): shown before the tap, as on Start over
+        out["worst"] = str(lns_flow_worst({"mode": "register", "fee_ceil": [fees[0], fees[1]]}))
+        out["worst_link"] = str(lns_flow_worst({"mode": "link", "fee_ceil": [fees[0], fees[1]]}))
     if st and fees:
         commit = LNS_REG_GAS[0] * fees[0] + LNS_RESERVE_BYTES * fees[1]
         out["need"] = str(int(out["deposit"]) + int(out["reserve"]) + commit)
@@ -1902,8 +1913,16 @@ def lns_flow_stop_safe():
     next register resumes it. At any other moment the signer may be mid-send, or between a send and saving what it
     sent, so it is never stopped then."""
     with lns_lock:
-        return (lns_job["state"] == "running" and lns_job["kind"] == "register" and lns_job.get("phase") == "wait"
-                and (lns_job.get("progress") or "").startswith("waiting"))
+        return lns_flow_stop_safe_locked()
+
+
+def lns_flow_stop_safe_locked():
+    """lns_flow_stop_safe, with lns_lock held. The window is narrower than the whole wait: the last line was "waiting
+    N s" with N over 35, printed less than 20 s ago. Then the signer is certainly asleep, and it prints again before
+    it does anything else (before it rewrites the wallet file, before the reveal)."""
+    m = re.match(r"waiting ([0-9]+)s", lns_job.get("progress") or "")
+    return bool(lns_job["state"] == "running" and lns_job["kind"] == "register" and lns_job.get("phase") == "wait"
+                and m and int(m.group(1)) > 35 and time.time() - (lns_job.get("progress_at") or 0) < 20)
 
 
 def lns_flow_stop(body=None):
@@ -1914,12 +1933,15 @@ def lns_flow_stop(body=None):
         fl = lns_flow_load()
         if not fl:
             return 409, {"error": "Nothing to stop."}
-        with lns_lock:
+        with lns_lock:                        # judged and done under the lock the signer's lines are kept with: no race
             running, kind, started, proc = lns_job["state"] == "running", lns_job["kind"], lns_job["started"], lns_job.get("proc")
+            safe = running and lns_flow_stop_safe_locked()
+            killed = False
+            if running and (body or {}).get("now") is True and safe and proc:
+                proc.kill()                   # asleep between the two steps: the commit is saved, nothing is in flight
+                killed = True
         if running:
-            safe = lns_flow_stop_safe()
-            if (body or {}).get("now") is True and safe and proc:
-                proc.kill()                   # waiting between the two steps: the commit is saved, nothing is in flight
+            if killed:
                 event("lns get stopped now", lns_name=fl["name"])
             else:
                 until = (started or time.time()) + LNS_TIMEOUT.get(kind, 0)
@@ -1949,8 +1971,33 @@ def lns_flow_view():
     cost = lns_flow_cost(fl["name"])
     out["cost"] = {"deposit": str(cost[0]), "fees": str(cost[1])} if cost else None
     if fl["step"] == "failed":
-        out["spent"], out["next_max"] = lns_flow_spent(fl), lns_flow_next_max(fl)
+        out["spent"], out["next_max"] = lns_flow_stopped_view(fl)
     return out
+
+
+lns_flow_stopped_cache = {}                  # what a stopped flow's view shows, read in the background (S-3)
+
+
+def lns_flow_stopped_view(fl):
+    """(spent, next_max) for a stopped flow, from a read at most 30 s old, made in the background so the page's poll
+    never waits on the sequencer. Before the first read: {"reading": true}, and no maximum (no Start over yet)."""
+    key = (fl.get("started"), fl.get("failed_at"), fl.get("error"))
+    c = lns_flow_stopped_cache
+    if c.get("key") != key:
+        c.clear()
+        c["key"] = key
+    if time.time() - c.get("at", 0) > 30 and not c.get("reading"):
+        c["reading"] = True
+
+        def read():
+            try:
+                c.update(spent=lns_flow_spent(fl), next_max=lns_flow_next_max(fl), at=time.time())
+                if c["next_max"] is not None:
+                    c["last_max"] = c["next_max"]
+            finally:
+                c["reading"] = False
+        threading.Thread(target=read, daemon=True).start()
+    return c.get("spent") or {"reading": True}, c.get("next_max") or c.get("last_max")
 
 
 def lns_flow_spent(fl):
@@ -1959,21 +2006,26 @@ def lns_flow_spent(fl):
     not known are None."""
     if fl.get("nonce_start") is None or not fl.get("fee_ceil"):
         return {"tx": 0, "billed_max": "0", "balance_change": None}
-    n = lez_nonce(fl["account"])
+    n = lez_nonce(fl["account"], timeout=5)
+    seen = (fl.get("nonce_seen") or fl["nonce_start"]) - fl["nonce_start"]
+    if n is None:                             # not readable now: what was seen so far, never "0" for not known
+        return {"tx": None, "tx_seen": seen, "billed_max": None, "billed_seen": str(fl.get("billed", 0)), "balance_change": None}
     billed = fl.get("billed", 0)
-    if n is not None and fl.get("nonce_seen") is not None and n > fl["nonce_seen"]:
-        billed += (n - fl["nonce_seen"]) * lns_flow_tx_max(fl, fl.get("billing_kind") or "register")
-    bal = lns_balance(fl["account"])
-    return {"tx": None if n is None else n - fl["nonce_start"], "billed_max": str(billed),
+    if fl.get("nonce_seen") is not None and n > fl["nonce_seen"]:
+        billed += (n - fl["nonce_seen"]) * lns_flow_tx_max(fl, "register")      # whatever landed late: the larger kind
+    bal = lns_balance(fl["account"], timeout=5)
+    return {"tx": n - fl["nonce_start"], "billed_max": str(billed),
+            # net: LEZ that arrived meanwhile (a bridge, the faucet) is in it
             "balance_change": None if bal is None or fl.get("bal_start") is None else str(int(bal) - fl["bal_start"])}
 
 
 def lns_flow_worst(fl):
-    """The most one flow can be billed, at its fee ceiling, with all the brakes (NAMES.md, Worst case): a register
-    flow, one register run of a commit and four failed reveals (5 register transactions; any other mix is stopped
-    sooner by the budget or the transaction cap); a held name, four entries (the transaction cap)."""
+    """The most one flow can be billed, at its fee ceiling (NAMES.md, Worst case; the Start over and Get buttons say
+    the same): its transaction cap, every one at its kind's full limit. A register flow: 6 register transactions
+    (one run of a commit and four failed reveals is 5; a transaction of that run still pending when the second run
+    is allowed can make 6, and the cap stops anything more). A held name: 4 entries."""
     if fl["mode"] == "register":
-        return 5 * lns_flow_tx_max(fl, "register")
+        return LNS_FLOW_TX_CAP["register"] * lns_flow_tx_max(fl, "register")
     return LNS_FLOW_TX_CAP["link"] * lns_flow_tx_max(fl, "text")
 
 
@@ -1987,7 +2039,11 @@ def lns_flow_next_max(fl):
 
 def lns_flow_fail(fl, step, error, final=False):
     """A step that didn't take: tried again after a growing pause, or, after the last try (or a refusal trying
-    again can't change), the flow stops with one line."""
+    again can't change), the flow stops with one line. What landed is counted first, so a stop shows it."""
+    if fl.get("fee_ceil") and step != "account":
+        n = lez_nonce(fl["account"], timeout=5)
+        if n is not None:
+            lns_flow_settle(fl, n)
     fl["tries"] = fl.get("tries", 0) + 1
     if final or fl["tries"] >= LNS_FLOW_TRIES:
         fl.update(step="failed", failed_at=step, error=error, next_at=0)
@@ -2053,7 +2109,10 @@ def lns_flow_job(fl, kind):
 #  - at least LNS_FLOW_GAP between two sends of one flow
 # None of them reads the balance (LEZ arriving would hide what was spent); an unknown nonce or fee means no send.
 LNS_FLOW_CAPS = {"register": 2, "blockchain": 3, "msg": 3}
-LNS_FLOW_TX_CAP = {"register": 6, "link": 4}   # commit, reveal, two entries; register mode two more for retries
+LNS_FLOW_TX_CAP = {"register": 6, "link": 4}
+LNS_RUN2_QUIET = float(os.environ.get("LNS_RUN2_QUIET", str(31 * 60)))     # the nonce still this long before a second
+                                                                            # register run: longer than the wallet's own
+                                                                            # wait for a block (60 x 30 s)   # commit, reveal, two entries; register mode two more for retries
 LNS_FLOW_GAP = float(os.environ.get("LNS_FLOW_GAP", "60"))    # seconds at least between two sends of one flow
 LNS_FLOW_RESOLVE_EVERY = [float(x) for x in os.environ.get("LNS_FLOW_RESOLVE_EVERY", "60,600").split(",")]
 lns_flow_mem = {"mono": None, "next_mono": 0.0, "resolves": 0, "last_resolve": -1e9, "last_send_mono": -1e9, "unsaved": 0.0}
@@ -2074,7 +2133,12 @@ def lns_flow_settle(fl, nonce):
     # the kind of the job that was sent last: what landed since was its (the person's own sends are refused meanwhile);
     # kept on its own, so clearing the job between steps doesn't turn entries into register transactions
     kind = fl.get("billing_kind") or (fl.get("job") or {}).get("kind") or "register"
-    fl["billed"] = fl.get("billed", 0) + (nonce - seen) * lns_flow_tx_max(fl, kind)
+    delta = nonce - seen
+    # an entry job sends one transaction: more than the entries sent since the last count (a late register
+    # transaction) are counted at the register limit
+    texts = min(delta, fl.get("texts_unsettled", 0)) if kind == "text" else 0
+    fl["billed"] = fl.get("billed", 0) + texts * lns_flow_tx_max(fl, "text") + (delta - texts) * lns_flow_tx_max(fl, "register")
+    fl["texts_unsettled"] = 0
     fl["nonce_seen"] = nonce
 
 
@@ -2118,10 +2182,10 @@ def lns_commit_saved(name):
         return False
 
 
-def lez_nonce(account):
+def lez_nonce(account, timeout=10):
     """The account's nonce on LEZ (how many of its transactions are in blocks), or None when not known."""
     try:
-        r = lez_rpc("getAccountsNonces", [[account]])
+        r = lez_rpc("getAccountsNonces", [[account]], timeout=timeout)
         return int(r[0]) if isinstance(r, list) and r and str(r[0]).isdigit() else None
     except Exception:
         return None
@@ -2180,6 +2244,9 @@ def lns_flow_start_job(fl, kind, fn, arg):
         return False
     fl["send_waits"] = 0
     fl["billing_kind"] = kind
+    fl.pop("quiet", None)
+    if kind == "text":
+        fl["texts_unsettled"] = fl.get("texts_unsettled", 0) + 1
     jid = secrets.token_hex(8)
     prev_send = fl.get("last_send_at", 0)
     fl["job"] = {"kind": kind, "id": jid, "entry": step if kind == "text" else None, "nonce": nonce}
@@ -2227,7 +2294,11 @@ def lns_flow_round_locked():
         if fl["step"] == "fund":
             fl["fund_elapsed"] = fl.get("fund_elapsed", 0) + d
         if d > 0:
-            lns_flow_save(fl, sync=False)
+            mem["unsaved"] += d                # forced to disk every two minutes; every send is forced anyway
+            sync = mem["unsaved"] > 120
+            if sync:
+                mem["unsaved"] = 0.0
+            lns_flow_save(fl, sync=sync)
     mem["mono"] = mono
     with lns_lock:
         job_running = lns_job["state"] == "running"
@@ -2327,6 +2398,17 @@ def lns_flow_round_locked():
                 # the last run got past its commit (at least one reveal billed): one run is a commit and up to four
                 # reveals, so a second run could bill four more. Only a run that landed its commit at most goes again.
                 return lns_flow_fail(fl, step, "the last try sent %d transactions; Try again to start over" % (n - prev["nonce"]), final=True)
+            if prev.get("kind") == "register":
+                # and only once nothing of the first run can still be pending: the nonce has to hold still for longer
+                # than the wallet waits for a block, and the name is read again after that (above, each round)
+                # (counted on the boot clock, so a clock set forward can't cut it short; after a reboot it starts over)
+                q = fl.get("quiet") or {}
+                now_b = lns_boot_clock()
+                if q.get("n") != n or not 0 <= now_b - q.get("since", now_b + 1):
+                    fl["quiet"] = {"n": n, "since": now_b}
+                    return lns_flow_pause(fl, min(60, LNS_RUN2_QUIET))
+                if now_b - q["since"] < LNS_RUN2_QUIET:
+                    return lns_flow_pause(fl, min(60, LNS_RUN2_QUIET))
         lns_flow_start_job(fl, "register", lns_register, {"name": fl["name"]})
         return
 

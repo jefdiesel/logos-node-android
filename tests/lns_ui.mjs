@@ -105,7 +105,7 @@ check("More says the key is kept unencrypted, that there is no recovery phrase, 
   /unencrypted/.test(more) && /no recovery phrase/.test(more) && /backup .* only way back/.test(more), more);
 check("More is closed until asked", await js(`!document.getElementById("lns-more").open`));
 await val("#lns-in", "slow");
-await waitFor("the cost of the whole thing, and the time, in one line", `document.getElementById("lns-cost").innerText === "Costs 1,000,000 LEZ deposit + about 2,580,000 LEZ fees · about 20 minutes."`, 20000);
+await waitFor("the cost of the whole thing, the most it may bill (S-5), and the time, in one line", `document.getElementById("lns-cost").innerText === "Costs 1,000,000 LEZ deposit + about 2,580,000 LEZ fees (at most 13,590,000) · about 20 minutes."`, 20000);
 await shot("get-a-name");
 
 // ---- one tap ----
