@@ -222,14 +222,23 @@ for _ in range(4):
         time.sleep(2)
 vals = sorted((v for v in (balance(k).get("notes") or {}).values() if v > 5000), reverse=True)
 check("three notes to try with", len(vals) >= 3, vals)
-f1 = fund(k, to["key"], 1000, tries=1)          # takes the largest note: the fee of a one-input transfer, two outputs
-fee2 = vals[0] - sum(o["value"] for o in f1["funded_tx"]["ops"][0]["payload"]["outputs"]) if f1 else None
-f = fund(k, to["key"], vals[1] - fee2, tries=1) if fee2 is not None else None   # takes the next note
-outs = f["funded_tx"]["ops"][0]["payload"]["outputs"] if f else []
-if len(outs) == 2:                              # one output costs less: what came back as change is the difference
-    fee1 = fee2 - outs[1]["value"]
-    f = fund(k, to["key"], vals[2] - fee1, tries=1)
+vmap = balance(k).get("notes") or {}
+paid = lambda g: sum(vmap.get(i, 0) for i in g["funded_tx"]["ops"][0]["payload"]["inputs"]) - \
+    sum(o["value"] for o in g["funded_tx"]["ops"][0]["payload"]["outputs"])      # the fee a funded transfer pays
+f1 = fund(k, to["key"], 1000, tries=60)         # one note, two outputs: its fee (the node's view may trail the tip)
+fee2 = paid(f1) if f1 else None
+used = set(f1["funded_tx"]["ops"][0]["payload"]["inputs"]) if f1 else set()
+f, outs = None, []
+for _ in range(2):
+    if fee2 is None:
+        break
+    nxt = max(v for i, v in vmap.items() if i not in used)
+    f = fund(k, to["key"], nxt - fee2, tries=60)    # the next note, all of it but the fee
     outs = f["funded_tx"]["ops"][0]["payload"]["outputs"] if f else []
+    if not f or len(outs) == 1:
+        break
+    used |= set(f["funded_tx"]["ops"][0]["payload"]["inputs"])
+    fee2 = fee2 - outs[-1]["value"]             # one output costs less: what came back as change is the difference
 check("a transfer with no change funded (one output)", len(outs) == 1, (f, LAST.get("fund"), fee2))
 if f and len(outs) == 1:
     mine = server.xfer_hash(f["funded_tx"])
