@@ -127,7 +127,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .acct .addr{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:6px}
 .acct code,.hash{font-family:var(--mono);font-size:13px;color:var(--dim);overflow-wrap:anywhere}
 .note{font-size:14px;color:var(--dim);margin:10px 0 0}
-.msg{font-size:14px;margin:12px 0 0;min-height:1px}.msg.bad{color:var(--bad)}.msg.ok{color:var(--ok)}p.msg.ok::before,div.msg.ok>p:first-child::before{content:"\2713\00a0";font-weight:700}.msg.warn{color:var(--warn)}
+.msg{font-size:14px;margin:12px 0 0;min-height:1px}.msg.bad{color:var(--bad)}.msg.ok{color:var(--ok)}p.msg.ok:not(:empty)::before,div.msg.ok>p:first-child:not(:empty)::before{content:"\2713\00a0";font-weight:700}.msg.warn{color:var(--warn)}
 dl{margin:0}dl div{display:flex;justify-content:space-between;gap:14px;padding:9px 0;border-top:1px solid var(--line)}dl div:first-child{border-top:0}
 dt{color:var(--dim);font-size:14px;flex:none}dd{margin:0;text-align:right;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
 details{margin-top:8px;border-top:1px solid var(--line);padding-top:10px}summary{cursor:pointer;color:var(--dim);font-size:14px;padding:12px 0}

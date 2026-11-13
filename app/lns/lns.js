@@ -442,7 +442,7 @@ $("b-lez-go").addEventListener("click", async () => {
   $("lez-rv").hidden = true; $("f-lez-send").hidden = false; lezPlan = null;
   if (!r.ok) return lezSay(r.data.error || "Didn't send.", "bad");
   $("lez-to").value = ""; $("lez-amt").value = "";
-  lezSay("Sending. See Activity.", "ok");
+  lezSay("Sending. See Activity.");
   lezFollow();
 });
 async function lezFollow() {          // until the send has finished: then its result, and the balance

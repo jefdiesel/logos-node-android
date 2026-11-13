@@ -1,5 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Every other screen (Node, the scanner) and their dialogs: the system's look, but switches, buttons,
+         handles and dialog buttons in the app's orange, never the system's accent (green or blue on many phones) -->
+    <style name="Theme.Logos.App" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <item name="android:colorAccent">@color/icon_orange</item>
+        <item name="android:colorControlActivated">@color/icon_orange</item>
+        <item name="android:alertDialogTheme">@style/Theme.Logos.Dialog</item>
+    </style>
+    <style name="Theme.Logos.Dialog" parent="@android:style/Theme.DeviceDefault.Dialog.Alert">
+        <item name="android:colorAccent">@color/icon_orange</item>
+        <item name="android:colorControlActivated">@color/icon_orange</item>
+    </style>
     <!-- The wallet screen: cream behind everything (window, start-up), never a dark or black screen
          while the wallet starts or recovers; the page paints its own background once it shows. -->
     <style name="Theme.Logos.Wallet" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar">
@@ -8,5 +19,6 @@
         <!-- the page's text handles, cursor and edge glow in the app's orange, not the system's green or blue -->
         <item name="android:colorAccent">@color/icon_orange</item>
         <item name="android:colorControlActivated">@color/icon_orange</item>
+        <item name="android:alertDialogTheme">@style/Theme.Logos.Dialog</item>
     </style>
 </resources>

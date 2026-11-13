@@ -7,6 +7,7 @@
         <!-- the page's text handles, cursor and edge glow in the app's orange, not the system's green or blue -->
         <item name="android:colorAccent">@color/icon_orange</item>
         <item name="android:colorControlActivated">@color/icon_orange</item>
+        <item name="android:alertDialogTheme">@style/Theme.Logos.Dialog</item>
         <item name="android:windowSplashScreenBackground">@color/icon_orange</item>
         <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
     </style>
