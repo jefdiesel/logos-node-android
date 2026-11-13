@@ -10,9 +10,14 @@
 // it at an interval, to prove that messages flow. On SIGINT/SIGTERM it stops and
 // destroys the node before exiting.
 //
+// With --api-socket PATH it serves the app's few messaging calls on a Unix socket in a
+// private directory (api_socket.h), so the library's REST API (TCP, reachable by every app
+// on a phone) can be turned off in the config ("rest": false).
+//
 // usage: waku-runner <config.json> [--duration SEC] [--status-every SEC]
-//                    [--topic CONTENT_TOPIC] [--send-every SEC]
+//                    [--topic CONTENT_TOPIC] [--send-every SEC] [--api-socket PATH]
 #include "liblogosdelivery.h"
+#include "api_socket.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -135,6 +140,7 @@ static void on_created(int errCode, LogosDeliveryCtx *ctx, const char *errMsg, v
 // ---- events ---------------------------------------------------------------------
 
 static volatile long g_received = 0, g_propagated = 0, g_sent = 0, g_send_errors = 0;
+static volatile int g_api = 0;   // the api socket runs: events also go to its buffers
 
 static void on_event(int ret, const char *msg, size_t len, void *userData) {
     const char *name = (const char *)userData;
@@ -143,9 +149,60 @@ static void on_event(int ret, const char *msg, size_t len, void *userData) {
     else if (strcmp(name, "onMessagePropagated") == 0) g_propagated++;
     else if (strcmp(name, "onMessageSent") == 0) g_sent++;
     else if (strcmp(name, "onMessageError") == 0) g_send_errors++;
-    int n = len > 1500 ? 1500 : (int)len;
-    logf_("event %s: %.*s%s", name, n, msg, len > 1500 ? "..." : "");
+    if (g_api) api_on_event(name, msg, len);
+    // with the api socket the app reads the messages; the log keeps only that one came
+    int n = g_api && strcmp(name, "onMessageReceived") == 0 ? 0 : len > 1500 ? 1500 : (int)len;
+    logf_("event %s: %.*s%s", name, n, msg, len > (size_t)n ? "..." : "");
 }
+
+// ---- the api socket's link to the library (api_socket.h) ---------------------------
+
+// Waits for one call's reply: 0 and *out (the reply text) on success, else -1 and *err. A reply
+// that never comes is leaked on purpose, as in CALL_SYNC: the library may still call back.
+static int be_finish(reply_t *r, int submitted, int timeout_ms, char **out, char **err) {
+    int w = submitted == 0 ? reply_wait(r, timeout_ms) : -1;
+    if (w == -2) { if (err) *err = strdup("no answer from the node"); return -1; }
+    if (w == 0) { if (out) *out = strdup(r->text ? r->text : ""); }
+    else if (err) *err = strdup(r->text ? r->text : "the call was not accepted");
+    reply_free(r);
+    free(r);
+    return w == 0 ? 0 : -1;
+}
+
+static reply_t *be_reply(void) {
+    reply_t *r = malloc(sizeof(reply_t));
+    if (r) reply_init(r);
+    return r;
+}
+
+static int be_subscribe(const char *topic, char **err) {
+    reply_t *r = be_reply();
+    if (!r) return -1;
+    return be_finish(r, logosdelivery_ctx_subscribe(g_ctx, topic, on_reply, r), 30000, NULL, err);
+}
+
+static int be_unsubscribe(const char *topic, char **err) {
+    reply_t *r = be_reply();
+    if (!r) return -1;
+    return be_finish(r, logosdelivery_ctx_unsubscribe(g_ctx, topic, on_reply, r), 10000, NULL, err);
+}
+
+static int be_send(const char *json, char **request_id, char **err) {
+    reply_t *r = be_reply();
+    if (!r) return -1;
+    return be_finish(r, logosdelivery_ctx_send(g_ctx, json, on_reply, r), 30000, request_id, err);
+}
+
+static char *be_status(void) {
+    reply_t *r = be_reply();
+    char *out = NULL;
+    if (r) be_finish(r, logosdelivery_ctx_get_connection_status(g_ctx, on_reply, r), 5000, &out, NULL);
+    return out;
+}
+
+static void be_log(const char *line) { logf_("%s", line); }
+
+static const api_backend_t k_backend = {be_subscribe, be_unsubscribe, be_send, be_status, be_log};
 
 // ---- helpers --------------------------------------------------------------------
 
@@ -247,7 +304,8 @@ static void usage(const char *argv0) {
             "  --duration SEC      stop after SEC seconds (default 0: run until SIGINT/SIGTERM)\n"
             "  --status-every SEC  status line interval (default 30)\n"
             "  --topic TOPIC       subscribe to this content topic and log what arrives on it\n"
-            "  --send-every SEC    publish a small ephemeral test message to --topic every SEC\n",
+            "  --send-every SEC    publish a small ephemeral test message to --topic every SEC\n"
+            "  --api-socket PATH   serve the app's messaging calls on this Unix socket (api_socket.h)\n",
             argv0);
 }
 
@@ -263,13 +321,14 @@ int main(int argc, char **argv) {
     }
     const char *config_path = argv[1];
     long duration = 0, status_every = 30, send_every = 0;
-    const char *topic = NULL;
+    const char *topic = NULL, *api_socket = NULL;
     for (int i = 2; i < argc; i++) {
         if (i + 1 >= argc) { usage(argv[0]); return 2; }
         if (strcmp(argv[i], "--duration") == 0) duration = atol(argv[++i]);
         else if (strcmp(argv[i], "--status-every") == 0) status_every = atol(argv[++i]);
         else if (strcmp(argv[i], "--topic") == 0) topic = argv[++i];
         else if (strcmp(argv[i], "--send-every") == 0) send_every = atol(argv[++i]);
+        else if (strcmp(argv[i], "--api-socket") == 0) api_socket = argv[++i];
         else { usage(argv[0]); return 2; }
     }
     if (status_every <= 0) status_every = 30;
@@ -299,7 +358,7 @@ int main(int argc, char **argv) {
     logf_("node created");
 
     static const char *events[] = {"onConnectionStatusChange", "onMessageReceived", "onMessageSent",
-                                   "onMessagePropagated", "onMessageError", NULL};
+                                   "onMessagePropagated", "onMessageError", "onMessageQueued", NULL};
     for (const char **e = events; *e; e++)
         if (logosdelivery_add_event_listener(ctx->ptr, *e, on_event, (void *)*e) == 0)
             logf_("could not register listener %s", *e);
@@ -309,6 +368,16 @@ int main(int argc, char **argv) {
         return 1;
     }
     logf_("node started");
+    if (api_socket) {
+        // the only way in for the app: without it the runner must not run
+        if (api_start(api_socket, &k_backend) != 0) {
+            logf_("api socket failed: stopping");
+            CALL_SYNC("stop_node", 15000, NULL, logosdelivery_ctx_stop_node(ctx, on_reply, r));
+            logosdelivery_ctx_destroy(ctx);
+            return 1;
+        }
+        g_api = 1;
+    }
 
     static const char *infos[] = {"Version", "MyPeerId", "MyMultiaddresses", "MyBoundPorts", "MyENR",
                                   "MaxMessageSize", NULL};
