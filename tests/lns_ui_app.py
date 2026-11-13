@@ -112,6 +112,32 @@ class Node(Seq):
         return self.out(404, {"code": 404})
 
 
+REC = json.load(open(os.path.join(HERE, "fixtures", "net04", "recorded.json")))
+NET04 = {"mode": "ok", "channel": REC["channel"]}
+NET04_ACCOUNTS = dict(REC["definitions"], **{REC["config_account"]: REC["config"]})
+NET04_ACCOUNTS["9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"] = list(REC["accounts"].values())[0]   # the stand-in signer's account
+NET04_ACCOUNTS.update(REC["accounts"])
+
+
+class Net04(Seq):
+    """The bridge test network (LEZ 0.4), from the answers recorded in tests/fixtures/net04; POST /ctl/net04/<mode>
+    makes it answer as reset (a new channel) or not at all (down)."""
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])) or b"{}")
+        if self.path.startswith("/ctl/net04/"):
+            NET04["mode"] = self.path.rsplit("/", 1)[1]
+            if NET04["mode"] == "reset":
+                NET04["channel"] = "ee" * 32
+            return self.out(200, {})
+        if NET04["mode"] == "down":
+            return self.out(503, {"error": "down"})
+        m, p = body.get("method"), body.get("params") or [None]
+        res = NET04["channel"] if m == "getChannelId" else REC["height"] if m == "getLastBlockId" else NET04_ACCOUNTS.get(p[0]) if m == "getAccount" else None
+        self.out(200, {"jsonrpc": "2.0", "id": body.get("id"), "result": res})
+
+
+net04 = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Net04)
+threading.Thread(target=net04.serve_forever, daemon=True).start()
 seq = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Seq)
 node_api = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Node)
 for srv in (seq, node_api):
@@ -130,6 +156,8 @@ with open(os.path.join(node, "user_config.yaml"), "w") as f:
     f.write("kms:\n  keystore: keystore.yaml\n")
 with open(os.path.join(node, "keystore.yaml"), "w") as f:
     f.write("public_keys:\n  LeaderFunding: %s\n  SdpFunding: %s\nsecret_keys:\n  LeaderFunding: %s\n" % ("a1" * 32, "b2" * 32, "c3" * 32))
+with open(os.path.join(data, "wallet-net04-config.json"), "w") as f:
+    json.dump({"rpc_url": "http://127.0.0.1:%d/" % net04.server_address[1]}, f)
 for src, dst in (("fake_node_bin.py", "fake_node_bin.py"), ("fake_names_bin.py", "libnames.so")):
     shutil.copy(os.path.join(HERE, src), os.path.join(bins, dst))
     os.chmod(os.path.join(bins, dst), 0o755)
@@ -137,13 +165,13 @@ os.environ.update(APP_EMBEDDED="android", APP_PORT=port, APP_DATA=data, NODE_BIN
                   NODE_CFG=os.path.join(node, "user_config.yaml"), UPDATE_URL="", NODE_RESTART_CMD="",
                   NAMES_BIN=os.path.join(bins, "libnames.so"), NAMES_RPC_URL="http://127.0.0.1:%d/" % seq.server_address[1],
                   NODE_API="http://127.0.0.1:%d" % node_api.server_address[1], BRIDGE_POLL="0.5", HISTORY_POLL="1",
-                  LNS_FLOW_POLL="0.5", LNS_FLOW_PAUSES="1,1,1,1", LNS_FLOW_GAP="0.5", LNS_FLOW_RESOLVE_EVERY="0.2,0.5", BRIDGE_SLOW="0", BRIDGE_SPLIT_WAIT="3",
+                  LNS_FLOW_POLL="0.5", LNS_FLOW_PAUSES="1,1,1,1", LNS_FLOW_GAP="0.5", LNS_FLOW_RESOLVE_EVERY="0.2,0.5", BRIDGE_SLOW="0", BRIDGE_SPLIT_WAIT="3", NET04_POLL_SECONDS="1",
                   LNS_FAUCET_URL="http://127.0.0.1:%d/faucet" % seq.server_address[1])
 sys.path.insert(0, os.path.join(HERE, "..", "app"))
 import server  # noqa: E402
 
 threading.Thread(target=server.main, daemon=True).start()
 time.sleep(1)
-print("ready %d" % seq.server_address[1], flush=True)
+print("ready %d net04 %d" % (seq.server_address[1], net04.server_address[1]), flush=True)
 while True:
     time.sleep(3600)

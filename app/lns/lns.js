@@ -17,6 +17,7 @@ slot.innerHTML = `
         <label for="lns-in">LNS name</label>
         <input id="lns-in" type="text" maxlength="32" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="alice">
         <button type="button" class="primary" id="b-lns-get" style="width:100%;margin-top:12px" disabled>Get this name</button>
+        <p class="runs">Runs on the public Logos testnet (LEZ 0.3).<br>Not on the bridge test network (LEZ 0.4).</p>
         <p class="note" id="lns-cost" hidden></p>
         <p class="note" id="lns-locked">Keeps going while the app is locked.</p>
         <button type="button" id="b-lns-link" style="width:100%;margin-top:8px" disabled>I already hold it</button>
@@ -56,7 +57,7 @@ slot.innerHTML = `
         </div>
         <p class="note">The key is made and kept on this phone, unencrypted like the wallet's own keys. Your PIN guards the app, not the file.</p>
         <p class="note">There is no recovery phrase. A backup made after the name account exists is the only way back.</p>
-        <p class="note">Names are paid in LEZ testnet tokens (Wallet → LEZ), not Logos. The deposit comes back if you give the name up.</p>
+        <p class="note">Names are paid in LEZ on the public Logos testnet (Wallet → LEZ), not Logos. The deposit comes back if you give the name up.</p>
         <p class="note">Registering takes two steps, 15 minutes apart, so nobody can take a name they saw you ask for. The app does every step itself, even while locked.</p>
       </details>
     </section>`;
@@ -65,6 +66,7 @@ const panels = document.getElementById("tok-panels");
 if (panels) panels.innerHTML = `
       <div id="lez-get" class="panel" hidden>
         <div class="row" style="margin-top:6px"><button type="button" id="b-lns-faucet">Get test LEZ</button><button type="button" id="b-lns-br">Bridge from Logos</button></div>
+        <p class="runs">Both run on the public Logos testnet (LEZ 0.3).</p>
         <div id="lns-brf" hidden>
           <label for="lns-br-from" id="l-lns-br-from">From</label>
           <select id="lns-br-from"></select>
@@ -93,6 +95,7 @@ if (panels) panels.innerHTML = `
           <label for="lez-amt">Amount, in LEZ</label>
           <input id="lez-amt" type="text" inputmode="numeric" maxlength="24">
           <button class="primary" type="submit" id="b-lez-rev">Review</button>
+          <p class="runs">Runs on the public Logos testnet (LEZ 0.3).</p>
         </form>
         <div id="lez-rv" hidden>
           <dl>
@@ -106,7 +109,7 @@ if (panels) panels.innerHTML = `
         <p class="msg" id="m-lez-send" role="status"></p>
       </div>
       <div id="lez-recv" class="panel" role="tabpanel" hidden>
-        <p class="note" style="text-align:center">LEZ testnet</p>
+        <p class="note" style="text-align:center">LEZ on the public Logos testnet (LEZ 0.3)</p>
         <div class="qr-wrap" id="lez-qr"></div>
         <p class="recv-addr" id="lez-addr"></p>
         <div class="row"><button type="button" id="b-lez-copy">Copy</button></div>
@@ -378,7 +381,7 @@ async function home(on) {
     document.getElementById("tok-lez").querySelector(".tok-amt").replaceChildren();
     return;
   }
-  walletToken({ id: "lez", name: "LEZ", net: "LEZ testnet", initials: "LEZ", pick: null,
+  walletToken({ id: "lez", name: "LEZ", net: "public Logos testnet", initials: "LEZ", pick: null,
                 panels: { top: "lez-get", send: "lez-send", recv: "lez-recv", hist: "lez-act" }, onShow: lezShow });
   const amt = document.getElementById("tok-lez").querySelector(".tok-amt");
   if (lezBal == null) amt.replaceChildren(el("span", { className: "ph", textContent: "—", title: "Not known right now" }));
