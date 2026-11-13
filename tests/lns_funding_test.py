@@ -298,12 +298,16 @@ server.lns_faucet_last.clear()             # a grant asked for in the last ten m
 
 # ---- the plan, and refusals that send nothing -------------------------------------------------------------
 before = len(Node.posts)
-code, d = call("/api/wallet/lns/bridge", {"from": MAIN, "amount": "1,000,000"}, session=s)
+code, d = call("/api/wallet/lns/bridge", {"from": MAIN, "amount": "1000000"}, session=s)
 check("a plan: from Main to the name account, the amount, the fee cap, a split first",
       code == 200 and d["plan"] == {"from": MAIN, "label": "Main", "to": ACCOUNT, "amount": "1000000", "split": True,
                                      "fee_max": "100000", "split_fee_max": "10000", "balance": "30400000"}, d)
 check("a plan sends nothing", len(Node.posts) == before)
 for body, want in (({"from": MAIN, "amount": "0"}, "above 0"), ({"from": MAIN, "amount": "1e6"}, "whole number"),
+                   ({"from": MAIN, "amount": "1_000000"}, "whole number"), ({"from": MAIN, "amount": "+1000000"}, "whole number"),
+                   ({"from": MAIN, "amount": "\uff11\uff10\uff10\uff10\uff10\uff10\uff10"}, "whole number"),
+                   ({"from": MAIN, "amount": "1,000,000"}, "whole number"), ({"from": MAIN, "amount": 1000000}, "whole number"),
+                   ({"from": MAIN, "amount": "109999"}, "at least 110,000"),
                    ({"from": "c3" * 32, "amount": "5"}, "isn't in this wallet"),
                    ({"from": MAIN, "amount": "30350000"}, "more for the fees")):
     code, d = call("/api/wallet/lns/bridge", dict(body, confirm=True), session=s)
@@ -329,7 +333,7 @@ check("the split is a transfer of exactly the amount from Main to Main",
       "funding_public_keys": [MAIN], "recipient_public_key": MAIN, "amount": 1000000}, split)
 code, d = call("/api/wallet/send", {"from": MAIN, "to": OTHER, "amount": "5"}, session=s)
 check("Send from Main waits while the bridge uses its notes", code == 409 and "name account" in d["error"], d)
-code, d = call("/api/wallet/lns/bridge", {"from": MAIN, "amount": "5", "confirm": True}, session=s)
+code, d = call("/api/wallet/lns/bridge", {"from": MAIN, "amount": "500000", "confirm": True}, session=s)
 check("one bridge at a time", code == 409 and "under way" in d["error"], d)
 time.sleep(1)
 check("nothing is deposited before the split is in a block", deposits() == [])
@@ -399,8 +403,15 @@ server.bridge_round()                     # what the loop does first after a sta
 check("a bridge stopped in the deposit call is taken as sent, unsure", bridge().get("state") == "sent")
 time.sleep(1)
 check("and nothing is deposited again", len(deposits()) == n)
-until("its note still there after the wait: failed, nothing bridged", lambda: bridge().get("state") == "failed", tries=80)
-check("it says the note is still in the wallet", "still in your wallet" in bridge()["error"], bridge())
+until("its note still there after the wait: overdue, never 'nothing bridged'", lambda: bridge().get("state") == "overdue", tries=80)
+check("it says the note is still in the wallet and it may still land", "may still land" in bridge()["error"] and "nothing" not in bridge()["error"], bridge())
+Node.notes[MAIN][hexid(901)] = 777000
+time.sleep(1.5)
+with server.bridge_lock:
+    b = server.bridge_load(); b["amount"] = "777000"; server.bridge_save(b)
+code, d = call("/api/wallet/lns/bridge", {"from": MAIN, "amount": "777000", "confirm": True}, session=s)
+check("the same amount again, while that one may still land, is refused", code == 409 and "may still land" in d["error"], d)
+Node.notes[MAIN].pop(hexid(901))
 Node.notes[MAIN].pop(hexid(900))
 
 # ---- a deposit the node takes but never puts in a block ----------------------------------------------------
@@ -430,7 +441,7 @@ check("the refused deposit leaves no history row", not [e for e in history() if 
 Node.deposit_mode = "ok"
 
 # ---- a split can be stopped before anything is deposited -----------------------------------------------------
-code, d = call("/api/wallet/lns/bridge", {"from": MAIN, "amount": "4321", "confirm": True}, session=s)
+code, d = call("/api/wallet/lns/bridge", {"from": MAIN, "amount": "123457", "confirm": True}, session=s)
 check("splitting", code == 200 and d["bridge"]["state"] == "splitting", d)
 code, d = call("/api/wallet/lns/bridge/cancel", {}, session=s)
 check("stopped", code == 200 and d["bridge"]["state"] == "cancelled", d)
@@ -438,7 +449,7 @@ code, d = call("/api/wallet/lns/bridge/cancel", {}, session=s)
 check("a sent bridge can't be stopped", code == 409)
 node_include()
 time.sleep(1)
-check("no deposit after a stop", not [x for x in deposits() if x["deposit"]["inputs"] and Node.notes[MAIN].get(x["deposit"]["inputs"][0]) == 4321])
+check("no deposit after a stop", not [x for x in deposits() if x["deposit"]["inputs"] and Node.notes[MAIN].get(x["deposit"]["inputs"][0]) == 123457])
 check("no pending row left in the history", until("settled", lambda: not [e for e in history() if e.get("status") == "pending"]))
 # ---- LEZ Send: a plain transfer from the name account, judged by the balance -------------------------------
 TO = "Public/3oRTrDMCWuSfnbUgUJCa1vqoedtUUi4xWmMdfJ4emVZC"
@@ -484,6 +495,25 @@ Seq.lez["balance"] = None
 server.lns_cost_cache["fees"] = None
 code, d = call("/api/wallet/lns/send", {"to": TO, "amount": "5", "confirm": True}, session=s)
 check("an unknown balance refuses", code == 502, d)
+# ---- an old "ready" never deposits on a later round ----
+Node.notes[MAIN][hexid(804)] = 5555
+with server.bridge_lock:
+    b = server.bridge_load()
+    b.update(id="old-1", state="ready", note=hexid(804), amount="5555", to=ACCOUNT, note_seen_at=time.time() - 3600)
+    server.bridge_save(b)
+n = len(deposits())
+server.bridge_round()
+check("a ready bridge older than its limit deposits nothing; it is stopped and says so", len(deposits()) == n
+      and bridge().get("state") == "cancelled" and "nothing was bridged" in bridge()["error"], bridge())
+
+# ---- a restore of the name account waits while a bridge is on its way ----
+with server.bridge_lock:
+    b = server.bridge_load(); b.update(id="busy-1", state="sent", note=hexid(804)); server.bridge_save(b)
+outcome, msg = server.lns_restore({"storage": "{}", "account": ACCOUNT}, True)
+check("a restore while a bridge is on its way: busy", outcome in ("busy", "unchecked") and (outcome == "busy" and "bridge" in msg or outcome == "unchecked"), (outcome, msg))
+with server.bridge_lock:
+    b = server.bridge_load(); b.update(state="arrived"); server.bridge_save(b)
+
 # ---- a bridge whose name account changed since it started deposits nothing ----
 Seq.lez["balance"] = 0
 Node.deposit_mode = "ok"
@@ -492,7 +522,7 @@ time.sleep(1.5)
 until("no transfer pending", lambda: not [e for e in history() if e.get("status") == "pending"])
 with server.bridge_lock:
     b = server.bridge_load()
-    b.update(id="moved-1", state="ready", note=hexid(803), amount="4444", to="3oRTrDMCWuSfnbUgUJCa1vqoedtUUi4xWmMdfJ4emVZC")
+    b.update(id="moved-1", state="ready", note=hexid(803), amount="4444", to="3oRTrDMCWuSfnbUgUJCa1vqoedtUUi4xWmMdfJ4emVZC", note_seen_at=time.time())
     server.bridge_save(b)
 n = len(deposits())
 server.bridge_round()

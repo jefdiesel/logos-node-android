@@ -8,7 +8,7 @@ Python standard library only. Wallet calls need a PIN that is set on first use.
 import base64, calendar, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.9.10"
+APP_VERSION = "0.9.11"
 # APP_EMBEDDED=android: this app runs inside the Android app (embedded Python, page in a WebView).
 # Then it never updates or restarts itself (the Android app brings new versions), and fingerprint
 # unlock goes through the phone's own fingerprint check instead of a passkey. Unset: nothing changes.
@@ -827,6 +827,11 @@ def lns_watch(kind, proc, deadline, on_success):
         lez_act_set(act, state="done" if ok else "failed", error=error)
     if kind == "text" and name:
         lns_entries_cache.pop(name, None)     # read again: the page shows what the name service has now
+    if kind == "register" and not ok:
+        try:
+            lns_state_save(reg_pending="")    # a failed registration no longer holds LEZ back from Send
+        except Exception:
+            pass
     event("lns %s %s" % (kind, "done" if ok else "failed"), lns_name=name)
 
 
@@ -914,6 +919,9 @@ def lns_text(body):
     entry = body.get("entry")
     if not isinstance(entry, str) or entry not in LNS_ENTRIES:
         return 400, {"error": "Only blockchain and msg can be set here."}
+    # what the name service has now, read before the change lock is taken (it can take minutes on a phone)
+    cur = lns_state()["name"]
+    texts = lns_entries_read(cur) if cur else None
 
     def build(st):
         name = st["name"]
@@ -930,8 +938,8 @@ def lns_text(body):
             value = mk["public"]
         if not HEX64_RE.fullmatch(value):
             return 500, {"error": "That address isn't in the expected form."}
-        texts = lns_entries_read(name)        # what the name service has now: an entry already set isn't sent again
-        if texts is not None and texts.get(entry) == value:
+        # an entry the name service already has isn't sent again (read above, for this same name)
+        if texts is not None and name == cur and texts.get(entry) == value:
             return 409, {"error": "Already points here.", "already": True}
         return 200, (["set-text", name, entry, value], name, entry, lambda: None)
     return lns_start("text", build)
@@ -951,6 +959,9 @@ SPLIT_FEE_ROOM = 10000                       # set aside for the split's own fee
 BRIDGE_POLL = float(os.environ.get("BRIDGE_POLL", "20"))
 BRIDGE_GIVE_UP = float(os.environ.get("BRIDGE_GIVE_UP", str(30 * 60)))   # a split or an unanswered deposit not in a block by then
 BRIDGE_ACTIVE = ("splitting", "ready", "depositing", "sent")             # notes of the key are spoken for
+BRIDGE_READY_MAX = float(os.environ.get("BRIDGE_READY_MAX", str(10 * 60)))  # a "ready" older than this deposits nothing
+BRIDGE_MIN = 110000                          # less than the fees it may take (up to 100,000 + 10,000) is refused
+BRIDGE_SAME_WAIT = 24 * 3600                 # after an overdue bridge, the same amount waits this long: it may still land
 LEZ_V03_PROBE = {"jsonrpc": "2.0", "id": 1, "method": "getRecoveryBinding", "params": ["11111111111111111111111111111111"]}
 LNS_RESERVE_BYTES = 1500                     # a registration's transaction bytes, generously: billed at the storage fee
 LNS_REG_GAS = (23214, 165000)                # gas a commit and a reveal use, as measured on the testnet (NAMES.md);
@@ -1121,7 +1132,7 @@ def lns_settings_read():
 
 
 lns_entries_cache = {}                       # name -> (time read, its texts or None)
-LNS_ENTRIES_FRESH = 60
+LNS_ENTRIES_FRESH = 600                       # read again on a page view after this; a change reads it right away
 
 
 def lns_entries_read(name):
@@ -1276,10 +1287,14 @@ def bridge_check(frm, amount):
         return 400, {"error": "That account isn't in this wallet."}
     if amount <= 0:
         return 400, {"error": "Enter an amount above 0."}
+    if amount < BRIDGE_MIN:
+        return 400, {"error": "Bridge at least %s: the fees can take up to that much." % fmt_int(BRIDGE_MIN)}
     with bridge_lock:
         b = bridge_load()
     if b and b["state"] in BRIDGE_ACTIVE:
         return 409, {"error": "A bridge is under way. Start another once it is in a block."}
+    if b and b["state"] == "overdue" and as_int(b["amount"]) == amount and time.time() - (b.get("sent_at") or 0) < BRIDGE_SAME_WAIT:
+        return 409, {"error": "A bridge of this amount may still land. Wait, or bridge another amount."}
     with hist_lock:
         pending = [e for e in history["entries"] if e["kind"] == "sent" and e.get("status") == "pending" and e.get("key") == frm]
     if pending:
@@ -1331,10 +1346,10 @@ def fmt_int(n):
 def lns_bridge(body):
     """Plans (confirm false) or starts (confirm true) a bridge of `amount` from the wallet key `from`."""
     frm = str(body.get("from", "")).strip().lower()
-    try:
-        amount = int(str(body.get("amount", "")).replace(",", "").strip())
-    except Exception:
+    a = body.get("amount")
+    if not isinstance(a, str) or not re.fullmatch(r"[0-9]{1,24}", a):     # plain ASCII digits, nothing else
         return 400, {"error": "The amount must be a whole number."}
+    amount = int(a)
     code, plan = bridge_check(frm, amount)
     if code:
         return code, plan
@@ -1343,6 +1358,7 @@ def lns_bridge(body):
         return 200, {"plan": shown}
     now = time.time()
     b = {"id": "%d" % int(now * 1000), "state": "ready" if plan["note"] else "splitting", "from": frm, "label": plan["label"],
+         "note_seen_at": now if plan["note"] else None,
          "to": plan["to"], "amount": plan["amount"], "channel": plan["channel"], "note": plan["note"],
          "notes_before": plan["notes_before"], "created": now, "fee": None, "split_fee": None, "error": "", "wait": "",
          "lez": {"base": None, "last": None, "up": 0, "faucet": 0}}
@@ -1551,6 +1567,14 @@ def bridge_round():
         if b["state"] != "ready":
             return
     if b["state"] == "ready":
+        if now - (b.get("note_seen_at") or b.get("created") or 0) > BRIDGE_READY_MAX and b.get("note_seen_at", b.get("created")):
+            # an old intent never deposits on a later round: the person confirms again
+            with bridge_lock:
+                b = bridge_load()
+                if b["state"] == "ready":
+                    b.update(state="cancelled", error="It waited too long to be sent, so nothing was bridged. The amount stays in your wallet.")
+                    bridge_save(b)
+            return
         return bridge_deposit(b)
     if b["state"] in ("sent", "overdue"):
         notes = notes_of(b["from"])
@@ -1563,7 +1587,8 @@ def bridge_round():
             if b["note"] not in notes:        # its note is spent: the deposit is in a block
                 b.update(state="landed", landed_at=now, unsure=False, error="", fee=bridge_fee_of(b, "deposit"))
             elif b.get("unsure") and now - b["sent_at"] > BRIDGE_GIVE_UP:
-                b.update(state="failed", error="The node didn't confirm the deposit and its note is still in your wallet, so nothing was bridged.")
+                # the node never answered: it may have taken the deposit. Watched on, never called "nothing bridged"
+                b.update(state="overdue", error="The node didn't confirm the deposit. Its note is still in your wallet; it may still land.")
                 bridge_history_settle(b, "deposit", "not in a block")
             elif b["state"] == "sent" and now - b["sent_at"] > BRIDGE_GIVE_UP:
                 # taken by the node but not in a block: the key is free again, and the note is still watched
@@ -1767,6 +1792,13 @@ def lns_flow_view():
     fl = lns_flow_load()
     if not fl:
         return None
+    if fl["step"] == "fund" and fl.get("next_at", 0) > time.time() and time.time() - fl.get("updated", 0) > 10:
+        lns_flow_wake.set()                   # someone is looking: check the balance now, not in a minute
+        with lns_flow_lock:
+            cur = lns_flow_load()
+            if cur and cur["step"] == "fund":
+                cur["next_at"] = 0
+                lns_flow_save(cur)
     out = {k: fl.get(k) for k in ("name", "mode", "step", "error", "tries", "next_at", "msg_later", "short", "started", "finished", "failed_at")}
     cost = lns_flow_cost(fl["name"])
     out["cost"] = {"deposit": str(cost[0]), "fees": str(cost[1])} if cost else None
@@ -1797,7 +1829,7 @@ def lns_flow_next(fl, step):
 def lns_flow_holds(name, account):
     """Whether this phone's account holds `name` on chain, by the signer reading it with the wallet's own keys
     (`names resolve` in the wallet's folder; it reads the chain and saves nothing): True, False, or None when it
-    couldn't be read. Called only between changes, with lns_change held."""
+    couldn't be read. Called only between changes (no job runs); it holds no lock, so it never blocks a tap."""
     try:
         r = subprocess.run([NAMES_BIN, "resolve", name], env=lns_env(), cwd=LNS_HOME, capture_output=True, timeout=180,
                            stdin=subprocess.DEVNULL, umask=0o077)
@@ -1873,12 +1905,7 @@ def lns_flow_round_locked():
             st = lns_state()
         fl["account"] = st["account"]
         if fl["mode"] == "link":
-            if not lns_change.acquire(blocking=False):
-                return
-            try:
-                held = lns_flow_holds(fl["name"], fl["account"])
-            finally:
-                lns_change.release()
+            held = lns_flow_holds(fl["name"], fl["account"])
             if held is None:
                 return lns_flow_fail(fl, step, "the name service didn't answer; trying again")
             if not held:
@@ -1893,10 +1920,11 @@ def lns_flow_round_locked():
             fl["next_at"] = time.time() + 2       # the cost is being read in the background: wait for it a little
             return lns_flow_save(fl)
         if bal is None:
-            fl["next_at"] = time.time() + 15
+            fl["next_at"] = time.time() + 60
             return lns_flow_save(fl)
         if need is not None and int(bal) < need:
-            fl.update(short=str(need - int(bal)), next_at=time.time() + 15)     # checked again until it is there
+            # checked again until it is there: a minute apart (a bridge can take hours; the page wakes it sooner)
+            fl.update(short=str(need - int(bal)), next_at=time.time() + 60)
             return lns_flow_save(fl)
         fl["short"] = None                    # enough, or the cost isn't known: the signer checks it itself
         return lns_flow_next(fl, "register")
@@ -1907,12 +1935,7 @@ def lns_flow_round_locked():
             return
         if lns_state()["name"] == fl["name"]:
             return lns_flow_next(fl, "blockchain")
-        if not lns_change.acquire(blocking=False):
-            return
-        try:
-            held = lns_flow_holds(fl["name"], fl["account"])      # a reveal that landed late counts
-        finally:
-            lns_change.release()
+        held = lns_flow_holds(fl["name"], fl["account"])          # a reveal that landed late counts
         if held:
             lns_state_save(name=fl["name"], reg_pending="")
             return lns_flow_next(fl, "blockchain")
@@ -2090,6 +2113,10 @@ def lns_restore(lw, replace=False):
             return "unchecked", "The name account in this backup couldn't be checked here, so it wasn't restored."
         if lns_flow_busy():                   # getting a name is between two of its changes
             return "busy", "The name account wasn't restored: getting a name is under way. Restore again when it has finished."
+        with bridge_lock:
+            b = bridge_load()
+        if b and b["state"] in BRIDGE_ACTIVE:     # a deposit is on its way to this account
+            return "busy", "The name account wasn't restored: a bridge to it is under way. Restore again when it is in a block."
         lns_lockdown()
         lns_repair()
         if lns_saved_copy():                  # the key is only in the copy: nothing may replace or set it aside

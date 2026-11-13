@@ -67,7 +67,7 @@ if (panels) panels.innerHTML = `
         <div id="lns-brr" hidden>
           <dl>
             <div><dt>From</dt><dd id="lns-brr-from"></dd></div>
-            <div><dt>To</dt><dd>LEZ (your name account)</dd></div>
+            <div><dt>To</dt><dd class="hash" id="lns-brr-to"></dd></div>
             <div><dt>Amount</dt><dd id="lns-brr-amt"></dd></div>
             <div><dt>Fee</dt><dd id="lns-brr-fee"></dd></div>
           </dl>
@@ -108,7 +108,8 @@ if (panels) panels.innerHTML = `
         <div id="lez-rows"></div>
       </div>`;
 
-var lnsTimer = null, lnsLast = null, lezAcct = null, lezBal, tick = null;
+var lnsTimer = null, lnsLast = null, lezAcct = null, lezBal, tick = null, epoch = 0;   // epoch: bumped by each lock
+const stale = e => e !== epoch || $("v-open").hidden;       // an answer that comes back after a lock is dropped
 const LEZ = n => fmt(n) + " LEZ";
 const lezAmt = v => balHidden ? MASK : LEZ(v);
 const up10k = v => ((BigInt(v) + 9999n) / 10000n * 10000n).toString();       // rounded up to 10,000
@@ -145,10 +146,11 @@ function flowDraw(d) {
   $("b-lns-retry").hidden = !failed;
   if (failed) $("lns-flow-err").textContent = "Stopped: " + f.error;
   $("lns-keep").hidden = failed || short;
-  if (!tick) tick = setInterval(() => { if (lnsLast) flowDraw(lnsLast); }, 1000);
+  if (!tick) tick = setInterval(() => { if (lnsLast && !document.hidden) flowDraw(lnsLast); }, 1000);
 }
 async function lnsLoad() {
-  const r = await api("/api/wallet/lns");
+  const e = epoch, r = await api("/api/wallet/lns");
+  if (stale(e)) return;
   if (r.status === 401) return lockedNow();
   if (!r.ok) { $("s-lns").hidden = true; return; }
   $("s-lns").hidden = false; lnsLast = r.data;
@@ -170,7 +172,8 @@ async function lnsLoad() {
   if (typeof stRows === "function") stRows();      // Settings' list: the Your name row and its line
   clearTimeout(lnsTimer);
   const later = active || running || (d.name && !d.entries) || (!d.name && !(d.cost && d.cost.need));
-  if (later && (!$("page-settings").hidden || tokSel === "lez")) lnsTimer = setTimeout(lnsLoad, active ? 3000 : 5000);
+  // asked again only while it is on screen (Settings shown, the app in front): nothing polls in the background
+  if (later && !document.hidden && (!$("page-settings").hidden || tokSel === "lez")) lnsTimer = setTimeout(lnsLoad, active ? 3000 : 5000);
 }
 // each entry as the name service has it: what is already true is shown as done, never offered again
 const ENTRY = { blockchain: ["b-lns-bc", "lns-ent-bc", "Pays go to this wallet ✓", "Not paying to this wallet yet"],
@@ -230,10 +233,10 @@ $("b-lns-faucet").addEventListener("click", async () => {
   const r = await api("/api/wallet/lns/faucet", {});
   $("b-lns-faucet").disabled = false;
   if (r.status === 401) return lockedNow();
-  brSay(r.ok ? "Faucet sent " + LEZ(r.data.amount) + ". Arrives in a minute or two." : (r.data.error || "The faucet didn't answer."), r.ok ? "ok" : "bad");
+  brSay(r.ok ? "Faucet sent " + lezAmt(r.data.amount) + ". Arrives in a minute or two." : (r.data.error || "The faucet didn't answer."), r.ok ? "ok" : "bad");
   lezLoad();
 });
-let brPlan = null;
+let brPlan = null, lezPlan = null;
 async function brOpen() {
   const r = await api("/api/wallet/accounts");
   if (r.status === 401) return lockedNow();
@@ -254,6 +257,7 @@ $("b-lns-br-rev").addEventListener("click", async () => {
   if (!r.ok) return brSay(r.data.error || "Can't bridge now.", "bad");
   brPlan = r.data.plan;
   $("lns-brr-from").textContent = brPlan.label;
+  $("lns-brr-to").textContent = "LEZ · Public/" + brPlan.to;
   $("lns-brr-amt").textContent = fmt(brPlan.amount) + " Logos → " + LEZ(brPlan.amount);
   $("lns-brr-fee").textContent = "Up to " + fmt(BigInt(brPlan.fee_max) + BigInt(brPlan.split_fee_max || 0)) + " Logos";
   $("lns-brf").hidden = true; $("lns-brr").hidden = false; brSay("");
@@ -285,32 +289,38 @@ function bridgeDraw() {
   if (!b || ($("lns-brf").hidden === false || $("lns-brr").hidden === false)) return;
   if (["arrived", "cancelled"].includes(b.state) && Date.now() / 1000 - (b.arrived_at || b.created || 0) > 3600) return brSay("");
   const ok = b.state === "arrived", bad = ["failed", "overdue"].includes(b.state);
-  brSay("Bridge " + fmt(b.amount) + ": " + BR_TEXT[b.state] + "." + (b.error ? " " + b.error : ""), ok ? "ok" : bad ? "bad" : "");
+  brSay("Bridge " + (balHidden ? MASK : fmt(b.amount)) + ": " + BR_TEXT[b.state] + "." + (b.error ? " " + b.error : ""), ok ? "ok" : bad ? "bad" : "");
 }
 let lezTimer = null;
 /** The Wallet's LEZ: the server's view (bridge, faucet, activity), while LEZ is picked; again while a bridge runs. */
 async function lezLoad() {
-  const r = await api("/api/wallet/lns");
+  const e = epoch, r = await api("/api/wallet/lns");
+  if (stale(e)) return;
   if (r.status === 401) return lockedNow();
   if (!r.ok || !lezAcct) return;
   lnsLast = r.data; bridgeDraw();
   if (tokSel === "lez" && wTab === "hist") lezActRows();
   clearTimeout(lezTimer);
   const b = r.data.bridge;
-  if (tokSel === "lez" && b && ["splitting", "ready", "depositing", "sent", "landed"].includes(b.state)) lezTimer = setTimeout(() => { lezLoad(); home(true); }, 5000);
+  if (tokSel === "lez" && !document.hidden && b && ["splitting", "ready", "depositing", "sent", "landed"].includes(b.state)) lezTimer = setTimeout(() => { lezLoad(); home(true); }, 5000);
 }
 
 // ---- the LEZ token in the Wallet -------------------------------------------------------------------------------
 async function home(on) {
-  if (!on) {                                    // locked: nothing of the account stays on the page
-    lezAcct = null; lezBal = undefined;
+  if (!on) {                                    // locked: nothing of the account stays on the page, hidden parts too
+    epoch++; lezAcct = null; lezBal = undefined; lnsLast = null; brPlan = null; lezPlan = null;
+    clearTimeout(lezTimer); clearTimeout(lnsTimer); clearInterval(tick); tick = null;
     const row = document.getElementById("tok-lez"); if (row) row.querySelector(".tok-amt").replaceChildren();
-    for (const id of ["lez-qr", "lez-rows"]) $(id).replaceChildren();
-    $("lez-addr").textContent = ""; $("lez-to").value = ""; $("lez-amt").value = ""; $("lez-rv").hidden = true; $("m-lez-send").textContent = "";
+    for (const id of ["lez-qr", "lez-rows", "lns-br-from"]) $(id).replaceChildren();
+    for (const id of ["lez-addr", "m-lez-send", "m-lez-scan", "lez-rv-amt", "lez-rv-to", "lez-rv-fee", "lns-brs", "lns-brr-from", "lns-brr-to",
+                      "lns-brr-amt", "lns-brr-fee", "lns-steps", "lns-need", "lns-flow-err", "lns-name", "lns-ent-bc", "lns-ent-msg", "m-lns"]) $(id).textContent = "";
+    for (const id of ["lez-to", "lez-amt", "lns-br-amt", "lns-in"]) $(id).value = "";
+    for (const id of ["lez-rv", "lns-brf", "lns-brr", "lns-brs", "m-lez-scan"]) $(id).hidden = true;
+    $("f-lez-send").hidden = false;
     return;
   }
-  const r = await api("/api/wallet/lns/balance");
-  if (r.status === 401 || !r.ok) return;
+  const e = epoch, r = await api("/api/wallet/lns/balance");
+  if (stale(e) || r.status === 401 || !r.ok) return;
   lezAcct = r.data.account; lezBal = r.data.balance;
   if (!lezAcct) {                               // no name account yet: a quiet row that leads to making one
     walletToken({ id: "lez", name: "Add LEZ", net: "Comes with an LNS name", initials: "LEZ", panels: null, pick: () => openSettings("s-lns", "lns-in") });
@@ -356,7 +366,6 @@ function lezActRows() {
 }
 
 // ---- LEZ Send: to a Public/ account, through the review, signed with the name account's key ---------------------
-let lezPlan = null;
 function lezSay(text, cls) { const m = $("m-lez-send"); m.className = "msg" + (cls ? " " + cls : ""); m.textContent = text; }
 $("f-lez-send").addEventListener("submit", async e => {
   e.preventDefault(); lezSay("");
@@ -385,7 +394,8 @@ $("b-lez-go").addEventListener("click", async () => {
   lezFollow();
 });
 async function lezFollow() {          // until the send has finished: then its result, and the balance
-  const r = await api("/api/wallet/lns");
+  const e = epoch, r = await api("/api/wallet/lns");
+  if (stale(e)) return;
   if (r.status === 401) return lockedNow();
   const j = (r.ok && r.data.job) || {};
   if (j.kind === "send" && j.state === "running") return void setTimeout(lezFollow, 3000);
@@ -412,6 +422,12 @@ $("b-lez-scan").addEventListener("click", () => {
     },
     fail: msg => say("bad", msg) });
   if (!started) say("bad", "The scanner didn't open. Paste the account instead.");
+});
+
+document.addEventListener("visibilitychange", () => {        // back on screen: ask once, the timers start again
+  if (document.hidden || $("v-open").hidden) return;
+  if (!$("page-settings").hidden && !$("s-lns").hidden) lnsLoad();
+  if (tokSel === "lez") lezLoad();
 });
 
 window.LNS = {

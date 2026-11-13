@@ -156,6 +156,49 @@ account holds less than it needs to start, one line says how much more, and Regi
 the balance or the fees can't be read, it says nothing of the sort and leaves Register to the
 signer's own check.
 
+## One tap: Get this name
+
+Your name has one field and one button. The tap starts a chained job on the server
+(`POST /api/wallet/lns/get`, state in `wallet-lns-flow.json`, 0600), which does every step itself and
+carries on after a restart:
+1. **Name account**: made silently if there is none.
+2. **LEZ**: it waits until the account holds what the whole chain needs: the commit's fee, then the
+   most any later step needs held (the deposit with the reveal's reserve, or with the reveal's fee and an
+   entry's reserve, or with both and the last entry's reserve), all at the next block's ceiling: about
+   4,420,000 today. The page shows one line and **Add LEZ**, which opens Wallet → LEZ with the bridge
+   filled in for what is missing. When LEZ arrives, it goes on by itself.
+3. **Register**: commit, the 15-minute wait, reveal.
+4. **Pay to this wallet**: the `blockchain` entry.
+5. **Messages to this phone**: the `msg` entry, once Messages is on. Without Messages, the name is done
+   and this step runs by itself when Messages is turned on.
+
+**Every step is decided from the chain:** before anything is sent, the name is read (`names resolve`).
+A step already true is skipped, so a stop and restart at any step never sends a change twice. A
+reveal that landed late counts as registered. A step that didn't take is tried again after 30 s,
+2, 5 and 10 minutes; a registration only once more, since a reveal that fails on chain is billed its
+whole limit. A refusal that can't change (the name is taken, or held by someone else) stops at once.
+Then the page shows one line and **Try again**.
+- **The job signs after the wallet locks.** The one tap is the consent. While it is between two
+  changes, a restore waits.
+- **I already hold it** is the same job: the signer reads, with the wallet's own keys, whether this
+  account holds the name; then the two entries.
+- **Cost line:** "Costs 1,000,000 LEZ deposit + about 2,580,000 LEZ fees · about 20 minutes", the
+  four transactions at today's base fee.
+
+**Can entries go into the reveal, or both into one transaction?** In the registry, yes: the reveal
+carries the sealed profile, and a set-text rewrites the whole sealed profile, so the reveal could hold
+both entries and one later change could set both. The pinned `names` (27029987) has neither: `register`
+takes no entries and `set-text` sets one. So the job chains them. Adding `--text key=value` to
+`register` (or several pairs to `set-text`) in the CLI, then rebuilding and re-pinning the signer, would
+save two transactions (about 1,060,000 at today's fee) and two waits for a block.
+
+**Why a set-text took about ten minutes on the phone.** The signer waits for its transaction to be in a
+block (`poll_transaction`: a 12-second pause between rounds, up to 60 rounds). The public LEZ testnet
+made only 12 blocks between two reads about 90 minutes apart on 2026-11-12 (heights 81,835 and 81,847),
+and none in a 30-second window. So the wait is for the next block, not the app or the forwarder. Each
+progress line of a change now goes in the app's event log with its time, so the next run shows where
+the minutes go.
+
 ## Why private names don't work on the phone
 
 A private holder changes a name with a privacy-preserving transaction. The client runs the

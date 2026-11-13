@@ -215,6 +215,7 @@ call("/api/wallet/lns/register", {"name": "taken"}, session=s)
 d = wait_job(s)
 check("a refused registration says why, as the app's own text", d["job"]["state"] == "failed" and d["job"]["error"] == "taken is already registered", d["job"])
 check("and the name stays unset", d["name"] == "", d)
+check("and a failed registration no longer holds LEZ back from Send (reg_pending cleared)", "reg_pending" not in server.lns_state() and d["reg_pending"] == "", d.get("reg_pending"))
 call("/api/wallet/lns/register", {"name": "leaky"}, session=s)
 d = wait_job(s)
 check("an error that isn't a known one shows only the app's fixed text",
@@ -651,12 +652,17 @@ server.lns_state_save(name="android")
 server.lns_state = recording_state
 code1, _ = server.lns_register({"name": "zz9"})
 server.lns_state = real_state
+reg_seen = list(seen_locked)
 server.lns_state_save(name="")
+del seen_locked[:]
 server.lns_state = recording_state
 code2, _ = server.lns_text({"entry": "blockchain"})
 server.lns_state = real_state
-check("register and set-text read the state only with the lock held", code1 == 409 and code2 == 409 and seen_locked
-      and all(seen_locked), seen_locked)
+# set-text reads the name once before the lock, only to ask the name service (which can take minutes, so never
+# under the lock); everything it decides on is read again with the lock held
+check("register reads the state only with the lock held; set-text decides only on a read under the lock",
+      code1 == 409 and code2 == 409 and reg_seen and all(reg_seen) and seen_locked[0] is False and seen_locked[1:] and all(seen_locked[1:]),
+      (reg_seen, seen_locked))
 server.lns_state_save(name="android")
 
 # 7. check folders left by a stop are swept at start
