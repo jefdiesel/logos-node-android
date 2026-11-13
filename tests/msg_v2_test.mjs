@@ -1142,6 +1142,38 @@ print(json.dumps(res))`);
   H.proc.kill();
 }
 
+// ---- 12. a message read the page drops because it locked while the read was on its way loses nothing ----
+{
+  const J = await app(w, 8159 + PS, w.NODES[3]);
+  await person(w, J, "jodi", "454589");
+  const jt = MC.inboxTopic(J.id.publicKey), jitems = async () => (await J.call("/api/messages/inbox")).d.items;
+  const kJ = (await J.call("/api/messages/key")).d;
+  // what the page's api() answers for a read (GET) made under a session that has ended since
+  const TRY = { ok: false, status: 0, data: { error: "Try again." } };
+  let drop = null;
+  const api = async (path, body) => { if (body === undefined && drop && path.startsWith(drop)) { drop = null; return TRY; } return J.api(path, body); };
+  const mk = () => new CORE.Chat({ me: { secret: unhex(kJ.secret), public: kJ.public, name: kJ.name }, api, resolve: w.resolve });
+  const j = mk(); await j.loadStore();
+  const id = await j.startDirect("bob"); await j.sync();
+  for (const t of ["locked one", "locked two"]) await w.control("inject/3", { topic: jt, payload: b64(MC.sealMessage({ to: J.id.publicKey, from: "bob", fromSecret: B.id.secretKey, text: t })) });
+  await until("bob's 2 messages are on jodi's server", async () => (await jitems()).length >= 2);
+  const texts = c => c.messages(id).filter(m => m.dir === "in").map(m => m.text).join("|");
+  const tries = async (c, path) => { const at = [c.inAfter, c.outAfter]; drop = path; let threw = false; try { await c.sync(); } catch (e) { threw = true; }
+    return threw && drop === null && c.inAfter === at[0] && c.outAfter === at[1]; };
+  check("the inbox read dropped: the sync stops there, its read point doesn't move, nothing shows", await tries(j, "/api/messages/inbox?") && texts(j) === "");
+  check("the outbox read dropped: the same", await tries(j, "/api/messages/outbox?") && texts(j) === "");
+  await j.sync();
+  check("the next sync reads both again: they show, and count as unread", texts(j) === "locked one|locked two" && j.unreadTotal() === 2, [texts(j), j.unreadTotal()]);
+  check("(on the server they are chat messages, none dropped)", (await jitems()).filter(i => i.k === "c").length === 2 && !(await jitems()).some(i => i.k === "d"));
+  // after the unlock the page starts a new Chat; its store read is dropped first (the lock came again): it decides nothing
+  const j2 = mk(); drop = "/api/messages/store"; try { await j2.loadStore(); } catch (e) {}
+  await j2.sync();
+  check("a dropped store read: nothing shows, nothing is sorted or dropped", !j2.storeOk && texts(j2) === "" && (await jitems()).filter(i => i.k === "c").length === 2 && !(await jitems()).some(i => i.k === "d"));
+  await j2.loadStore(); await j2.sync();
+  check("the next try reads everything from the start: both show, both unread", j2.storeOk && texts(j2) === "locked one|locked two" && j2.unreadTotal() === 2, [texts(j2), j2.unreadTotal()]);
+  J.proc.kill();
+}
+
 stopAll();
 console.log("all checks passed");
 process.exit(0);

@@ -955,7 +955,7 @@ await shot("messages-home");
   let failStore = true;
   ws.addEventListener("message", (e) => {
     const m = JSON.parse(e.data);
-    if (m.method !== "Fetch.requestPaused") return;
+    if (m.method !== "Fetch.requestPaused" || !/\/api\/messages\/store/.test(m.params.request.url)) return;
     const q = m.params;
     if (failStore && q.request.method === "GET") cdp("Fetch.fulfillRequest", { requestId: q.requestId, responseCode: 500, body: Buffer.from('{"error":"test"}').toString("base64") });
     else cdp("Fetch.continueRequest", { requestId: q.requestId });
@@ -987,6 +987,30 @@ await shot("messages-home");
   await click("#mg-store-prev");
   await waitFor("Use the last saved copy: the chats are back", `document.querySelectorAll("#mg-rows .crow").length >= 3 && document.getElementById("mg-store-warn").hidden`, 30000);
   check("(the file is readable again)", readFileSync(join(A.data, "wallet-chat.json"), "utf8").length > 10 && good.length > 10);
+}
+// ---- a message read that is answered after a lock shows nothing, and the message is read again after the unlock ----
+{
+  const held = [];
+  let holding = true;
+  ws.addEventListener("message", (e) => {
+    const m = JSON.parse(e.data);
+    if (m.method !== "Fetch.requestPaused" || !/\/api\/messages\/inbox\?/.test(m.params.request.url)) return;
+    if (holding) held.push(m.params.requestId); else cdp("Fetch.continueRequest", { requestId: m.params.requestId });
+  });
+  await cdp("Fetch.enable", { patterns: [{ urlPattern: "*/api/messages/inbox?*" }] });
+  const top = async () => Math.max(0, ...(await A.call("/api/messages/inbox")).d.items.map(i => i.n)), before = await top();
+  await bob.send("d:alice", "sent while the page locked");
+  await until("bob's message is on alice's server, and a read of the page's is held", async () => await top() > before && held.length > 0, 20000);
+  await js(`lockedNow(); true`);
+  await waitFor("locked, with the page's inbox read still on its way", `!document.getElementById("v-locked").hidden`);
+  holding = false;
+  for (const id of held.splice(0)) await cdp("Fetch.continueRequest", { requestId: id });
+  await sleep(800);
+  check("the read answered after the lock rendered nothing behind it", !(await js(`document.body.textContent`)).includes("sent while the page locked"));
+  await cdp("Fetch.disable");
+  await unlock();
+  await click("#nav-msg");
+  await waitFor("after the unlock the message is read again and shows", `document.getElementById("mg-rows").innerText.includes("sent while the page locked")`, 20000);
 }
 
 // ---- the lock screen inside the Android app, with fingerprint on (a stand-in bridge counts the prompts) ----

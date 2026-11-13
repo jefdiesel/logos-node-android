@@ -57,6 +57,9 @@ async function bgApi(path, body) {
   try {
     const r = await fetch(path, opt);
     let data = null; try { data = await r.json(); } catch (e) {}
+    // as the page's api(): a read made under a session that has ended since shows nothing (the next sync, after
+    // an unlock, reads it again: nothing that came in is skipped, since the read point only moves on success)
+    if (body === undefined && sent && sent !== token) return { ok: false, status: 0, data: { error: "Try again." } };
     if (r.status === 401 && sent !== token) return { ok: false, status: 0, data: { error: "Try again." } };
     return { ok: r.ok, status: r.status, data: data || {} };
   } catch (e) { return { ok: false, status: 0, data: { error: "The app on this device isn't answering." } }; }

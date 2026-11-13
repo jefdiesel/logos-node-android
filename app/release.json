@@ -8,7 +8,7 @@
   "messages/chat-core.js": "b0c42d5a21d1f3a07812cc97204cab28319bf24660e9c058abf2a17e3673e62e",
   "messages/icon.js": "22fcd81680dffc58b3a3c21346c2498cc6864679fe6c40af31457320a6c13592",
   "messages/identity.js": "0a4943568abb6aae7a11b3555d02c4adfa1b9204322a09019afaf6541bf25445",
-  "messages/messages.js": "efc73ea6e191582a88cd6711dd3b59d249228cebd862d67ab3ccef43c0522763",
+  "messages/messages.js": "60c98c18540085744bb79fd15a783f27eeada6aee9c9043c1dc6960783d7b62d",
   "messages/msg-crypto.js": "cd3e81b81c503bfbdb04104c86067f0d7121dbec4758a824b0b57f6dd90a83b5",
   "messages/noble-ciphers/LICENSE": "f36671a5487c9c5050efacb58011c37c24c55a889803cb036cf9d9a6347c1e2d",
   "messages/noble-ciphers/_arx.js": "ead142ba410404c0698bb80e0d6f77780799bb77a9e3b098cf0f9fca1c486e37",
