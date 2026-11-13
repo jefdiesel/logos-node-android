@@ -58,7 +58,7 @@ for src, dst in (("fake_node_bin.py", "fake_node_bin.py"), ("fake_names_bin.py",
 os.environ.update(APP_EMBEDDED="android", APP_PORT="8096", APP_DATA=data, NODE_BIN=os.path.join(bins, "fake_node_bin.py"),
                   NODE_CFG=os.path.join(node, "user_config.yaml"), UPDATE_URL="", NODE_RESTART_CMD="",
                   NAMES_BIN=os.path.join(bins, "libnames.so"), NAMES_RPC_URL="http://127.0.0.1:%d/" % seq.server_address[1],
-                  LNS_FLOW_POLL="0.2", LNS_FLOW_PAUSES="0.5,0.5,0.5,0.5", LNS_FLOW_GAP="0.3")
+                  LNS_FLOW_POLL="0.2", LNS_FLOW_PAUSES="0.5,0.5,0.5,0.5", LNS_FLOW_GAP="0.3", LNS_FLOW_RESOLVE_EVERY="0.05,0.2")
 sys.path.insert(0, os.path.join(HERE, "..", "app"))
 import server  # noqa: E402
 
@@ -110,6 +110,12 @@ def chain():
         return {}
 
 
+def poke(**kw):
+    """Changes the flow's file as a test, and drops the pause this process holds (as a restart would)."""
+    server.lns_flow_save(dict(server.lns_flow_load(), **kw))
+    server.lns_flow_mem["next_mono"] = 0.0
+
+
 s = call("/api/wallet/setup", {"pin": PIN})[1]["session"]
 secret = "11" * 32
 public = server.x25519(bytes.fromhex(secret), (9).to_bytes(32, "little")).hex()
@@ -149,7 +155,7 @@ check("each progress line is in the event log with its time", "lns progress" in 
 # ---- every step is decided from the chain: a stop and start at any step sends nothing twice ----
 n = len(sends())
 for step in ("register", "blockchain", "msg"):
-    server.lns_flow_save(dict(server.lns_flow_load(), step=step, job=None, tries=0, next_at=0))
+    poke(**dict(step=step, job=None, tries=0, next_at=0))
     with server.lns_lock:
         server.lns_job.update(kind=None, state="idle", started=None)          # as after a restart
     server.lns_flow_round(); server.lns_flow_round(); server.lns_flow_round()
@@ -224,11 +230,11 @@ server.lns_state_save(name="")
 LEZ["balance"] = 0
 code, d = call("/api/wallet/lns/get", {"name": "frank"}, session=s)
 until("waiting for LEZ", lambda: flow().get("step") == "fund")
-server.lns_flow_save(dict(server.lns_flow_load(), step="blockchain", next_at=time.time() + 60))
+poke(**dict(step="blockchain", next_at=time.time() + 60))
 outcome, msg = server.lns_restore({"storage": "{}", "account": FAKE.ACCOUNT}, True)
 check("a restore while getting a name is between changes: busy, nothing changed", outcome == "busy" and "getting a name" in msg, (outcome, msg))
 # ---- M-1: a slow start never makes a failed change look like someone else's: it is counted, and not re-sent ----
-server.lns_flow_save(dict(server.lns_flow_load(), step="done"))
+poke(**dict(step="done"))
 os.remove(server.LNS_FLOW_FILE)
 server.lns_state_save(name="")
 LEZ["balance"] = 20000000
@@ -267,11 +273,13 @@ os.remove(always)
 os.remove(server.LNS_FLOW_FILE)
 server.lns_state_save(name="")
 LEZ["balance"] = 20000000
-LEZ["drain"] = 9000000                                                    # each change takes far more than it should
+open(os.path.join(data, "fake-register-reveals-fail"), "w").close()       # a commit and four reveals, all billed
+LEZ["drain"] = -9000000                                                   # and more LEZ arriving with each: it mustn't hide them
 code, d = call("/api/wallet/lns/get", {"name": "kate"}, session=s)
-until("(c) the spend brake stops it", lambda: flow().get("step") == "failed", tries=400)
-check("(c) once it has spent more than the cost at the ceiling plus the margin, nothing more is sent", "spent more than expected" in flow()["error"]
-      and len([x for x in sends() if "kate" in x]) <= 2, (flow()["error"], [x for x in sends() if "kate" in x]))
+until("(c) the billed brake stops it", lambda: flow().get("step") == "failed", tries=400)
+check("(c) after one register run of 5 billed transactions (at most 11.3M at the ceiling), nothing more: counted by the nonce, not the balance",
+      "billed up to" in flow()["error"] and len([x for x in sends() if "kate" in x]) == 1, (flow()["error"], [x for x in sends() if "kate" in x]))
+os.remove(os.path.join(data, "fake-register-reveals-fail"))
 LEZ["drain"] = 0
 server.lns_flow_job = real_job
 code, d = call("/api/wallet/lns/get/retry", {}, session=s)
@@ -339,17 +347,17 @@ fresh("pia", balance=100)
 until("waiting for LEZ", lambda: flow().get("step") == "fund")
 real_need = server.lns_flow_need
 server.lns_flow_need = lambda name: None
-server.lns_flow_save(dict(server.lns_flow_load(), started=time.time() - 3 * 3600, next_at=0))
+poke(**dict(started=time.time() - 3 * 3600, next_at=0))
 time.sleep(1.5)
 check("S-6: with the cost unknown it keeps waiting, nothing is sent", flow().get("step") == "fund" and not [x for x in sends() if "pia" in x])
 server.lns_flow_need = real_need
 
 # S-7: the wait for LEZ ends after a day, the whole job after two
-server.lns_flow_save(dict(server.lns_flow_load(), fund_since=time.time() - 25 * 3600, next_at=0))
+poke(**dict(fund_since=time.time() - 25 * 3600, next_at=0))
 until("S-7: a day waiting for LEZ: it stops and asks for a new tap", lambda: flow().get("step") == "failed" and "waited a day" in flow()["error"])
 fresh("qing", balance=0)
 until("waiting", lambda: flow().get("step") == "fund")
-server.lns_flow_save(dict(server.lns_flow_load(), started=time.time() - 49 * 3600, fund_since=time.time(), next_at=0))
+poke(**dict(started=time.time() - 49 * 3600, fund_since=time.time(), next_at=0))
 until("S-7: two days after the tap it stops", lambda: flow().get("step") == "failed" and "two days" in flow()["error"])
 
 # S-8: the name can't be set by hand while a flow exists; a mismatch stops the flow
@@ -358,7 +366,7 @@ check("S-8: setting a name by hand is refused while a flow exists", code == 409,
 fresh("rosa", balance=0)
 until("waiting", lambda: flow().get("step") == "fund")
 server.lns_state_save(name="zed")
-server.lns_flow_save(dict(server.lns_flow_load(), step="blockchain", account=server.lns_state()["account"], next_at=0))
+poke(**dict(step="blockchain", account=server.lns_state()["account"], next_at=0))
 until("S-8: the state names another name: the flow stops, nothing sent", lambda: flow().get("step") == "failed" and "changed" in flow()["error"])
 check("S-8: no set-text for zed or rosa", not [x for x in sends("set-text") if x[1] in ("zed", "rosa")])
 
@@ -368,10 +376,101 @@ check("S-10: a new tap doesn't replace a stopped flow", code == 409 and "Stop it
 check("Stop clears it", call("/api/wallet/lns/get/stop", {}, session=s)[0] == 200)
 fresh("tara", balance=0)
 until("waiting", lambda: flow().get("step") == "fund")
-server.lns_flow_save(dict(server.lns_flow_load(), next_at=time.time() + 10 * 86400))      # as if the clock went back
+poke(**dict(next_at=time.time() + 10 * 86400))      # as if the clock went back
 server.lns_flow_round()
 check("S-10: a pause longer than any it sets is dropped (clock set back)", server.lns_flow_load()["next_at"] < time.time() + 3700)
-server.lns_flow_save(dict(server.lns_flow_load(), step="blockchain", next_at=time.time() + 30))
+poke(**dict(step="blockchain", next_at=time.time() + 30))
 check("Stop works at any step while nothing is being sent", call("/api/wallet/lns/get/stop", {}, session=s)[0] == 200)
+# ---- review B2 ----
+# S-1: transactions billed are capped too, whatever the per-step counts say
+real_caps, real_budget = dict(server.LNS_FLOW_CAPS), server.lns_flow_budget
+server.LNS_FLOW_CAPS.update(blockchain=99, msg=99)
+server.lns_flow_budget = lambda fl: 10 ** 15
+server.lns_flow_job = lambda fl, kind: None
+flag("fake-settext-fail-always")
+c = chain(); c["uma"] = {"_owner": FAKE.ACCOUNT}; json.dump(c, open(chain_file, "w"))
+fresh("uma", mode="link")
+until("S-1: the transaction cap stops it", lambda: flow().get("step") == "failed", tries=600)
+check("S-1: at most 4 billed transactions for a link (counted by the nonce)", len([x for x in sends("set-text") if x[1] == "uma"]) <= 4
+      and "in blocks already" in flow()["error"], (len([x for x in sends("set-text") if x[1] == "uma"]), flow()["error"]))
+flag("fake-settext-fail-always", False)
+server.LNS_FLOW_CAPS.update(real_caps); server.lns_flow_budget = real_budget; server.lns_flow_job = real_job
+# S-1: no fee ceiling known before the first paid send: nothing is sent
+real_fees = server.lns_fee_state
+server.lns_fee_state = lambda: None
+c = chain(); c["vera"] = {"_owner": FAKE.ACCOUNT}; json.dump(c, open(chain_file, "w"))
+n = len(sends())
+fresh("vera", mode="link")
+time.sleep(2)
+check("S-1: with the fees unknown before the first paid send, it waits; nothing is sent", len(sends()) == n and flow().get("step") == "blockchain", flow())
+server.lns_fee_state = real_fees
+until("and goes on once they are known", lambda: flow().get("step") == "done", tries=300)
+
+# S-2: the three stops recover with Try again (an unlocked tap: a fresh start)
+fresh("wes", balance=0)
+until("waiting", lambda: flow().get("step") == "fund")
+poke(**dict(fund_elapsed=25 * 3600))
+until("a day waiting: stopped", lambda: flow().get("step") == "failed" and "Try again to start over" in flow()["error"])
+LEZ["balance"] = 20000000
+check("S-2: Try again after 'waited a day'", call("/api/wallet/lns/get/retry", {}, session=s)[0] == 200)
+until("S-2: it goes on and finishes", lambda: flow().get("step") == "done", tries=400)
+fresh("xia", balance=0)
+until("waiting", lambda: flow().get("step") == "fund")
+poke(**dict(elapsed=49 * 3600))
+until("two days: stopped", lambda: flow().get("step") == "failed" and "two days" in flow()["error"])
+LEZ["balance"] = 20000000
+check("S-2: Try again after 'two days'", call("/api/wallet/lns/get/retry", {}, session=s)[0] == 200)
+until("S-2: it goes on and finishes", lambda: flow().get("step") == "done", tries=400)
+flag("fake-register-lost-commit")
+fresh("yan")
+until("an earlier commit may have landed: stopped", lambda: flow().get("step") == "failed" and "earlier commit" in flow()["error"], tries=400)
+flag("fake-register-lost-commit", False)
+check("S-2: Try again after 'an earlier commit may have landed'", call("/api/wallet/lns/get/retry", {}, session=s)[0] == 200)
+until("S-2: it sends a new commit and finishes", lambda: flow().get("step") == "done", tries=400)
+
+# S-3: a nonce that can't be read is a counted wait, and Argon2 reads are throttled; the clock can't stretch limits
+real_nonce = server.lez_nonce
+server.lez_nonce = lambda account: None
+server.LNS_FLOW_READ_WAITS = [0.2, 0.2, 0.2]
+c = chain(); c["zoe"] = {"_owner": FAKE.ACCOUNT}; json.dump(c, open(chain_file, "w"))
+r0 = len([1 for l in open(calls_file) if json.loads(l)["args"] == ["resolve", "zoe"]])
+fresh("zoe", mode="link")
+until("S-3: a nonce that can't be read: counted waits, then it stops", lambda: flow().get("step") == "failed", tries=300)
+server.lez_nonce = real_nonce
+server.LNS_FLOW_READ_WAITS = real_waits
+fresh("ann", balance=0)
+until("waiting", lambda: flow().get("step") == "fund")
+poke(**dict(started=time.time() + 10 * 86400, elapsed=49 * 3600))   # clock set back
+until("S-3: the 48 h limit holds with the clock set back (time counted on the monotonic clock)", lambda: flow().get("step") == "failed" and "two days" in flow()["error"])
+check("S-3: a start time in the future was taken as now", server.lns_flow_load()["started"] <= time.time())
+server.lns_flow_mem["resolves"] = 5
+server.lns_flow_mem["last_resolve"] = time.monotonic()
+check("S-3: after five reads with no step taken, the next waits the longer interval", server.lns_flow_resolve_ok() is False)
+
+# S-4: LEZ Send waits while getting a name runs
+fresh("bea", balance=0)
+until("waiting", lambda: flow().get("step") == "fund")
+code, d = call("/api/wallet/lns/send", {"to": "Public/3oRTrDMCWuSfnbUgUJCa1vqoedtUUi4xWmMdfJ4emVZC", "amount": "5", "confirm": True}, session=s)
+check("S-4: LEZ Send is refused while getting a name runs, with one line why", code == 409 and "under way" in d["error"], d)
+
+# S-5: the jobs outlast the wallet's own wait for a block (60 x 30 s)
+check("S-5: text, send and register jobs run longer than one transaction's wait", min(server.LNS_TIMEOUT["text"], server.LNS_TIMEOUT["send"]) > 30 * 60
+      and server.LNS_TIMEOUT["register"] > 75 * 60)
+
+# S-6: the CLI's own owner and age test for a saved commitment
+nj = os.path.join(server.LNS_HOME, "names.json")
+now_ms = int(time.time() * 1000)
+for label, entry, want in (("this account's, fresh", {"owner": FAKE.ACCOUNT, "secret": "ab" * 32, "made": now_ms}, True),
+                           ("another owner's", {"owner": "someoneelse", "secret": "ab" * 32, "made": now_ms}, False),
+                           ("more than a day old", {"owner": FAKE.ACCOUNT, "secret": "ab" * 32, "made": now_ms - 25 * 3600 * 1000}, False)):
+    json.dump({"pending": {"cat": entry}}, open(nj, "w"))
+    check("S-6: a saved commitment counts only as the CLI would resume it: %s -> %s" % (label, want), server.lns_commit_saved("cat") is want)
+os.remove(nj)
+# S-6: "already" leaves the time of the last real send as it was
+fl_ = server.lns_flow_load() or {}
+server.lns_flow_save(dict(fl_, name="bea", step="blockchain", last_send_at=12345.0, sends={}, fee_ceil=[9, 9], nonce_start=LEZ.get("nonce", 0), nonce_seen=LEZ.get("nonce", 0), billed=0, mode="link"))
+server.lns_flow_mem["last_send_mono"] = -1e9
+r = server.lns_flow_start_job(server.lns_flow_load(), "text", lambda arg, job_id=None: (409, {"error": "Already points here.", "already": True}), {"entry": "blockchain"})
+check("S-6: an 'already' answer keeps the last real send's time", r == "already" and server.lns_flow_load()["last_send_at"] == 12345.0, server.lns_flow_load().get("last_send_at"))
 print("all checks passed", flush=True)
 os._exit(0)

@@ -178,6 +178,20 @@ reveal that landed late counts as registered. A step that didn't take is tried a
 2, 5 and 10 minutes; a registration only once more, since a reveal that fails on chain is billed its
 whole limit. A refusal that can't change (the name is taken, or held by someone else) stops at once.
 Then the page shows one line and **Try again**.
+- **Brakes**, each written to disk before a send, none of them reading the balance (LEZ arriving would
+  hide what was spent):
+  - at most 2 register runs and 3 sends of each entry;
+  - at most 6 billed transactions (4 for a name already held), counted by the account's nonce;
+  - what those may have been billed, each at its kind's full gas limit at the fee ceiling taken before
+    the first paid send: at most the expected cost plus one failed register transaction;
+  - at least a minute between two sends;
+  - an unknown nonce or fee means nothing is sent: it waits (counted), then stops.
+  A register run is one commit and up to four reveals, so the per-run count alone doesn't bound it.
+- **Waits** are all counted and spaced out; a `names resolve` (Argon2) runs at most once a minute, and
+  after five with no step taken, once every ten minutes. The day's wait for LEZ and the two-day limit
+  count time on the monotonic clock, so setting the clock back can't stretch them.
+- **Try again** after any stop is the person's own tap: it starts every count and limit over.
+- **LEZ Send waits** while getting a name runs: the brakes count the account's transactions.
 - **The job signs after the wallet locks.** The one tap is the consent. While it is between two
   changes, a restore waits.
 - **I already hold it** is the same job: the signer reads, with the wallet's own keys, whether this

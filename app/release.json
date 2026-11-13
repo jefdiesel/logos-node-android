@@ -44,7 +44,7 @@
   "noble-curves/utils.js": "ba29ee6d5c0129f0913e0cb11e1c84d09b7e1dd73c55e158cd49b5987bb62a65",
   "qr/VENDORED.txt": "1d4fc608d725afe81619262b9fb4323fe2d77318579396d9429f3a6f04b873ad",
   "qr/qrcode.js": "ea91d7118a5395289170da848b7c6758b996163bfbccf312591ab65a4911b7c0",
-  "server.py": "eff3816f8b57ad3d902b61804392ba8b2f6b5abaefad8c0bc5bd470e30e78967"
+  "server.py": "f9b2829a9204757e564b3340f26031e44a72716419358b7f5a9649bc9f88c3a1"
  },
- "version": "0.9.12"
+ "version": "0.9.13"
 }

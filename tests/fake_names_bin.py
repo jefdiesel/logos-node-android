@@ -126,6 +126,18 @@ def main():
         if name == "taken":
             fail("taken is already registered\n\nCaused by:\n    held")
         flag = lambda f: os.path.exists(os.path.join(home, "..", f))
+        if flag("fake-register-reveals-fail"):    # a commit (saved) and four reveals, each billed, then a passing error
+            rpc("sendTransaction", [{"Public": "commit"}])
+            nj = os.path.join(home, "names.json")
+            try:
+                dflt = json.load(open(nj))
+            except Exception:
+                dflt = {}
+            dflt.setdefault("pending", {})[name] = {"owner": ACCOUNT, "secret": "ab" * 32, "made": int(time.time() * 1000)}
+            json.dump(dflt, open(nj, "w"))
+            for _ in range(4):
+                rpc("sendTransaction", [{"Public": "reveal"}])
+            fail("error sending request for url (connection refused)")
         if flag("fake-register-lost-commit"):     # the commit goes out, the wallet stops waiting before saving it
             rpc("sendTransaction", [{"Public": "commit"}])
             fail("the transaction was not included in a block")
@@ -158,7 +170,7 @@ def main():
             dflt = json.load(open(nj))
         except Exception:
             dflt = {}
-        dflt.setdefault("pending", {})[name] = {"commit": "x"}
+        dflt.setdefault("pending", {})[name] = {"owner": ACCOUNT, "secret": "ab" * 32, "made": int(time.time() * 1000)}
         json.dump(dflt, open(nj, "w"))
         print("noise that must not be shown: " + FAKE_PHRASE)
         print("payments to %s will arrive privately at Private/7AqUabc" % name)

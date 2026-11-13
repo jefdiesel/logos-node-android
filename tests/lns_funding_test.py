@@ -521,6 +521,7 @@ check("S-9: it reads as unsure, and is kept as unsure", j["error"] == "May have 
       and call("/api/wallet/lns", session=s)[1]["activity"][0]["state"] == "unsure", j)
 code, d = call("/api/wallet/lns/send", {"to": TO, "amount": "19", "confirm": True}, session=s)
 check("S-9: the same send again is held back for a few minutes", code == 409 and "may have gone out" in d["error"], d)
+check("S-6 (B2): that hold is on disk, so a restart keeps it", json.load(open(server.LNS_SEND_UNSURE_FILE)).get("amount") == "19")
 code, d = call("/api/wallet/lns/send", {"to": TO, "amount": "21", "confirm": True}, session=s)
 j = until("the timed-out one finishes", lambda: (lambda j: j if j["state"] != "running" else None)(call("/api/wallet/lns", session=s)[1]["job"]))
 check("S-9: handed to the sequencer but its answer lost (no hash printed): unsure, not 'not sent'", j["error"] == server.LNS_SEND_UNSURE and j.get("unsure") is True, j)
