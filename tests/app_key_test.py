@@ -8,7 +8,7 @@ Part 1 runs the app as the Android app does (APP_EMBEDDED=android, APP_KEY set) 
 the phone would: any Host, any Origin, no cookie. Part 2 checks that nothing changes without APP_KEY (Linux,
 Termux). Part 3 checks that the key is not left in the environment the app's child processes inherit.
 """
-import os, secrets, subprocess, sys, tempfile, time
+import os, secrets, socket, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -18,7 +18,7 @@ check = W.check
 APP = os.path.join(HERE, "..", "app")
 KEY = secrets.token_hex(32)
 PIN = "864213"
-PORT = 8096
+PORT = 8096 + int(os.environ.get("PORT_SHIFT", "0"))
 
 
 def call(path, body=None, cookie=None, origin="", host=None, session=None):
@@ -147,12 +147,34 @@ for _ in range(100):
     time.sleep(0.1)
 answers = socket.socket(); answers.settimeout(2)
 up = answers.connect_ex(("127.0.0.1", port)) == 0
-print(before, logos_embed.serving(), up)
+answers.close()
+later = logos_embed.serving()
+if squat:   # the other app lets the port go: the wallet takes it within a few seconds
+    other.shutdown(); other.server_close()
+    for _ in range(100):
+        if logos_embed.serving():
+            break
+        time.sleep(0.1)
+    later = logos_embed.serving()
+print(before, logos_embed.serving() if not squat else False, up, later)
 """
-for mode, want in (("own", ["False", "True", "True"]), ("squat", ["False", "False", "True"])):
+for mode, want in (("own", ["False", "True", "True", "True"]), ("squat", ["False", "False", "True", "True"])):
     r = subprocess.run([sys.executable, "-B", "-c", probe, EMBED, APP, str(PORT + 1), mode], capture_output=True, text=True, timeout=60)
     out = r.stdout.split()
-    check("logos_embed.serving() %s (before start, after start, port answers): %s" % (
+    check("logos_embed.serving() %s (before start, after start, port answers, once the port is free): %s" % (
         "with its own server" if mode == "own" else "when another app holds the port", " ".join(want)), out == want, (out, r.stderr[-300:]))
+
+# ---- part 5: an idle connection doesn't hold a server thread for ever ------------------------------------------
+p = start({"APP_EMBEDDED": "android", "APP_KEY": KEY, "APP_IDLE_TIMEOUT": "2"})
+try:
+    idle = socket.create_connection(("127.0.0.1", PORT), timeout=10)
+    t0 = time.time()
+    idle.settimeout(10)
+    got = idle.recv(100)               # the server closes it: b"" (or a 408) after about 2 s
+    idle.close()
+    waited = time.time() - t0
+    check("an idle connection is closed by the server after its timeout", 1 < waited < 8, (waited, got[:40]))
+finally:
+    p.terminate(); p.wait(timeout=10)
 
 print("all checks passed")

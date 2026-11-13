@@ -21,6 +21,15 @@ class NodeFiles(context: Context) {
     val previousState = File(home, "state.previous")    // kept by an import (see Snapshot.kt)
     val replayInfo = File(home, "replay-info.txt")      // how the last start replayed its stored blocks (ReplayInfo)
     val binaryRecord = File(home, "state-node.sha256")  // the node binary that last ran on the state (NodeBinaryRecord)
+    /** files/node/api: the node API's Unix socket folder (0700; patch 0002, NodeApi), and the socket in it. */
+    val apiDir = File(home, "api")
+    val apiSocket = File(apiDir, "api.sock")
+
+    /** Creates [apiDir] owner-only: the patched node refuses to start its API in a folder anyone else can enter. */
+    fun privateApiDir() {
+        apiDir.mkdirs()
+        android.system.Os.chmod(apiDir.path, 448)                  // 0700
+    }
 
     /**
      * files/node/logos-blockchain-node, a link to the bundled binary. Started through it, the node's

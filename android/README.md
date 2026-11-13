@@ -9,6 +9,12 @@ It is a debug build for testing, not something to publish.
 - **The node** is the binary from the `native-build` workflow (see `native/README.md`), bundled as it
   is, not rebuilt. The APK carries it as `lib/arm64-v8a/liblogosnode.so`. Android extracts that at
   install to the app's native library folder, the only place it lets an app run programs from.
+  **Since 0.5.16 it is the official Logos node source at a pinned commit (tag 0.3.4, commit
+  `f7ab0323346d36840660908be049d5a62c905516`) plus one published patch,
+  `native/patches/0002-api-unix-socket.patch`, that moves the node's local control interface (its HTTP
+  API) from a network port, which every app on a phone can reach, to a private socket file in the
+  app's own storage.** Nothing about the chain rules, block checking or peer networking is changed.
+  How to rebuild and check it (commit, patch-set id, sha256): `LOCAL-APIS.md`, "The node the app ships".
 - **The wallet** is the repository's web app, `app/`, at build time: its own `server.py`, `index.html`
   and `names/`. They are shipped unchanged as assets, and `server.py` runs inside the app on
   Python 3.12, through Chaquopy (MIT licence). There is one codebase for both routes, the Linux
@@ -47,7 +53,8 @@ It is a debug build for testing, not something to publish.
   - holds a partial wake lock while the node runs
 - **On first start**, the service runs the node's own `init-config`, which creates fresh keys. It
   then writes `user_config.yaml` in the same shape as `install.sh`: the four testnet initial peers,
-  the API on `127.0.0.1:18180`, and log and state folders inside the app.
+  the API on `127.0.0.1:18180` (unused with the `api` variant, whose API is on its socket instead,
+  `files/node/api/api.sock`; see `LOCAL-APIS.md`), and log and state folders inside the app.
 - **What a restart costs.** Each start, the node first replays its saved blocks since the last
   final block (LIB), at about 30 blocks a second on a Pixel 8. That is about 1,000 blocks, around
   30 s, once the node has been Online. Then it goes Online, but only after
@@ -75,7 +82,9 @@ It is a debug build for testing, not something to publish.
   | setting | value |
   |---|---|
   | `APP_EMBEDDED` | `android`: the web app's Android mode (0.7.6 and later) |
-  | `NODE_API` | `http://127.0.0.1:18180` |
+  | `NODE_API` | `unix:files/node/api/api.sock` (full path) with the `api` variant; `http://127.0.0.1:18180` otherwise |
+  | `NODE_TCP_GUARD` | `127.0.0.1:18180` with the `api` variant: nothing is sent to the node while something answers there |
+  | `APP_KEY` | a random key made at each start, also given to the WebView as a cookie (`LOCAL-APIS.md`) |
   | `NODE_BIN` | the link above |
   | `NODE_CFG` | `files/node/user_config.yaml` |
   | `APP_DATA` | `files/wallet` |
@@ -237,7 +246,8 @@ adb shell am start-foreground-service -n $P/.NodeService -a $P.START
 ## Patched node (fast restart)
 
 The app carries one of two builds of the blockchain node from the `native-build` workflow. Which
-one, and its sha256, is set in `node.properties` (`variant=patched` or `unpatched`, one line). CI
+one, and its sha256, is set in `node.properties` (`variant=api`, `patched` or `unpatched`, one line;
+`api` since 0.5.16: patch 0002 alone, the API on a private socket, see `LOCAL-APIS.md`). CI
 checks the APK's copy byte for byte. The screen shows the variant under "Node binary".
 
 - **The patched node** applies `native/patches/` to the official 0.3.4 source;

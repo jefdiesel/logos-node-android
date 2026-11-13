@@ -8,7 +8,7 @@ Python standard library only. Wallet calls need a PIN that is set on first use.
 import base64, calendar, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.9.16"
+APP_VERSION = "0.9.17"
 # APP_EMBEDDED=android: this app runs inside the Android app (embedded Python, page in a WebView).
 # Then it never updates or restarts itself (the Android app brings new versions), and fingerprint
 # unlock goes through the phone's own fingerprint check instead of a passkey. Unset: nothing changes.
@@ -58,9 +58,66 @@ keys_cache = {"keys": [], "at": 0.0}
 
 # ---- node API -------------------------------------------------------------------------------
 
+# NODE_API "unix:<path>": the node serves its API on that Unix socket and on no TCP port (the Android app with
+# node patch 0002, android/LOCAL-APIS.md). Then NODE_TCP_GUARD ("127.0.0.1:18180") names the TCP address where
+# nothing may answer: if something does, nothing is sent to the node (another app, or a node that opened TCP).
+import errno, http.client, socket  # noqa: E402
+
+
+class _UnixHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, path, timeout):
+        super().__init__("localhost", timeout=timeout)
+        self.unix_path = path
+
+    def connect(self):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(self.timeout)
+        try:
+            s.connect(self.unix_path)
+        except Exception:
+            s.close()
+            raise
+        self.sock = s
+
+
+def node_tcp_taken():
+    """With the node on its socket: whether something answers on NODE_TCP_GUARD, where nothing should."""
+    host, _, port = os.environ.get("NODE_TCP_GUARD", "").rpartition(":")
+    if not host or not port.isdigit():
+        return False
+    try:
+        socket.create_connection((host, int(port)), timeout=1).close()
+        return True
+    except OSError:
+        return False
+
+
+_tcp_warned = {"at": 0.0}
+
+
 def node(path, body=None, timeout=8):
     """Calls the node. Returns (http status, parsed JSON or text). Status 0 means no answer."""
     data = None if body is None else json.dumps(body).encode()
+    if NODE_API.startswith("unix:"):
+        if data is not None and node_tcp_taken():
+            if time.time() - _tcp_warned["at"] > 60:
+                _tcp_warned["at"] = time.time()
+                event("node call refused: something answers on the node's old TCP port", guard=os.environ.get("NODE_TCP_GUARD", ""))
+            return 0, None
+        conn = _UnixHTTPConnection(NODE_API[len("unix:"):], timeout)
+        try:
+            conn.request("GET" if data is None else "POST", path, body=data,
+                         headers={"Content-Type": "application/json"} if data is not None else {})
+            r = conn.getresponse()
+            raw, code = r.read(), r.status
+        except Exception:
+            return 0, None
+        finally:
+            conn.close()
+        try:
+            return code, json.loads(raw)
+        except Exception:
+            return code, raw.decode(errors="replace")
     req = urllib.request.Request(NODE_API + path, data=data, method="GET" if body is None else "POST")
     if data is not None:
         req.add_header("Content-Type", "application/json")
@@ -4409,6 +4466,8 @@ def passkey_unlock(body):
 
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "LogosNodeApp"
+    # an idle or slow connection is closed after this many seconds, so nobody can hold the server's threads
+    timeout = float(os.environ.get("APP_IDLE_TIMEOUT", "30"))
 
     def reply(self, code, obj=None, ctype="application/json", raw=None):
         data = raw if raw is not None else json.dumps(obj, separators=(",", ":")).encode()
@@ -4880,7 +4939,19 @@ def main():
     if messaging_on():
         messaging_start()
     threading.Thread(target=session_watch, daemon=True).start()
-    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    while True:
+        try:
+            httpd = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+            break
+        except OSError as e:
+            # inside the Android app another app may hold the port: wait for it to be free (the app's cover
+            # says so) instead of stopping; elsewhere a service manager restarts the app
+            if not EMBEDDED or e.errno != errno.EADDRINUSE:
+                raise
+            if not getattr(main, "port_taken", False):
+                main.port_taken = True
+                event("port taken", port=PORT)
+            time.sleep(5)
     SERVING.set()
     try:
         httpd.serve_forever()

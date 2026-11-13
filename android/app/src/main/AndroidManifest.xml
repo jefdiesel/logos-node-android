@@ -43,6 +43,15 @@
             </intent-filter>
         </activity>
 
+        <!-- the wallet screen again, for adb only (the probe and crashrenderer extras of debug builds): only
+             holders of DUMP (the adb shell) can start it, and WalletActivity honours those extras only when it was
+             started through this entry, so other apps can't use them through the launcher entry -->
+        <activity-alias
+            android:name=".WalletDebug"
+            android:targetActivity=".WalletActivity"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
+
         <!-- the QR scanner for the page's Scan button (ZXing, on the phone): in the wallet's process,
              portrait, QR codes only -->
         <activity

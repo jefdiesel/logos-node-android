@@ -113,6 +113,8 @@ jobs:
         run: python3 tests/embedded_test.py
       - name: Android app key - other apps on the phone get only the page's public files (android/LOCAL-APIS.md)
         run: python3 tests/app_key_test.py
+      - name: The node API on a Unix socket (node patch 0002) - server.py's transport, and no sends while something answers on its old TCP port
+        run: python3 tests/node_socket_test.py
       - name: The phone's own LNS name (Android app only), with a stand-in signer and sequencer
         run: python3 tests/lns_test.py
       - name: Getting LEZ for the phone's name account (faucet, bridge through the node's API), with stand-ins

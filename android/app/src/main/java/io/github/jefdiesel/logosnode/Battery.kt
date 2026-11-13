@@ -221,18 +221,13 @@ object OpenTimer {
     private val running = java.util.concurrent.atomic.AtomicBoolean(false)
     const val LIMIT_MS = 180_000L
 
-    private fun get(path: String): JSONObject? = try {
-        val c = java.net.URL("http://127.0.0.1:${NodeFiles.API_PORT}$path").openConnection() as java.net.HttpURLConnection
-        c.connectTimeout = 2000; c.readTimeout = 4000
-        try { if (c.responseCode == 200) JSONObject(c.inputStream.bufferedReader().readText()) else null } finally { c.disconnect() }
-    } catch (_: Exception) {
-        null
-    }
+    /** The node's API (its Unix socket with patch 0002, NodeApi). */
+    private fun get(files: NodeFiles, path: String): JSONObject? = NodeApi.json(files, path, 4000)
 
     /** "Online, tip 12 s old", "Bootstrapping, ...", or "no answer". */
-    private fun probe(): Pair<String?, Long?> {
-        val i = get("/cryptarchia/info")?.let { it.optJSONObject("cryptarchia_info") ?: it } ?: return null to null
-        val t = get("/time/info")
+    private fun probe(files: NodeFiles): Pair<String?, Long?> {
+        val i = get(files, "/cryptarchia/info")?.let { it.optJSONObject("cryptarchia_info") ?: it } ?: return null to null
+        val t = get(files, "/time/info")
         val tip = i.optLong("slot", -1L); val cur = t?.optLong("current_slot", -1L) ?: -1L
         val ms = t?.optLong("slot_duration_ms", 1000L)?.takeIf { it > 0 } ?: 1000L
         return i.optString("state") to (if (tip >= 0 && cur >= 0) maxOf(0L, cur - tip) * ms / 1000 else null)
@@ -250,11 +245,11 @@ object OpenTimer {
         try {
             val t0 = System.currentTimeMillis()
             val profile = try { JSONObject(files.mobileState.readText()).optString("profile") } catch (_: Exception) { "" }
-            val first = probe()
+            val first = probe(files)
             var now = first
             while (now.first != "Online" && System.currentTimeMillis() - t0 < LIMIT_MS) {
                 Thread.sleep(1000)
-                now = probe()
+                now = probe(files)
             }
             val ms = if (now.first == "Online") System.currentTimeMillis() - t0 else null
             val f = File(files.home, "open-times.txt")
