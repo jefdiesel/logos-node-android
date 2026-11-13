@@ -44,9 +44,11 @@ def chain():
         return {}
 
 
-def chain_set(name, key=None, value=None):
+def chain_set(name, key=None, value=None, owner=None):
     c = chain()
     c.setdefault(name, {})
+    if owner:
+        c[name]["_owner"] = owner
     if key:
         c[name][key] = value
     json.dump(c, open(CHAIN, "w"))
@@ -101,7 +103,13 @@ def main():
         c = chain()
         if args[1] not in c:
             fail("%s is not registered" % args[1])
-        print(json.dumps({"name": args[1], "held_by": None, "texts": c[args[1]], "page": None}, indent=2))
+        rec = dict(c[args[1]])
+        owner = rec.pop("_owner", None)
+        try:                                  # held_by only when this wallet holds the owner's key
+            mine = owner in (json.load(open(storage)).get("public") or {})
+        except Exception:
+            mine = False
+        print(json.dumps({"name": args[1], "held_by": owner if mine else None, "texts": rec, "page": None}, indent=2))
         sys.exit(0)
     if not os.path.exists(storage):
         fail("there is no wallet")       # the real one would make a new wallet and print its phrase here
@@ -141,13 +149,16 @@ def main():
         print("submitted %s" % (rpc("sendTransaction", [{"Public": "reveal"}])))
         print("applied in block 9")
         print("%s is registered" % name)
-        chain_set(name)
+        chain_set(name, owner=ACCOUNT)
         sys.exit(0)
     if args[:3] == ["wallet", "auth-transfer", "send"]:      # a plain public transfer, as LEZ's own wallet prints it
         record()
         o = dict(zip(args[3::2], args[4::2]))
         if sorted(o) != ["--amount", "--from", "--to"] or o["--from"] != "Public/" + ACCOUNT or not o["--amount"].isdigit():
             fail("unexpected arguments")
+        if o["--amount"] == "19":             # sent and billed, but the wallet never saw it in a block
+            print("Transaction hash is " + rpc("sendTransaction", [{"Public": "transfer", "amount": 19}]), flush=True)
+            fail("Transaction not found in preconfigured amount of blocks")
         if o["--amount"] == "13":             # the wallet gives up waiting (as a late inclusion looks)
             print("Transaction hash is " + "ef" * 32, flush=True)
             fail("Transaction not found in 30 blocks")
@@ -163,6 +174,10 @@ def main():
             fail("gas limit %s, not 120000" % gas)
         if args[1] == "nothold":
             fail("this wallet does not hold nothold")
+        once = os.path.join(home, "..", "fake-settext-fail-once")
+        if os.path.exists(once):              # one passing failure (the name service didn't answer)
+            os.remove(once)
+            fail("error sending request for url (connection refused)")
         print("submitted %s" % (rpc("sendTransaction", [{"Public": "set-text"}])))
         print("applied in block 11")
         chain_set(args[1], args[2], args[3])

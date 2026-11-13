@@ -149,7 +149,10 @@ class SeqH(http.server.BaseHTTPRequestHandler):
         elif m == "sendTransaction":
             p = (body.get("params") or [{}])[0]
             if isinstance(p, dict) and p.get("Public") == "transfer":
-                Seq.lez["balance"] -= int(p["amount"]) + 3000
+                if int(p["amount"]) == 17:    # LEZ arrives while this send goes out: the balance rises
+                    Seq.lez["balance"] += 5000 - 17 - 3000
+                else:
+                    Seq.lez["balance"] -= int(p["amount"]) + 3000
             r["result"] = "cd" * 32
         elif m == "getFeeState":
             r["result"] = {"next_base_fee_exec_ceiling": 9, "next_base_fee_stor_ceiling": 9, "base_fee_exec": 8, "base_fee_stor": 8}
@@ -465,6 +468,13 @@ code, d = call("/api/wallet/lns/send", {"to": TO, "amount": "13", "confirm": Tru
 j = until("the unsure one finishes", lambda: (lambda j: j if j["state"] != "running" else None)(call("/api/wallet/lns", session=s)[1]["job"]))
 check("a send the wallet gave up on, with no balance change, says to check before sending again (never 'try again')",
       j["state"] == "failed" and j["error"] == server.LNS_SEND_UNSURE, j)
+Seq.lez["balance"] = 50000
+code, d = call("/api/wallet/lns/send", {"to": TO, "amount": "17", "confirm": True}, session=s)
+j = until("the send with LEZ arriving meanwhile finishes", lambda: (lambda j: j if j["state"] != "running" else None)(call("/api/wallet/lns", session=s)[1]["job"]))
+check("LEZ arriving while a send goes out doesn't make it look failed: judged by its own transaction (in a block)", j["state"] == "done", j)
+code, d = call("/api/wallet/lns/send", {"to": TO, "amount": "19", "confirm": True}, session=s)
+j = until("the billed one finishes", lambda: (lambda j: j if j["state"] != "running" else None)(call("/api/wallet/lns", session=s)[1]["job"]))
+check("a send billed more than its amount but never seen in a block isn't 'Sent': it may still land", j["state"] == "failed" and j["error"] == server.LNS_SEND_UNSURE, j)
 server.lns_state_save(reg_pending="alice")
 Seq.lez["balance"] = 3600000
 code, d = call("/api/wallet/lns/send", {"to": TO, "amount": "200000", "confirm": True}, session=s)
@@ -474,5 +484,19 @@ Seq.lez["balance"] = None
 server.lns_cost_cache["fees"] = None
 code, d = call("/api/wallet/lns/send", {"to": TO, "amount": "5", "confirm": True}, session=s)
 check("an unknown balance refuses", code == 502, d)
+# ---- a bridge whose name account changed since it started deposits nothing ----
+Seq.lez["balance"] = 0
+Node.deposit_mode = "ok"
+Node.notes[MAIN][hexid(803)] = 4444
+time.sleep(1.5)
+until("no transfer pending", lambda: not [e for e in history() if e.get("status") == "pending"])
+with server.bridge_lock:
+    b = server.bridge_load()
+    b.update(id="moved-1", state="ready", note=hexid(803), amount="4444", to="3oRTrDMCWuSfnbUgUJCa1vqoedtUUi4xWmMdfJ4emVZC")
+    server.bridge_save(b)
+n = len(deposits())
+server.bridge_round()
+check("a bridge to an account that is no longer this phone's name account deposits nothing, and says so",
+      len(deposits()) == n and bridge().get("state") == "failed" and "changed" in bridge()["error"], bridge())
 print("all checks passed", flush=True)
 os._exit(0)
