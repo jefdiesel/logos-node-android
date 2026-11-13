@@ -134,6 +134,7 @@ await shot("register-stepper");
 await waitFor("then: slow is yours", `document.getElementById("m-lns").innerText === "slow is yours."`, 20000);
 await waitFor("and now it asks for a backup again", `!document.getElementById("lns-bk").hidden`);
 await waitFor("the name shows bare", `document.getElementById("lns-name").innerText === "slow"`);
+await waitFor("once the name service has been read, Point it at this wallet is offered (not set yet)", `document.getElementById("b-lns-bc").textContent === "Point it at this wallet" && !document.getElementById("b-lns-bc").disabled`, 20000);
 await click("#b-lns-bc");
 await waitFor("pointing it at this wallet: Done.", `document.getElementById("m-lns").innerText === "Done."`, 20000);
 await waitFor("then it shows as done, from the name service, and isn't offered again", `document.getElementById("b-lns-bc").textContent === "Points at this wallet ✓" && document.getElementById("b-lns-bc").disabled`, 20000);
