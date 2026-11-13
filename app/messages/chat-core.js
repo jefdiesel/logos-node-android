@@ -43,6 +43,13 @@ export const nameless = hex => "msg-" + hex.slice(0, 16);            // the `fro
 export const shortFp = hex => hex ? hex.slice(0, 6) + "…" + hex.slice(-4) : "";
 /** The form a messaging address is shared in: "msg:" and 64 hex. */
 export const shareable = hex => "msg:" + hex;
+/**
+ * The store's maps (profiles, conversations, aliases) are keyed by strings a stranger chooses (an LNS name in a
+ * message's `from`), so they have no prototype: "constructor" and the like are never found on a plain object's
+ * prototype, and "__proto__" is an ordinary key. Lookups also go through own() (Object.hasOwn).
+ */
+export const dict = o => Object.assign(Object.create(null), o && typeof o === "object" && !Array.isArray(o) ? o : {});
+export const own = (o, k) => (o && Object.prototype.hasOwnProperty.call(o, k) ? o[k] : undefined);
 
 // ---- encryption of what the page keeps ----
 export function storeKey(secret) {
@@ -115,9 +122,10 @@ export class Chat {
     this.unread = new Set();
     this.inAfter = 0; this.outAfter = 0; this.outSince = 0;
     this.chain = new Map();                // name -> { registered, key, avatar, color, display, at }
+    this.bad = new Set();                  // n of messages that made the code throw: set aside, never shown
     this.failed = new Map();               // name -> when reading it from the chain last failed
   }
-  emptyStore() { return { v: STORE_VERSION, profiles: {}, convos: {}, aliases: {} }; }
+  emptyStore() { return { v: STORE_VERSION, profiles: dict(), convos: dict(), aliases: dict() }; }
   /** What goes in `from` on the wire: my LNS name once its msg entry is this phone's address (read on chain),
    *  otherwise the stand-in for a sender with no name. A name typed in but not linked is never used. */
   fromName() { return this.nameLinked() ? this.me.name : nameless(this.me.public); }
@@ -131,7 +139,7 @@ export class Chat {
     const got = r.data.blob ? decryptBlob(this.key, "store", r.data.blob) : null;
     this.storeUnreadable = Boolean(r.data.blob) && !got;
     this.store = got && got.v === STORE_VERSION ? got : this.emptyStore();
-    this.store.profiles ||= {}; this.store.convos ||= {}; this.store.aliases ||= {};
+    this.store.profiles = dict(this.store.profiles); this.store.convos = dict(this.store.convos); this.store.aliases = dict(this.store.aliases);
   }
   /** Changes the store with fn(store) and saves it; another page's change in between is loaded and fn runs again. */
   async mutate(fn) {
@@ -162,7 +170,7 @@ export class Chat {
   chainOf(pid) { return isAddressId(pid) ? { registered: false, address: true, key: pid.slice(2) } : this.chain.get(pid) || null; }
 
   // -- people --
-  profile(pid) { return this.store.profiles[pid] || null; }
+  profile(pid) { return own(this.store.profiles, pid) || null; }
   pinned(pid) {
     if (isAddressId(pid)) return pid.slice(2);
     const p = this.profile(pid); return p && p.keys.length ? p.keys[p.keys.length - 1].key : null;
@@ -182,7 +190,7 @@ export class Chat {
   async setProfile(pid, fields) {
     const allowed = ["nickname", "note", "blocked", "muted"];
     await this.mutate(s => {
-      const p = s.profiles[pid] || (s.profiles[pid] = this.newProfile(pid, isAddressId(pid) ? pid.slice(2) : null));
+      const p = own(s.profiles, pid) || (s.profiles[pid] = this.newProfile(pid, isAddressId(pid) ? pid.slice(2) : null));
       for (const k of allowed) if (k in fields) p[k] = typeof p[k] === "boolean" ? Boolean(fields[k]) : String(fields[k]).slice(0, k === "note" ? 4000 : 40);
       p.updated = Date.now();
     });
@@ -193,19 +201,19 @@ export class Chat {
     const c = await this.lookup(name, true);
     if (!c.key) throw new Error(name + " has no messaging address now.");
     await this.mutate(s => {
-      const p = s.profiles[name] || (s.profiles[name] = this.newProfile(name, null));
+      const p = own(s.profiles, name) || (s.profiles[name] = this.newProfile(name, null));
       if (!p.keys.length || p.keys[p.keys.length - 1].key !== c.key) p.keys.push({ key: c.key, at: Date.now() });
       p.updated = Date.now();
     });
   }
   /** Pins `key` for `pid` if nothing is pinned yet (first contact). */
   pinFirst(s, pid, key) {
-    const p = s.profiles[pid] || (s.profiles[pid] = this.newProfile(pid, null));
+    const p = own(s.profiles, pid) || (s.profiles[pid] = this.newProfile(pid, null));
     if (!p.keys.length && key) p.keys.push({ key, at: Date.now() });
     return p;
   }
   /** The address chat whose address is `key`, if there is one (to offer merging it into a name). */
-  addressChatFor(key) { const id = "k:" + key; return this.store.convos[id] && !this.store.aliases[id] ? id : null; }
+  addressChatFor(key) { const id = "k:" + key; return own(this.store.convos, id) && !own(this.store.aliases, id) ? id : null; }
   /**
    * Merges the address chat "k:<key>" into the chat with `name`, once the chain says `key` is that name's
    * messaging address: its messages show in the name's chat, and its nickname and note move over if the
@@ -217,24 +225,24 @@ export class Chat {
     const aid = "k:" + key, id = convoIdOf(name);
     await this.mutate(s => {
       s.aliases[aid] = name;
-      const from = s.profiles[aid] || {}, to = this.pinFirst(s, name, key);
+      const from = own(s.profiles, aid) || {}, to = this.pinFirst(s, name, key);
       if (!to.nickname && from.nickname) to.nickname = from.nickname;
       if (!to.note && from.note) to.note = from.note;
       if (from.blocked) to.blocked = true;
       delete s.profiles[aid]; delete s.convos[aid];
-      if (!s.convos[id]) s.convos[id] = { id, kind: "direct", title: name, members: [{ name }], created: Date.now() };
+      if (!own(s.convos, id)) s.convos[id] = { id, kind: "direct", title: name, members: [{ name }], created: Date.now() };
     });
     return id;
   }
   /** A message's conversation, after merges. */
-  thread(id) { const a = this.store.aliases[id]; return a ? convoIdOf(a) : id; }
+  thread(id) { const a = own(this.store.aliases, id); return a ? convoIdOf(a) : id; }
 
   // -- conversations --
   convo(id) {
-    if (!id.startsWith("x:")) return this.store.convos[id] || null;
+    if (!id.startsWith("x:")) return own(this.store.convos, id) || null;
     // messages that claim a name but didn't come from its messaging address: a thread of their own, never
     // the real person's, keyed by the address they did come from
-    const m = [...this.inbox.values()].find(x => x && this.threadOf(x) === id);
+    const m = this.msgs().find(x => this.threadOf(x) === id);
     return m ? { id, kind: "direct", unverified: true, claimed: m.sender, title: m.sender, members: [{ name: null, key: m.senderKey }], created: m.received } : null;
   }
   /** Starts (or opens) the direct chat with `name`, after a lookup that found its messaging address. */
@@ -245,7 +253,7 @@ export class Chat {
     const id = convoIdOf(name);
     await this.mutate(s => {
       this.pinFirst(s, name, c.key);
-      if (!s.convos[id]) s.convos[id] = { id, kind: "direct", title: name, members: [{ name }], created: Date.now() };
+      if (!own(s.convos, id)) s.convos[id] = { id, kind: "direct", title: name, members: [{ name }], created: Date.now() };
     });
     return id;
   }
@@ -253,10 +261,10 @@ export class Chat {
   async startAddress(key) {
     if (!/^[0-9a-f]{64}$/.test(key)) throw new Error("That isn't a messaging address.");
     const aid = "k:" + key;
-    if (this.store.aliases[aid]) return convoIdOf(this.store.aliases[aid]);
+    if (own(this.store.aliases, aid)) return convoIdOf(own(this.store.aliases, aid));
     await this.mutate(s => {
       this.pinFirst(s, aid, key);
-      if (!s.convos[aid]) s.convos[aid] = { id: aid, kind: "direct", title: shortFp(key), members: [{ name: null, key }], created: Date.now() };
+      if (!own(s.convos, aid)) s.convos[aid] = { id: aid, kind: "direct", title: shortFp(key), members: [{ name: null, key }], created: Date.now() };
     });
     return aid;
   }
@@ -271,6 +279,8 @@ export class Chat {
   isMuted(convo) { return Boolean(convo.muted) || (convo.kind === "direct" && Boolean((this.profile(this.peer(convo)) || {}).muted)); }
 
   // -- messages --
+  /** Incoming messages that opened, without any set aside as bad. */
+  msgs() { return [...this.inbox.values()].filter(m => m && !this.bad.has(m.n)); }
   /** Reads what came in and what was sent since last time. Returns true when anything changed. */
   async sync() {
     let changed = false;
@@ -304,21 +314,24 @@ export class Chat {
     // read the chain for names whose message came from an address not pinned for them, to tell a new
     // address from a stranger; then chats for people who wrote first (only if the message is theirs)
     // (over every message, not only new ones: a name the chain couldn't be asked about is tried again later)
-    const all = [...this.inbox.values()].filter(Boolean);
-    const unknown = [...new Set(all.filter(m => !isAddressId(m.sender) && !this.chainOf(m.sender)
-      && !(this.profile(m.sender) || { keys: [] }).keys.some(k => k.key === m.senderKey)).map(m => m.sender))];
+    // one message that makes something here throw is set aside (this.bad) and the rest go on
+    const each = f => m => { try { return f(m); } catch (e) { this.bad.add(m.n); return false; } };
+    const all = this.msgs();
+    const unknown = [...new Set(all.filter(each(m => !isAddressId(m.sender) && !this.chainOf(m.sender)
+      && !((this.profile(m.sender) || {}).keys || []).some(k => k.key === m.senderKey))).map(m => m.sender))];
     for (const pid of unknown) {
       if (Date.now() - (this.failed.get(pid) || 0) < 30000) continue;
       try { await this.lookup(pid); this.failed.delete(pid); } catch (e) { this.failed.set(pid, Date.now()); }
     }
-    const newcomers = [...new Set(all.filter(m => m.kind === "direct" && this.trust(m) !== "unverified" && !this.convo(this.thread(m.convo))).map(m => m.sender))];
+    const newcomers = [...new Set(this.msgs().filter(each(m => m.kind === "direct" && this.trust(m) !== "unverified" && !this.convo(this.thread(m.convo)))).map(m => m.sender))];
     if (newcomers.length) {
       await this.mutate(s => {
-        for (const pid of newcomers) {
-          const first = all.find(m => m.sender === pid && this.trust(m) !== "unverified");
+        for (const pid of newcomers) try {
+          const first = this.msgs().find(m => m.sender === pid && this.trust(m) !== "unverified");
+          if (!first) continue;
           const c = this.chainOf(pid);
           const id = convoIdOf(pid);
-          if (s.convos[id]) continue;
+          if (own(s.convos, id)) continue;
           if (isAddressId(pid)) {
             if (!first.authentic) continue;               // an address that can't prove itself gets no chat
             this.pinFirst(s, pid, first.senderKey);
@@ -327,11 +340,11 @@ export class Chat {
             this.pinFirst(s, pid, first.authentic && c && c.key === first.senderKey ? first.senderKey : null);
             s.convos[id] = { id, kind: "direct", title: pid, members: [{ name: pid }], created: Date.now() };
           }
-        }
+        } catch (e) { for (const m of this.msgs()) if (m.sender === pid) this.bad.add(m.n); }
       });
     }
     // a blocked sender's messages count as read straight away
-    const quiet = fresh.filter(m => this.unread.has(m.n) && this.convo(this.threadOf(m)) && this.isBlocked(this.convo(this.threadOf(m))));
+    const quiet = fresh.filter(m => !this.bad.has(m.n)).filter(each(m => this.unread.has(m.n) && this.convo(this.threadOf(m)) && this.isBlocked(this.convo(this.threadOf(m)))));
     if (quiet.length) await this.markRead(null, quiet.map(m => m.n));
     return changed;
   }
@@ -364,7 +377,7 @@ export class Chat {
     const mine = m => m && this.threadOf(m) === id;
     if (convo && this.isBlocked(convo)) return [...this.outbox.values()].filter(mine).sort((a, b) => a.ts - b.ts);
     const seen = new Set(), out = [];
-    for (const m of [...this.inbox.values(), ...this.outbox.values()]) {
+    for (const m of [...this.msgs(), ...this.outbox.values()]) {
       if (!mine(m)) continue;
       if (m.dir === "in") { if (seen.has(m.id)) continue; seen.add(m.id); }
       out.push(m);
@@ -394,7 +407,7 @@ export class Chat {
   /** The conversation list: newest first, with the last message and the unread count. */
   conversations() {
     const out = [];
-    const strangers = [...new Set([...this.inbox.values()].filter(m => m && this.threadOf(m).startsWith("x:")).map(m => this.threadOf(m)))];
+    const strangers = [...new Set(this.msgs().filter(m => this.threadOf(m).startsWith("x:")).map(m => this.threadOf(m)))];
     for (const convo of [...Object.values(this.store.convos), ...strangers.map(id => this.convo(id))]) {
       const list = this.messages(convo.id);
       const last = list[list.length - 1] || null;
@@ -463,7 +476,7 @@ export class Chat {
   }
   /** Deletes a conversation's messages; with `profile`, the person's profile and note too. */
   async deleteConversation(id, profile = false) {
-    const ins = [...this.inbox.values()].filter(m => m && this.threadOf(m) === id).map(m => m.n);
+    const ins = this.msgs().filter(m => this.threadOf(m) === id).map(m => m.n);
     const outs = [...this.outbox.values()].filter(m => this.threadOf(m) === id).map(m => m.n);
     if (ins.length) await this.api("/api/messages/inbox/delete", { ids: ins });
     if (outs.length) await this.api("/api/messages/outbox/delete", { ids: outs });

@@ -153,6 +153,8 @@ jobs:
             mkdir -p "$OLD/$(dirname "$f")" && curl -fsSL -o "$OLD/$f" "$base/$f"
           done
           NAMES_MSG_CRYPTO="$RUNNER_TEMP/names-msg-crypto.js" OLD_APP="$OLD" node tests/chat_test.mjs
+      - name: Hostile sender names (constructor, __proto__, ...) and 200 random ones never stop the chats
+        run: node tests/msg_hostile_test.mjs
   chat-ui:
     # The Messages screen in headless Chrome at phone width (x64 runner: Chrome has no Linux arm64 build)
     runs-on: ubuntu-latest
