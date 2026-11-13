@@ -1,6 +1,6 @@
 {
  "files": {
-  "index.html": "358e22c226fa96f2beae8d8dde929c96efebefeeee5a1eb1df9d4a57c4d60db2",
+  "index.html": "4684d1f95a50d3ef4501427f8b0b755948cf700169988122587617a14961e403",
   "lns/lns.js": "57a6cd5e3234965ccfc0f780b06ef9c6ab67f47b6079b88f75bbb1dcd62f3975",
   "messages/VENDORED.txt": "6fbf95fc9f8f846e65996ac4c9e2179002b631af229d8c222ab19a4a756d98e0",
   "messages/chat-core.js": "8d3f39319344ea2550e216cf27abcf271e17da15ed0bce95ffdbaf60af5a9e38",
@@ -44,7 +44,7 @@
   "noble-curves/utils.js": "ba29ee6d5c0129f0913e0cb11e1c84d09b7e1dd73c55e158cd49b5987bb62a65",
   "qr/VENDORED.txt": "1d4fc608d725afe81619262b9fb4323fe2d77318579396d9429f3a6f04b873ad",
   "qr/qrcode.js": "ea91d7118a5395289170da848b7c6758b996163bfbccf312591ab65a4911b7c0",
-  "server.py": "366df2216103e5cf6cb88f08bc5cbe5b5496c0d6a54a5d3d3e21c491dff5711c"
+  "server.py": "a69a556af0f9d8f053cc65c347f3c6ebba52eddf8a7def511057a1cc0aeba7f4"
  },
  "version": "0.9.21"
 }

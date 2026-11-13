@@ -376,19 +376,30 @@ After 0.5.20 (branch `sockets-e`, versions unchanged; review of 503b141, E1 to E
   environment variables before creating the node; the app writes all five network keys as `false` and checks them.
 - E3: `getTcp` (TCP builds only) reads the whole answer, status line and headers included, through one size cap and
   one deadline over a plain socket. Test: `theTcpPathGivesUpOnDrippingHeaders`.
-- E5, F1, F5, DELTA4 M1/M2/S1-S5: sends that may still land. A hold is set for the account before its transfer goes to
-  the node, under an id of its own; only a definite answer about that same transfer drops it: the node's hash, a
-  refusal the node answered, or a connection the node never took (then nothing was sent). With no clear answer (none
-  at all, the node's own 30 s timeout 408, a 500 "Failed to add tx", or a 2xx without a hash) the send is written to
-  Activity as pending ("No clear answer from the node: may have been sent"), and every spend from that account
-  (sends, and starting a bridge) is refused for 30 minutes; nothing else lifts the hold early (not the balance, not
-  another send landing). The 30 minutes run on the system's boot clock, which doesn't move when the wall clock is set
-  and runs on through app restarts; after a reboot they count again in full. The hold is on disk (owner-only,
-  fsync'd); a file or entry that can't be read holds the accounts concerned (all of them, if it can't tell) for the
-  full time; if the hold can't be saved before a send, the send isn't made. The bridge deposit takes a 408 as "may
-  have been made" too. What this does not cover: a transfer that is still out after the 30 minutes (the node keeps
-  its notes reserved for about 10 blocks), and two devices sending from the same keys. Test:
-  `tests/send_unsure_test.py`, one case per probe of the reviews, failing on the code before.
+- E5, F1, F5, DELTA4, DELTA5: sends that may still land. A hold is set for the account before its transfer goes to
+  the node, under an id of its own, and the send is written to Activity at the same moment (so a crash meanwhile
+  still leaves it there). Only a definite answer about that same transfer drops the hold: the node's hash, a refusal
+  the node answered, or a connection the node never took (nothing was sent; the entry is removed). With no clear
+  answer (none at all, the node's own 30 s timeout 408, a 500 "Failed to add tx", or a 2xx without a hash) Activity
+  shows "No clear answer from the node: may have been sent", and the account sends nothing more for 30 minutes:
+  sends are refused, and so is a bridge (checked again, under the same lock, just before it is saved and splits). The
+  message says to check the balance before sending it again. When the history sees coins leave the account, it
+  settles the pending send whose amount plus a fee (at most the bridge's fee cap) matches, so several pending sends
+  each settle. When a hold ends without that, its entry reads "No answer from the node: check the balance before
+  sending it again", never "not in a block"; the history loop ends holds when their time is up, whether or not the
+  account is used. The bridge's split takes no clear answer the same way and goes on if the amount set aside shows up.
+  Time: within one boot the system's boot clock counts (CLOCK_BOOTTIME where there is one), so app restarts and a
+  wall clock set either way change nothing; the boot is told apart by the kernel's boot_id, or, if the app can't read
+  it, by the wall time at boot to the minute. Across a reboot the hold counts on by the wall clock (never more than 30
+  minutes, never restarting them); a hold that ended stays ended. At start the app logs which clock and boot id
+  source it uses (`held sends: clock …, boot id …`). The hold is on disk (owner-only, fsync'd, and so is the history);
+  a file or entry that can't be read holds the accounts concerned (all of them, if it can't tell) for the full time;
+  a hold file from before these changes counts from its own time; if the hold can't be saved before a send, the send
+  isn't made. The bridge deposit takes a 408 as "may have been made" too. Not covered: a transfer still out after 30
+  minutes (the node keeps its notes reserved for about 10 blocks), a wall clock moved forward and then a reboot within
+  the 30 minutes (the hold ends that much early), and two devices sending from the same keys. PHONE: whether the app
+  can read /proc/sys/kernel/random/boot_id and has CLOCK_BOOTTIME (the start-up line says). Test:
+  `tests/send_unsure_test.py`, a case per probe of the reviews.
 - `tests/node_socket_test.py` now counts connections to the old TCP port (with `NODE_TCP_GUARD` set as 0.5.17-0.5.19
   set it): zero; it fails on the 0.5.17 server.py.
 - F2: the guard's ten-minute fallback runs on the monotonic clock (`NodeApi.ServicesStart`, tested: line match,

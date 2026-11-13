@@ -184,12 +184,13 @@ reset()
 state["answers"] = [(0, None)]
 send()
 with server.send_hold_lock:
-    server.send_holds()[A]["mono"] -= 1700               # almost over in this boot...
+    server.send_holds()[A]["mono"] -= 1700               # almost over in this boot (28 min 20 s)...
+    server.send_holds()[A]["at"] -= 1700
     server.send_holds_save()
 state["boot"] = "boot-B"                                 # ...then the phone restarts
 restart()
 code, d = send()
-check("after a reboot the hold counts the full 30 minutes again", code == 409 and "about 30 minutes" in d["error"], (code, d))
+check("after a reboot the hold counts on from the wall time, not a full new 30 minutes (DELTA5 S1)", code == 409 and "about 2 minutes" in d["error"], (code, d))
 
 # ---- S1: the file fails closed --------------------------------------------------------------------------------------
 reset()
@@ -235,6 +236,128 @@ reset()
 state["answers"] = [(400, "insufficient funds"), ("hash",)]
 check("a refusal the node answered: no hold", send()[1].get("unsure") is None)
 check("  the next send goes ahead", send()[0] == 200)
+
+# ---- DELTA5 M1: a hashed send and an unsure one from the same account, both land ---------------------------------------
+reset()
+D = "d4" * 32
+notes = {A: {"n1": 10_000_000}, C: {"m1": 5}}
+server.notes_of = lambda k: dict(notes[k])
+with server.hist_lock:
+    server.history["snapshot"] = {}
+server.history_round()                                   # the starting point
+state["answers"] = [("hash",), (0, None)]
+check("(Bob: sent)", send(100, B)[0] == 200)
+check("(Carol: no answer)", send(50, D)[0] == 502)
+code, d = send(50, D)
+check("the 409 doesn't invite a blind retry: it says to check the balance first", code == 409 and "check the balance" in d["error"], d)
+notes[A] = {"n2": 10_000_000 - 107}                      # Bob's transfer lands (fee 7)
+server.history_round()
+notes[A] = {"n3": 10_000_000 - 107 - 57}                 # then Carol's (fee 7)
+server.history_round()
+sends = {(e["to"], e["amount"]): e for e in server.history["entries"] if e.get("kind") == "sent"}
+check("DELTA5 M1: Bob's transfer is in a block, not 'Confirming…' for good", sends[(B, "100")]["status"] == "in block" and sends[(B, "100")]["fee"] == "7", sends.get((B, "100")))
+check("DELTA5 M1: Carol's landed transfer is in a block too", sends[(D, "50")]["status"] == "in block", sends.get((D, "50")))
+check("  and nothing is left as 'changed'", not [e for e in server.history["entries"] if e.get("kind") == "changed"])
+with server.send_hold_lock:
+    server.send_holds()[A]["mono"] -= 1801
+server.send_holds_sweep()
+check("DELTA5 M1: when the hold ends, a landed send stays 'in block' (never 'not in a block')", sends[(D, "50")]["status"] == "in block", sends[(D, "50")])
+code, d = server.bridge_check(A, 500_000)
+check("DELTA5 M1: and bridging isn't blocked by a pending entry that never settles", "isn't in a block yet" not in str(d) and "may still go through" not in str(d), (code, d))
+# an unsure send that never lands: after its hold, "unknown", not "not in a block"
+reset()
+notes[A] = {"n4": 9_000_000}
+with server.hist_lock:
+    server.history["snapshot"] = {}
+server.history_round()
+state["answers"] = [(0, None)]
+send(70, D)
+with server.send_hold_lock:
+    server.send_holds()[A]["mono"] -= 1801
+server.send_holds_sweep()                                 # what the history loop does, whether the account is used or not
+e70 = [e for e in server.history["entries"] if e.get("kind") == "sent" and e["amount"] == "70"][0]
+check("DELTA5 M1: a hold that ends without an answer marks its send 'unknown', not 'not in a block'", e70["status"] == "unknown", e70)
+check("DELTA5 S1: and the ended hold is gone without the account being used", A not in server.send_unsure)
+notes[A] = {"n5": 9_000_000 - 77}                         # it lands after all
+server.history_round()
+check("  and if it lands later, it is matched then", e70["status"] == "in block", e70)
+
+# ---- DELTA5 S1: an ended hold never comes back after a reboot; no boot id; old file format; cap ------------------------
+reset()
+state["answers"] = [(0, None)]
+send()
+with server.send_hold_lock:
+    server.send_holds()[A]["mono"] -= 1801
+server.send_holds_sweep()
+state["boot"] = "boot-C"
+restart()
+state["answers"] = [("hash",)]
+check("DELTA5 S1: an ended hold stays ended after a reboot", send()[0] == 200)
+reset()
+state["boot"] = ""                                       # boot_id unreadable: what the app then derives
+server.boot_id = lambda: "derived-%d" % round((time.time() - server.mono_now()) / 60)
+state["answers"] = [(0, None)]
+send()
+with server.send_hold_lock:
+    server.send_holds()[A]["mono"] -= 1500
+    server.send_holds()[A]["at"] -= 1500
+    server.send_holds_save()
+for i in range(3):
+    restart()                                            # three app restarts: the 30 minutes don't start over
+code, d = send()
+check("DELTA5 S1: without the kernel's boot id, app restarts don't restart the 30 minutes", code == 409 and "about 5 minutes" in d["error"], (code, d))
+server.boot_id = lambda: state["boot"]
+check("DELTA5 S1: the start-up line says which clock and boot id are used", len(server.send_clock_source()) == 2)
+reset()
+with open(server.SEND_UNSURE_FILE, "w") as f:
+    json.dump({A: {"before": 10_000_000, "amount": 100, "at": time.time() - 600}}, f)   # 1073a9b's format, 10 min old
+restart()
+code, d = send()
+check("an old-format hold counts from its time (about 20 minutes left), not as unreadable", code == 409 and "about 20 minutes" in d["error"] and "couldn't read" not in d["error"], (code, d))
+reset()
+with open(server.SEND_UNSURE_FILE, "w") as f:
+    json.dump({A: {"before": 1, "amount": 1, "at": time.time() - 5 * 86400}}, f)       # an old one, long over
+restart()
+state["answers"] = [("hash",)]
+check("an old-format hold that is long over is dropped", send()[0] == 200)
+reset()
+state["answers"] = [(0, None)]
+send()
+with server.send_hold_lock:
+    server.send_holds()[A]["mono"] += 1e12               # a stored time ahead of now
+check("a hold is never longer than 30 minutes", server.send_hold_left(server.send_holds()[A]) <= 1800)
+
+# ---- DELTA5 S2, S3: the bridge split ------------------------------------------------------------------------------
+plan = {"from": A, "label": "Main", "to": "Public/" + "1" * 32, "amount": "500000", "split": True, "fee_max": "1",
+        "split_fee_max": "1", "balance": "1", "note": None, "channel": "c" * 64, "notes_before": []}
+real_check = server.bridge_check
+server.bridge_check = lambda frm, amount: (None, dict(plan))   # as if checked just before a send got held
+server.bridge_view = lambda: {}
+server.lez_act_add = lambda *a, **k: None
+reset()
+for f in (server.BRIDGE_FILE,) if hasattr(server, "BRIDGE_FILE") else ():
+    try:
+        os.unlink(f)
+    except FileNotFoundError:
+        pass
+state["answers"] = [(0, None)]
+send()                                                   # a send got held in between
+posts = state["posts"]
+code, d = server.lns_bridge({"from": A, "amount": "500000", "confirm": True})
+check("DELTA5 S2: a bridge whose check ran before a send got held doesn't split", code == 409 and state["posts"] == posts, (code, d, state["posts"]))
+for answer, want in (((0, None), "splitting"), ((408, ""), "splitting"), ((400, "bad"), "failed")):
+    reset()
+    with server.bridge_lock:
+        try:
+            os.unlink(server.BRIDGE_FILE)
+        except Exception:
+            pass
+    state["answers"] = [answer]
+    code, d = server.lns_bridge({"from": A, "amount": "500000", "confirm": True})
+    with server.bridge_lock:
+        b = server.bridge_load()
+    check("DELTA5 S3: a split answered %s: the bridge is %s" % (answer[0], want), b and b["state"] == want, (code, d, b and b.get("state")))
+server.bridge_check = real_check
 
 print("all checks passed" if not FAILS else "%d FAILED" % len(FAILS))
 sys.exit(1 if FAILS else 0)

@@ -1528,28 +1528,41 @@ def lns_bridge(body):
          "to": plan["to"], "amount": plan["amount"], "channel": plan["channel"], "note": plan["note"],
          "notes_before": plan["notes_before"], "created": now, "fee": None, "split_fee": None, "error": "", "wait": "",
          "lez": {"base": None, "last": None, "up": 0, "faucet": 0}}
-    with bridge_lock:
-        cur = bridge_load()
-        if cur and cur["state"] in BRIDGE_ACTIVE:
-            return 409, {"error": "A bridge is under way. Start another once it is in a block."}
-        bridge_save(b)                        # the intent, before the node is asked anything
+    send_holds_sweep()
+    with send_hold_lock:                      # checked again here: a send may have been held since bridge_check
+        h = send_holds().get(frm)
+        if h and send_hold_left(h) > 0:
+            return 409, {"error": "A transfer from this account got no clear answer from the node and may still go "
+                                  "through, so nothing more is sent from it for about %d minutes."
+                                  % max(1, round(send_hold_left(h) / 60))}
+        with bridge_lock:                     # saved under the hold lock: a send now sees the bridge (and waits)
+            cur = bridge_load()
+            if cur and cur["state"] in BRIDGE_ACTIVE:
+                return 409, {"error": "A bridge is under way. Start another once it is in a block."}
+            bridge_save(b)                    # the intent, before the node is asked anything
     lez_act_add({"kind": "bridge", "amount": plan["amount"], "from_label": plan["label"], "state": b["state"]}, "bridge-" + b["id"])
     if plan["split"]:
+        _node_reach.refused = False
         code, reply = node("/wallet/transactions/transfer-funds", {
             "tip": None, "change_public_key": frm, "funding_public_keys": [frm],
             "recipient_public_key": frm, "amount": amount}, timeout=60)
+        outcome = transfer_outcome(code, reply, code == 0 and getattr(_node_reach, "refused", False))
         with bridge_lock:
             b = bridge_load()
-            if not 200 <= code < 300 or not isinstance(reply, dict) or not reply.get("hash"):
+            if outcome in ("refused", "unreached"):
                 b.update(state="failed", error="The node refused to set the amount aside, so nothing was bridged: %s"
                          % (reply if isinstance(reply, str) else json.dumps(reply) if reply else "no answer")[:200])
                 bridge_save(b)
                 return 502, {"error": b["error"]}
-            b.update(split_hash=reply["hash"], split_at=time.time())
+            # sent, or no clear answer: it may have gone through. The bridge goes on once the amount set aside shows
+            # up as a note of its own (bridge_round), and gives up if it never does (BRIDGE_GIVE_UP)
+            b.update(split_hash=reply["hash"] if outcome == "sent" else None, split_at=time.time(),
+                     split_unsure=outcome == "unsure")
             bridge_save(b)
         history_record_send({"key": frm, "label": plan["label"], "to": frm, "to_label": "itself", "amount": "0",
-                             "fee": None, "hash": reply["hash"], "status": "pending", "bridge": "split",
-                             "bridge_id": b["id"], "bridge_amount": plan["amount"]})
+                             "fee": None, "hash": reply["hash"] if outcome == "sent" else None, "status": "pending",
+                             "bridge": "split", "bridge_id": b["id"], "bridge_amount": plan["amount"],
+                             **({"unsure": True} if outcome == "unsure" else {})})
     bridge_wake.set()
     return 200, {"bridge": bridge_view(), "plan": shown}
 
@@ -3211,15 +3224,33 @@ _node_reach = threading.local()             # node(): whether the last call's co
 
 
 def mono_now():
+    """Seconds on the boot clock: CLOCK_BOOTTIME (counts while the phone sleeps) where there is one, else the
+    system-wide monotonic clock. Neither moves when the wall clock is set; both run on through app restarts."""
     return time.clock_gettime(time.CLOCK_BOOTTIME) if hasattr(time, "CLOCK_BOOTTIME") else time.monotonic()
 
 
 def boot_id():
+    """An id of this boot of the phone. The kernel's boot_id where the app may read it; else the wall time at boot as
+    the boot clock gives it, to the minute (stable within a boot unless the wall clock is set by a minute or more,
+    which then reads as another boot: holds fall back to the wall clock, never to a full new 30 minutes)."""
     try:
         with open("/proc/sys/kernel/random/boot_id") as f:
-            return f.read().strip()
+            b = f.read().strip()
+            if b:
+                return b
     except Exception:
-        return ""
+        pass
+    return "derived-%d" % round((time.time() - mono_now()) / 60)
+
+
+def send_clock_source():
+    """For the start-up line: which clock and boot id the holds use."""
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as f:
+            src = "kernel boot_id" if f.read().strip() else "derived from wall time minus the boot clock"
+    except Exception:
+        src = "derived from wall time minus the boot clock (kernel boot_id unreadable)"
+    return ("CLOCK_BOOTTIME" if hasattr(time, "CLOCK_BOOTTIME") else "CLOCK_MONOTONIC"), src
 
 
 def send_hold_new(amount=0, to="", hid=None):
@@ -3243,19 +3274,25 @@ def send_holds():
     except Exception:
         keys_all = "the file of held sends can't be read"
         d = {}
-    boot = boot_id()
+    boot, now, mono = boot_id(), time.time(), mono_now()
     for k, h in d.items():
         if not KEY_RE.match(str(k)):
             keys_all = "an entry in the file of held sends isn't readable"
             continue
         try:
-            same_boot = bool(boot) and h.get("boot") == boot
-            held = {"id": str(h["id"]), "amount": int(h.get("amount", 0)), "to": str(h.get("to", "")),
-                    "at": float(h["at"]), "mono": float(h["mono"]) if same_boot else mono_now(),
-                    "boot": boot, "entry": h.get("entry") if isinstance(h.get("entry"), int) else None}
+            at = float(h["at"])
+            if h.get("boot") == boot and "mono" in h:
+                m = min(float(h["mono"]), mono)          # this boot: the boot clock counts (never ahead of now)
+            else:
+                # another boot (or a file from before the boot clock): the wall time left, never more than the
+                # full hold, never less than 0; a hold that ended meanwhile stays ended
+                m = mono - min(max(now - at, 0.0), SEND_UNSURE_HOLD)
+            held = {"id": str(h.get("id") or "legacy"), "amount": int(h.get("amount", 0)), "to": str(h.get("to", "")),
+                    "at": at, "mono": m, "boot": boot, "entry": h.get("entry") if isinstance(h.get("entry"), int) else None}
         except Exception:
             held = send_hold_new(hid="unreadable")       # this account's entry is bad: hold it, from now
-        send_unsure.setdefault(k, held)
+        if send_hold_left(held) > 0:
+            send_unsure.setdefault(k, held)
     if keys_all:
         event("held sends: " + keys_all + "; every account is held", file=SEND_UNSURE_FILE)
         try:
@@ -3292,38 +3329,66 @@ def send_holds_save():
 
 
 def send_hold_left(h):
-    """Seconds the hold `h` still holds; 0 when it is over."""
-    return max(0.0, SEND_UNSURE_HOLD - (mono_now() - h["mono"]))
+    """Seconds the hold `h` still holds; 0 when it is over; never more than the full hold."""
+    return min(SEND_UNSURE_HOLD, max(0.0, SEND_UNSURE_HOLD - (mono_now() - h["mono"])))
+
+
+SEND_UNKNOWN = "unknown"                    # an unsure send whose hold ended without an answer: never "not in a block"
+
+
+def send_hold_end(entries):
+    """Marks the Activity entries of ended holds as unknown, if they are still pending."""
+    if not entries:
+        return
+    with hist_lock:
+        for e in history["entries"]:
+            if e.get("id") in entries and e.get("status") == "pending":
+                e["status"] = SEND_UNKNOWN
+                e.pop("sending", None)
+        history_save()
+
+
+def send_holds_sweep():
+    """Ends every hold whose time is up (from the history loop, so an ended hold never outlives its time)."""
+    with send_hold_lock:
+        holds = send_holds()
+        over = [k for k, h in holds.items() if send_hold_left(h) <= 0]
+        entries = [holds[k].get("entry") for k in over if holds[k].get("entry") is not None]
+        for k in over:
+            holds.pop(k, None)
+        if over:
+            send_holds_save()
+    send_hold_end(entries)
 
 
 def send_hold_check(frm):
-    """None if `frm` may spend now, else the message why not (call without send_hold_lock). Ends a hold whose time is up,
-    and marks its history entry as not seen in a block."""
+    """None if `frm` may spend now, else the message why not (call without send_hold_lock)."""
+    send_holds_sweep()
     with send_hold_lock:
-        holds = send_holds()
-        h = holds.get(frm)
-        if not h:
-            return None
-        left = send_hold_left(h)
-        if left <= 0:
-            holds.pop(frm, None)
-            send_holds_save()
-            entry = h.get("entry")
-        else:
-            entry = None
-    if entry is not None:
-        with hist_lock:
-            for e in history["entries"]:
-                if e.get("id") == entry and e.get("status") == "pending":
-                    e["status"] = "not seen"
-            history_save()
-    if left <= 0:
+        h = send_holds().get(frm)
+        left = send_hold_left(h) if h else 0
+    if not h:
         return None
     if h["id"] == "unreadable":
         return ("This account is held for about %d more minutes: the app couldn't read its record of sends that may "
                 "still go through, so it doesn't send from it until then." % max(1, round(left / 60)))
     return ("A transfer from this account got no clear answer from the node and may still go through, so nothing more "
-            "is sent from it for about %d minutes. It is in Activity." % max(1, round(left / 60)))
+            "is sent from it for about %d minutes. It is in Activity. Before sending it again, check the balance: if "
+            "the amount has left the account, it went through." % max(1, round(left / 60)))
+
+
+def transfer_outcome(code, reply, unreached):
+    """What the node's answer to a transfer means: "sent" (a hash), "unreached" (it never took the connection:
+    nothing sent), "unsure" (no clear answer: none, its own 30 s timeout 408, a 500 "Failed to add tx", a 2xx
+    without a hash; the mempool may still take it) or "refused" (an answer that says it wasn't added)."""
+    if 200 <= code < 300 and isinstance(reply, dict) and reply.get("hash"):
+        return "sent"
+    if unreached:
+        return "unreached"
+    text = reply if isinstance(reply, str) else json.dumps(reply)
+    if code in (0, 408) or 200 <= code < 300 or (code == 500 and "Failed to add tx" in (text or "")):
+        return "unsure"
+    return "refused"
 
 
 def send(body):
@@ -3354,10 +3419,20 @@ def send(body):
     why = send_hold_check(frm)
     if why:
         return 409, {"error": why, "unsure": True}
+    labels = {k["key"]: k["label"] for k in wallet_keys()}
+    entry = {"key": frm, "label": labels.get(frm, ""), "to": to, "amount": str(amount), "fee": None,
+             "hash": None, "status": "pending", "sending": True, "height": st.get("height")}
+    if to in labels:
+        entry["to_label"] = labels[to]
+    name = str(body.get("name") or "")
+    if NAME_RE.match(name):                 # the LNS name the page resolved `to` from, kept for the history
+        entry["name"] = name
     with send_hold_lock:
         holds = send_holds()
         if frm in holds:                       # another send from this account got in meanwhile
             return 409, {"error": "Another transfer from this account is on its way. Wait for it.", "unsure": True}
+        if EMBEDDED and bridge_busy_key(frm):  # a bridge that started meanwhile (it checks the holds under this lock)
+            return 409, {"error": "This account is moving coins to your name account. Send from it once that is in a block (a minute or so)."}
         mine = send_hold_new(amount, to)       # held from now until the node answers about this one
         holds[frm] = mine
         if not send_holds_save():
@@ -3365,50 +3440,43 @@ def send(body):
             send_holds_save()
             return 503, {"error": "This app can't save its record of the transfer right now (is the phone's storage "
                                   "full?), so it didn't send it. Nothing was sent."}
+        # in Activity before the node is asked, so a crash meanwhile still leaves the send there to see
+        with hist_lock:
+            e = history_add("sent", **entry)
+            history_save()
+        mine["entry"] = e["id"]
+        send_holds_save()
     _node_reach.refused = False
     code, reply = node("/wallet/transactions/transfer-funds", {
         "tip": None, "change_public_key": frm, "funding_public_keys": [frm],
         "recipient_public_key": to, "amount": amount}, timeout=60)
-    unreached = code == 0 and getattr(_node_reach, "refused", False)
-    # the node answers an accepted transfer with 201 Created. It stops waiting at 30 s with 408 and may still send
-    # (its mempool takes the transfer whatever happens to the answer); a 500 "Failed to add tx" is the same
-    accepted = 200 <= code < 300 and isinstance(reply, dict) and bool(reply.get("hash"))
-    unsure = not unreached and (code in (0, 408) or (200 <= code < 300 and not accepted)
-                                or (code == 500 and "Failed to add tx" in (reply if isinstance(reply, str) else json.dumps(reply))))
-    if unsure:
-        labels = {k["key"]: k["label"] for k in wallet_keys()}
-        with hist_lock:
-            e = history_add("sent", key=frm, label=labels.get(frm, ""), to=to, amount=str(amount), fee=None, hash=None,
-                            status="pending", unsure=True, height=st.get("height"),
-                            **({"to_label": labels[to]} if to in labels else {}))
-            history_save()
-        with send_hold_lock:
-            if send_holds().get(frm, {}).get("id") == mine["id"]:
-                mine["entry"] = e["id"]
-                send_holds_save()
+    outcome = transfer_outcome(code, reply, code == 0 and getattr(_node_reach, "refused", False))
+    with hist_lock:
+        if outcome == "sent":
+            e.update(hash=reply["hash"])
+            e.pop("sending", None)
+        elif outcome == "unsure":
+            e.update(unsure=True)
+            e.pop("sending", None)
+        else:                                  # nothing was sent: no entry
+            history["entries"] = [x for x in history["entries"] if x is not e]
+        history_save()
+    if outcome == "unsure":
         return 502, {"error": "No clear answer from the node about this transfer: it may have been sent. It is in "
-                              "Activity; nothing more is sent from this account for about %d minutes."
-                              % max(1, round(SEND_UNSURE_HOLD / 60)), "unsure": True}
+                              "Activity; nothing more is sent from this account for about %d minutes. Before sending "
+                              "it again, check the balance." % max(1, round(SEND_UNSURE_HOLD / 60)), "unsure": True}
     with send_hold_lock:
         if send_holds().get(frm, {}).get("id") == mine["id"]:     # only this send's own hold
             send_holds().pop(frm, None)
             send_holds_save()
-    if unreached:
+    if outcome == "unreached":
         return 503, {"error": "The node didn't take the connection, so nothing was sent. Try again in a moment."}
-    if not accepted:
-        detail = reply if isinstance(reply, str) else json.dumps(reply)
-        return 502, {"error": "The node refused the transfer: %s" % (detail or "no answer")[:300]}
+    if outcome == "refused":
+        detail = reply if isinstance(reply, str) else json.dumps(reply) if reply else ""
+        return 502, {"error": ("The node refused the transfer: %s" % detail[:300]) if detail
+                     else "The node refused the transfer (HTTP %d). Nothing was sent." % code}
     with lock:
         sent[reply["hash"]] = {"from": frm, "to": to, "amount": amount, "before": before, "at": time.time()}
-    labels = {k["key"]: k["label"] for k in wallet_keys()}
-    entry = {"key": frm, "label": labels.get(frm, ""), "to": to, "amount": str(amount), "fee": None,
-             "hash": reply["hash"], "status": "pending", "height": st.get("height")}
-    if to in labels:
-        entry["to_label"] = labels[to]
-    name = str(body.get("name") or "")
-    if NAME_RE.match(name):                 # the LNS name the page resolved `to` from, kept for the history
-        entry["name"] = name
-    history_record_send(entry)
     return 200, {"hash": reply["hash"]}
 
 
@@ -3464,6 +3532,8 @@ def history_save():
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
             json.dump(history, f)
+            f.flush()
+            os.fsync(f.fileno())               # a send's entry is written before the node is asked: keep it
         os.replace(tmp, HISTORY_FILE)
     except Exception:
         pass
@@ -3522,11 +3592,16 @@ def history_round():
             changed = True
             if removed:
                 out = sum(removed.values()) - sum(added.values())
-                pending = [e for e in history["entries"] if e["kind"] == "sent" and e.get("status") == "pending" and e["key"] == key]
-                if len(pending) == 1 and out >= int(pending[0]["amount"]):
-                    # our own transfer is in a block: what left the key beyond the amount is the fee
-                    pending[0].update(status="in block", fee=str(out - int(pending[0]["amount"])), landed_height=height,
-                                      landed=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+                pending = [e for e in history["entries"] if e["kind"] == "sent" and e.get("status") in ("pending", SEND_UNKNOWN)
+                           and e["key"] == key]
+                # one of our own transfers is in a block: the pending one whose amount plus a fee (at most
+                # BRIDGE_MAX_FEE) is what left the key, the smallest fee if several fit, the oldest of those
+                fits = sorted((out - int(e["amount"]), i, e) for i, e in enumerate(pending) if 0 <= out - int(e["amount"]) <= BRIDGE_MAX_FEE)
+                if fits:
+                    fee, _, hit = fits[0]
+                    hit.update(status="in block", fee=str(fee), landed_height=height,
+                               landed=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+                    hit.pop("sending", None)
                 else:
                     history_add("changed", key=key, label=label, amount=str(-out), height=height)
             else:
@@ -3541,6 +3616,10 @@ def history_loop():
     while True:
         try:
             history_round()
+        except Exception:
+            pass
+        try:
+            send_holds_sweep()                 # held sends whose 30 minutes are up end here, used or not
         except Exception:
             pass
         time.sleep(HISTORY_POLL)
@@ -5375,8 +5454,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 def main():
     """Starts the app and serves until the process ends. The Android app imports this module and calls main()
     in a thread, so it can also call native_unlock() in the same process."""
+    clock, boot_src = send_clock_source()
+    sys.stderr.write("held sends: clock %s, boot id %s (%s)\n" % (clock, boot_id(), boot_src))
     if EMBEDDED:
-        event("app start", port=PORT, version=APP_VERSION, embedded="android")
+        event("app start", port=PORT, version=APP_VERSION, embedded="android", hold_clock=clock, hold_boot_id=boot_src)
         try:
             lns_sweep()                       # check folders a stopped restore left
             if os.path.isdir(LNS_HOME):
