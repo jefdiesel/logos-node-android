@@ -59,10 +59,10 @@ h3{font-size:15px;font-weight:650;margin:16px 0 6px}
 .tok{display:flex;align-items:center;gap:12px;width:100%;min-height:64px;margin:0;padding:10px 16px;border:0;border-bottom:1px solid var(--line);border-radius:0;background:none;text-align:left;font-weight:400;color:var(--ink);box-shadow:inset 3px 0 0 transparent}
 .tok[aria-checked="true"]{background:var(--field);box-shadow:inset 3px 0 0 var(--accent)}
 .tok-ic{flex:none;width:38px;height:38px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;background:var(--field);border:1px solid var(--line);color:var(--ink);font-size:12px;font-weight:700;letter-spacing:.02em}
-.tok-t{flex:1;min-width:0}.tok-t b{display:block;font-size:16px;font-weight:620;line-height:1.3}
+.tok-t{flex:1 1 56px;min-width:56px}.tok-t b{display:block;font-size:16px;font-weight:620;line-height:1.3}
 .tok-t small{display:block;font-size:13px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.tok-amt{flex:0 1 auto;min-width:0;max-width:58%;font-size:18px;font-weight:650;letter-spacing:-.02em;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden}
-.tok-amt .unit{font-size:max(11px,.7em);font-weight:500;color:var(--dim);letter-spacing:0;margin-left:.3em}
+.tok-amt{flex:0 1 auto;min-width:0;font-size:18px;font-weight:650;letter-spacing:-.02em;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;line-height:1.25}
+.tok-amt .unit{font-size:max(8px,.7em);font-weight:500;color:var(--dim);letter-spacing:0;margin-left:.3em}
 .tok-amt .mask{letter-spacing:.08em}
 .wtabs{display:flex;gap:6px;margin:16px 0 0;border-bottom:1px solid var(--line)}
 .wtabs button{flex:1;margin:0;min-height:46px;border:0;border-radius:0;background:none;font-weight:600;color:var(--dim);box-shadow:inset 0 -3px 0 transparent}
@@ -986,7 +986,7 @@ function fitAmt(e) {       // a token's amount stays on one line: the font gets 
   if (!e || e.offsetParent === null) return;      // hidden: done when it shows
   e.style.fontSize = "";
   let px = parseFloat(getComputedStyle(e).fontSize);
-  while (e.scrollWidth > e.clientWidth && px > 11) { px -= px > 18 ? 1 : 0.5; e.style.fontSize = px + "px"; }
+  while (e.scrollWidth > e.clientWidth && px > 9) { px -= px > 18 ? 1 : 0.5; e.style.fontSize = px + "px"; }
 }
 function fitHero() { for (const e of document.querySelectorAll(".tok-amt")) fitAmt(e); }
 // again when the amount changes, and when the card's width changes or it shows (another tab, Settings)

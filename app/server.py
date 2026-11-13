@@ -819,6 +819,8 @@ BRIDGE_GIVE_UP = float(os.environ.get("BRIDGE_GIVE_UP", str(30 * 60)))   # a spl
 BRIDGE_ACTIVE = ("splitting", "ready", "depositing", "sent")             # notes of the key are spoken for
 LEZ_V03_PROBE = {"jsonrpc": "2.0", "id": 1, "method": "getRecoveryBinding", "params": ["11111111111111111111111111111111"]}
 LNS_RESERVE_BYTES = 1500                     # a registration's transaction bytes, generously: billed at the storage fee
+LNS_REG_GAS = (23214, 165000)                # gas a commit and a reveal use, as measured on the testnet (NAMES.md);
+LNS_REG_BYTES = 500                          # a fee is the gas used (not the limit) times the base fee, plus the bytes
 B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 bridge_lock = threading.Lock()               # guards the bridge state and its file
 bridge_wake = threading.Event()
@@ -938,13 +940,15 @@ def lez_is_v03():
 
 
 def lns_fee_state():
-    """(exec ceiling, storage ceiling) of the next block, from getFeeState; None when not known. Cached a minute."""
+    """(exec ceiling, storage ceiling, exec base fee, storage base fee) of the next block, from getFeeState; None when
+    not known. Cached a minute."""
     now = time.time()
     if lns_cost_cache["fees"] and now - lns_cost_cache["fees_at"] < 60:
         return lns_cost_cache["fees"]
     try:
         r = lez_rpc("getFeeState", [])
-        fees = (int(r["next_base_fee_exec_ceiling"]), int(r["next_base_fee_stor_ceiling"]))
+        ce, cs = int(r["next_base_fee_exec_ceiling"]), int(r["next_base_fee_stor_ceiling"])
+        fees = (ce, cs, int(r.get("base_fee_exec", ce)), int(r.get("base_fee_stor", cs)))
     except Exception:
         return None
     lns_cost_cache.update(fees=fees, fees_at=now)
@@ -983,12 +987,16 @@ def lns_settings_read():
 
 
 def lns_cost():
-    """What registering a name takes from the name account, as `names` checks it before sending: what the reveal
-    moves (the deposit, or the 1-year price in fee mode), plus a fee reserve for each of the two transactions (the
-    commit and the reveal): the register gas limit at the next block's exec fee ceiling, plus the bytes at the
-    storage ceiling. Parts not known right now are None."""
+    """What registering a name costs and what the name account must hold to start it.
+    - `fees`: what the two transactions should cost: the gas each uses (LNS_REG_GAS, measured) at today's base fee,
+      plus their bytes. The testnet bills the gas used, not the limit.
+    - `reserve`: what `names` checks is held for the fee while a transaction runs: the register gas limit at the
+      next block's exec fee ceiling, plus the bytes at the storage ceiling.
+    - `need`: what the account must hold to start, so both of `names`'s checks pass: the commit's fee (at the
+      ceiling), then, at the reveal, the deposit (or the 1-year price in fee mode) and the reserve.
+    Parts not known right now are None."""
     st, fees = lns_settings(), lns_fee_state()
-    out = {"deposit": None, "deposit_three": None, "mode": None, "reserve": None, "need": None, "need_three": None}
+    out = {"deposit": None, "deposit_three": None, "mode": None, "reserve": None, "fees": None, "need": None, "need_three": None}
     if st:
         out["mode"] = "fee" if st.get("mode") == "fee" else "deposit"
         if out["mode"] == "fee":
@@ -999,9 +1007,11 @@ def lns_cost():
             out["deposit_three"] = str(as_int(st["deposits"].get("three_characters")))
     if fees:
         out["reserve"] = str(LNS_GAS["register"] * fees[0] + LNS_RESERVE_BYTES * fees[1])
+        out["fees"] = str(sum(LNS_REG_GAS) * fees[2] + 2 * LNS_REG_BYTES * fees[3])
     if st and fees:
-        out["need"] = str(int(out["deposit"]) + 2 * int(out["reserve"]))
-        out["need_three"] = str(int(out["deposit_three"]) + 2 * int(out["reserve"]))
+        commit = LNS_REG_GAS[0] * fees[0] + LNS_RESERVE_BYTES * fees[1]
+        out["need"] = str(int(out["deposit"]) + int(out["reserve"]) + commit)
+        out["need_three"] = str(int(out["deposit_three"]) + int(out["reserve"]) + commit)
     return out
 
 

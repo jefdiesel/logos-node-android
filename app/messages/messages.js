@@ -224,6 +224,11 @@ msgSettings.innerHTML = `
   <div class="card groups" id="mgs-list"></div>
   <div class="card" id="mgs-name" hidden>
   <h3 class="vh">Your name</h3>
+  <div id="mg-own" hidden>
+    <p class="msg" id="mg-own-m" role="status" style="margin-top:0"></p>
+    <button type="button" class="primary" id="mg-own-go" style="width:100%" hidden></button>
+  </div>
+  <details id="mg-else" open><summary id="mg-else-s">Use a name held elsewhere</summary>
   <p class="msg" id="mg-check-m" role="status" style="margin-top:0"></p>
   <div class="pwrow"><input id="mg-name" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="40" placeholder="yourname" aria-label="Your LNS name"><button type="button" id="mg-name-save">Save</button></div>
   <p class="msg" id="mg-name-m" role="status"></p>
@@ -235,6 +240,7 @@ msgSettings.innerHTML = `
       <code class="cmd" id="mg-cmd"></code>
       <button type="button" id="mg-copy" style="width:100%;margin-top:10px">Copy command</button>
     </details>
+  </details>
   </details>
   </div>
   <div class="card" id="mgs-addr" hidden>
@@ -316,6 +322,7 @@ function msgSettingsUi(fresh = false) {
 /** Settings' Messages row: one line on your LNS name; "linked" only once the name service said so. */
 window.msgSettingsState = () => {
   if (!chat || !me) return "";
+  if (own && own.name && me.name !== own.name) return ["On · " + own.name + " isn't used for messages yet", "warn"];
   if (!me.name) return "On · no LNS name yet";
   const c = chat.chainOf(me.name);
   if (!c) return "On · " + me.name;
@@ -332,7 +339,8 @@ const forget = () => {        // nothing of the chats stays in the page while it
   chat = null; me = null; loading = null; closeAll();
   for (const id of ["mg-rows", "mg-found", "mg-hint", "mg-addr-qr"]) $(id).replaceChildren();
   for (const id of ["mg-to", "mg-name"]) $(id).value = "";
-  for (const id of ["mg-cmd", "mg-addr", "mg-check-m", "mg-name-m", "mg-addr-m"]) $(id).textContent = "";
+  for (const id of ["mg-cmd", "mg-addr", "mg-check-m", "mg-name-m", "mg-addr-m", "mg-own-m"]) $(id).textContent = "";
+  own = null;
   badge.hidden = true; msgSettingsUi();
 };
 function home() { if (view === "new" && stack.length && stack[stack.length - 1].name === "new") popOv(); view = "home"; $("mg-newv").hidden = true; render(); }
@@ -604,12 +612,48 @@ $("mg-find").addEventListener("submit", async e => {
 });
 
 // ---- your messaging: name and setup ---------------------------------------------------------------------
+// ---- the name this phone holds itself (Settings > Your name, /lns/lns.js), when there: no typing, no command ----
+// The one action is Your name's own "Point it at my messages" (window.LNS.pointMsg); whether it is pointed here is
+// read from the name service, as for any name. Once it is, it becomes the name messages are sent under. A name
+// held elsewhere keeps the manual way, folded.
+let own = null;            // { name, running } of the phone's own name; null without Your name
+async function ownCheck(fresh) {
+  const box = $("mg-own"), m = $("mg-own-m"), go = $("mg-own-go");
+  const ln = window.LNS && window.LNS.own ? await window.LNS.own() : null;
+  $("mg-else").firstElementChild.hidden = !ln;                    // a fold only beside the phone's own name
+  if (!ln) { own = null; box.hidden = true; $("mg-else").open = true; return; }
+  if (own === null) $("mg-else").open = false;    // folded when first shown beside the phone's own name
+  own = { name: ln.name || "", running: ln.running }; box.hidden = false; m.className = "msg"; go.hidden = true;
+  if (!me || !chat) return;
+  if (!own.name) { m.textContent = "No LNS name yet."; go.textContent = "Get a name"; go.hidden = false; go.onclick = () => openSettings("s-lns", "lns-in"); return; }
+  if (own.running) { m.textContent = "Pointing " + own.name + " at this phone…"; return; }
+  let c = null;
+  try { c = await chat.lookup(own.name, fresh); } catch (e) {}
+  if (!c) { m.className = "msg bad"; m.textContent = "Couldn't reach the name service."; return; }
+  if (c.key === me.public) {
+    m.className = "msg ok"; m.textContent = own.name + " · messages come to this phone";
+    if (me.name !== own.name) {                   // the name service says so: messages go out under it
+      const r = await api("/api/messages/name", { name: own.name });
+      if (!locked401(r) && r.ok) { me.name = own.name; $("mg-name").value = own.name; msgRows(); }
+    }
+    return;
+  }
+  m.textContent = own.name + " isn't used for messages yet.";
+  go.textContent = "Use " + own.name + " for messages"; go.hidden = false;
+  go.onclick = async () => { go.disabled = true; const ok = await window.LNS.pointMsg(); go.disabled = false; if (ok) ownFollow(); };
+}
+async function ownFollow() {          // until the change has finished, then the name service again
+  await ownCheck(false);
+  if (own && own.running) setTimeout(ownFollow, 4000); else ownCheck(true);
+}
+/** Whether `name` points its msg entry at this phone, per the name service (Your name shows the same). */
+window.msgPointsHere = async name => { if (!chat || !me || !name) return null; try { return (await chat.lookup(name, false)).key === me.public; } catch (e) { return null; } };
 function openMe() {
   $("mg-name").value = me.name; $("mg-name-m").textContent = ""; $("mg-addr-m").textContent = "";
   $("mg-cmd").textContent = `names set-text ${me.name || "<yourname>"} msg ${me.public}`;
   $("mg-addr").textContent = shareable(me.public); $("mg-addr").hidden = true; $("mg-addr-qr").hidden = true; $("mg-addr-qr").replaceChildren();
   $("mg-addr-show").textContent = "Show"; $("mg-addr-show").setAttribute("aria-expanded", "false");
-  checkMine(false);
+  checkMine(false); ownCheck(false);
 }
 async function checkMine(fresh) {
   const m = $("mg-check-m"); m.className = "msg"; m.textContent = "";

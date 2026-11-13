@@ -8,7 +8,7 @@
 // Three apps on a fake messaging network: the browser shows alice's; bob and carol write from Node with the
 // page's own chat model. Checks what the screen shows; with SHOTS, saves a PNG of each state.
 import { spawn } from "node:child_process";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inflateSync } from "node:zlib";
@@ -33,6 +33,8 @@ A.pin = "111222"; A.session = (await A.call("/api/wallet/setup", { pin: A.pin })
 // ---- a browser ----
 const port = 9333 + PS, prof = mkdtempSync(join(tmpdir(), "chrome-"));
 process.on("exit", () => { try { rmSync(prof, { recursive: true, force: true }); } catch {} });   // the headless profile goes with the run
+// never drive a browser this test didn't start: a DevTools port that already answers may be an adb forward to a phone
+if (await fetch(`http://127.0.0.1:${port}/json/version`).then(() => true, () => false)) { console.error(`port ${port} already has a DevTools endpoint (an adb forward?); set PORT_SHIFT or free it`); process.exit(1); }
 const chrome = spawn(CHROME, ["--headless=new", `--remote-debugging-port=${port}`, `--user-data-dir=${prof}`, "--no-first-run",
   "--no-default-browser-check", "--disable-gpu", "--hide-scrollbars", "--force-device-scale-factor=2",
   ...(process.env.CI ? ["--no-sandbox"] : []), "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });   // CI: Ubuntu 24.04 blocks the sandbox's user namespaces
@@ -63,7 +65,8 @@ const seen = (sel) => js(`(() => { const e = document.querySelector(${JSON.strin
 const waitFor = async (name, expr, ms = 10000) => {
   const end = Date.now() + ms;
   while (Date.now() < end) { if (await js(expr).catch(() => false)) return true; await sleep(150); }
-  check(name, false, { errors, page: (await js(`(document.querySelector(".ov") || document.getElementById("page-msg")).innerText`).catch(() => "")).slice(0, 400) });
+  check(name, false, { errors, at: await js(`document.body.className + " lock:" + document.getElementById("lock").hidden + " vl:" + document.getElementById("v-locked").hidden + " vo:" + document.getElementById("v-open").hidden`).catch(() => ""),
+    page: (await js(`(document.querySelector(".ov") || document.getElementById("page-msg")).innerText`).catch(() => "")).slice(0, 300) });
 };
 // the old header's words must never show again, on any screen
 const noOldHeader = async (where) => {
@@ -78,6 +81,7 @@ const bigTargets = async (where) => {
     const r = e.getBoundingClientRect(); if (!r.width || !r.height) return false;
     if (e.closest(".bub, .lnk") || e.classList.contains("bub") || e.classList.contains("lnk")) return false;
     if (e.classList.contains("sw") && e.closest(".tg") && e.closest(".tg").getBoundingClientRect().height >= 44) return false;
+    if (e.type === "radio" && e.closest("label") && e.closest("label").getBoundingClientRect().height >= 44) return false;   // the whole label is the target
     return r.height < 43.5 || r.width < 43.5;
   }).map(e => (e.id || e.className || e.tagName) + " " + Math.round(e.getBoundingClientRect().width) + "x" + Math.round(e.getBoundingClientRect().height))`);
   check(`${where}: every control is at least 44 px`, small.length === 0, small);
@@ -200,7 +204,9 @@ check("no node card on the wallet home", await js(`!document.getElementById("pag
 await shot("wallet-home-starting");
 await nodeMode("online");
 await waitFor("online: up to date, the balance as the hero", `document.getElementById("node-ic").dataset.kind === "ok" && /75,000/.test(document.getElementById("bal-total").textContent)`, 20000);
-check("no addresses on the wallet home until Receive", await js(`document.getElementById("p-recv").hidden && !/[0-9a-f]{10}…/.test(document.getElementById("page-main").innerText)`));
+check("no addresses on the wallet home until Receive", await js(`document.getElementById("p-recv").hidden && !/[0-9a-f]{10}/.test(document.getElementById("page-main").innerText)`));
+check("the wallet home: the token list (Logos), then Send, Receive, Activity, with Activity open", await js(`[...document.querySelectorAll("#tokens .tok")].map(b => b.querySelector("b").textContent).join() === "Logos"
+  && [...document.querySelectorAll(".wtabs [role=tab]")].map(b => b.textContent).join() === "Send,Receive,Activity" && !document.getElementById("p-hist").hidden`));
 await shot("wallet-home");
 // the balance: a normal size, on one line inside the card at any amount, on small and large phones
 const setBal = async (key, n) => (await fetch(`http://127.0.0.1:${NODE_PORT}/balance/${key ? key + "/" : ""}${n}`, { method: "POST" })).text();
@@ -218,9 +224,9 @@ for (const width of [360, 412]) {
                oneLine: Math.abs(u.top - r.top) < parseFloat(getComputedStyle(e).fontSize) && r.height < parseFloat(getComputedStyle(e).fontSize) * 1.6,
                pageFits: document.documentElement.scrollWidth <= innerWidth }; })()`);
     console.log(`     ${width} px, ${want}: ${m.px} px`);
-    // 18 px or more up to 100 billion; the largest u64 (20 digits) may go to 14 px (fonts differ: 18 px on macOS, 16 on CI's Linux)
-    const floor = n.length >= 20 ? 14 : 18;
-    check(`${width} px, ${want}: one line, inside the card, no sideways scroll, ${floor} to 34 px`, m.fits && m.inCard && m.oneLine && m.pageFits && m.px >= floor && m.px <= 34, m);
+    // in its token row: 18 px, smaller only as the digits grow; 14 px or more up to 100 billion, 9 px for the largest u64
+    const floor = n.length >= 20 ? 9 : 14;
+    check(`${width} px, ${want}: one line, inside the card, no sideways scroll, ${floor} to 18 px`, m.fits && m.inCard && m.oneLine && m.pageFits && m.px >= floor && m.px <= 18, m);
     if (width === 360 && n === "18446744073709551615") await shot("wallet-home-big-balance");
   }
 }
@@ -235,7 +241,7 @@ check("the balance shows by default, with a Hide balance eye", await js(`documen
 await click("#b-eye");
 await waitFor("hidden: dots instead of the balance", `document.getElementById("bal-total").textContent === "••••••" && document.getElementById("b-eye").getAttribute("aria-label") === "Show balance"`);
 await js(`openPanel("recv"); true`);
-await waitFor("and no amounts anywhere on the home screen (Receive, Activity)", `!!document.querySelector("#accts .bal") && !/[0-9] Logos/.test(document.getElementById("page-main").innerText)`);
+await waitFor("and no amounts anywhere on the home screen (Receive has none at all, Activity)", `!!document.querySelector("#accts .acct") && !document.querySelector("#accts .bal") && !/[0-9] Logos/.test(document.getElementById("page-main").innerText)`);
 check("remembered on this device", await js(`localStorage.getItem("balance-hidden") === "1"`));
 await js(`openPanel(null); true`);
 await shot("wallet-home-hidden");
@@ -282,7 +288,7 @@ await setBal(null, 12500); await settle(); await js(`loadAccounts(); true`);
 await waitFor("back to the usual balance, received notes gone", `/75,000/.test(document.getElementById("bal-total").textContent)`);
 await noOldHeader("the wallet home");
 await click("#t-recv");
-await waitFor("Receive shows the address with Copy", `!document.getElementById("p-recv").hidden && document.getElementById("p-recv").innerText.includes("Copy address")`);
+await waitFor("Receive shows the address in full with Copy", `!document.getElementById("p-recv").hidden && document.getElementById("p-recv").innerText.includes("Copy address") && document.getElementById("p-recv").innerText.includes(accts[0].key)`);
 await waitFor("and its QR code", `!!document.querySelector("#recv-qr .qr svg path")`);
 check("the QR code on Receive reads as the wallet address, exactly (64 hex, nothing added)", await qrOnScreen("#recv-qr .qr") === key0, { read: await qrOnScreen("#recv-qr .qr"), key0 });
 check("the QR code holds no amount", !/[0-9],[0-9]|Logos/.test(await qrOnScreen("#recv-qr .qr") || ""));
@@ -377,13 +383,13 @@ check("Messages has its own top: no node header, no status pill", await js(`docu
 check("no name linked yet: no name card on Messages home", !(await text("#mg-home")).includes("People reach you"));
 
 // ---- Settings: a home list of groups in a fixed order, each opening its own page; Back goes up one level ----
-const GROUPS = [["msg", "Messages"], ["name", "Your name"], ["node", "Node"], ["sec", "Security"], ["upd", "Updates"], ["bk", "Backup & restore"], ["about", "About"]];
+const GROUPS = [["msg", "Messages"], ["name", "Your name"], ["node", "Node"], ["sec", "Security"], ["upd", "Updates"], ["bk", "Backup & restore"], ["look", "Appearance"], ["about", "About"]];
 const ANDROID_ONLY = new Set(["name"]);        // only inside the Android app with the LNS signer (checked with erin's app below)
 const LINUX_GROUPS = GROUPS.filter(g => !ANDROID_ONLY.has(g[0]));
 // Everything Settings had in 0.9.7, by id, and the group page it now lives on. `show`: on screen whenever that page is
 // (the rest come and go with the state: fingerprint on or off, an update available, a file picked...).
 const INVENTORY = {
-  msg: { all: ["s-msg", "h-s-msg", "mg-check-m", "mg-name", "mg-name-save", "mg-name-m", "mg-link", "mg-check", "mg-cmd-d", "mg-cmd", "mg-copy", "mg-addr", "mg-addr-qr", "mg-addr-show", "mg-addr-copy", "mg-addr-m"],
+  msg: { all: ["s-msg", "h-s-msg", "mg-own", "mg-own-m", "mg-own-go", "mg-else", "mg-else-s", "mg-check-m", "mg-name", "mg-name-save", "mg-name-m", "mg-link", "mg-check", "mg-cmd-d", "mg-cmd", "mg-copy", "mg-addr", "mg-addr-qr", "mg-addr-show", "mg-addr-copy", "mg-addr-m"],
          show: ["mgs-go-name", "mgs-go-addr"] },
   node: { all: ["s-nodec", "h-node", "height", "nodeline", "syncline", "state", "peers", "rate", "b-open-node"], show: ["height", "nodeline", "state", "peers", "rate"] },
   sec: { all: ["s-sec", "h-s-sec", "s-fp", "h-s-fp", "fp-off", "b-fp-set", "fp-on", "b-fp-off", "fp-confirm", "b-fp-yes", "b-fp-no", "nfp-on-form", "nfp-pin", "b-nfp-on", "fp-host", "m-fp", "s-lock", "h-s-lock", "al-min", "al-grace", "m-al", "b-lock"],
@@ -394,9 +400,12 @@ const INVENTORY = {
               "s-rs", "h-s-rs", "rs", "rs-file", "rs-step2", "rs-compare", "rs-warn", "rs-msg", "rs-pw", "rs-show", "rs-pin", "rs-ok", "b-rs", "m-rs"],
         show: ["h-s-bk", "bk-state", "bk-what", "bk-pw1", "bk-show", "bk-pw2", "bk-hist", "bk-pin", "b-bk", "h-s-rs", "rs-file"] },
   about: { all: ["s-about", "h-s-about", "about-version", "about-upd", "about-talk"], show: ["about-version", "about-talk"] },
-  name: { all: ["s-lns", "h-s-lns", "lns-none", "b-lns-acct", "lns-acct", "lns-addr", "lns-copy", "lns-bal", "lns-bk", "b-lns-bk", "lns-noname", "lns-in",
-                "b-lns-reg", "b-lns-link", "lns-has", "lns-name", "b-lns-bc", "b-lns-msg", "lns-notes", "m-lns"],
-          show: ["b-lns-acct"] },
+  look: { all: ["s-look", "h-s-look", "th-system", "th-light", "th-dark"], show: ["th-system", "th-light", "th-dark"] },
+  name: { all: ["s-lns", "h-s-lns", "lns-none", "b-lns-acct", "lns-acct", "lns-addr", "lns-copy", "lns-bal", "lns-cost", "lns-need", "lns-get", "b-lns-faucet",
+                "b-lns-br", "lns-brf", "lns-br-from", "lns-br-amt", "b-lns-br-x", "b-lns-br-rev", "lns-brr", "b-lns-br-back", "b-lns-br-go", "lns-brs", "b-lns-br-stop",
+                "lns-bk", "b-lns-bk", "lns-noname", "lns-in", "b-lns-reg", "lns-why", "b-lns-link", "lns-has", "lns-name", "b-lns-bc", "b-lns-msg", "lns-step",
+                "lns-notes", "m-lns", "lns-more"],
+          show: ["b-lns-acct", "lns-more"] },
 };
 // and the words, as they were (a few from each)
 const WORDS = {
@@ -406,7 +415,8 @@ const WORDS = {
   upd: ["Installed version", "Check for updates", "Updates come from the project's GitHub repository"],
   bk: ["Back up", "Saves this wallet", "Backup password (at least 8 characters)", "Include message history", "Save backup file", "Restore from a backup", "Restoring replaces this wallet's accounts"],
   about: ["Version", "This page is served by the app on this device", "Testnet."],
-  name: ["This phone can hold an LNS name of its own", "unencrypted like the wallet's own keys", "There is no recovery phrase", "Make a name account"],
+  look: ["System", "Light", "Dark"],
+  name: ["Hold an LNS name on this phone", "Make a name account", "Details"],
 };
 await click("#nav-wallet");
 await click("#b-gear");
@@ -419,7 +429,7 @@ check("its title is Settings, at a normal size", (await text("#h-settings")) ===
 await barOk("Settings", "#page-settings .bar");
 const rowState = (id) => text(`#go-${id} small`);
 await waitFor("each row has one line on where it stands", `[...document.querySelectorAll("#s-groups .grow")].filter(b => !b.hidden).every(b => b.querySelector("small").textContent.length > 0)`);
-for (const [id, want] of [["msg", /^On · linked to alice$/], ["node", /^(Up to date|Online) · block [0-9,]+$/], ["sec", /^PIN · locks after 5 minutes$/], ["upd", /^Version \d+\.\d+\.\d+/], ["bk", /^No backup yet$/], ["about", /^Version \d+\.\d+\.\d+ · Testnet$/]])
+for (const [id, want] of [["msg", /^On · linked to alice$/], ["node", /^(Up to date|Online) · block [0-9,]+$/], ["sec", /^PIN · locks after 5 minutes$/], ["upd", /^Version \d+\.\d+\.\d+/], ["bk", /^No backup yet$/], ["look", /^System$/], ["about", /^Version \d+\.\d+\.\d+ · Testnet$/]])
   check(`the ${id} row says ${want}`, want.test(await rowState(id)), await rowState(id));
 check("the rows say no key or address", !/\bkey\b|[0-9a-f]{20,}/i.test(await text("#s-groups")));
 for (const width of [360, 412]) {
@@ -437,7 +447,7 @@ check("the reload notice (after an update) shows above Settings' bar, not under 
 const seenIds = new Set();
 // Settings > Messages' own pages: what 0.9.8's one Messages page had, each id on exactly one of them
 const MSG_SUB = [
-  ["name", "Name", { all: ["mg-check-m", "mg-name", "mg-name-save", "mg-name-m", "mg-link", "mg-check", "mg-cmd-d", "mg-cmd", "mg-copy"], show: ["mg-check-m", "mg-name", "mg-name-save", "mg-link"],
+  ["name", "Name", { all: ["mg-own", "mg-own-m", "mg-own-go", "mg-else", "mg-else-s", "mg-check-m", "mg-name", "mg-name-save", "mg-name-m", "mg-link", "mg-check", "mg-cmd-d", "mg-cmd", "mg-copy"], show: ["mg-check-m", "mg-name", "mg-name-save", "mg-link"],
     words: ["Your name", "alice, linked to this phone", "Without a name you can still write and get messages", "Link your name to this phone"] }],
   ["addr", "Address", { all: ["mg-addr", "mg-addr-qr", "mg-addr-show", "mg-addr-copy", "mg-addr-m"], show: ["mg-addr-show", "mg-addr-copy"],
     words: ["Your messaging address", "Anyone can write to this phone at this address", "Coins go to your wallet address"] }],
@@ -826,6 +836,39 @@ check("Your name's ids are all on its page", [...seenIds].filter(x => INVENTORY.
 await click("#b-settings-back"); await stWait("out of Settings", "closed");
 await click("#nav-msg");
 await waitFor("erin's chat with bob", `[...document.querySelectorAll("#mg-rows .crow")].some(r => r.innerText.includes("bob"))`, 15000);
+// ---- Messages > Name with the phone's own name: nothing to type, one action shared with Your name ----
+const openOwn = async (what) => {
+  await js(`closeSettings(); true`); await js(`openSettings("s-msg"); true`);
+  await click("#mgs-go-name"); await mgsWait(`Messages > Name (${what})`, "name");
+};
+await E.call("/api/wallet/lns/account", {});
+await openOwn("no name yet");
+await waitFor("a name account and no name: one line, and Get a name", `document.getElementById("mg-own-m").textContent === "No LNS name yet." && document.getElementById("mg-own-go").textContent === "Get a name" && !document.getElementById("mg-own-go").hidden`);
+check("the manual way is folded: Use a name held elsewhere", await js(`!document.getElementById("mg-else").open && document.getElementById("mg-else-s").textContent === "Use a name held elsewhere" && !document.getElementById("mg-name").checkVisibility()`),
+  await js(`[document.getElementById("mg-else").open, document.getElementById("mg-else-s").textContent, document.getElementById("mg-else-s").hidden].join()`));
+await shot("messages-name-none");
+await E.call("/api/wallet/lns/name", { name: "erin" });
+await openOwn("erin, pointed here");
+await waitFor("the phone holds erin, pointed here on chain: it says so, nothing to do", `document.getElementById("mg-own-m").textContent === "erin · messages come to this phone" && document.getElementById("mg-own-go").hidden`);
+await shot("messages-name-own");
+await w.register("zed", {});
+await E.call("/api/wallet/lns/name", { name: "zed" });
+await openOwn("zed, not pointed");
+await waitFor("zed isn't pointed here: one button", `document.getElementById("mg-own-m").textContent === "zed isn't used for messages yet." && document.getElementById("mg-own-go").textContent === "Use zed for messages"`);
+check("no field, no Save, no command in sight", await js(`!document.getElementById("mg-name").checkVisibility() && !document.getElementById("mg-name-save").checkVisibility() && !document.getElementById("mg-cmd").checkVisibility()`));
+await shot("messages-name-use");
+await click("#mg-own-go");
+await until("it runs Your name's own set-text job for msg", async () => {
+  try { return readFileSync(join(E.data, "fake-names-calls.jsonl"), "utf8").trim().split("\n").map(l => JSON.parse(l)).some(c => JSON.stringify(c.args) === JSON.stringify(["set-text", "zed", "msg", E.id ? hex(E.id.publicKey) : ""])); } catch { return false; } }, 20000);
+await w.register("zed", { msg: hex(E.id.publicKey) });                // the name service has it now
+await until("the change has finished", async () => (await E.call("/api/wallet/lns")).d.job.state !== "running", 20000);
+await openOwn("zed, pointed now");
+await waitFor("now: zed · messages come to this phone", `document.getElementById("mg-own-m").textContent === "zed · messages come to this phone"`, 20000);
+await until("and messages go out under zed", async () => (await E.call("/api/messages/key")).d.name === "zed", 10000);
+await js(`closeSettings(); true`); await js(`openSettings("s-lns"); true`);
+await waitFor("Your name shows the same state on its button", `document.getElementById("b-lns-msg").textContent === "Messages come to this phone" && document.getElementById("b-lns-msg").disabled`, 15000);
+await js(`closeSettings(); true`); await click("#nav-msg");
+await waitFor("back on Messages with erin's chats", `[...document.querySelectorAll("#mg-rows .crow")].some(r => r.innerText.includes("bob"))`, 15000);
 await js(`[...document.querySelectorAll("#mg-rows .crow")].find(r => r.innerText.includes("bob")).click(); true`);
 await waitFor("the chat is open", `!!document.querySelector(".ov .cmp")`);
 await js(`lockedNow(); true`);                    // what an auto-lock does

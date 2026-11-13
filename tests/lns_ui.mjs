@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CHROME = process.env.CHROME || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-const PORT = 8121, BASE = `http://127.0.0.1:${PORT}`, PIN = "246813";
+const PORT = 8121 + Number(process.env.PORT_SHIFT || 0), BASE = `http://127.0.0.1:${PORT}`, PIN = "246813";
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
 const procs = [];
 let prof = "";
@@ -29,7 +29,9 @@ const ctl = (path) => fetch(`http://127.0.0.1:${SEQ}/ctl/${path}`, { method: "PO
 const post = async (path, body, session) => (await fetch(BASE + path, { method: "POST", headers: { "Content-Type": "application/json", Origin: BASE, ...(session ? { "X-Session": session } : {}) }, body: JSON.stringify(body) })).json();
 const session = (await post("/api/wallet/setup", { pin: PIN })).session;
 
-const cport = 9343; prof = mkdtempSync(join(tmpdir(), "chrome-"));
+const cport = 9343 + Number(process.env.PORT_SHIFT || 0); prof = mkdtempSync(join(tmpdir(), "chrome-"));
+// never drive a browser this test didn't start: a DevTools port that already answers may be an adb forward to a phone
+if (await fetch(`http://127.0.0.1:${cport}/json/version`).then(() => true, () => false)) { console.error(`port ${cport} already has a DevTools endpoint (an adb forward?); set PORT_SHIFT or free it`); stop(); process.exit(1); }
 const chrome = spawn(CHROME, ["--headless=new", `--remote-debugging-port=${cport}`, `--user-data-dir=${prof}`, "--no-first-run",
   "--no-default-browser-check", "--disable-gpu", ...(process.env.CI ? ["--no-sandbox"] : []), "about:blank"], { stdio: "ignore" });
 procs.push(chrome);
@@ -92,11 +94,11 @@ check("Details says the key is kept unencrypted, that there is no recovery phras
 check("Details is closed until asked", await js(`!document.getElementById("lns-more").open`));
 await click("#b-lns-acct");
 await waitFor("the account shows, with its balance in LEZ", `!document.getElementById("lns-acct").hidden && document.getElementById("lns-bal").innerText === "0 LEZ"`);
-await waitFor("what a name costs, in one line", `document.getElementById("lns-cost").innerText === "Costs 1,000,000 LEZ deposit + a small fee."`, 20000);
-await waitFor("and how much is missing", `document.getElementById("lns-need").innerText === "You need 5,527,000 more LEZ."`);
+await waitFor("what a name costs, in one line: the deposit and the fees it should really take", `document.getElementById("lns-cost").innerText === "Costs 1,000,000 LEZ deposit + about 1,520,000 LEZ fees."`, 20000);
+await waitFor("and how much is missing", `document.getElementById("lns-need").innerText === "You need 3,485,926 more LEZ."`);
 await waitFor("right away it asks for a new backup", `!document.getElementById("lns-bk").hidden`);
 await val("#lns-in", "slow");
-check("Register waits for the LEZ, and says why", await js(`document.getElementById("b-lns-reg").disabled && document.getElementById("lns-why").innerText === "Needs 5,527,000 LEZ. Get LEZ above."`), await text("#lns-why"));
+check("Register waits for the LEZ, and says why", await js(`document.getElementById("b-lns-reg").disabled && document.getElementById("lns-why").innerText === "Needs 3,485,926 LEZ. Get LEZ above."`), await text("#lns-why"));
 check("I already hold it works without LEZ", await js(`!document.getElementById("b-lns-link").disabled`));
 await shot("your-name-short");
 
@@ -108,20 +110,20 @@ await click("#b-lns-faucet");
 await waitFor("a refusal in the faucet's own words", `document.getElementById("lns-brs").innerText === "The faucet says: this account was funded in the last day"`);
 await sleep(1200);
 await js(`LNS.refresh(); true`);
-await waitFor("the grant arrives: 3,527,000 more", `document.getElementById("lns-need").innerText === "You need 3,527,000 more LEZ."`);
+await waitFor("the grant arrives: 1,485,926 more", `document.getElementById("lns-need").innerText === "You need 1,485,926 more LEZ."`);
 
 // ---- a bridge from the wallet, with its review ----
 await click("#b-lns-br");
-await waitFor("the bridge form: one account with coins, so no From choice; the missing amount filled in", `!document.getElementById("lns-brf").hidden && document.getElementById("lns-br-from").hidden && document.getElementById("lns-br-amt").value === "3527000"`);
+await waitFor("the bridge form: one account with coins, so no From choice; the missing amount filled in", `!document.getElementById("lns-brf").hidden && document.getElementById("lns-br-from").hidden && document.getElementById("lns-br-amt").value === "1485926"`);
 await click("#b-lns-br-rev");
 await waitFor("the review", `!document.getElementById("lns-brr").hidden`);
 const rv = await text("#lns-brr");
 check("it shows from, to your name account, the amount, the fee, and that it takes time and can't be undone",
-  /From\s+Main/.test(rv) && /To\s+Your name account/.test(rv) && /3,527,000 Logos → 3,527,000 LEZ/.test(rv) && /Up to 110,000 Logos/.test(rv) && /Takes minutes to hours\. Can't be undone\./.test(rv), rv);
+  /From\s+Main/.test(rv) && /To\s+Your name account/.test(rv) && /1,485,926 Logos → 1,485,926 LEZ/.test(rv) && /Up to 110,000 Logos/.test(rv) && /Takes minutes to hours\. Can't be undone\./.test(rv), rv);
 await shot("bridge-review");
 await click("#b-lns-br-go");
-await waitFor("it starts by setting the amount aside", `/^Bridge 3,527,000: (Setting the amount aside|Sending to the bridge|Sent)/.test(document.getElementById("lns-brs").innerText)`);
-await waitFor("and arrives", `/^Bridge 3,527,000: Arrived\./.test(document.getElementById("lns-brs").innerText)`, 30000);
+await waitFor("it starts by setting the amount aside", `/^Bridge 1,485,926: (Setting the amount aside|Sending to the bridge|Sent)/.test(document.getElementById("lns-brs").innerText)`);
+await waitFor("and arrives", `/^Bridge 1,485,926: Arrived\./.test(document.getElementById("lns-brs").innerText)`, 30000);
 await waitFor("now nothing is missing, and Register is on", `document.getElementById("lns-need").hidden && !document.getElementById("b-lns-reg").disabled && document.getElementById("lns-why").hidden`);
 
 // ---- register: a short stepper ----

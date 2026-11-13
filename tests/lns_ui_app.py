@@ -49,7 +49,7 @@ class Seq(http.server.BaseHTTPRequestHandler):
                 r["result"] = "cd" * 32
             else:
                 r["result"] = {"getAccountBalance": LEZ["balance"], "getLastBlockId": 7, "getChannelId": CHANNEL,
-                               "getFeeState": {"next_base_fee_exec_ceiling": 9, "next_base_fee_stor_ceiling": 9}}.get(m)
+                               "getFeeState": {"next_base_fee_exec_ceiling": 9, "next_base_fee_stor_ceiling": 9, "base_fee_exec": 8, "base_fee_stor": 8}}.get(m)
             return r
         self.out(200, [answer(c) for c in body] if isinstance(body, list) else answer(body))
 

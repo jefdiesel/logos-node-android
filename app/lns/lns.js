@@ -151,6 +151,11 @@ async function lnsLoad() {
     $("b-lns-bc").disabled = !d.values.blockchain; $("b-lns-msg").disabled = !d.values.msg;
     $("b-lns-msg").title = d.values.msg ? "" : "Turn on messages first";
     costDraw(); bridgeDraw();
+    // the same state Messages > Name shows: pointed here or not, as the name service says
+    if (d.name && d.values.msg && window.msgPointsHere) window.msgPointsHere(d.name).then(here => {
+      if (here === true && !(lnsLast.job && lnsLast.job.state === "running")) { $("b-lns-msg").disabled = true; $("b-lns-msg").textContent = "Messages come to this phone"; }
+      else $("b-lns-msg").textContent = "Point it at my messages";
+    });
   }
   // not while a change runs: the signer may be rewriting the files a backup would read
   $("lns-bk").hidden = !(has && d.backup_needed && !(d.job && d.job.state === "running"));
@@ -183,7 +188,8 @@ function costDraw() {
   const d = lnsLast || {}, c = d.cost || {}, n = lnsName(), three = n.length === 3;
   const dep = three ? c.deposit_three : c.deposit;
   $("lns-cost").hidden = !dep || !!d.name;
-  if (dep) $("lns-cost").textContent = "Costs " + fmt(dep) + " LEZ deposit + a small fee.";
+  const fees = c.fees ? ((BigInt(c.fees) + 9999n) / 10000n * 10000n).toString() : null;     // rounded up to 10,000
+  if (dep) $("lns-cost").textContent = "Costs " + fmt(dep) + " LEZ deposit" + (fees ? " + about " + fmt(fees) + " LEZ fees." : " + fees.");
   const [, by] = needFor(n);
   $("lns-need").hidden = d.name || by == null || by === "0";
   if (by && by !== "0") $("lns-need").textContent = "You need " + fmt(by) + " more LEZ.";
@@ -210,7 +216,9 @@ $("b-lns-acct").addEventListener("click", () => lnsDo("/api/wallet/lns/account",
 $("b-lns-reg").addEventListener("click", () => lnsDo("/api/wallet/lns/register", { name: lnsName() }));
 $("b-lns-link").addEventListener("click", () => lnsDo("/api/wallet/lns/name", { name: lnsName() }));
 $("b-lns-bc").addEventListener("click", () => lnsDo("/api/wallet/lns/text", { entry: "blockchain" }));
-$("b-lns-msg").addEventListener("click", () => lnsDo("/api/wallet/lns/text", { entry: "msg" }));
+// the one way to point the name at this phone's messaging address: here, and Settings > Messages > Name
+const pointMsg = async () => { await lnsDo("/api/wallet/lns/text", { entry: "msg" }); return !!(lnsLast && lnsLast.job && lnsLast.job.state === "running"); };
+$("b-lns-msg").addEventListener("click", pointMsg);
 
 // ---- Get LEZ: the faucet, and a bridge from this wallet -------------------------------------------------------
 function brSay(text, cls) { const m = $("lns-brs"); m.className = "msg" + (cls ? " " + cls : ""); m.textContent = text; m.hidden = !text; }
@@ -401,6 +409,10 @@ window.LNS = {
   settings(unlocked, shown) { if (!unlocked) { $("s-lns").hidden = true; clearTimeout(lnsTimer); } else if (shown) lnsLoad(); },
   refresh() { if (!$("s-lns").hidden) lnsLoad(); },
   home,
+  /** The phone's own name for Messages > Name: { name, running } (null when it can't be read). */
+  async own() { const r = await api("/api/wallet/lns"); if (!r.ok) return null; lnsLast = r.data; const j = r.data.job || {};
+    return { name: r.data.name || "", running: j.state === "running" && j.kind === "text" && j.entry === "msg" }; },
+  pointMsg,
   /** A scanned LEZ account from elsewhere: LEZ's Send, with it filled in. */
   sendTo(acct) { if (!lezAcct) return openSettings("s-lns", "b-lns-acct"); walletPick("lez", "send"); $("lez-to").value = acct; $("lez-amt").focus(); },
   // one short line for Settings' list; [text, "warn"] for something to look at

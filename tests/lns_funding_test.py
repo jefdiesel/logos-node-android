@@ -146,8 +146,13 @@ class SeqH(http.server.BaseHTTPRequestHandler):
             r["result"] = CHANNEL
         elif m == "getAccountBalance":
             r["result"] = Seq.lez["balance"]
+        elif m == "sendTransaction":
+            p = (body.get("params") or [{}])[0]
+            if isinstance(p, dict) and p.get("Public") == "transfer":
+                Seq.lez["balance"] -= int(p["amount"]) + 3000
+            r["result"] = "cd" * 32
         elif m == "getFeeState":
-            r["result"] = {"next_base_fee_exec_ceiling": 9, "next_base_fee_stor_ceiling": 9, "base_fee_exec": 8}
+            r["result"] = {"next_base_fee_exec_ceiling": 9, "next_base_fee_stor_ceiling": 9, "base_fee_exec": 8, "base_fee_stor": 8}
         else:
             r["result"] = None
         self.send(200, r)
@@ -263,7 +268,10 @@ check("the deposit comes from the registry's settings: 1,000,000 (3,000,000 for 
       d["deposit"] == "1000000" and d["deposit_three"] == "3000000", d)
 check("the reserve is the register gas limit at the exec ceiling, plus the bytes at the storage ceiling: 2,263,500",
       d["reserve"] == str(250000 * 9 + 1500 * 9), d)
-check("registering needs the deposit plus a reserve for each of its two transactions: 5,527,000", d["need"] == "5527000", d)
+check("the fees: the gas a commit and a reveal use (23,214 and 165,000) at today's base fee, plus their bytes: 1,513,712",
+      d["fees"] == str((23214 + 165000) * 8 + 1000 * 8), d)
+check("to start, the account needs the commit's fee at the ceiling, then the deposit and the reserve: 3,485,926",
+      d["need"] == str(1000000 + 2263500 + 23214 * 9 + 1500 * 9) == "3485926" and d["need_three"] == "5485926", d)
 calls = [json.loads(l) for l in open(os.path.join(data, "fake-names-calls.jsonl"))]
 st_calls = [c for c in calls if c["args"] == ["settings"]]
 check("`names settings` was asked", bool(st_calls))
@@ -429,5 +437,42 @@ node_include()
 time.sleep(1)
 check("no deposit after a stop", not [x for x in deposits() if x["deposit"]["inputs"] and Node.notes[MAIN].get(x["deposit"]["inputs"][0]) == 4321])
 check("no pending row left in the history", until("settled", lambda: not [e for e in history() if e.get("status") == "pending"]))
+# ---- LEZ Send: a plain transfer from the name account, judged by the balance -------------------------------
+TO = "Public/3oRTrDMCWuSfnbUgUJCa1vqoedtUUi4xWmMdfJ4emVZC"
+Seq.lez["balance"] = 50000
+for body, want in (({"to": TO.lower(), "amount": "5"}, "Public/ and its ID"), ({"to": "Public/" + "1" * 50, "amount": "5"}, "Public/ and its ID"),
+                   ({"to": TO + " ", "amount": "5"}, "Public/ and its ID"), ({"to": "Public/" + ACCOUNT, "amount": "5"}, "this name account"),
+                   ({"to": TO, "amount": "0"}, "above 0"), ({"to": TO, "amount": "1,000"}, "above 0"), ({"to": TO, "amount": 5}, "above 0"),
+                   ({"to": TO, "amount": "40000"}, "Not enough")):
+    code, d = call("/api/wallet/lns/send", dict(body, confirm=True), session=s)
+    check("LEZ Send refused: %r" % (body,), code in (400, 409) and want in d["error"], d)
+code, d = call("/api/wallet/lns/send", {"to": TO, "amount": "1000"}, session=s)
+check("a plan: from the name account, to, amount, the fee at most the transfer limit at the ceiling plus its bytes",
+      code == 200 and d["plan"] == {"from": ACCOUNT, "to": TO[7:], "amount": "1000", "fee_max": str(1000 * 9 + 1500 * 9)}, d)
+n_calls = len(open(os.path.join(data, "fake-names-calls.jsonl")).readlines())
+check("a plan runs nothing", len(open(os.path.join(data, "fake-names-calls.jsonl")).readlines()) == n_calls)
+code, d = call("/api/wallet/lns/send", {"to": TO, "amount": "1000", "confirm": True}, session=s)
+check("sent through the job runner", code == 200 and d["started"] == "send", d)
+j = until("it finishes", lambda: (lambda j: j if j["state"] != "running" else None)(call("/api/wallet/lns", session=s)[1]["job"]))
+check("done: the balance dropped by the amount", j["state"] == "done" and j["kind"] == "send" and j["amount"] == "1000", j)
+c = [json.loads(l) for l in open(os.path.join(data, "fake-names-calls.jsonl"))][-1]
+check("as `names wallet auth-transfer send --from Public/<account> --to Public/<id> --amount 1000`",
+      c["args"] == ["wallet", "auth-transfer", "send", "--from", "Public/" + ACCOUNT, "--to", TO, "--amount", "1000"], c)
+d = call("/api/wallet/lns", session=s)[1]
+check("nothing of the signer's noise in the reply", "abandon" not in json.dumps(d))
+check("the LEZ activity has it", any(a["kind"] == "send" and a["state"] == "done" and a["amount"] == "1000" for a in d["activity"]), d["activity"][:3])
+code, d = call("/api/wallet/lns/send", {"to": TO, "amount": "13", "confirm": True}, session=s)
+j = until("the unsure one finishes", lambda: (lambda j: j if j["state"] != "running" else None)(call("/api/wallet/lns", session=s)[1]["job"]))
+check("a send the wallet gave up on, with no balance change, says to check before sending again (never 'try again')",
+      j["state"] == "failed" and j["error"] == server.LNS_SEND_UNSURE, j)
+server.lns_state_save(reg_pending="alice")
+Seq.lez["balance"] = 3600000
+code, d = call("/api/wallet/lns/send", {"to": TO, "amount": "200000", "confirm": True}, session=s)
+check("while a registration is unfinished, what it needs stays", code == 409 and "must stay for registering alice" in d["error"], d)
+server.lns_state_save(reg_pending="")
+Seq.lez["balance"] = None
+server.lns_cost_cache["fees"] = None
+code, d = call("/api/wallet/lns/send", {"to": TO, "amount": "5", "confirm": True}, session=s)
+check("an unknown balance refuses", code == 502, d)
 print("all checks passed", flush=True)
 os._exit(0)
