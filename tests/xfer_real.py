@@ -152,13 +152,17 @@ sys.path.insert(0, os.path.join(HERE, "..", "app"))
 import server  # noqa: E402  (only for its encoder, xfer_hash)
 
 
-def fund(key, to, amount, tries=40):
-    for _ in range(tries):                    # the node keeps a fund's notes apart for ~10 blocks: wait it out
+LAST = {}
+
+
+def fund(key, to, amount, tries=200):
+    for _ in range(tries):                    # the node keeps a fund's notes apart for 10 final blocks: wait it out
         code, f = node("POST", "/wallet/fund", {"tip": None, "tx_builder": {"mantle_tx": {"ops": []}, "ledger_inputs": [],
                        "pending_transfer": {"inputs": [], "outputs": [{"value": amount, "pk": to}]}, "channel_multi_sig_proofs": {}},
                        "change_public_key": key, "funding_public_keys": [key], "max_tx_fee": 100000, "priority_fee_percent": 0})
         if code == 200:
             return f
+        LAST["fund"] = (code, f)
         time.sleep(3)
     return None
 
@@ -205,12 +209,17 @@ for _ in range(40):
         break
     time.sleep(2)
 v = max(notes.values())
-f1 = fund(k, to["key"], v // 2)                # to learn the fee of a one-input transfer of that note
-fee = v - sum(o["value"] for o in f1["funded_tx"]["ops"][0]["payload"]["outputs"]) if f1 else None
-f = fund(k, to["key"], v - fee) if fee is not None else None
-outs = f["funded_tx"]["ops"][0]["payload"]["outputs"] if f else []
-check("a transfer with no change funded (one output)", len(outs) == 1, f)
-if f:
+f1 = fund(k, to["key"], v // 2)                # a one-input transfer of that note: its fee (two outputs)
+fee2 = v - sum(o["value"] for o in f1["funded_tx"]["ops"][0]["payload"]["outputs"]) if f1 else None
+f, outs = None, []
+for fee in ([fee2] if fee2 is not None else []):
+    f = fund(k, to["key"], v - fee)            # waits until the node lets go of the note f1 kept apart
+    outs = f["funded_tx"]["ops"][0]["payload"]["outputs"] if f else []
+    if len(outs) == 2 and outs[1]["value"] < fee:    # one output costs less: the rest came back as change; once more
+        f = fund(k, to["key"], v - (fee - outs[1]["value"]))
+        outs = f["funded_tx"]["ops"][0]["payload"]["outputs"] if f else []
+check("a transfer with no change funded (one output)", len(outs) == 1, (f, LAST.get("fund"), fee2))
+if f and len(outs) == 1:
     mine = server.xfer_hash(f["funded_tx"])
     node("POST", "/mempool/add/tx", {"mantle_tx": f["funded_tx"], "ops_proofs": [f["transfer_proof"]]})
     theirs = node_hash_of(f["funded_tx"]["ops"][0]["payload"]["inputs"])
