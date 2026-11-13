@@ -14,6 +14,7 @@ import android.os.Looper
 import android.util.Base64
 import android.util.Log
 import android.webkit.ConsoleMessage
+import android.webkit.CookieManager
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -107,6 +108,7 @@ class WalletActivity : Activity() {
     /** native_fingerprint from the wallet's GET /api/wallet; null if it doesn't answer. */
     private fun walletSetting(): Boolean? = try {
         val c = java.net.URL(WalletServer.URL + "api/wallet").openConnection() as java.net.HttpURLConnection
+        c.setRequestProperty("Cookie", "${WalletServer.APP_KEY_COOKIE}=${WalletServer.appKey}")
         c.connectTimeout = 2000
         c.readTimeout = 5000
         try {
@@ -256,8 +258,15 @@ class WalletActivity : Activity() {
             }
             Log.i(TAG, "wallet server answering after ${System.currentTimeMillis() - started} ms")
             main.post {
-                waiting = false
-                web.loadUrl(WalletServer.URL)
+                // the app key first (android/LOCAL-APIS.md): server.py answers only requests carrying it,
+                // and the WebView sends it with every request of the page from then on
+                val cookies = CookieManager.getInstance()
+                cookies.setAcceptCookie(true)
+                cookies.setCookie(WalletServer.URL, WalletServer.appKeyCookie()) { ok ->
+                    if (!ok) Log.w(TAG, "the WebView did not take the app key cookie")
+                    waiting = false
+                    web.loadUrl(WalletServer.URL)
+                }
             }
         }
     }

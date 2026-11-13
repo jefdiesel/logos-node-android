@@ -34,6 +34,19 @@ object WalletServer {
     private const val TAG = "LogosWallet"
     @Volatile private var started = false
 
+    /**
+     * The app key (android/LOCAL-APIS.md): 32 random bytes made once per wallet process, given to server.py
+     * (APP_KEY) and to this app's own WebView as the cookie [APP_KEY_COOKIE], never written to a file or a log.
+     * Any app on the phone can connect to 127.0.0.1:[PORT]; without this cookie server.py answers it only
+     * with the page's public files.
+     */
+    val appKey: String = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
+        .joinToString("") { "%02x".format(it) }
+    const val APP_KEY_COOKIE = "app_key"
+
+    /** The cookie as the WebView is given it: this host only, all paths, not readable by the page's scripts. */
+    fun appKeyCookie() = "$APP_KEY_COOKIE=$appKey; Path=/; HttpOnly; SameSite=Strict"
+
     /** What went wrong starting the wallet in this process, for the wallet screen; null if nothing. */
     @Volatile var problem: String? = null
 
@@ -63,6 +76,8 @@ object WalletServer {
                 val env = JSONObject(
                     mapOf(
                         "APP_PORT" to PORT.toString(),
+                        // every request but the page's public files needs it (the WebView's cookie)
+                        "APP_KEY" to appKey,
                         "APP_DATA" to dataDir(app).path,
                         "NODE_API" to "http://127.0.0.1:${NodeFiles.API_PORT}",
                         "NODE_BIN" to files.launcher.path,

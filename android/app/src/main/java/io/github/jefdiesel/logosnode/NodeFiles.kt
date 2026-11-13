@@ -86,6 +86,11 @@ class NodeFiles(context: Context) {
                 "api:",
                 "  backend:",
                 "    listen_address: 127.0.0.1:$API_PORT",
+                // with no origin listed the node answers CORS with "*", so any website open in the phone's
+                // browser could send JSON to the wallet endpoints; this lets only the wallet's page origin in, as
+                // install.sh's --http-cors-origin does. Other apps are not browsers: see android/LOCAL-APIS.md.
+                "    cors_origins:",
+                "    - http://127.0.0.1:${WalletServer.PORT}",
                 "tracing:",
                 "  logger:",
                 "    file:",

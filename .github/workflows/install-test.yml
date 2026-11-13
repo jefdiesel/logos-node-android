@@ -111,6 +111,8 @@ jobs:
         run: python3 tests/autolock_test.py
       - name: Inside the Android app (APP_EMBEDDED=android) and unchanged without it
         run: python3 tests/embedded_test.py
+      - name: Android app key - other apps on the phone get only the page's public files (android/LOCAL-APIS.md)
+        run: python3 tests/app_key_test.py
       - name: The phone's own LNS name (Android app only), with a stand-in signer and sequencer
         run: python3 tests/lns_test.py
       - name: Getting LEZ for the phone's name account (faucet, bridge through the node's API), with stand-ins
@@ -157,6 +159,8 @@ jobs:
         run: CHROME="$(command -v google-chrome || command -v chromium)" node tests/chat_ui.mjs
       - name: Your name (Android app only) in a real browser, with a stand-in signer
         run: CHROME="$(command -v google-chrome || command -v chromium)" node tests/lns_ui.mjs
+      - name: Android app key in a real browser - the page's requests carry the cookie, its scripts can't read it
+        run: CHROME="$(command -v google-chrome || command -v chromium)" node tests/app_key_ui.mjs
   wallet-send:
     # A real transfer through the web app, on a private one-node chain with the node's public test keys.
     runs-on: ubuntu-24.04-arm
@@ -171,6 +175,10 @@ jobs:
           for f in standalone-node-config.yaml standalone-deployment-config.yaml; do
             curl -fsSL -o $f "https://raw.githubusercontent.com/logos-blockchain/logos-blockchain/$V/nodes/node/$f"
           done
+          # cors_origins in the shape the Android app writes (NodeFiles.writeConfig), for this job's app origin
+          grep -q '^    cors_origins: \[ \]$' standalone-node-config.yaml
+          sed -i 's|^    cors_origins: \[ \]$|    cors_origins:\n    - http://127.0.0.1:8090|' standalone-node-config.yaml
+          ./logos-blockchain-node --deployment standalone-deployment-config.yaml standalone-node-config.yaml --check-config
           nohup ./logos-blockchain-node --deployment standalone-deployment-config.yaml standalone-node-config.yaml > node.log 2>&1 &
           NODE_BIN="$PWD/logos-blockchain-node" NODE_CFG="$PWD/standalone-node-config.yaml" \
           NODE_DEPLOYMENT="$PWD/standalone-deployment-config.yaml" APP_DATA="$PWD" \
@@ -185,6 +193,8 @@ jobs:
           APP_BASE=http://127.0.0.1:8090 APP_PIN=135790 \
           NAMES_FROM=e3635f207984ae779cf76b5f20714b514373f61ff96260879fe0a6d71f2dce07 \
           NAMES_TO=cce9796339efd968df9cd463bc2248e4b29c86409496e8b2599da8c4c1074d22 node tests/names_test.mjs
+      - name: Node API - another local program spends with no credential (expected until the node patch); websites can't
+        run: NODE_API=http://127.0.0.1:8080 APP_PIN=135790 python3 tests/local_api_probe.py
       - name: Logs, if something failed
         if: failure()
         run: tail -40 chain/node.log; cat chain/app.log
