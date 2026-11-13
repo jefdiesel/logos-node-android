@@ -106,11 +106,11 @@ for _ in range(120):
     code, st = W.call("/api/wallet/tx?hash=" + h, session=s)
     hist = W.call("/api/wallet/history", session=s)[1].get("entries", [])
     e = next((x for x in hist if x.get("hash") == h), None)
-    if st.get("state") == "in_block" and e and e.get("status") == "in block":
+    if st.get("state") == "in_block" and e and e.get("status") in ("in block", "confirming"):   # final once below the LIB
         state = st
         break
     time.sleep(2)
-check("after the restart: the same transfer submitted, found in a block by its hash", state is not None, (st, e))
+check("after the restart: the same transfer submitted, found in a block by its hash (%s)" % (e or {}).get("status"), state is not None, (st, e))
 check("  Activity: in block, with the fee the funded transfer names", e and e.get("fee") == str(r.get("fee")), e)
 found = False
 code, raw = None, b""
@@ -127,8 +127,11 @@ check("the node's own block stream has the hash the app computed", found, raw[:6
 lines = [json.loads(x) for x in raw.decode().splitlines() if x.strip()]
 print("     one line of the stream (cut):", json.dumps(lines[0])[:400] if lines else "none")
 blocks = [ev.get("block", ev) for ev in lines]
-check("its lines are what the app reads: block.header.slot an integer, transactions[].mantle_tx.hash a string",
-      blocks and all(isinstance((b.get("header") or {}).get("slot"), int) for b in blocks)
+check("its lines are what the app reads: header slot, id and parent_block (each linking to the one before), lib_slot, transactions[].mantle_tx.hash",
+      blocks and all(isinstance((b.get("header") or {}).get("slot"), int) and isinstance(b["header"].get("id"), str)
+                     and isinstance(b["header"].get("parent_block"), str) for b in blocks)
+      and all(isinstance(ev.get("lib_slot"), int) for ev in lines)
+      and all(blocks[n]["header"]["parent_block"] == blocks[n - 1]["header"]["id"] for n in range(1, len(blocks)))
       and all(isinstance((t.get("mantle_tx") or {}).get("hash"), str) for b in blocks for t in b.get("transactions") or []),
       json.dumps(lines[:1])[:600])
 
@@ -142,6 +145,76 @@ check("the recipient got the amount once: one new note of it", sorted(v for v in
 mv = node("GET", "/mempool/view")[1]
 check("and the node holds nothing more of it", h not in (mv if isinstance(mv, list) else []), mv)
 p.terminate()
+
+# ---- 4. the app's hash against the node's own, for a transfer with several inputs and one with no change ------------------
+os.environ["APP_DATA"] = tempfile.mkdtemp(prefix="xfer-real-enc-")
+sys.path.insert(0, os.path.join(HERE, "..", "app"))
+import server  # noqa: E402  (only for its encoder, xfer_hash)
+
+
+def fund(key, to, amount, tries=40):
+    for _ in range(tries):                    # the node keeps a fund's notes apart for ~10 blocks: wait it out
+        code, f = node("POST", "/wallet/fund", {"tip": None, "tx_builder": {"mantle_tx": {"ops": []}, "ledger_inputs": [],
+                       "pending_transfer": {"inputs": [], "outputs": [{"value": amount, "pk": to}]}, "channel_multi_sig_proofs": {}},
+                       "change_public_key": key, "funding_public_keys": [key], "max_tx_fee": 100000, "priority_fee_percent": 0})
+        if code == 200:
+            return f
+        time.sleep(3)
+    return None
+
+
+def node_hash_of(inputs, timeout=120):
+    """The hash the node itself gives the transaction that spends exactly `inputs`, from its block stream."""
+    end = time.time() + timeout
+    while time.time() < end:
+        c = Unix("node", timeout=60)
+        c.request("GET", "/cryptarchia/blocks_range?slot_from=0&order=ascending&blocks_limit=1000")
+        raw = c.getresponse().read()
+        for line in raw.decode().splitlines():
+            if line.strip():
+                for t in json.loads(line).get("block", {}).get("transactions") or []:
+                    mt = t.get("mantle_tx") or {}
+                    for op in mt.get("ops") or []:
+                        if sorted((op.get("payload") or {}).get("inputs") or []) == sorted(inputs):
+                            return mt.get("hash")
+        time.sleep(3)
+    return None
+
+
+k = rich["key"]
+notes = balance(k).get("notes") or {}
+f = fund(k, k, min(notes.values()) // 2)       # a second note on the key: a transfer to itself
+node("POST", "/mempool/add/tx", {"mantle_tx": f["funded_tx"], "ops_proofs": [f["transfer_proof"]]})
+node_hash_of(f["funded_tx"]["ops"][0]["payload"]["inputs"])
+for _ in range(40):
+    if len(balance(k).get("notes") or {}) >= 2:
+        break
+    time.sleep(2)
+notes = balance(k).get("notes") or {}
+amount = max(notes.values()) + 1               # more than any one note: two inputs or more
+f = fund(k, to["key"], amount)
+ins = f["funded_tx"]["ops"][0]["payload"]["inputs"] if f else []
+check("a transfer with %d inputs funded" % len(ins), len(ins) >= 2, f)
+mine = server.xfer_hash(f["funded_tx"])
+node("POST", "/mempool/add/tx", {"mantle_tx": f["funded_tx"], "ops_proofs": [f["transfer_proof"]]})
+theirs = node_hash_of(ins)
+check("several inputs: the app's hash is the node's", mine == theirs, (mine, theirs, f["funded_tx"]))
+for _ in range(40):
+    notes = balance(k).get("notes") or {}
+    if notes and not set(ins) & set(notes):
+        break
+    time.sleep(2)
+v = max(notes.values())
+f1 = fund(k, to["key"], v // 2)                # to learn the fee of a one-input transfer of that note
+fee = v - sum(o["value"] for o in f1["funded_tx"]["ops"][0]["payload"]["outputs"]) if f1 else None
+f = fund(k, to["key"], v - fee) if fee is not None else None
+outs = f["funded_tx"]["ops"][0]["payload"]["outputs"] if f else []
+check("a transfer with no change funded (one output)", len(outs) == 1, f)
+if f:
+    mine = server.xfer_hash(f["funded_tx"])
+    node("POST", "/mempool/add/tx", {"mantle_tx": f["funded_tx"], "ops_proofs": [f["transfer_proof"]]})
+    theirs = node_hash_of(f["funded_tx"]["ops"][0]["payload"]["inputs"])
+    check("no change: the app's hash is the node's", mine == theirs, (mine, theirs, f["funded_tx"]))
 print("all checks passed" if not FAILS else "%d FAILED" % len(FAILS))
 if FAILS:
     for f in os.listdir(DATA):

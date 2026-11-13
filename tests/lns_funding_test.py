@@ -82,8 +82,8 @@ class NodeH(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/cryptarchia/blocks_range"):
             lo = int(self.path.split("slot_from=")[1].split("&")[0])
-            lines = "".join(json.dumps({"block": {"header": {"slot": b["slot"]}, "transactions": [
-                {"mantle_tx": {"hash": h, "ops": []}, "ops_proofs": []} for h in b["txs"]]}}) + "\n" for b in Node.blocks if b["slot"] >= lo)
+            lines = "".join(json.dumps({"block": {"header": {"slot": b["slot"], "id": "%064x" % (n + 1), "parent_block": "%064x" % n}, "transactions": [
+                {"mantle_tx": {"hash": h, "ops": []}, "ops_proofs": []} for h in b["txs"]]}, "lib_slot": Node.blocks[-1]["slot"]}) + "\n" for n, b in enumerate(Node.blocks) if b["slot"] >= lo)
             raw = lines.encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/x-ndjson")
@@ -548,7 +548,7 @@ check("nothing of the signer's noise in the reply", "abandon" not in json.dumps(
 check("the LEZ activity has it", any(a["kind"] == "send" and a["state"] == "done" and a["amount"] == "1000" for a in d["activity"]), d["activity"][:3])
 code, d = call("/api/wallet/lns/send", {"to": TO, "amount": "13", "confirm": True}, session=s)
 j = until("the unsure one finishes", lambda: (lambda j: j if j["state"] != "running" else None)(call("/api/wallet/lns", session=s)[1]["job"]))
-check("a send the wallet gave up on, with no balance change, says to check before sending again (never 'try again')",
+check("a send the wallet gave up on, with no balance change, says it may still arrive (never to try again)",
       j["state"] == "failed" and j["error"] == server.LNS_SEND_UNSURE, j)
 Seq.lez["balance"] = 50000
 code, d = call("/api/wallet/lns/send", {"to": TO, "amount": "17", "confirm": True}, session=s)
@@ -557,7 +557,7 @@ check("LEZ arriving while a send goes out doesn't make it look failed: judged by
 code, d = call("/api/wallet/lns/send", {"to": TO, "amount": "19", "confirm": True}, session=s)
 j = until("the billed one finishes", lambda: (lambda j: j if j["state"] != "running" else None)(call("/api/wallet/lns", session=s)[1]["job"]))
 check("a send billed more than its amount but never seen in a block isn't 'Sent': it may still land", j["state"] == "failed" and j["error"] == server.LNS_SEND_UNSURE, j)
-check("S-9: it reads as unsure, and is kept as unsure", j["error"] == "May have been sent. Check before sending again." and j.get("unsure") is True
+check("S-9: it reads as unsure, and is kept as unsure", j["error"] == "May have been sent: it may still arrive. Check the balance and Activity." and j.get("unsure") is True
       and call("/api/wallet/lns", session=s)[1]["activity"][0]["state"] == "unsure", j)
 code, d = call("/api/wallet/lns/send", {"to": TO, "amount": "19", "confirm": True}, session=s)
 check("S-9: the same send again is held back for a few minutes", code == 409 and "may have gone out" in d["error"], d)

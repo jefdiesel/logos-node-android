@@ -77,8 +77,8 @@ class Node(Seq):
     def do_GET(self):
         if self.path.startswith("/cryptarchia/blocks_range"):
             lo = int(self.path.split("slot_from=")[1].split("&")[0])
-            raw = "".join(json.dumps({"block": {"header": {"slot": b["slot"]}, "transactions": [
-                {"mantle_tx": {"hash": h, "ops": []}, "ops_proofs": []} for h in b["txs"]]}}) + "\n" for b in BLOCKS if b["slot"] >= lo).encode()
+            raw = "".join(json.dumps({"block": {"header": {"slot": b["slot"], "id": "%064x" % (n + 1), "parent_block": "%064x" % n}, "transactions": [
+                {"mantle_tx": {"hash": h, "ops": []}, "ops_proofs": []} for h in b["txs"]]}, "lib_slot": BLOCKS[-1]["slot"]}) + "\n" for n, b in enumerate(BLOCKS) if b["slot"] >= lo).encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()

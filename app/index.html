@@ -1423,9 +1423,10 @@ $("b-go").addEventListener("click", async () => {
   clearInterval(txTimer);
   txTimer = setInterval(async () => {
     const s = await api("/api/wallet/tx?hash=" + encodeURIComponent(hash));
-    if (s.ok && s.data.state === "in_block") { clearInterval(txTimer); $("s-state").textContent = "Confirmed"; $("s-fee").textContent = amt(s.data.fee); $("s-note").hidden = true; loadAccounts(); loadHistory(); }
+    if (s.ok && s.data.state === "in_block" && s.data.final) { clearInterval(txTimer); $("s-state").textContent = "Confirmed"; $("s-fee").textContent = amt(s.data.fee); $("s-note").hidden = true; loadAccounts(); loadHistory(); }
+    else if (s.ok && s.data.state === "in_block") { $("s-state").textContent = "In a block, confirming"; $("s-fee").textContent = amt(s.data.fee); $("s-note").hidden = true; }
     else if (s.ok && s.data.state === "not_in_block") { clearInterval(txTimer); $("s-state").textContent = "Not in a block: nothing was sent"; loadAccounts(); loadHistory(); }
-    else if (s.ok && s.data.state === "unknown") { clearInterval(txTimer); $("s-state").textContent = "Can't tell: check your balance"; loadAccounts(); loadHistory(); }
+    else if (s.ok && s.data.state === "unknown") { $("s-state").textContent = "Can't tell yet (see Activity)"; }
   }, 5000);
 });
 $("b-again").addEventListener("click", () => { resetSend(); loadAccounts(); loadHistory(); });
@@ -1439,11 +1440,12 @@ function copyBtn(text, label) {
   return b;
 }
 const span = (t, cls) => Object.assign(document.createElement("span"), { textContent: t, className: cls || "" });
-// a transfer's state: in a block only once its hash is found in a block; "can't tell" when it went unsettled for
-// the 30 minutes the app waits (it may still land, and then reads in a block)
+// a transfer's state, as the chain shows it: in a block (final: at or below the node's last irreversible block),
+// in a block but not final yet (a fork could still take it away), not in a block only when a note it spends went
+// to another transaction, final; "can't tell yet" when it has waited 30 minutes and the chain hasn't settled it
 function sentState(e) {
   return e.status === "pending" ? "Confirming…" : e.status === "in block" ? (e.fee != null ? "fee " + amtH(e.fee) : "in a block")
-    : e.status === "unknown" ? "can't tell: check your balance" : "not in a block";
+    : e.status === "confirming" ? "in a block, confirming" : e.status === "unknown" ? "can't tell yet" : "not in a block";
 }
 function histRow(e) {
   const d = document.createElement("div"); d.className = "hrow";

@@ -1,6 +1,6 @@
 {
  "files": {
-  "index.html": "65eafb09e5b12c2138f61831123176dd560f83ecee4df437d3b26cc7fc41979e",
+  "index.html": "c0e877ec520eeec2cfc7a964a3921d41a3f4842d2c8accb1309bf155daad47a4",
   "lez04.json": "e74f571de285b6bf0d48a60db9c5e29c7f0abd976793ea535d165fb956e7afaf",
   "lez04.py": "fb4343a9aba6cb20257b310185f550b224004ca89374398a55632cff63203465",
   "lns/lns.js": "06b6bacbc6fbcc7e55f729972e00c4d3a47d9a7338f50e5a9d92b3089170b6cb",
@@ -47,7 +47,7 @@
   "noble-curves/utils.js": "ba29ee6d5c0129f0913e0cb11e1c84d09b7e1dd73c55e158cd49b5987bb62a65",
   "qr/VENDORED.txt": "1d4fc608d725afe81619262b9fb4323fe2d77318579396d9429f3a6f04b873ad",
   "qr/qrcode.js": "ea91d7118a5395289170da848b7c6758b996163bfbccf312591ab65a4911b7c0",
-  "server.py": "042164d47cd4113df4201aa19c90da04688eb7cbb711010c8fe8ff5360a436e4"
+  "server.py": "6879efc68fa876e2ccc265ed933b2fb8ea918bd8aae0fd82c2c98de351591877"
  },
  "version": "0.9.24"
 }
