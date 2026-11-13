@@ -93,8 +93,9 @@ jobs:
         run: python3 tools/release.py check
       - name: The page's script parses
         run: |
-          python3 -c "import re,sys; sys.stdout.write(re.search(r'<script>(.*)</script>', open('app/index.html').read(), re.S).group(1))" > "$RUNNER_TEMP/page.js"
-          node --check "$RUNNER_TEMP/page.js"
+          # every inline <script> of the page, each checked on its own (the theme one in <head>, the page's own)
+          python3 -c "import re,sys,os; [open(os.path.join(sys.argv[1], 'page%d.js' % i), 'w').write(m) for i, m in enumerate(re.findall(r'<script>(.*?)</script>', open('app/index.html').read(), re.S))]" "$RUNNER_TEMP"
+          for f in "$RUNNER_TEMP"/page*.js; do node --check "$f"; done
       - name: Update the app in place
         run: |
           cp -r app "$RUNNER_TEMP/app"
