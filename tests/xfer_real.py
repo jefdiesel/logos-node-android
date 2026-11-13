@@ -246,6 +246,58 @@ if f and len(outs) == 1:
     node("POST", "/mempool/add/tx", {"mantle_tx": f["funded_tx"], "ops_proofs": [f["transfer_proof"]]})
     theirs = node_hash_of(f["funded_tx"]["ops"][0]["payload"]["inputs"])
     check("no change: the app's hash is the node's", mine == theirs, (mine, theirs, f["funded_tx"]))
+
+# ---- 5. a forced input: the fund request's ledger_inputs (what the app uses to make a new transfer conflict with an
+# unsettled one: review SEND-HOLD-2B M2/M3) ---------------------------------------------------------------------------
+def forced(key, to, amount, note_id, value, op_id=None, index=0, tries=60):
+    utxo = {"op_id": op_id if op_id is not None else [0] * 32, "output_index": index, "note": {"value": value, "pk": key}}
+    for _ in range(tries):
+        code, f = node("POST", "/wallet/fund", {"tip": None, "tx_builder": {"mantle_tx": {"ops": []}, "ledger_inputs": [utxo],
+                       "pending_transfer": {"inputs": [note_id], "outputs": [{"value": amount, "pk": to}]}, "channel_multi_sig_proofs": {}},
+                       "change_public_key": key, "funding_public_keys": [key], "max_tx_fee": 100000, "priority_fee_percent": 0})
+        if code == 200 or "enough funds" not in json.dumps(f):
+            return code, f
+        time.sleep(3)
+    return code, f
+
+
+for _ in range(60):                             # every earlier transfer of k settled
+    notes = balance(k).get("notes") or {}
+    if notes:
+        break
+    time.sleep(2)
+ranked = sorted(notes.items(), key=lambda kv: kv[1])
+print("     notes of k:", [v for _, v in ranked])
+small = next(((i, v) for i, v in ranked if v > 5000), None)
+code, f = forced(k, to["key"], small[1] // 2, small[0], small[1]) if small else (0, None)
+print("     forced (op_id zeros, as an array):", code, json.dumps(f)[:500])
+if code != 200:
+    code, f = forced(k, to["key"], small[1] // 2, small[0], small[1], op_id="00" * 32)
+    print("     forced (op_id zeros, as hex):", code, json.dumps(f)[:500])
+fins = f["funded_tx"]["ops"][0]["payload"]["inputs"] if code == 200 else []
+check("a forced input that isn't the largest note: the node funds the transfer from it (any op_id)", fins == [small[0]] if small else False,
+      (code, f, small))
+if code == 200:
+    mine = server.xfer_hash(f["funded_tx"])
+    node("POST", "/mempool/add/tx", {"mantle_tx": f["funded_tx"], "ops_proofs": [f["transfer_proof"]]})
+    theirs = node_hash_of(fins)
+    check("  and it lands, the node's hash the app's", mine == theirs, (mine, theirs))
+for _ in range(60):
+    notes = balance(k).get("notes") or {}
+    if small and small[0] not in notes:
+        break
+    time.sleep(2)
+big = max(notes.items(), key=lambda kv: kv[1]) if notes else None
+g = fund(k, to["key"], 1000, tries=30)          # the node keeps the largest note apart for this unsubmitted one
+held = g["funded_tx"]["ops"][0]["payload"]["inputs"] if g else []
+print("     unsubmitted fund kept apart:", held, "largest:", big)
+code, f = forced(k, to["key"], 2000, big[0], big[1], op_id=[0] * 32, tries=1) if big else (0, None)
+print("     forced input the node keeps apart:", code, json.dumps(f)[:400])
+fins = f["funded_tx"]["ops"][0]["payload"]["inputs"] if code == 200 else []
+check("a forced input the node keeps apart for an unsubmitted fund: funded all the same", fins == [big[0]] if big else False, (code, f))
+if code == 200:
+    node("POST", "/mempool/add/tx", {"mantle_tx": f["funded_tx"], "ops_proofs": [f["transfer_proof"]]})
+    check("  and it lands", node_hash_of(fins) == server.xfer_hash(f["funded_tx"]))
 print("all checks passed" if not FAILS else "%d FAILED" % len(FAILS))
 if FAILS:
     for f in os.listdir(DATA):
