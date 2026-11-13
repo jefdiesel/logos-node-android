@@ -50,6 +50,315 @@ class NodeService : Service() {
 
         fun messagingPrefs(context: android.content.Context) =
             context.getSharedPreferences("messaging", android.content.Context.MODE_PRIVATE)
+
+        /**
+         * Mobile mode (android/BATTERY.md): set it with --es mode auto|off|light (the wallet page's Settings >
+         * Node does the same); --ez reset true clears files/node/battery-stats.txt for a new measurement.
+         */
+        const val ACTION_MOBILE_MODE = "io.github.jefdiesel.logosnode.MOBILE_MODE"
+        /** One line for the Node screen: the setting and what it does now. */
+        @Volatile var mobileSummary = ""
+
+        /** Kept by this (the main) process only; the wallet page reads files/node/mobile-state.json. */
+        fun mobileMode(context: android.content.Context): MobileMode =
+            MobileMode.parse(context.getSharedPreferences("battery", android.content.Context.MODE_PRIVATE).getString("mode", null))
+                ?: MobileMode.DEFAULT
+    }
+
+    // ---- mobile mode: the node's profile from the charger and the network (Battery.kt, BATTERY.md) ----
+
+    private val batteryWork = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private var powerReceiver: android.content.BroadcastReceiver? = null
+    private var batteryNetCallback: android.net.ConnectivityManager.NetworkCallback? = null
+    private lateinit var stats: BatteryStats
+    @Volatile private var plugged: Boolean? = null
+    @Volatile private var unmetered: Boolean? = null
+    @Volatile private var inputsChangedAt = 0L
+    @Volatile private var lastSwitchAt = 0L
+    @Volatile private var userChangePending = false
+    @Volatile private var lightFailed = false
+    @Volatile private var lightQuickExits = 0
+    @Volatile private var lastCheckedLight: String? = null
+    /** The profile of the node process now running (null when none runs), and the one the next start uses. */
+    @Volatile private var runningProfile: NodeProfile? = null
+    @Volatile private var startingProfile = NodeProfile.FULL
+    @Volatile private var nodeStartedAt = 0L
+    /** Set when the service itself stops the node to start it on another profile: no crash backoff then. */
+    @Volatile private var plannedRestart: String? = null
+    @Volatile private var lastWait = ""
+    private val nodeLines = java.util.concurrent.atomic.AtomicLong()
+    private val nodeBytes = java.util.concurrent.atomic.AtomicLong()
+
+    private val evaluateRunnable = Runnable { batteryWork.execute { evaluateProfile() } }
+
+    private fun scheduleEvaluate(delayMs: Long) {
+        main.removeCallbacks(evaluateRunnable)
+        main.postDelayed(evaluateRunnable, maxOf(0L, delayMs))
+    }
+
+    private fun stickyPlugged(): Boolean? = try {
+        registerReceiver(null, android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            ?.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, -1)?.takeIf { it >= 0 }?.let { it > 0 }
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun unmeteredNow(): Boolean? {
+        val cm = getSystemService(android.net.ConnectivityManager::class.java)
+        return cm.activeNetwork?.let { cm.getNetworkCapabilities(it) }
+            ?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+    }
+
+    /** A new reading of the charger or the network; a change waits SETTLE_MS before it can switch anything. */
+    private fun onInputs(newPlugged: Boolean?, newUnmetered: Boolean?) {
+        if (newPlugged == plugged && newUnmetered == unmetered) return
+        plugged = newPlugged
+        unmetered = newUnmetered
+        inputsChangedAt = System.currentTimeMillis()
+        log.app("mobile mode: plugged in=${newPlugged ?: "?"}, unmetered network=${newUnmetered ?: "?"}")
+        publishMobileState()
+        scheduleEvaluate(ProfileSwitch.SETTLE_MS + 1000)
+    }
+
+    private fun watchPowerAndNetwork() {
+        plugged = stickyPlugged()
+        unmetered = unmeteredNow()
+        val r = object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: android.content.Context, i: Intent) {
+                onInputs(i.action == Intent.ACTION_POWER_CONNECTED, unmetered)
+            }
+        }
+        val filter = android.content.IntentFilter().apply {
+            addAction(Intent.ACTION_POWER_CONNECTED); addAction(Intent.ACTION_POWER_DISCONNECTED)
+        }
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(r, filter, RECEIVER_NOT_EXPORTED) else registerReceiver(r, filter)
+        powerReceiver = r
+        val cb = object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onCapabilitiesChanged(network: android.net.Network, caps: android.net.NetworkCapabilities) {
+                onInputs(plugged, caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED))
+            }
+
+            override fun onLost(network: android.net.Network) = onInputs(plugged, null)
+        }
+        try {
+            getSystemService(android.net.ConnectivityManager::class.java).registerDefaultNetworkCallback(cb)
+            batteryNetCallback = cb
+        } catch (e: Exception) {
+            log.app("mobile mode: can't watch the network: $e")
+        }
+    }
+
+    private fun unwatchPowerAndNetwork() {
+        powerReceiver?.let { try { unregisterReceiver(it) } catch (_: Exception) {} }
+        powerReceiver = null
+        batteryNetCallback?.let { try { getSystemService(android.net.ConnectivityManager::class.java).unregisterNetworkCallback(it) } catch (_: Exception) {} }
+        batteryNetCallback = null
+    }
+
+    private fun readOrNull(f: File): String? = try { if (f.isFile) f.readText() else null } catch (_: Exception) { null }
+
+    /** The `names` signer (libnames.so) runs while a name change is made. */
+    private fun namesRunning(): Boolean =
+        File("/proc").listFiles { f -> f.name.all(Char::isDigit) }.orEmpty().any { dir ->
+            try { File(dir, "cmdline").readText().substringBefore('\u0000').endsWith("/libnames.so") } catch (_: Exception) { false }
+        }
+
+    private fun walletBusy(now: Long): String? {
+        val w = LogosApp.dataDir(this)
+        return WalletBusy.reason(
+            readOrNull(File(w, "wallet-bridge.json")), readOrNull(File(w, "wallet-history.json")), namesRunning(),
+            files.walletVisible.takeIf { it.exists() }?.lastModified(), now,
+        )
+    }
+
+    /** GET on the node's API, parsed; null when it doesn't answer. */
+    private fun nodeJson(path: String): org.json.JSONObject? = try {
+        val c = java.net.URL("http://127.0.0.1:${NodeFiles.API_PORT}$path").openConnection() as java.net.HttpURLConnection
+        c.connectTimeout = 3000; c.readTimeout = 5000
+        try { if (c.responseCode == 200) org.json.JSONObject(c.inputStream.bufferedReader().readText()) else null } finally { c.disconnect() }
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun chainInfo(): org.json.JSONObject? = nodeJson("/cryptarchia/info")?.let { it.optJSONObject("cryptarchia_info") ?: it }
+
+    /** On the batteryWork thread: switch the running node to the profile it should have, when that is safe. */
+    private fun evaluateProfile() {
+        try {
+            val mode = mobileMode(this)
+            val desired = MobilePolicy.desired(mode, plugged, unmetered, lightFailed)
+            val running = runningProfile.takeIf { process != null && !hold && !importRunning && !stopping && !stopRequested }
+            val now = System.currentTimeMillis()
+            val differs = desired != null && running != null && desired != running
+            val busy = if (differs) walletBusy(now) else null
+            val online = if (differs && busy == null) chainInfo()?.optString("state") == "Online" else null
+            when (val d = ProfileSwitch.decide(desired, running, now, inputsChangedAt, lastSwitchAt, nodeStartedAt, userChangePending, busy, online)) {
+                ProfileSwitch.Decision.Keep -> {
+                    lastWait = ""
+                    if (desired != null && desired == running) userChangePending = false
+                }
+                is ProfileSwitch.Decision.Wait -> {
+                    if (d.reason != lastWait) log.app("mobile mode: switching to ${desired?.key} when possible: ${d.reason}")
+                    lastWait = d.reason
+                    if (d.reason == busy) stats.add("waits_busy", 1)
+                    scheduleEvaluate(d.retryMs)
+                }
+                ProfileSwitch.Decision.Switch -> {
+                    lastWait = ""
+                    userChangePending = false
+                    lastSwitchAt = now
+                    stats.add("switches", 1)
+                    log.app("mobile mode: restarting the node on the ${desired!!.key} profile (${MobilePolicy.why(mode, plugged, unmetered, lightFailed)})")
+                    plannedRestart = "mobile mode: ${desired.key}"
+                    killNode()
+                }
+            }
+        } catch (e: Exception) {
+            log.app("mobile mode: $e")
+        }
+        publishMobileState()
+    }
+
+    /** files/node/mobile-state.json for the wallet page, and the Node screen's line. */
+    private fun publishMobileState() {
+        val mode = mobileMode(this)
+        val why = MobilePolicy.why(mode, plugged, unmetered, lightFailed)
+        val running = runningProfile
+        val desired = MobilePolicy.desired(mode, plugged, unmetered, lightFailed)
+        val now = when {
+            running == null -> "The node isn't running."
+            desired != null && desired != running && lastWait.isNotEmpty() ->
+                "Running ${running.key}; switching to ${desired.key} ($why) once possible: $lastWait."
+            else -> "Running ${running.key} ($why)."
+        }
+        mobileSummary = "Mobile mode: ${mode.key}. $now"
+        try {
+            val o = org.json.JSONObject().put("mode", mode.key).put("profile", running?.key ?: "").put("now", now)
+            files.mobileState.writeText(o.toString())
+        } catch (_: Exception) {}
+    }
+
+    // ---- the counters (BatteryStats), once a minute from the monitor thread ----
+
+    @Volatile private var resetRequested = false
+    private var lastTickAt = 0L
+    private val prevTicks = HashMap<Int, Long>()
+    private var prevUid: Pair<Long, Long>? = null
+    private var prevWaku: Pair<Long, Long>? = null
+    private var prevLines = 0L
+    private var prevBytes = 0L
+
+    private fun cpuMs(pids: List<Int>, hz: Long): Long {
+        var ms = 0L
+        for (pid in pids) {
+            val t = ProcCpu.ticksOf(pid) ?: continue
+            val d = t - (prevTicks[pid] ?: 0L)
+            prevTicks[pid] = t
+            if (d > 0) ms += d * 1000 / hz
+        }
+        return ms
+    }
+
+    private fun statsTick() {
+        try {
+            val now = System.currentTimeMillis()
+            stickyPlugged()?.let { p -> if (p != plugged) onInputs(p, unmetered) }    // a missed broadcast
+            val p = runningProfile?.key ?: "stopped"
+            if (lastTickAt > 0) stats.add("seconds_$p", minOf(now - lastTickAt, 5 * 60_000L) / 1000)
+            lastTickAt = now
+            val hz = try { android.system.Os.sysconf(android.system.OsConstants._SC_CLK_TCK).takeIf { it > 0 } ?: 100L } catch (_: Exception) { 100L }
+            val live = (NodeProcesses.pids() + runnerPids() + android.os.Process.myPid()).toSet()
+            prevTicks.keys.retainAll(live)
+            val nodeCpu = cpuMs(NodeProcesses.pids(), hz)
+            val wakuCpu = cpuMs(runnerPids(), hz)
+            stats.add("node_cpu_ms_$p", nodeCpu)
+            stats.add("waku_cpu_ms_$p", wakuCpu)
+            stats.add("service_cpu_ms_$p", cpuMs(listOf(android.os.Process.myPid()), hz))
+            val uid = android.os.Process.myUid()
+            val rx = android.net.TrafficStats.getUidRxBytes(uid); val tx = android.net.TrafficStats.getUidTxBytes(uid)
+            if (rx >= 0 && tx >= 0) {
+                prevUid?.let { (r, t) -> stats.add("uid_rx_bytes_$p", rx - r); stats.add("uid_tx_bytes_$p", tx - t) }
+                prevUid = rx to tx
+            }
+            messagingUsage?.let { u ->
+                val w = u.todayIn to u.todayOut
+                prevWaku?.let { (r, t) -> stats.add("waku_rx_bytes_$p", w.first - r); stats.add("waku_tx_bytes_$p", w.second - t) }
+                prevWaku = w
+            }
+            val l = nodeLines.get(); val b = nodeBytes.get()
+            stats.add("node_log_lines_$p", l - prevLines); stats.add("node_log_bytes_$p", b - prevBytes)
+            prevLines = l; prevBytes = b
+            // quality, next to the cost: the node's state, height and tip age each minute (battery-samples.csv
+            // has one line a minute, to set against a reference node's height at the same times)
+            var sample = listOf<Any?>(now / 1000, p, plugged, unmetered)
+            if (runningProfile != null) {
+                val net = nodeJson("/network/info")
+                val c = chainInfo()
+                val t = nodeJson("/time/info")
+                val peers = net?.optInt("n_peers", -1)
+                val tipSlot = c?.optLong("slot", -1L)?.takeIf { it >= 0 }
+                val curSlot = t?.optLong("current_slot", -1L)?.takeIf { it >= 0 }
+                val slotMs = t?.optLong("slot_duration_ms", 0L)?.takeIf { it > 0 } ?: 1000L
+                val tipAgeS = if (tipSlot != null && curSlot != null) maxOf(0L, curSlot - tipSlot) * slotMs / 1000 else null
+                stats.set("node_peers", peers); stats.set("node_connections", net?.optInt("n_connections", -1))
+                stats.set("node_height", c?.opt("height")); stats.set("node_state", c?.optString("state"))
+                if (tipAgeS != null && c?.optString("state") == "Online") {
+                    stats.add("tip_age_samples_$p", 1); stats.add("tip_age_s_sum_$p", tipAgeS)
+                    if (tipAgeS > stats.get("tip_age_s_max_$p")) stats.set("tip_age_s_max_$p", tipAgeS)
+                }
+                sample = sample + listOf(c?.optString("state"), c?.opt("height"), tipSlot, curSlot, tipAgeS, peers)
+            } else sample = sample + listOf(null, null, null, null, null, null)
+            sample = sample + listOf(nodeCpu, wakuCpu)
+            try {
+                val csv = File(files.home, "battery-samples.csv")
+                if (csv.length() > 2L * 1024 * 1024) { File(csv.path + ".1").delete(); csv.renameTo(File(csv.path + ".1")) }
+                if (!csv.exists()) csv.writeText("time,profile,plugged,unmetered,state,height,tip_slot,current_slot,tip_age_s,peers,node_cpu_ms,waku_cpu_ms\n")
+                csv.appendText(sample.joinToString(",") { it?.toString() ?: "" } + "\n")
+            } catch (_: Exception) {}
+            val mode = mobileMode(this)
+            stats.set("mode", mode.key); stats.set("profile", p)
+            stats.set("plugged", plugged); stats.set("unmetered", unmetered)
+            stats.set("light_failed", lightFailed); stats.set("waiting_for", lastWait)
+            stats.set("why", MobilePolicy.why(mode, plugged, unmetered, lightFailed))
+            stats.set("wakelock_held", wakeLock?.isHeld == true)
+            stats.set("updated", now)
+            if (resetRequested) {
+                // this minute's readings are the new starting point; everything counted so far goes
+                resetRequested = false
+                stats.reset()
+                File(files.home, "battery-samples.csv").delete(); File(files.home, "open-times.txt").delete()
+                log.app("mobile mode: counters reset")
+            }
+            stats.save()
+        } catch (e: Exception) {
+            log.app("mobile mode: counters: $e")
+        }
+    }
+
+    /**
+     * Runs the node binary's own config check (--check-config) on the light config, next to keystore.yaml.
+     * The node refuses unknown keys, so a light config it can't read must never become the running one.
+     */
+    private fun lightConfigOk(swarm: List<String>): Boolean {
+        val key = swarm.joinToString("\n")
+        if (key == lastCheckedLight) return true
+        return try {
+            files.writeConfig(swarm, files.checkConfig)
+            val p = processBuilder(listOf(files.binary.path, files.checkConfig.name, "--check-config")).start()
+            val out = p.inputStream.bufferedReader().readText()
+            val done = p.waitFor(60, TimeUnit.SECONDS)
+            if (!done) p.destroyForcibly()
+            val ok = done && p.exitValue() == 0
+            // only the last line, cut short: an error message could quote config values
+            if (!ok) log.app("mobile mode: the node refused the light config (${out.trim().lines().lastOrNull()?.take(200)})")
+            if (ok) lastCheckedLight = key
+            ok
+        } catch (e: Exception) {
+            log.app("mobile mode: couldn't check the light config: $e")
+            false
+        } finally {
+            files.checkConfig.delete()
+        }
     }
 
     // ---- the messaging (Waku) node: a second child, with its own supervisor (Messaging.kt) ----
@@ -227,6 +536,10 @@ class NodeService : Service() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(CHANNEL, "Node", NotificationManager.IMPORTANCE_LOW)
         )
+        files.mkdirs()
+        stats = BatteryStats(files.batteryStats)
+        watchPowerAndNetwork()
+        publishMobileState()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -260,6 +573,24 @@ class NodeService : Service() {
                 }
                 goForeground(if (supervisor?.isAlive == true) status else "Messaging node")
                 evaluateMessaging()
+                return START_STICKY
+            }
+            ACTION_MOBILE_MODE -> {
+                goForeground(if (supervisor?.isAlive == true) status else "Mobile mode")
+                if (intent.getBooleanExtra("reset", false)) {
+                    resetRequested = true                    // done by the next minute's count, on its thread
+                    log.app("mobile mode: counters reset at the next minute")
+                }
+                val m = MobileMode.parse(intent.getStringExtra("mode"))
+                if (m != null && m != mobileMode(this)) {
+                    getSharedPreferences("battery", MODE_PRIVATE).edit().putString("mode", m.key).commit()
+                    lightFailed = false; lightQuickExits = 0; lastCheckedLight = null
+                    userChangePending = true
+                    log.app("mobile mode set to ${m.key}")
+                }
+                publishMobileState()
+                scheduleEvaluate(0)
+                main.post { stopIfIdle() }
                 return START_STICKY
             }
             ACTION_TEST_IMPORT -> {
@@ -415,6 +746,8 @@ class NodeService : Service() {
         stopRequested = true
         thread(name = "node-stop-on-destroy") { killNode() }
         unwatchNetwork()
+        unwatchPowerAndNetwork()
+        main.removeCallbacks(evaluateRunnable)
         messaging?.let { m -> if (m.running) thread(name = "messaging-stop-on-destroy") { m.stop("the app's service stopped") } }
         messaging = null
         active = false
@@ -487,8 +820,9 @@ class NodeService : Service() {
     }
 
     private fun supervise() {
+        // the wake lock is held only while a node process runs (runNode), not in a restart wait or a snapshot pause
         wakeLock = getSystemService(PowerManager::class.java)
-            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "logosnode:node").apply { acquire() }
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "logosnode:node").apply { setReferenceCounted(false) }
         var backoffSeconds = 5L
         try {
             while (!stopRequested) {
@@ -514,7 +848,24 @@ class NodeService : Service() {
                 }
                 if (stopRequested) break
                 if (hold) continue                           // stopped on purpose for the import
-                if (System.currentTimeMillis() - started > 10 * 60_000) backoffSeconds = 5
+                val ranMs = System.currentTimeMillis() - started
+                val planned = plannedRestart
+                if (planned != null) {                       // mobile mode stopped it for another profile: start at once
+                    plannedRestart = null
+                    log.app("node stopped for $planned; starting it again now")
+                    backoffSeconds = 5
+                    continue
+                }
+                if (lastRunProfile == NodeProfile.LIGHT && ranMs < 90_000) {
+                    // a light config that passed the check but stops the node anyway: after two quick exits, full
+                    lightQuickExits++
+                    if (lightQuickExits >= 2 && !lightFailed) {
+                        lightFailed = true
+                        stats.set("light_failed", true); stats.save()
+                        log.app("mobile mode: the node stopped twice within 90 s on the light profile; using the full profile until the setting changes")
+                    }
+                } else if (ranMs > 10 * 60_000) lightQuickExits = 0
+                if (ranMs > 10 * 60_000) backoffSeconds = 5
                 log.app("node exited (exit code $exit); restarting in $backoffSeconds s")
                 setStatus("node exited (code $exit), restarting in $backoffSeconds s")
                 try {
@@ -557,7 +908,27 @@ class NodeService : Service() {
             log.app("init-config exited with code $code")
             if (code != 0 || !files.keystore.exists()) throw IllegalStateException("init-config failed (code $code)")
         }
-        files.writeConfig()
+        // mobile mode: this start's profile, from the setting, the charger and the network (BATTERY.md)
+        val mode = mobileMode(this)
+        var profile = MobilePolicy.atStart(mode, plugged, unmetered, lightFailed)
+        val overrides = files.profileOverrideLines()
+        fun swarmFor(p: NodeProfile): List<String> {
+            val v = NodeProfileConfig.values(p, overrides) ?: run {
+                log.app("mobile mode: profile.txt gives gossipsub values the node would refuse; using the ${p.key} defaults")
+                NodeProfileConfig.values(p) ?: emptyMap()
+            }
+            return NodeProfileConfig.swarmLines(v)
+        }
+        var swarm = swarmFor(profile)
+        if (profile == NodeProfile.LIGHT && !lightConfigOk(swarm)) {
+            lightFailed = true
+            stats.set("light_failed", true); stats.save()
+            profile = NodeProfile.FULL
+            swarm = swarmFor(profile)
+        }
+        files.writeConfig(swarm)
+        startingProfile = profile
+        if (MobilePolicy.desired(mode, plugged, unmetered, lightFailed) == profile) userChangePending = false
         files.linkBinary()
         // a node left over from an earlier run of the app would hold the database lock and the ports
         for (pid in NodeProcesses.pids()) {
@@ -588,26 +959,42 @@ class NodeService : Service() {
         }
         val started = System.currentTimeMillis()
         try { files.replayInfo.delete() } catch (_: Exception) {}
-        val p = synchronized(startLock) {
-            if (hold || stopRequested) return -1                    // an import took the state meanwhile
-            processBuilder(listOf(launcher.path, files.config.name))
-                .apply { if (forceFull) environment()["LOGOS_REPLAY_VERIFY"] = "full" }
-                .start().also { process = it }
-        }
-        setStatus("node running")
+        wakeLock?.acquire()
         try {
-            p.inputStream.bufferedReader().forEachLine { line ->
-                log.node(line)
-                ReplayInfo.fromLine(line, System.currentTimeMillis() - started)?.let { note ->
-                    try { files.replayInfo.appendText(note + "\n") } catch (_: Exception) {}
-                }
+            val p = synchronized(startLock) {
+                if (hold || stopRequested) return -1                    // an import took the state meanwhile
+                processBuilder(listOf(launcher.path, files.config.name))
+                    .apply { if (forceFull) environment()["LOGOS_REPLAY_VERIFY"] = "full" }
+                    .start().also { process = it }
             }
-        } catch (_: Exception) {
+            runningProfile = startingProfile
+            lastRunProfile = startingProfile
+            nodeStartedAt = System.currentTimeMillis()
+            log.app("node started on the ${startingProfile.key} profile (mobile mode ${mobileMode(this).key})")
+            publishMobileState()
+            scheduleEvaluate(ProfileSwitch.MIN_UPTIME_MS + 1000)   // a change that came while it was starting
+            setStatus(if (startingProfile == NodeProfile.LIGHT) "node running (light)" else "node running")
+            try {
+                p.inputStream.bufferedReader().forEachLine { line ->
+                    nodeLines.incrementAndGet(); nodeBytes.addAndGet(line.length + 1L)
+                    log.node(line)
+                    ReplayInfo.fromLine(line, System.currentTimeMillis() - started)?.let { note ->
+                        try { files.replayInfo.appendText(note + "\n") } catch (_: Exception) {}
+                    }
+                }
+            } catch (_: Exception) {
+            }
+            val code = p.waitFor()
+            process = null
+            return code
+        } finally {
+            runningProfile = null
+            publishMobileState()
+            wakeLock?.let { if (it.isHeld) it.release() }
         }
-        val code = p.waitFor()
-        process = null
-        return code
     }
+
+    @Volatile private var lastRunProfile: NodeProfile? = null
 
     private fun killNode() {
         val p = process ?: return
@@ -631,6 +1018,7 @@ class NodeService : Service() {
             }
             val pids = NodeProcesses.pids()
             if (pids.isNotEmpty()) log.app("node memory: " + pids.joinToString { "pid $it ${NodeProcesses.rssMb(it)} MB" })
+            statsTick()
         }
     }
 }

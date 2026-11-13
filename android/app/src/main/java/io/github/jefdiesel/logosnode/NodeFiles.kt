@@ -64,10 +64,26 @@ class NodeFiles(context: Context) {
         }
     }
 
-    /** The user config, in the same shape as install.sh writes it. */
-    fun writeConfig() {
+    /** files/node/profile.txt: this phone's own values for the mobile-mode levers, for testing them (NodeProfileConfig). */
+    val profileOverrides = File(home, "profile.txt")
+    /** files/node/battery-stats.txt: the mobile-mode counters (BatteryStats). */
+    val batteryStats = File(home, "battery-stats.txt")
+    /** files/node/mobile-state.json: the mobile-mode setting and what it does now, written by the service for the wallet page. */
+    val mobileState = File(home, "mobile-state.json")
+    /** files/node/wallet-visible: touched every few seconds while the wallet screen shows (WalletBusy). */
+    val walletVisible = File(home, "wallet-visible")
+    /** The light config is checked here (next to keystore.yaml, which it needs) before the node runs on it. */
+    val checkConfig = File(home, "user_config.check.yaml")
+
+    fun profileOverrideLines(): List<String> = try { profileOverrides.readLines() } catch (_: Exception) { emptyList() }
+
+    /**
+     * The user config, in the same shape as install.sh writes it, plus [swarm]: the profile's lines under
+     * `network: backend:` (NodeProfileConfig.swarmLines; none for the node's defaults). Written to [target].
+     */
+    fun writeConfig(swarm: List<String> = emptyList(), target: File = config) {
         val lines = listOf("network:", "  backend:", "    initial_peers:") +
-            INITIAL_PEERS.map { "    - $it" } +
+            INITIAL_PEERS.map { "    - $it" } + swarm +
             listOf(
                 "api:",
                 "  backend:",
@@ -80,7 +96,7 @@ class NodeFiles(context: Context) {
                 "state:",
                 "  base_folder: ${state.absolutePath}",
             ) + bootstrapLines()
-        config.writeText(lines.joinToString("\n", postfix = "\n"))
+        target.writeText(lines.joinToString("\n", postfix = "\n"))
     }
 
     /** files/node/bootstrap.txt: this phone's own values for the two settings below, for testing them. */

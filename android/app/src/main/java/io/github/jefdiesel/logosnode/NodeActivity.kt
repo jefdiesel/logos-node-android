@@ -227,7 +227,7 @@ class NodeActivity : Activity() {
                 java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date(previous.lastModified())) + ")"
         } else null
         main.post {
-            processView.text = processText + "\n" + walletText
+            processView.text = processText + (if (NodeService.mobileSummary.isEmpty()) "" else "\n" + NodeService.mobileSummary) + "\n" + walletText
             statusView.text = statusText
             logView.text = logText
             snapshotView.text = snapshotText

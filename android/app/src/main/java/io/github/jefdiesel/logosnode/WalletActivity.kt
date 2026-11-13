@@ -328,18 +328,32 @@ class WalletActivity : Activity() {
         main.removeCallbacks(watchdog)
         main.postDelayed(watchdog, 10_000)
         main.post { runQueuedUnlock() }
+        markVisible(true)
+        val nodeFiles = NodeFiles(this)
+        thread(name = "open-timer", isDaemon = true) { OpenTimer.measure(nodeFiles) }
     }
 
     override fun onPause() {
         resumed = false
         web.onPause()        // ... and hidden
         main.removeCallbacks(watchdog)
+        markVisible(false)
         super.onPause()
+    }
+
+    /**
+     * files/node/wallet-visible, fresh while this screen shows (touched here and by the 10 s watchdog): the
+     * node's service doesn't restart the node for mobile mode while it is (WalletBusy).
+     */
+    private fun markVisible(on: Boolean) = io.execute {
+        val f = NodeFiles(this).walletVisible
+        try { if (on) f.writeText(System.currentTimeMillis().toString()) else f.delete() } catch (_: Exception) {}
     }
 
     /** While the screen shows: if the page is up but the wallet stopped answering, cover up and reload. */
     private val watchdog: Runnable = object : Runnable {
         override fun run() {
+            markVisible(true)
             val shown = cover.visibility != View.VISIBLE && FingerprintUnlock.isOwnPage(web.url)
             if (shown) {
                 io.execute {
@@ -516,6 +530,31 @@ class WalletActivity : Activity() {
             main.post {
                 if (!FingerprintUnlock.isOwnPage(web.url)) return@post
                 WalletPage.parseCssColor(background)?.let { setBars(it) }
+            }
+        }
+
+        /**
+         * Settings > Node > Mobile mode: the setting and what it does now, as JSON {mode, profile, now}, from
+         * the file the node's service keeps (files/node/mobile-state.json). The default before the service
+         * has run once: auto.
+         */
+        @JavascriptInterface
+        fun mobileMode(): String =
+            (try { NodeFiles(this@WalletActivity).mobileState.readText() } catch (_: Exception) { null })
+                ?: org.json.JSONObject().put("mode", MobileMode.DEFAULT.key).put("profile", "").put("now", "").toString()
+
+        /** Settings > Node > Mobile mode: auto, off or light. The node's service keeps it and applies it (BATTERY.md). */
+        @JavascriptInterface
+        fun setMobileMode(mode: String) {
+            val m = MobileMode.parse(mode) ?: return
+            main.post {
+                if (!FingerprintUnlock.isOwnPage(web.url)) return@post
+                try {
+                    startForegroundService(Intent(this@WalletActivity, NodeService::class.java)
+                        .setAction(NodeService.ACTION_MOBILE_MODE).putExtra("mode", m.key))
+                } catch (e: Exception) {
+                    Log.w(TAG, "mobile mode: couldn't reach the node's service: $e")
+                }
             }
         }
 
