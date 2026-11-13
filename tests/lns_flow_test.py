@@ -83,7 +83,7 @@ def sends(kind=None):
         cs = [json.loads(l)["args"] for l in open(calls_file)]
     except FileNotFoundError:
         return []
-    cs = [c for c in cs if c[:1] in (["register"], ["set-text"], ["wallet"]) and c[:3] != ["wallet", "account", "list"]]
+    cs = [c for c in cs if c[:1] in (["register"], ["set-text"]) or c[:3] == ["wallet", "auth-transfer", "send"]]
     return [c for c in cs if kind is None or c[0] == kind]
 
 
@@ -114,7 +114,7 @@ public = server.x25519(bytes.fromhex(secret), (9).to_bytes(32, "little")).hex()
 # ---- who may call ----
 check("locked: Get this name is refused", call("/api/wallet/lns/get", {"name": "alice"})[0] == 401)
 check("from another page: refused", call("/api/wallet/lns/get", {"name": "alice"}, session=s, origin="https://evil.example")[0] == 403)
-for bad in ("Alice", "-x", "a b", "", "x" * 33, "alice\n"):
+for bad in ("al!ce", "-x", "a b", "", "x" * 33, "alice\n", 5):
     check("not a name: %r refused" % bad, call("/api/wallet/lns/get", {"name": bad}, session=s)[0] == 400)
 
 # ---- one tap with no account and no LEZ: the account is made, then it waits for LEZ, then carries on by itself ----
@@ -128,7 +128,7 @@ check("what it waits for covers the whole chain: commit, then the most any later
       need == (23214 * 9 + 13500) + 1000000 + (165000 * 9 + 13500) + (65590 * 9 + 13500) + (120000 * 9 + 13500) and f["short"] == str(need), (need, f))
 check("its cost: the deposit and the fees of all four transactions at today's base fee",
       f["cost"] == {"deposit": "1000000", "fees": str((23214 + 165000 + 2 * 65590) * 8 + 4 * 500 * 8)}, f["cost"])
-check("nothing was sent while it waits", sends() == [])
+check("nothing was sent while it waits", sends() == [], sends())
 code, d = call("/api/wallet/restore", {"backup": {}, "password": "x" * 8, "pin": PIN}, session=s)
 LEZ["balance"] = need
 until("LEZ arrives: it carries on with no tap, all the way", lambda: flow().get("step") == "done", tries=300)
@@ -156,7 +156,7 @@ code, d = call("/api/wallet/lns/text", {"entry": "blockchain"}, session=s)
 check("Point it at this wallet now is refused before sending: already points here", code == 409 and d.get("already") is True, d)
 
 # ---- Messages off: done without msg; msg follows by itself when Messages is turned on ----
-os.remove(server.MSG_KEY_FILE) if hasattr(server, "MSG_KEY_FILE") and os.path.exists(server.MSG_KEY_FILE) else None
+LEZ["balance"] = 20000000                       # bob has three characters: the higher deposit
 server.lns_state_save(name="")
 os.remove(server.LNS_FLOW_FILE)
 real_mk = server.msg_key_load

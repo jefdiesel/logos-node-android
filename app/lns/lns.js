@@ -9,72 +9,74 @@
 const slot = document.getElementById("lns-slot");
 if (!slot) return;
 const el = (tag, props, ...kids) => { const e = Object.assign(document.createElement(tag), props || {}); e.append(...kids); return e; };
+// Settings > Your name: the name, its state, one tap to get one, a single cost line. LEZ itself lives in the Wallet.
 slot.innerHTML = `
     <section class="card" id="s-lns" aria-labelledby="h-s-lns" hidden>
       <h2 id="h-s-lns">Your name</h2>
       <div id="lns-none">
-        <p style="margin:0">Hold an LNS name on this phone, like <b>alice</b>.</p>
-        <button type="button" id="b-lns-acct" style="width:100%;margin-top:12px">Make a name account</button>
-      </div>
-      <div id="lns-acct" hidden>
-        <p style="margin:0">Account <code id="lns-addr"></code> <span id="lns-copy"></span></p>
-        <p style="margin:6px 0 0">Balance <b id="lns-bal">-</b></p>
+        <label for="lns-in">LNS name</label>
+        <input id="lns-in" type="text" maxlength="32" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="alice">
+        <button type="button" class="primary" id="b-lns-get" style="width:100%;margin-top:12px" disabled>Get this name</button>
         <p class="note" id="lns-cost" hidden></p>
+        <button type="button" id="b-lns-link" style="width:100%;margin-top:8px" disabled>I already hold it</button>
+      </div>
+      <div id="lns-flow" hidden>
+        <p style="margin:0"><b id="lns-flow-name"></b></p>
+        <ol class="steps" id="lns-steps"></ol>
         <p class="msg warn" id="lns-need" hidden></p>
-        <div id="lns-get">
-          <div class="row"><button type="button" id="b-lns-faucet">Get test LEZ</button><button type="button" id="b-lns-br">Bridge from wallet</button></div>
-          <div id="lns-brf" hidden>
-            <label for="lns-br-from" id="l-lns-br-from">From</label>
-            <select id="lns-br-from"></select>
-            <label for="lns-br-amt">Amount</label>
-            <input id="lns-br-amt" type="text" inputmode="numeric" maxlength="24" autocomplete="off">
-            <div class="row"><button type="button" id="b-lns-br-x">Cancel</button><button type="button" class="primary" id="b-lns-br-rev">Review</button></div>
-          </div>
-          <div id="lns-brr" hidden>
-            <dl>
-              <div><dt>From</dt><dd id="lns-brr-from"></dd></div>
-              <div><dt>To</dt><dd>Your name account</dd></div>
-              <div><dt>Amount</dt><dd id="lns-brr-amt"></dd></div>
-              <div><dt>Fee</dt><dd id="lns-brr-fee"></dd></div>
-            </dl>
-            <p class="note">Takes minutes to hours. Can't be undone.</p>
-            <div class="row"><button type="button" id="b-lns-br-back">Back</button><button type="button" class="primary" id="b-lns-br-go">Bridge now</button></div>
-          </div>
-          <p class="msg" id="lns-brs" role="status" hidden></p>
-          <button type="button" id="b-lns-br-stop" hidden>Stop</button>
-        </div>
-        <div id="lns-bk" class="msg warn" hidden>
-          <p style="margin:0">Back up now. This key has no other copy.</p>
-          <button type="button" id="b-lns-bk" style="width:100%;margin-top:10px">Back up now</button>
-        </div>
-        <div id="lns-noname">
-          <label for="lns-in">LNS name</label>
-          <input id="lns-in" type="text" maxlength="32" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-          <p class="hint">a–z, 0–9 and -, like <b>alice</b></p>
-          <button type="button" class="primary" id="b-lns-reg" style="width:100%;margin-top:12px" disabled>Register</button>
-          <p class="note" id="lns-why" hidden></p>
-          <button type="button" id="b-lns-link" style="width:100%;margin-top:8px" disabled>I already hold it</button>
-        </div>
-        <div id="lns-has" hidden>
-          <p style="margin:12px 0 0">Name <b id="lns-name"></b></p>
-          <button type="button" id="b-lns-bc" style="width:100%;margin-top:12px">Point it at this wallet</button>
+        <button type="button" class="primary" id="b-lns-addlez" style="width:100%" hidden>Add LEZ</button>
+        <p class="note" id="lns-keep">Keep the app open.</p>
+        <p class="msg bad" id="lns-flow-err" role="alert" hidden></p>
+        <div class="row" id="lns-flow-acts" hidden><button type="button" id="b-lns-stop">Stop</button><button type="button" class="primary" id="b-lns-retry">Try again</button></div>
+      </div>
+      <div id="lns-has" hidden>
+        <p style="margin:0"><b id="lns-name"></b> is yours.</p>
+        <p class="note" id="lns-ent-bc"></p>
+        <p class="note" id="lns-ent-msg"></p>
+      </div>
+      <div id="lns-bk" class="msg warn" hidden>
+        <p style="margin:0">Back up now. This key has no other copy.</p>
+        <button type="button" id="b-lns-bk" style="width:100%;margin-top:10px">Back up now</button>
+      </div>
+      <p class="msg warn" id="lns-notes" role="alert" hidden></p>
+      <button type="button" id="b-lns-putback" style="width:100%" hidden>Put back the saved copy</button>
+      <p class="msg" id="m-lns" role="status"></p>
+      <details id="lns-more"><summary>More</summary>
+        <div id="lns-manual" hidden>
+          <button type="button" id="b-lns-bc" style="width:100%;margin-top:8px">Point it at this wallet</button>
           <button type="button" id="b-lns-msg" style="width:100%;margin-top:8px">Point it at my messages</button>
         </div>
-      </div>
-      <div id="lns-step" class="msg" role="status" hidden><b id="lns-step-t"></b><br><span id="lns-step-s"></span><br><span class="note">Keep the app open.</span></div>
-      <p class="msg warn" id="lns-notes" role="alert" hidden></p>
-      <p class="msg" id="m-lns" role="status"></p>
-      <details id="lns-more"><summary>Details</summary>
         <p class="note">The key is made and kept on this phone, unencrypted like the wallet's own keys. Your PIN guards the app, not the file.</p>
-        <p class="note">There is no recovery phrase. A backup made after the account exists is the only way back.</p>
-        <p class="note">Names are paid in LEZ testnet tokens, not Logos. The deposit comes back if you give the name up.</p>
-        <p class="note">Registering takes two steps, 15 minutes apart, so nobody can take a name they saw you ask for.</p>
-        <p class="note">The faucet pays once a day. A bridge moves Logos from this wallet to the name account; it can't be sent back yet.</p>
+        <p class="note">There is no recovery phrase. A backup made after the name account exists is the only way back.</p>
+        <p class="note">Names are paid in LEZ testnet tokens (Wallet → LEZ), not Logos. The deposit comes back if you give the name up.</p>
+        <p class="note">Registering takes two steps, 15 minutes apart, so nobody can take a name they saw you ask for. The app does every step itself, even while locked.</p>
       </details>
     </section>`;
-// the LEZ token's Send / Receive / Activity, shown by the Wallet's tabs when LEZ is picked
+// the LEZ token's Send / Receive / Activity, and Get LEZ above them, shown by the Wallet when LEZ is picked
 const panels = document.getElementById("tok-panels");
 if (panels) panels.innerHTML = `
+      <div id="lez-get" class="panel" hidden>
+        <div class="row" style="margin-top:6px"><button type="button" id="b-lns-faucet">Get test LEZ</button><button type="button" id="b-lns-br">Bridge from Logos</button></div>
+        <div id="lns-brf" hidden>
+          <label for="lns-br-from" id="l-lns-br-from">From</label>
+          <select id="lns-br-from"></select>
+          <label for="lns-br-amt">Amount</label>
+          <input id="lns-br-amt" type="text" inputmode="numeric" maxlength="24" autocomplete="off">
+          <div class="row"><button type="button" id="b-lns-br-x">Cancel</button><button type="button" class="primary" id="b-lns-br-rev">Review</button></div>
+        </div>
+        <div id="lns-brr" hidden>
+          <dl>
+            <div><dt>From</dt><dd id="lns-brr-from"></dd></div>
+            <div><dt>To</dt><dd>LEZ (your name account)</dd></div>
+            <div><dt>Amount</dt><dd id="lns-brr-amt"></dd></div>
+            <div><dt>Fee</dt><dd id="lns-brr-fee"></dd></div>
+          </dl>
+          <p class="note">Takes minutes to hours. Can't be undone.</p>
+          <div class="row"><button type="button" id="b-lns-br-back">Back</button><button type="button" class="primary" id="b-lns-br-go">Bridge now</button></div>
+        </div>
+        <p class="msg" id="lns-brs" role="status" hidden></p>
+        <button type="button" id="b-lns-br-stop" hidden>Stop</button>
+      </div>
       <div id="lez-send" class="panel" role="tabpanel" hidden>
         <form id="f-lez-send" autocomplete="off">
           <label for="lez-to">To: a LEZ account</label>
@@ -96,7 +98,7 @@ if (panels) panels.innerHTML = `
         <p class="msg" id="m-lez-send" role="status"></p>
       </div>
       <div id="lez-recv" class="panel" role="tabpanel" hidden>
-        <p class="note" style="text-align:center">Your name account · LEZ testnet</p>
+        <p class="note" style="text-align:center">LEZ testnet</p>
         <div class="qr-wrap" id="lez-qr"></div>
         <p class="recv-addr" id="lez-addr"></p>
         <div class="row"><button type="button" id="b-lez-copy">Copy</button></div>
@@ -104,128 +106,124 @@ if (panels) panels.innerHTML = `
       <div id="lez-act" class="panel" role="tabpanel" hidden>
         <p class="note">What this app did with LEZ. Payments from others show in the balance.</p>
         <div id="lez-rows"></div>
-        <button type="button" id="b-lez-get" style="width:100%;margin-top:12px">Get LEZ</button>
       </div>`;
 
 var lnsTimer = null, lnsLast = null, lezAcct = null, lezBal, tick = null;
 const LEZ = n => fmt(n) + " LEZ";
 const lezAmt = v => balHidden ? MASK : LEZ(v);
+const up10k = v => ((BigInt(v) + 9999n) / 10000n * 10000n).toString();       // rounded up to 10,000
 function lnsMsg(text, cls) { const m = $("m-lns"); m.className = "msg" + (cls ? " " + cls : ""); m.textContent = text; }
-const RUN_IDS = ["b-lns-acct", "b-lns-reg", "b-lns-link", "b-lns-bc", "b-lns-msg"];
 
-// ---- what a running change shows: a short stepper -------------------------------------------------------------
-function stepText(j) {
-  if (j.kind === "register") {
-    const sent = /^(sent|in block)/.test(j.progress || "");
-    if (j.phase === "wait") {
-      const m = /^waiting ([0-9]+)s/.exec(j.progress || ""), left = m ? Math.max(0, Number(m[1]) - Math.round(Date.now() / 1000 - (j.progress_at || 0))) : 0;
-      return ["Registering " + j.name, "Waiting " + Math.floor(left / 60) + ":" + String(left % 60).padStart(2, "0")];
-    }
-    if (j.phase === "2") return ["Registering " + j.name, "Step 2 of 2 · " + (sent ? "sent" : "sending")];
-    return ["Registering " + j.name, "Step 1 of 2 · " + (sent ? "sent" : "sending")];
+// ---- Settings > Your name ------------------------------------------------------------------------------------------
+// The steps of getting a name, as the page shows them; the server's flow (/api/wallet/lns/get) does them all.
+const STEPS = [["account", "Name account"], ["fund", "LEZ"], ["register", "Register"], ["blockchain", "Pay to this wallet"], ["msg", "Messages to this phone"]];
+function regSub(j) {             // the register step while it runs: 1 of 2, the wait (a countdown), 2 of 2
+  if (!j || j.state !== "running" || j.kind !== "register") return "";
+  const sent = /^(sent|in block)/.test(j.progress || "");
+  if (j.phase === "wait") {
+    const m = /^waiting ([0-9]+)s/.exec(j.progress || ""), left = m ? Math.max(0, Number(m[1]) - Math.round(Date.now() / 1000 - (j.progress_at || 0))) : 0;
+    return "waiting " + Math.floor(left / 60) + ":" + String(left % 60).padStart(2, "0");
   }
-  if (j.kind === "send") return ["Sending " + LEZ(j.amount), /^(sent|in block)/.test(j.progress || "") ? "sent" : "sending"];
-  return [(j.entry === "msg" ? "Pointing " + j.name + " at my messages" : "Pointing " + j.name + " at this wallet"),
-          /^(sent|in block)/.test(j.progress || "") ? "sent" : "sending"];
+  return (j.phase === "2" ? "step 2 of 2 · " : "step 1 of 2 · ") + (sent ? "sent" : "sending");
 }
-function stepDraw() {
-  const j = (lnsLast && lnsLast.job) || {};
-  $("lns-step").hidden = j.state !== "running";
-  if (j.state !== "running") { clearInterval(tick); tick = null; return; }
-  const [t, sub] = stepText(j); $("lns-step-t").textContent = t; $("lns-step-s").textContent = sub;
+function flowDraw(d) {
+  const f = d.flow, on = !!f && f.step !== "done";
+  $("lns-flow").hidden = !on;
+  if (!on) { clearInterval(tick); tick = null; return; }
+  $("lns-flow-name").textContent = f.name;
+  const at = f.step === "failed" ? "" : f.step, idx = STEPS.findIndex(s => s[0] === at);
+  $("lns-steps").replaceChildren(...STEPS.filter(s => !(f.mode === "link" && (s[0] === "fund" || s[0] === "register"))).map(([k, label]) => {
+    const i = STEPS.findIndex(s => s[0] === k), state = f.step === "failed" ? (k === f.failed_at ? "bad" : "") : i < idx ? "done" : i === idx ? "now" : "";
+    const sub = i === idx && k === "register" ? regSub(d.job) : i === idx && k === "fund" && f.short ? "needs " + fmt(f.short) + " more" : "";
+    return el("li", { className: state }, (state === "done" ? "✓ " : state === "now" ? "→ " : "") + label + (sub ? " · " + sub : ""));
+  }));
+  const short = f.step === "fund" && f.short;
+  $("lns-need").hidden = !short; $("b-lns-addlez").hidden = !short;
+  if (short) $("lns-need").textContent = "Needs " + fmt(f.short) + " more LEZ.";
+  const failed = f.step === "failed";
+  $("lns-flow-err").hidden = !failed; $("lns-flow-acts").hidden = !failed && f.step !== "fund";
+  $("b-lns-retry").hidden = !failed;
+  if (failed) $("lns-flow-err").textContent = "Stopped: " + f.error;
+  $("lns-keep").hidden = failed || short;
+  if (!tick) tick = setInterval(() => { if (lnsLast) flowDraw(lnsLast); }, 1000);
 }
-
-// ---- Settings > Your name -------------------------------------------------------------------------------------
 async function lnsLoad() {
   const r = await api("/api/wallet/lns");
   if (r.status === 401) return lockedNow();
   if (!r.ok) { $("s-lns").hidden = true; return; }
   $("s-lns").hidden = false; lnsLast = r.data;
-  const d = r.data, has = !!d.account;
-  $("lns-none").hidden = has; $("lns-acct").hidden = !has;
-  if (has) {
-    $("lns-addr").textContent = short(d.account); $("lns-addr").title = d.account;
-    $("lns-copy").replaceChildren(copyBtn("Public/" + d.account, "Copy"));
-    $("lns-bal").textContent = d.balance == null ? "not known right now" : LEZ(d.balance);
-    $("lns-noname").hidden = !!d.name; $("lns-has").hidden = !d.name; $("lns-name").textContent = d.name || "";
-    $("b-lns-bc").disabled = !d.values.blockchain; $("b-lns-msg").disabled = !d.values.msg;
-    $("b-lns-msg").title = d.values.msg ? "" : "Turn on messages first";
-    costDraw(); bridgeDraw();
-  }
+  const d = r.data, f = d.flow, active = f && f.step !== "done";
+  $("lns-none").hidden = !!d.name || active;
+  $("lns-has").hidden = !d.name || active;
+  $("lns-name").textContent = d.name || "";
+  entriesDraw(d);
+  flowDraw(d);
+  costDraw();
   // not while a change runs: the signer may be rewriting the files a backup would read
-  $("lns-bk").hidden = !(has && d.backup_needed && !(d.job && d.job.state === "running"));
+  const running = d.job && d.job.state === "running";
+  $("lns-bk").hidden = !(d.account && d.backup_needed && !running && !active);
   $("lns-notes").hidden = !(d.notes && d.notes.length);
   if (d.notes && d.notes.length) $("lns-notes").textContent = d.notes.join(" ");
-  const j = d.job || {}, running = j.state === "running";
-  for (const id of RUN_IDS) if (running) $(id).disabled = true;
-  if (!running) { lnsInput(); $("b-lns-acct").disabled = false; if (has) { $("b-lns-bc").disabled = !d.values.blockchain; $("b-lns-msg").disabled = !d.values.msg; } }
-  entriesDraw(d, running);
-  stepDraw();
-  if (running) { lnsMsg(""); if (!tick) tick = setInterval(stepDraw, 1000); }
-  else if (j.state === "done") lnsMsg(j.kind === "register" ? j.name + " is yours." : j.kind === "send" ? "Sent " + LEZ(j.amount) + "." : "Done.", "ok");
-  else if (j.state === "failed") lnsMsg("Didn't work: " + j.error, "bad");
+  $("b-lns-putback").hidden = !d.saved_copy;
+  lnsInput();
+  if (!running && d.job && d.job.state === "failed" && !active) lnsMsg("Didn't work: " + d.job.error, "bad");
   if (typeof stRows === "function") stRows();      // Settings' list: the Your name row and its line
   clearTimeout(lnsTimer);
-  const costLater = (has && !d.name && !(d.cost && d.cost.need)) || (d.name && !d.entries);   // read in the background: ask again
-  const wait = running || costLater || (d.bridge && ["splitting", "ready", "depositing", "sent", "landed"].includes(d.bridge.state));
-  if (wait && (!$("page-settings").hidden || tokSel === "lez")) lnsTimer = setTimeout(() => { lnsLoad(); if (tokSel === "lez") lezActDraw(); }, 5000);
+  const later = active || running || (d.name && !d.entries) || (!d.name && !(d.cost && d.cost.need));
+  if (later && (!$("page-settings").hidden || tokSel === "lez")) lnsTimer = setTimeout(lnsLoad, active ? 3000 : 5000);
 }
 // each entry as the name service has it: what is already true is shown as done, never offered again
-const ENTRY = { blockchain: ["b-lns-bc", "Point it at this wallet", "Points at this wallet ✓"], msg: ["b-lns-msg", "Point it at my messages", "Messages come to this phone ✓"] };
-function entriesDraw(d, running) {
-  for (const [k, [id, offer, done]] of Object.entries(ENTRY)) {
-    const st = d.entries && d.entries[k], b = $(id);
-    b.textContent = st === "here" ? done : st == null && d.name ? offer + " (checking…)" : offer;
-    if (st === "here" || (st == null && d.name)) b.disabled = true;     // done, or not known yet
+const ENTRY = { blockchain: ["b-lns-bc", "lns-ent-bc", "Pays go to this wallet ✓", "Not paying to this wallet yet"],
+                msg: ["b-lns-msg", "lns-ent-msg", "Messages come to this phone ✓", "Messages don't come here yet"] };
+function entriesDraw(d) {
+  const running = d.job && d.job.state === "running";
+  let offer = false;
+  for (const [k, [bid, lid, done, not]] of Object.entries(ENTRY)) {
+    const st = d.entries && d.entries[k];
+    $(lid).textContent = st === "here" ? done : st == null ? "" : k === "msg" && !d.values.msg ? "Messages come here once you turn them on." : not;
+    const can = st !== "here" && st != null && !running && (k !== "msg" || !!d.values.msg);
+    $(bid).hidden = !can; offer = offer || can;
   }
+  $("lns-manual").hidden = !(d.name && offer);
 }
 const lnsName = () => $("lns-in").value.trim().toLowerCase();
 const nameOk = n => /^(?!-)[a-z0-9-]{1,32}(?<!-)$/.test(n);
-/** What registering this name takes, and whether the balance covers it: [need, short by] (nulls when not known). */
-function needFor(n) {
-  const d = lnsLast || {}, c = d.cost || {};
-  const need = n && n.length === 3 ? c.need_three : c.need;
-  if (need == null || d.balance == null) return [need, null];
-  const by = BigInt(need) - BigInt(d.balance);
-  return [need, by > 0n ? by.toString() : "0"];
-}
 function costDraw() {
-  const d = lnsLast || {}, c = d.cost || {}, n = lnsName(), three = n.length === 3;
-  const dep = three ? c.deposit_three : c.deposit;
-  $("lns-cost").hidden = !dep || !!d.name;
-  const fees = c.fees ? ((BigInt(c.fees) + 9999n) / 10000n * 10000n).toString() : null;     // rounded up to 10,000
-  if (dep) $("lns-cost").textContent = "Costs " + fmt(dep) + " LEZ deposit" + (fees ? " + about " + fmt(fees) + " LEZ fees." : " + fees.");
-  const [, by] = needFor(n);
-  $("lns-need").hidden = d.name || by == null || by === "0";
-  if (by && by !== "0") $("lns-need").textContent = "You need " + fmt(by) + " more LEZ.";
+  const d = lnsLast || {}, c = d.cost || {}, n = lnsName();
+  const dep = n.length === 3 ? c.deposit_three : c.deposit, fees = c.flow_fees;    // register (2) and both entries (2)
+  $("lns-cost").hidden = !dep || !fees;
+  if (dep && fees) $("lns-cost").textContent = "Costs " + fmt(dep) + " LEZ deposit + about " + fmt(up10k(fees)) + " LEZ fees · about 20 minutes.";
 }
 function lnsInput() {
-  const n = lnsName(), ok = nameOk(n), running = lnsLast && lnsLast.job && lnsLast.job.state === "running";
-  const [need, by] = needFor(n), short = by != null && by !== "0";
-  $("b-lns-reg").disabled = !ok || short || running; $("b-lns-link").disabled = !ok || running;
-  $("lns-why").hidden = !(ok && short);
-  if (ok && short) $("lns-why").textContent = "Needs " + fmt(need) + " LEZ. Get LEZ above.";
+  const ok = nameOk(lnsName()), d = lnsLast || {}, busy = (d.flow && d.flow.step !== "done") || (d.job && d.job.state === "running");
+  $("b-lns-get").disabled = !ok || busy; $("b-lns-link").disabled = !ok || busy;
   costDraw();
 }
 $("lns-in").addEventListener("input", lnsInput);
 async function lnsDo(path, body) {
   lnsMsg("");
-  for (const id of RUN_IDS) $(id).disabled = true;
   const r = await api(path, body);
   if (r.status === 401) return lockedNow();
-  if (!r.ok) { await lnsLoad(); return lnsMsg(r.data.error || "That didn't work.", "bad"); }
-  await lnsLoad();
+  if (!r.ok) { await lnsLoad(); lnsMsg(r.data.error || "That didn't work.", "bad"); return false; }
+  await lnsLoad(); return true;
 }
+$("b-lns-get").addEventListener("click", () => lnsDo("/api/wallet/lns/get", { name: lnsName() }));
+$("b-lns-link").addEventListener("click", () => lnsDo("/api/wallet/lns/get", { name: lnsName(), mode: "link" }));
+$("b-lns-retry").addEventListener("click", () => lnsDo("/api/wallet/lns/get/retry", {}));
+$("b-lns-stop").addEventListener("click", () => lnsDo("/api/wallet/lns/get/stop", {}));
+$("b-lns-putback").addEventListener("click", () => lnsDo("/api/wallet/lns/putback", {}));
 $("b-lns-bk").addEventListener("click", () => openSettings("s-bk", "bk-pw1"));
-$("b-lns-acct").addEventListener("click", () => lnsDo("/api/wallet/lns/account", {}));
-$("b-lns-reg").addEventListener("click", () => lnsDo("/api/wallet/lns/register", { name: lnsName() }));
-$("b-lns-link").addEventListener("click", () => lnsDo("/api/wallet/lns/name", { name: lnsName() }));
 $("b-lns-bc").addEventListener("click", () => lnsDo("/api/wallet/lns/text", { entry: "blockchain" }));
 // the one way to point the name at this phone's messaging address: here, and Settings > Messages > Name
 const pointMsg = async () => { await lnsDo("/api/wallet/lns/text", { entry: "msg" }); return !!(lnsLast && lnsLast.job && lnsLast.job.state === "running"); };
 $("b-lns-msg").addEventListener("click", pointMsg);
+// short of LEZ: to the Wallet's LEZ, with the bridge ready for what is missing
+$("b-lns-addlez").addEventListener("click", async () => {
+  closeSettings(); await home(true);            // the LEZ row as it is now (the account was just made)
+  walletPick("lez", "hist"); await brOpen(); $("lez-get").scrollIntoView({ block: "start" });
+});
 
-// ---- Get LEZ: the faucet, and a bridge from this wallet -------------------------------------------------------
+// ---- Get LEZ (Wallet → LEZ): the faucet, and a bridge from this wallet's Logos ----------------------------------
 function brSay(text, cls) { const m = $("lns-brs"); m.className = "msg" + (cls ? " " + cls : ""); m.textContent = text; m.hidden = !text; }
 $("b-lns-faucet").addEventListener("click", async () => {
   $("b-lns-faucet").disabled = true; brSay("Asking the faucet…");
@@ -233,7 +231,7 @@ $("b-lns-faucet").addEventListener("click", async () => {
   $("b-lns-faucet").disabled = false;
   if (r.status === 401) return lockedNow();
   brSay(r.ok ? "Faucet sent " + LEZ(r.data.amount) + ". Arrives in a minute or two." : (r.data.error || "The faucet didn't answer."), r.ok ? "ok" : "bad");
-  lnsLoad(); lezActDraw();
+  lezLoad();
 });
 let brPlan = null;
 async function brOpen() {
@@ -242,10 +240,9 @@ async function brOpen() {
   const sel = $("lns-br-from"), list = ((r.ok && r.data.accounts) || []).filter(a => a.balance && a.balance !== "0");
   sel.replaceChildren(...list.map(a => el("option", { value: a.key, textContent: a.label + " (" + amtH(a.balance) + ")" })));
   const one = list.length <= 1; sel.hidden = one; $("l-lns-br-from").hidden = one;
-  const [, by] = needFor(lnsName());
-  if (!$("lns-br-amt").value && by && by !== "0") $("lns-br-amt").value = by;
+  const f = lnsLast && lnsLast.flow;
+  if (!$("lns-br-amt").value && f && f.step === "fund" && f.short) $("lns-br-amt").value = f.short;
   $("lns-brf").hidden = false; $("lns-brr").hidden = true; brSay("");
-  $("lns-br-amt").focus();
 }
 $("b-lns-br").addEventListener("click", () => $("lns-brf").hidden ? brOpen() : ($("lns-brf").hidden = true));
 $("b-lns-br-x").addEventListener("click", () => { $("lns-brf").hidden = true; brSay(""); });
@@ -271,13 +268,13 @@ $("b-lns-br-go").addEventListener("click", async () => {
   $("lns-brr").hidden = true; brPlan = null;
   if (!r.ok) return brSay(r.data.error || "Didn't start.", "bad");
   $("lns-br-amt").value = "";
-  await lnsLoad();
+  await lezLoad();
 });
 $("b-lns-br-stop").addEventListener("click", async () => {
   const r = await api("/api/wallet/lns/bridge/cancel", {});
   if (r.status === 401) return lockedNow();
   if (!r.ok) brSay(r.data.error || "Can't stop it now.", "bad");
-  await lnsLoad();
+  await lezLoad();
 });
 const BR_TEXT = { splitting: "Setting the amount aside", ready: "Sending to the bridge", depositing: "Sending to the bridge",
   sent: "Sent. Waiting for a block", landed: "In a block. Arrives in minutes to hours", arrived: "Arrived",
@@ -289,6 +286,18 @@ function bridgeDraw() {
   if (["arrived", "cancelled"].includes(b.state) && Date.now() / 1000 - (b.arrived_at || b.created || 0) > 3600) return brSay("");
   const ok = b.state === "arrived", bad = ["failed", "overdue"].includes(b.state);
   brSay("Bridge " + fmt(b.amount) + ": " + BR_TEXT[b.state] + "." + (b.error ? " " + b.error : ""), ok ? "ok" : bad ? "bad" : "");
+}
+let lezTimer = null;
+/** The Wallet's LEZ: the server's view (bridge, faucet, activity), while LEZ is picked; again while a bridge runs. */
+async function lezLoad() {
+  const r = await api("/api/wallet/lns");
+  if (r.status === 401) return lockedNow();
+  if (!r.ok || !lezAcct) return;
+  lnsLast = r.data; bridgeDraw();
+  if (tokSel === "lez" && wTab === "hist") lezActRows();
+  clearTimeout(lezTimer);
+  const b = r.data.bridge;
+  if (tokSel === "lez" && b && ["splitting", "ready", "depositing", "sent", "landed"].includes(b.state)) lezTimer = setTimeout(() => { lezLoad(); home(true); }, 5000);
 }
 
 // ---- the LEZ token in the Wallet -------------------------------------------------------------------------------
@@ -304,12 +313,12 @@ async function home(on) {
   if (r.status === 401 || !r.ok) return;
   lezAcct = r.data.account; lezBal = r.data.balance;
   if (!lezAcct) {                               // no name account yet: a quiet row that leads to making one
-    walletToken({ id: "lez", name: "Add LEZ", net: "Make a name account", initials: "LEZ", panels: null, pick: () => openSettings("s-lns", "b-lns-acct") });
+    walletToken({ id: "lez", name: "Add LEZ", net: "Comes with an LNS name", initials: "LEZ", panels: null, pick: () => openSettings("s-lns", "lns-in") });
     document.getElementById("tok-lez").querySelector(".tok-amt").replaceChildren();
     return;
   }
   walletToken({ id: "lez", name: "LEZ", net: "LEZ testnet · for your LNS name", initials: "LEZ", pick: null,
-                panels: { send: "lez-send", recv: "lez-recv", hist: "lez-act" }, onShow: lezShow });
+                panels: { top: "lez-get", send: "lez-send", recv: "lez-recv", hist: "lez-act" }, onShow: lezShow });
   const amt = document.getElementById("tok-lez").querySelector(".tok-amt");
   if (lezBal == null) amt.replaceChildren(el("span", { className: "ph", textContent: "—", title: "Not known right now" }));
   else if (balHidden) amt.replaceChildren(el("span", { className: "mask", textContent: MASK }));
@@ -324,7 +333,7 @@ function lezShow(tab) {
     const cur = $("lez-qr").firstElementChild;
     if (!cur || cur.dataset.text !== text) qrSvg(text).then(q => { if (lezAcct && !$("lez-recv").hidden) $("lez-qr").replaceChildren(q); }).catch(() => $("lez-qr").replaceChildren());
   }
-  if (tab === "hist") lezActDraw();
+  lezLoad();                                     // Get LEZ's state, and Activity's rows
 }
 $("b-lez-copy").addEventListener("click", async () => {
   const b = $("b-lez-copy");
@@ -334,12 +343,8 @@ $("b-lez-copy").addEventListener("click", async () => {
 const ACT_TEXT = { faucet: "From the faucet", bridge: "Bridged from wallet", register: "Registered", text: "Pointed", send: "Sent" };
 const ACT_STATE = { running: "running", done: "", failed: "didn't work", sent: "", arrived: "", landed: "on its way",
   splitting: "starting", ready: "starting", depositing: "starting", overdue: "not in a block yet", cancelled: "stopped" };
-async function lezActDraw() {
-  const r = await api("/api/wallet/lns");
-  if (r.status === 401) return lockedNow();
-  if (!r.ok || !lezAcct) return;
-  lnsLast = r.data;
-  const rows = (r.data.activity || []).map(a => {
+function lezActRows() {
+  const rows = ((lnsLast || {}).activity || []).map(a => {
     const what = a.kind === "register" ? "Registered " + a.name : a.kind === "text" ? "Pointed " + a.name : a.kind === "send" ? "Sent to " + short(a.to || "") : ACT_TEXT[a.kind] || a.kind;
     const money = a.amount ? (a.kind === "send" ? "−" : a.kind === "faucet" || a.kind === "bridge" ? "+" : "") + lezAmt(a.amount) : "";
     const st = ACT_STATE[a.state] != null ? ACT_STATE[a.state] : a.state;
@@ -349,7 +354,6 @@ async function lezActDraw() {
   });
   $("lez-rows").replaceChildren(...(rows.length ? rows : [el("p", { className: "note", textContent: "Nothing yet." })]));
 }
-$("b-lez-get").addEventListener("click", () => openSettings("s-lns", "b-lns-faucet"));
 
 // ---- LEZ Send: to a Public/ account, through the review, signed with the name account's key ---------------------
 let lezPlan = null;
@@ -386,7 +390,7 @@ async function lezFollow() {          // until the send has finished: then its r
   const j = (r.ok && r.data.job) || {};
   if (j.kind === "send" && j.state === "running") return void setTimeout(lezFollow, 3000);
   if (j.kind === "send") lezSay(j.state === "done" ? "Sent " + LEZ(j.amount) + "." : "Didn't work: " + j.error, j.state === "done" ? "ok" : "bad");
-  home(true); if (tokSel === "lez" && wTab === "hist") lezActDraw();
+  home(true); lezLoad();
 }
 $("b-lez-scan").hidden = typeof SCAN === "undefined" || !SCAN;
 $("b-lez-scan").addEventListener("click", () => {
@@ -419,13 +423,16 @@ window.LNS = {
     return { name: r.data.name || "", running: j.state === "running" && j.kind === "text" && j.entry === "msg" }; },
   pointMsg,
   /** A scanned LEZ account from elsewhere: LEZ's Send, with it filled in. */
-  sendTo(acct) { if (!lezAcct) return openSettings("s-lns", "b-lns-acct"); walletPick("lez", "send"); $("lez-to").value = acct; $("lez-amt").focus(); },
+  sendTo(acct) { if (!lezAcct) return openSettings("s-lns", "lns-in"); walletPick("lez", "send"); $("lez-to").value = acct; $("lez-amt").focus(); },
   // one short line for Settings' list; [text, "warn"] for something to look at
   state() {
     const d = lnsLast; if (!d) return "";
-    const j = d.job || {};
-    if (j.state === "running") return j.kind === "register" ? "Registering " + j.name : j.kind === "send" ? "Sending LEZ" : "Pointing " + j.name;
-    if (!d.account) return "No name account yet";
+    const j = d.job || {}, f = d.flow;
+    if (f && f.step === "fund" && f.short) return ["Getting " + f.name + " · needs LEZ", "warn"];
+    if (f && f.step === "failed") return ["Getting " + f.name + " stopped", "warn"];
+    if (f && f.step !== "done") return "Getting " + f.name;
+    if (j.state === "running") return j.kind === "send" ? "Sending LEZ" : "Pointing " + j.name;
+    if (!d.name) return "No name yet";
     if (d.backup_needed) return [(d.name || "No name yet") + " · back up needed", "warn"];
     return d.name || "No name yet";
   },

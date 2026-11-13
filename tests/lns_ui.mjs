@@ -85,22 +85,29 @@ await click("#t-act");
 await click("#tok-lez");
 await waitFor("Add LEZ leads to making the name account", `!document.getElementById("page-settings").hidden && document.getElementById("h-settings").textContent === "Your name"`);
 
-// ---- Your name: short lines, details behind one fold ----
+// ---- Your name: one field, one button, one cost line; the details behind More ----
+await waitFor("Your name shows", `document.getElementById("s-lns").offsetParent !== null && !document.getElementById("lns-none").hidden`);
 const intro = await text("#s-lns");
-check("no paragraph: every line is short", intro.split("\n").every(l => l.length <= 60), intro);
-const details = await words("#lns-more");
-check("Details says the key is kept unencrypted, that there is no recovery phrase, and that a backup is the only way back",
-  /unencrypted/.test(details) && /no recovery phrase/.test(details) && /backup .* only way back/.test(details), details);
-check("Details is closed until asked", await js(`!document.getElementById("lns-more").open`));
-await click("#b-lns-acct");
-await waitFor("the account shows, with its balance in LEZ", `!document.getElementById("lns-acct").hidden && document.getElementById("lns-bal").innerText === "0 LEZ"`);
-await waitFor("what a name costs, in one line: the deposit and the fees it should really take", `document.getElementById("lns-cost").innerText === "Costs 1,000,000 LEZ deposit + about 1,520,000 LEZ fees."`, 20000);
-await waitFor("and how much is missing", `document.getElementById("lns-need").innerText === "You need 3,485,926 more LEZ."`);
-await waitFor("right away it asks for a new backup", `!document.getElementById("lns-bk").hidden`);
+check("no paragraph: every line is short", intro.split("\n").every(l => l.length <= 70), intro);
+check("no 'name account' in sight", !/name account/i.test(intro), intro);
+const more = await words("#lns-more");
+check("More says the key is kept unencrypted, that there is no recovery phrase, and that a backup is the only way back",
+  /unencrypted/.test(more) && /no recovery phrase/.test(more) && /backup .* only way back/.test(more), more);
+check("More is closed until asked", await js(`!document.getElementById("lns-more").open`));
 await val("#lns-in", "slow");
-check("Register waits for the LEZ, and says why", await js(`document.getElementById("b-lns-reg").disabled && document.getElementById("lns-why").innerText === "Needs 3,485,926 LEZ. Get LEZ above."`), await text("#lns-why"));
-check("I already hold it works without LEZ", await js(`!document.getElementById("b-lns-link").disabled`));
-await shot("your-name-short");
+await waitFor("the cost of the whole thing, and the time, in one line", `document.getElementById("lns-cost").innerText === "Costs 1,000,000 LEZ deposit + about 2,580,000 LEZ fees · about 20 minutes."`, 20000);
+await shot("get-a-name");
+
+// ---- one tap ----
+await click("#b-lns-get");
+await waitFor("the stepper: the name account made by itself, then LEZ: needs 4,418,236 more, with one button", `!document.getElementById("lns-flow").hidden
+  && document.getElementById("lns-need").innerText === "Needs 4,418,236 more LEZ." && !document.getElementById("b-lns-addlez").hidden
+  && /✓ Name account/.test(document.getElementById("lns-steps").innerText) && /→ LEZ · needs 4,418,236 more/.test(document.getElementById("lns-steps").innerText)`, 20000);
+check("the other steps wait, in order", /Register\nPay to this wallet\nMessages to this phone/.test(await text("#lns-steps")), await text("#lns-steps"));
+await shot("stepper-needs-lez");
+await click("#b-lns-addlez");
+await waitFor("Add LEZ: the Wallet, LEZ picked, Get LEZ open with the bridge filled in with what is missing", `document.getElementById("page-settings").hidden && tokSel === "lez"
+  && !document.getElementById("lez-get").hidden && !document.getElementById("lns-brf").hidden && document.getElementById("lns-br-amt").value === "4418236"`);
 
 // ---- the faucet ----
 await click("#b-lns-faucet");
@@ -108,39 +115,46 @@ await waitFor("the faucet: what it sent", `document.getElementById("lns-brs").in
 await ctl("faucet/limit");
 await click("#b-lns-faucet");
 await waitFor("a refusal in the faucet's own words", `document.getElementById("lns-brs").innerText === "The faucet says: this account was funded in the last day"`);
-await sleep(1200);
-await js(`LNS.refresh(); true`);
-await waitFor("the grant arrives: 1,485,926 more", `document.getElementById("lns-need").innerText === "You need 1,485,926 more LEZ."`);
+await sleep(1500);
 
-// ---- a bridge from the wallet, with its review ----
-await click("#b-lns-br");
-await waitFor("the bridge form: one account with coins, so no From choice; the missing amount filled in", `!document.getElementById("lns-brf").hidden && document.getElementById("lns-br-from").hidden && document.getElementById("lns-br-amt").value === "1485926"`);
+// ---- a bridge from Logos, with its review ----
+await val("#lns-br-amt", "");
+await js(`LNS.refresh(); true`);
+await waitFor("the flow sees the grant: 2,418,236 more", `(LNS.refresh(), /needs 2,418,236 more/.test(document.getElementById("lns-steps").textContent))`, 20000);
+await click("#b-lns-br"); await click("#b-lns-br");
+await waitFor("the bridge form: one account with coins, so no From choice; what is missing filled in", `!document.getElementById("lns-brf").hidden && document.getElementById("lns-br-from").hidden && document.getElementById("lns-br-amt").value === "2418236"`);
 await click("#b-lns-br-rev");
 await waitFor("the review", `!document.getElementById("lns-brr").hidden`);
 const rv = await text("#lns-brr");
-check("it shows from, to your name account, the amount, the fee, and that it takes time and can't be undone",
-  /From\s+Main/.test(rv) && /To\s+Your name account/.test(rv) && /1,485,926 Logos → 1,485,926 LEZ/.test(rv) && /Up to 110,000 Logos/.test(rv) && /Takes minutes to hours\. Can't be undone\./.test(rv), rv);
+check("it shows from, to LEZ, the amount, the fee, and that it takes time and can't be undone",
+  /From\s+Main/.test(rv) && /To\s+LEZ/.test(rv) && /2,418,236 Logos → 2,418,236 LEZ/.test(rv) && /Up to 110,000 Logos/.test(rv) && /Takes minutes to hours\. Can't be undone\./.test(rv), rv);
 await shot("bridge-review");
 await click("#b-lns-br-go");
-await waitFor("it starts by setting the amount aside", `/^Bridge 1,485,926: (Setting the amount aside|Sending to the bridge|Sent)/.test(document.getElementById("lns-brs").innerText)`);
-await waitFor("and arrives", `/^Bridge 1,485,926: Arrived\./.test(document.getElementById("lns-brs").innerText)`, 30000);
-await waitFor("now nothing is missing, and Register is on", `document.getElementById("lns-need").hidden && !document.getElementById("b-lns-reg").disabled && document.getElementById("lns-why").hidden`);
+await waitFor("it starts by setting the amount aside", `/^Bridge 2,418,236: (Setting the amount aside|Sending to the bridge|Sent)/.test(document.getElementById("lns-brs").innerText)`);
+await waitFor("and arrives", `/^Bridge 2,418,236: Arrived\./.test(document.getElementById("lns-brs").innerText)`, 30000);
+await click("#tok-logos"); await click("#t-act");
+await waitFor("Logos Activity: the bridge as two rows of its own (set aside, bridged), each with its fee", `(() => { const t = document.getElementById("hist").innerText; return /Set aside for the bridge/.test(t) && /Bridged to LEZ/.test(t) && /−2,418,236 Logos/.test(t) && !/Changed outside this app/.test(t); })()`, 20000);
 
-// ---- register: a short stepper ----
-await click("#b-lns-reg");
-await waitFor("the stepper: Registering slow, step 1 of 2, keep the app open", `!document.getElementById("lns-step").hidden && document.getElementById("lns-step-t").innerText === "Registering slow" && /^Step 1 of 2 · (sending|sent)$/.test(document.getElementById("lns-step-s").innerText) && /Keep the app open\./.test(document.getElementById("lns-step").innerText)`, 5000);
+// ---- with LEZ there, the flow goes on by itself: register, then this wallet; Messages is off, so that waits ----
+await js(`openSettings("s-lns"); true`);
+await waitFor("register runs with no tap: the stepper says where it is", `/→ Register · step (1|2) of 2 · (sending|sent)|→ Register · waiting/.test(document.getElementById("lns-steps").innerText)`, 20000);
+check("Keep the app open, in one line", (await text("#lns-keep")) === "Keep the app open.");
 check("while it runs, the page doesn't offer a backup", await js(`document.getElementById("lns-bk").hidden`));
-await shot("register-stepper");
-await waitFor("then: slow is yours", `document.getElementById("m-lns").innerText === "slow is yours."`, 20000);
-await waitFor("and now it asks for a backup again", `!document.getElementById("lns-bk").hidden`);
-await waitFor("the name shows bare", `document.getElementById("lns-name").innerText === "slow"`);
-await waitFor("once the name service has been read, Point it at this wallet is offered (not set yet)", `document.getElementById("b-lns-bc").textContent === "Point it at this wallet" && !document.getElementById("b-lns-bc").disabled`, 20000);
-await click("#b-lns-bc");
-await waitFor("pointing it at this wallet: Done.", `document.getElementById("m-lns").innerText === "Done."`, 20000);
-await waitFor("then it shows as done, from the name service, and isn't offered again", `document.getElementById("b-lns-bc").textContent === "Points at this wallet ✓" && document.getElementById("b-lns-bc").disabled`, 20000);
-check("Point it at my messages waits for messages", await js(`document.getElementById("b-lns-msg").disabled`));
+await shot("stepper-register");
+await waitFor("then: slow is yours, paying to this wallet; messages wait for Messages to be on", `!document.getElementById("lns-has").hidden && document.getElementById("lns-name").innerText === "slow"
+  && document.getElementById("lns-ent-bc").innerText === "Pays go to this wallet ✓" && /turn them on/.test(document.getElementById("lns-ent-msg").innerText)`, 40000);
+await waitFor("and one button: Back up now", `!document.getElementById("lns-bk").hidden`);
+check("nothing to tap but that: no point buttons offered", await js(`document.getElementById("lns-manual").hidden`));
+const flowCalls = await js(`api("/api/wallet/lns").then(r => r.data.activity.filter(a => a.kind === "register" || a.kind === "text").map(a => a.kind + ":" + (a.entry || "")).join())`);
+check("one register and one entry, nothing twice", flowCalls === "text:blockchain,register:", flowCalls);
+await shot("name-is-yours");
 await click("#b-lns-bk");
 await waitFor("Back up now opens Back up", `!document.getElementById("s-bk").hidden && document.activeElement && document.activeElement.id === "bk-pw1"`);
+await js(`closeSettings(); true`);
+await cdp("Page.reload");
+await waitFor("after a reload the page shows the same", `!document.getElementById("v-open").hidden`);
+await js(`openSettings("s-lns"); true`);
+await waitFor("still: slow is yours", `document.getElementById("lns-name").innerText === "slow" && document.getElementById("lns-ent-bc").innerText === "Pays go to this wallet ✓"`, 15000);
 
 // ---- the LEZ token in the Wallet ----
 await js(`closeSettings(); true`);

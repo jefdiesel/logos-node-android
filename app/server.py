@@ -583,6 +583,12 @@ def lns_sweep():
     for d in os.listdir(DATA_DIR):
         if d.startswith(".lns-check-") and os.path.isdir(os.path.join(DATA_DIR, d)):
             shutil.rmtree(os.path.join(DATA_DIR, d), ignore_errors=True)
+    for f in os.listdir(DATA_DIR):            # and the flow's own
+        if f.startswith("wallet-lns-flow.json.") and f.endswith(".tmp"):
+            try:
+                os.remove(os.path.join(DATA_DIR, f))
+            except OSError:
+                pass
     if os.path.isdir(LNS_HOME):               # half-written files a stop left (each write is to <file>.tmp, then renamed)
         for f in os.listdir(LNS_HOME):
             if f.endswith(".tmp"):
@@ -740,7 +746,7 @@ def lns_view():
             # the last backup doesn't hold the account as it is now (or there is none)
             "backup_needed": bool(st["account"]) and lns_fingerprint() != lns_backed_up(),
             "values": {"blockchain": main, "msg": mk["public"] if mk else None},
-            "cost": lns_cost() if st["account"] else None, "bridge": bridge_view(),
+            "cost": lns_cost() if not st["name"] else None, "bridge": bridge_view(),     # before the account too (one tap)
             "faucet": {k: lns_faucet_last[k] for k in ("at", "amount") if k in lns_faucet_last} or None, "saved_copy": saved,
             # each entry as the name service has it: "here" (points at this wallet / this phone), "other", "none";
             # None while not known. The page offers only what isn't true yet.
@@ -1165,7 +1171,7 @@ def lns_cost():
       ceiling), then, at the reveal, the deposit (or the 1-year price in fee mode) and the reserve.
     Parts not known right now are None."""
     st, fees = lns_settings(), lns_fee_state()
-    out = {"deposit": None, "deposit_three": None, "mode": None, "reserve": None, "fees": None, "need": None, "need_three": None}
+    out = {"deposit": None, "deposit_three": None, "mode": None, "reserve": None, "fees": None, "flow_fees": None, "need": None, "need_three": None}
     if st:
         out["mode"] = "fee" if st.get("mode") == "fee" else "deposit"
         if out["mode"] == "fee":
@@ -1177,6 +1183,8 @@ def lns_cost():
     if fees:
         out["reserve"] = str(LNS_GAS["register"] * fees[0] + LNS_RESERVE_BYTES * fees[1])
         out["fees"] = str(sum(LNS_REG_GAS) * fees[2] + 2 * LNS_REG_BYTES * fees[3])
+        # getting a name all the way (register, then both entries)
+        out["flow_fees"] = str((sum(LNS_REG_GAS) + 2 * LNS_TEXT_GAS_USED) * fees[2] + 4 * LNS_REG_BYTES * fees[3])
     if st and fees:
         commit = LNS_REG_GAS[0] * fees[0] + LNS_RESERVE_BYTES * fees[1]
         out["need"] = str(int(out["deposit"]) + int(out["reserve"]) + commit)
@@ -1647,7 +1655,7 @@ LNS_FLOW_TRIES = len(LNS_FLOW_PAUSES) + 1
 LNS_FLOW_STEPS = ("account", "fund", "register", "blockchain", "msg")
 LNS_FLOW_ACTIVE = ("account", "register", "blockchain", "msg")           # changes run: no restore meanwhile
 LNS_TEXT_GAS_USED = 65590                    # a set-text's gas, as measured on the testnet (NAMES.md)
-lns_flow_lock = threading.Lock()
+lns_flow_lock = threading.RLock()            # one round at a time; a tap, Try again or Stop waits for it
 lns_flow_wake = threading.Event()
 # a name's fixed refusals: trying again can't help
 LNS_FLOW_FINAL = ("is already registered", "is locked", "doesn't hold", "isn't registered", "someone else holds")
@@ -1664,7 +1672,7 @@ def lns_flow_load():
 
 def lns_flow_save(fl):
     fl["updated"] = time.time()
-    tmp = LNS_FLOW_FILE + ".tmp"
+    tmp = LNS_FLOW_FILE + ".%d.tmp" % threading.get_ident()
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         json.dump(fl, f)
@@ -1706,8 +1714,8 @@ def lns_flow_cost(name):
 
 def lns_get(body):
     """The one tap: `name` and `mode` ("register", or "link" for a name the account already holds)."""
-    name, mode = str(body.get("name", "")).strip().lower(), body.get("mode", "register")
-    if not lns_name_ok(name):
+    name, mode = body.get("name"), body.get("mode", "register")
+    if not lns_name_ok(name):                 # the whole string, as sent: nothing is trimmed or lowered here
         return 400, {"error": "That isn't an LNS name: a to z, 0 to 9 and -."}
     if mode not in ("register", "link"):
         return 400, {"error": "Unknown way to get a name."}
@@ -1759,7 +1767,7 @@ def lns_flow_view():
     fl = lns_flow_load()
     if not fl:
         return None
-    out = {k: fl.get(k) for k in ("name", "mode", "step", "error", "tries", "next_at", "msg_later", "short", "started", "finished")}
+    out = {k: fl.get(k) for k in ("name", "mode", "step", "error", "tries", "next_at", "msg_later", "short", "started", "finished", "failed_at")}
     cost = lns_flow_cost(fl["name"])
     out["cost"] = {"deposit": str(cost[0]), "fees": str(cost[1])} if cost else None
     return out
@@ -1830,7 +1838,11 @@ def lns_flow_start_job(fl, kind, fn, arg):
 def lns_flow_round():
     """One look at the flow: moves it on as far as it can now. Never runs two changes at once."""
     with lns_flow_lock:
-        fl = lns_flow_load()
+        return lns_flow_round_locked()
+
+
+def lns_flow_round_locked():
+    fl = lns_flow_load()
     if not fl:
         return
     if fl["step"] == "done":
@@ -1877,6 +1889,9 @@ def lns_flow_round():
 
     if step == "fund":
         need, bal = lns_flow_need(fl["name"]), lns_balance(fl["account"])
+        if need is None and time.time() - fl.get("started", 0) < 120:
+            fl["next_at"] = time.time() + 2       # the cost is being read in the background: wait for it a little
+            return lns_flow_save(fl)
         if bal is None:
             fl["next_at"] = time.time() + 15
             return lns_flow_save(fl)
