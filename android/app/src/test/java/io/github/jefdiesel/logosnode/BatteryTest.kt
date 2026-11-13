@@ -12,95 +12,45 @@ import org.junit.rules.TemporaryFolder
 class BatteryTest {
     @get:Rule val tmp = TemporaryFolder()
 
-    // ---- the policy: which profile ----
+    // ---- the setting: which profile ----
 
-    @Test fun autoIsFullOnlyWhenChargingOnUnmetered() {
-        val a = MobileMode.AUTO
-        assertEquals(NodeProfile.FULL, MobilePolicy.desired(a, plugged = true, unmetered = true))
-        assertEquals(NodeProfile.LIGHT, MobilePolicy.desired(a, plugged = false, unmetered = true))
-        assertEquals(NodeProfile.LIGHT, MobilePolicy.desired(a, plugged = true, unmetered = false))   // charging on mobile data
-        assertEquals(NodeProfile.LIGHT, MobilePolicy.desired(a, plugged = false, unmetered = false))
-        // unknown charger or network: no opinion, nothing changes
-        assertNull(MobilePolicy.desired(a, plugged = null, unmetered = true))
-        assertNull(MobilePolicy.desired(a, plugged = false, unmetered = null))
+    @Test fun onIsLightOffIsFull() {
+        assertEquals(NodeProfile.LIGHT, MobilePolicy.profile(MobileMode.ON, lightFailed = false))
+        assertEquals(NodeProfile.FULL, MobilePolicy.profile(MobileMode.OFF, lightFailed = false))
+        // a light config the node refused (or kept stopping on): full until the setting changes
+        assertEquals(NodeProfile.FULL, MobilePolicy.profile(MobileMode.ON, lightFailed = true))
     }
 
-    @Test fun offIsAlwaysFullAndLightIsAlwaysLight() {
-        for (p in listOf(true, false, null)) for (u in listOf(true, false, null)) {
-            assertEquals(NodeProfile.FULL, MobilePolicy.desired(MobileMode.OFF, p, u))
-            assertEquals(NodeProfile.LIGHT, MobilePolicy.desired(MobileMode.LIGHT, p, u))
-        }
-    }
-
-    @Test fun aFailedLightConfigMeansFull() {
-        assertEquals(NodeProfile.FULL, MobilePolicy.desired(MobileMode.AUTO, false, false, lightFailed = true))
-        assertEquals(NodeProfile.FULL, MobilePolicy.desired(MobileMode.LIGHT, true, true, lightFailed = true))
-        assertEquals(NodeProfile.FULL, MobilePolicy.atStart(MobileMode.AUTO, null, null, lightFailed = true))
-    }
-
-    @Test fun atStartWithoutReadingsIsLightUnlessOff() {
-        assertEquals(NodeProfile.LIGHT, MobilePolicy.atStart(MobileMode.AUTO, null, null, false))
-        assertEquals(NodeProfile.FULL, MobilePolicy.atStart(MobileMode.OFF, null, null, false))
-        assertEquals(NodeProfile.FULL, MobilePolicy.atStart(MobileMode.AUTO, true, true, false))
-    }
-
-    @Test fun modeParsesAndDefaultsToAuto() {
-        assertEquals(MobileMode.AUTO, MobileMode.DEFAULT)
+    @Test fun modeParsesAndDefaultsToOn() {
+        assertEquals(MobileMode.ON, MobileMode.DEFAULT)
         assertEquals(MobileMode.OFF, MobileMode.parse(" off\n"))
-        assertEquals(MobileMode.LIGHT, MobileMode.parse("light"))
+        assertEquals(MobileMode.ON, MobileMode.parse("on"))
+        // the earlier test build's names
+        assertEquals(MobileMode.ON, MobileMode.parse("auto"))
+        assertEquals(MobileMode.ON, MobileMode.parse("light"))
         assertNull(MobileMode.parse("saver"))
         assertNull(MobileMode.parse(null))
     }
 
     @Test fun whyReadsRight() {
-        assertEquals("charging on Wi-Fi", MobilePolicy.why(MobileMode.AUTO, true, true, false))
-        assertEquals("on mobile data", MobilePolicy.why(MobileMode.AUTO, true, false, false))
-        assertEquals("on battery", MobilePolicy.why(MobileMode.AUTO, false, true, false))
-        assertEquals("mobile mode is off", MobilePolicy.why(MobileMode.OFF, false, false, true))
+        assertEquals("mobile mode is on", MobilePolicy.why(MobileMode.ON, false))
+        assertEquals("mobile mode is off", MobilePolicy.why(MobileMode.OFF, true))
+        assertTrue(MobilePolicy.why(MobileMode.ON, true).contains("failed"))
     }
 
-    // ---- the switch: when a running node may be restarted ----
+    // ---- "Restart node now": only on the user's tap, and not when it would cost them ----
 
-    private val T = 10 * 60 * 60_000L     // "now", long after everything
-    private fun decide(
-        desired: NodeProfile? = NodeProfile.LIGHT, running: NodeProfile? = NodeProfile.FULL, now: Long = T,
-        changed: Long = T - 2 * 60_000, lastSwitch: Long = 0, started: Long = T - 30 * 60_000,
-        user: Boolean = false, busy: String? = null, online: Boolean? = true,
-    ) = ProfileSwitch.decide(desired, running, now, changed, lastSwitch, started, user, busy, online)
-
-    @Test fun switchesWhenEverythingAllows() {
-        assertEquals(ProfileSwitch.Decision.Switch, decide())
-    }
-
-    @Test fun keepsWhenNothingDiffersOrNodeIsntRunning() {
-        assertEquals(ProfileSwitch.Decision.Keep, decide(desired = NodeProfile.FULL))
-        assertEquals(ProfileSwitch.Decision.Keep, decide(desired = null))
-        assertEquals(ProfileSwitch.Decision.Keep, decide(running = null))        // the next start takes the new config
-    }
-
-    @Test fun aChargerBlipNeverRestarts() {
-        // the input changed 20 s ago: wait until it has held for a minute
-        val d = decide(changed = T - 20_000)
-        assertTrue(d is ProfileSwitch.Decision.Wait)
-        assertTrue((d as ProfileSwitch.Decision.Wait).retryMs in 40_000..42_000)
-        // two restarts are at least five minutes apart
-        assertTrue(decide(lastSwitch = T - 60_000) is ProfileSwitch.Decision.Wait)
-        assertEquals(ProfileSwitch.Decision.Switch, decide(lastSwitch = T - ProfileSwitch.MIN_GAP_MS))
-    }
-
-    @Test fun theUsersOwnChangeSkipsSettleAndGapButNotSafety() {
-        assertEquals(ProfileSwitch.Decision.Switch, decide(changed = T, lastSwitch = T - 1000, user = true))
-        assertTrue(decide(user = true, busy = "a send is waiting for its block") is ProfileSwitch.Decision.Wait)
-        assertTrue(decide(user = true, online = false) is ProfileSwitch.Decision.Wait)
-        assertTrue(decide(user = true, started = T - 1000) is ProfileSwitch.Decision.Wait)
-    }
-
-    @Test fun neverWhileBusyOrNotOnlineOrJustStarted() {
-        val busy = decide(busy = "a bridge is in progress")
-        assertEquals("a bridge is in progress", (busy as ProfileSwitch.Decision.Wait).reason)
-        assertTrue(decide(online = false) is ProfileSwitch.Decision.Wait)
-        assertTrue(decide(online = null) is ProfileSwitch.Decision.Wait)
-        assertTrue(decide(started = T - 60_000) is ProfileSwitch.Decision.Wait)
+    @Test fun restartNowOnlyWhenSafe() {
+        val ok = RestartNow.ONLINE_SETTLE_MS
+        assertNull(RestartNow.refusal(running = true, otherJob = false, pending = true, busy = null, onlineForMs = ok))
+        assertNotNull(RestartNow.refusal(running = false, otherJob = false, pending = true, busy = null, onlineForMs = ok))
+        assertNotNull(RestartNow.refusal(running = true, otherJob = true, pending = true, busy = null, onlineForMs = ok))
+        assertNotNull(RestartNow.refusal(running = true, otherJob = false, pending = false, busy = null, onlineForMs = ok))
+        val busy = RestartNow.refusal(running = true, otherJob = false, pending = true, busy = "a bridge is in progress", onlineForMs = ok)
+        assertTrue(busy!!, busy.contains("a bridge is in progress"))
+        // Online only just now, or not Online: a restart would start the bootstrap wait again
+        assertNotNull(RestartNow.refusal(running = true, otherJob = false, pending = true, busy = null, onlineForMs = ok - 1))
+        assertNotNull(RestartNow.refusal(running = true, otherJob = false, pending = true, busy = null, onlineForMs = -1))
     }
 
     // ---- the light config ----
@@ -144,22 +94,20 @@ class BatteryTest {
     private val now = WalletBusy.parseTime("2026-11-13T01:00:00Z")!!
 
     @Test fun walletBusyFromItsFiles() {
-        assertNull(WalletBusy.reason(null, null, false, null, now))
-        assertEquals("the wallet is open", WalletBusy.reason(null, null, false, now - 30_000, now))
-        assertNull(WalletBusy.reason(null, null, false, now - 10 * 60_000, now))           // a stale marker
-        assertEquals("a name change is running", WalletBusy.reason(null, null, true, null, now))
+        assertNull(WalletBusy.reason(null, null, false, now))
+        assertEquals("a name change is running", WalletBusy.reason(null, null, true, now))
         val bridge = """{"id":"b1","state":"depositing","from":"aa","updated":${(now - 5 * 60_000) / 1000.0}}"""
-        assertEquals("a bridge is in progress", WalletBusy.reason(bridge, null, false, null, now))
+        assertEquals("a bridge is in progress", WalletBusy.reason(bridge, null, false, now))
         val oldBridge = """{"id":"b1","state":"sent","updated":${(now - 3 * 60 * 60_000) / 1000.0}}"""
-        assertNull(WalletBusy.reason(oldBridge, null, false, null, now))
-        assertNull(WalletBusy.reason("""{"id":"b1","state":"done","updated":${now / 1000.0}}""", null, false, null, now))
+        assertNull(WalletBusy.reason(oldBridge, null, false, now))
+        assertNull(WalletBusy.reason("""{"id":"b1","state":"done","updated":${now / 1000.0}}""", null, false, now))
         val hist = """{"version":1,"entries":[{"id":1,"time":"2026-11-13T00:50:00Z","kind":"sent","status":"pending"}],"snapshot":{}}"""
-        assertEquals("a send is waiting for its block", WalletBusy.reason(null, hist, false, null, now))
+        assertEquals("a send is waiting for its block", WalletBusy.reason(null, hist, false, now))
         val oldHist = """{"version":1,"entries":[{"id":1,"time":"2026-11-12T20:00:00Z","kind":"sent","status":"pending"},
             {"id":2,"time":"2026-11-13T00:59:00Z","kind":"sent","status":"in block"},
             {"id":3,"time":"2026-11-13T00:59:30Z","kind":"received","status":"pending"}],"snapshot":{}}"""
-        assertNull(WalletBusy.reason(null, oldHist, false, null, now))
-        assertNull(WalletBusy.reason("not json", "{broken", false, null, now))
+        assertNull(WalletBusy.reason(null, oldHist, false, now))
+        assertNull(WalletBusy.reason("not json", "{broken", false, now))
     }
 
     // ---- the counters ----

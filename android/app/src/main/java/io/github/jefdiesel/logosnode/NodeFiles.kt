@@ -70,8 +70,6 @@ class NodeFiles(context: Context) {
     val batteryStats = File(home, "battery-stats.txt")
     /** files/node/mobile-state.json: the mobile-mode setting and what it does now, written by the service for the wallet page. */
     val mobileState = File(home, "mobile-state.json")
-    /** files/node/wallet-visible: touched every few seconds while the wallet screen shows (WalletBusy). */
-    val walletVisible = File(home, "wallet-visible")
     /** The light config is checked here (next to keystore.yaml, which it needs) before the node runs on it. */
     val checkConfig = File(home, "user_config.check.yaml")
 

@@ -319,7 +319,12 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
         <div><span>Nodes connected</span><b id="peers">-</b></div>
         <div><span>New blocks a minute</span><b id="rate">-</b></div>
       </div>
-      <div id="mm" hidden><label for="mm-sel">Mobile mode</label><select id="mm-sel"><option value="auto">Auto: lighter on battery or mobile data</option><option value="off">Off: the full node always</option><option value="light">Always lighter</option></select><p class="hint" id="mm-now"></p></div>
+      <div id="mm" hidden>
+        <label for="mm-sel">Mobile mode</label>
+        <select id="mm-sel"><option value="on">On: lighter on the network, for phones</option><option value="off">Off: the node's defaults</option></select>
+        <p class="hint" id="mm-now"></p>
+        <button type="button" id="b-mm-restart" style="width:100%" hidden>Restart node now</button>
+      </div>
       <button type="button" id="b-open-node" style="width:100%;margin-top:14px" hidden>Open node</button>
     </section>
 
@@ -986,7 +991,7 @@ new MutationObserver(nodeIcon).observe($("pill"), { childList: true, characterDa
 nodeIcon();
 $("node-ic").addEventListener("click", () => openSettings("s-nodec"));
 // Settings > Node > Mobile mode (the Android app only): the app keeps the setting and applies it, see android/BATTERY.md
-if (window.LogosAndroid && LogosAndroid.mobileMode) { const mm = () => { try { const s = JSON.parse(LogosAndroid.mobileMode()); $("mm-sel").value = s.mode; $("mm-now").textContent = s.now || ""; } catch (e) {} }; $("mm").hidden = false; mm(); $("mm-sel").addEventListener("change", () => { LogosAndroid.setMobileMode($("mm-sel").value); setTimeout(mm, 2000); }); setInterval(() => { if (!$("s-nodec").hidden && !$("page-settings").hidden) mm(); }, 15000); }
+if (window.LogosAndroid && LogosAndroid.mobileMode) { const mm = () => { try { const s = JSON.parse(LogosAndroid.mobileMode()); $("mm-sel").value = s.mode === "off" ? "off" : "on"; $("mm-now").textContent = [s.now, s.restart].filter(Boolean).join(" "); $("b-mm-restart").hidden = !s.pending; } catch (e) {} }; $("mm").hidden = false; mm(); $("mm-sel").addEventListener("change", () => { LogosAndroid.setMobileMode($("mm-sel").value); setTimeout(mm, 1500); }); $("b-mm-restart").addEventListener("click", () => { LogosAndroid.restartNode(); setTimeout(mm, 2500); }); setInterval(() => { if (!$("s-nodec").hidden && !$("page-settings").hidden) mm(); }, 15000); }
 // the balance stays on one line: from 34 px the font gets smaller until it fits the card (18 px for any
 // amount the node can hold, a u64; smaller only past that)
 function fitAmt(e) {       // a token's amount stays on one line: the font gets smaller until it fits its row

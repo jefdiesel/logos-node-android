@@ -1,8 +1,8 @@
 # Mobile mode (battery)
 
 The app runs two native processes: the Logos blockchain node and the Messaging (Waku) node. Mobile
-mode makes the blockchain node cheaper on battery and on mobile data **without any loss the user could
-notice**. The node stays a correct, current follower, messages arrive as before, sending works at once,
+mode makes the blockchain node cheaper, on battery and on mobile data alike, **without any loss the user
+could notice**. The node stays a correct, current follower, messages arrive as before, sending works at once,
 and the wallet is correct the moment the app opens. Anything that trades quality for battery is listed
 under "Options with a cost". None of those are built.
 
@@ -23,17 +23,15 @@ The node uploads more than it downloads and holds about 130 peers. So most of it
 
 ## The setting
 
-Settings → Node → **Mobile mode** offers three choices. The page shows it only inside the Android app.
+Settings → Node → **Mobile mode**: **On** (the default) or **Off**. The page shows it only inside the
+Android app.
 
-- **Auto** (the default). The light profile runs on battery, and also on a metered network (mobile data)
-  even while charging. The full profile runs only while plugged in **and** on an unmetered network.
-- **Off**. The full profile always, as before this change.
-- **Always lighter**. The light profile always.
-
-Two other ways in:
-- From adb:
-  `am start-foreground-service -n io.github.jefdiesel.logosnode/.NodeService -a io.github.jefdiesel.logosnode.MOBILE_MODE --es mode auto|off|light`
-- The Node screen shows a line with the setting and what it does now.
+- **On** runs the light profile all the time, charging or not, on Wi-Fi or mobile data. It changes only
+  what the node sends to other nodes (next section), so there is nothing to win by switching back to the
+  full profile while charging.
+- **Off** runs the node's own defaults, as before this change.
+- From adb: `am start-foreground-service -n io.github.jefdiesel.logosnode/.NodeService -a io.github.jefdiesel.logosnode.MOBILE_MODE --es mode on|off`.
+- The Node screen shows a line with the setting and the profile the node runs.
 
 ## The two profiles
 
@@ -85,37 +83,34 @@ checks or publishes itself. The source for each lever is in the next section. li
 - **How to measure.** As above. For this lever alone, run with `light.max_inbound_requests=10` in
   `profile.txt` (see below) and compare.
 
-## When the profile switches
+## When a change applies: the node's next start, never a restart by itself
 
-A running node changes profile by restarting on the new config. A restart replays the blocks stored after
-the last irreversible block (about 1,000 blocks, about 30 s of CPU). The node then goes back to Online.
-That took under a minute on a phone running with `bootstrap.txt` overrides (60 s bootstrap, 24 h grace),
-when the node was Online before and off for a short time. With the app's defaults (the node's own 1 h and
-20 min) it is not measured yet, but a restart of seconds is well within the 20-minute grace period.
-During that time the wallet cannot send. So a switch happens only when nobody can notice it:
+The node reads its profile when it starts: app start, the user's Start, or a crash restart. Changing the
+setting does not restart the node. Settings shows "Applies the next time the node starts" and a
+**Restart node now** button.
 
-- the charger and the network have held still for **60 s** (a loose cable never restarts anything);
-- at least **5 min** have passed since the previous switch;
-- the node has run for at least 3 min and has been **Online** on readings at least 90 s apart. The node
-  saves its state once a minute, and a restart before a saved Online state would start the one-hour
-  bootstrap wait again;
-- the **screen is off**;
-- the wallet is not busy, read from the wallet's own files without changing them:
-  - not open: `files/node/wallet-visible` is touched every 10 s while the wallet screen shows;
-  - no bridge in progress: `wallet-bridge.json` `state` is in `splitting|ready|depositing|sent`, with
+**Why no automatic switching.** An earlier design (Auto: light on battery, full when charging on Wi-Fi)
+restarted the node at every plug, unplug or network change. A restart replays the blocks stored after the
+last irreversible block (about 1,000 blocks, about 30 s of CPU). The node is then not Online for about a
+minute. That was measured on a phone with `bootstrap.txt` overrides (60 s bootstrap, 24 h grace); with the
+app's defaults (the node's own 1 h and 20 min) it is not measured. In that minute the wallet cannot send.
+That is a loss the user can notice, for a profile that costs the phone nothing anyway, so it was dropped.
+
+**Restart node now** (one tap, never automatic) restarts the node on the new setting. It refuses, and
+says why, when:
+- the node isn't running (it uses the setting when it starts);
+- a snapshot import or a stop is running;
+- the node already runs this setting;
+- the wallet is busy with the node. This is read from the wallet's own files, without changing them:
+  - a bridge in progress: `wallet-bridge.json` `state` is in `splitting|ready|depositing|sent`, with
     `updated` under 2 h old;
-  - no send waiting for its block: `wallet-history.json` has a `kind: sent`, `status: pending` entry under
+  - a send waiting for its block: `wallet-history.json` has a `kind: sent`, `status: pending` entry under
     1 h old;
-  - no name change running: no `libnames.so` process.
+  - a name change running: a `libnames.so` process;
+- the node has not been Online on readings at least 90 s apart. The node saves its state once a minute,
+  and a restart before a saved Online state would start the one-hour bootstrap wait again.
 
-These rules are `ProfileSwitch` and `WalletBusy` in `Battery.kt`, tested in `BatteryTest.kt`.
-
-The user's own change in Settings skips the 60 s and 5 min waits, but none of the others. While a switch
-waits, Settings and the Node screen say what it waits for.
-
-A node that **starts** (app start, user's Start, crash restart) simply starts on the right profile, at no
-extra cost. Setting `NodeService.SWITCH_BY_RESTART` to false makes that the only way a profile changes: mobile
-mode then never restarts the node. A phone that stays up for days then keeps the profile it started with.
+These rules are `RestartNow` and `WalletBusy` in `Battery.kt`, tested in `BatteryTest.kt`.
 
 Two safeguards protect the light config:
 - **Before first use.** It is checked with the node binary's own `--check-config`, on a copy next to
@@ -125,9 +120,9 @@ Two safeguards protect the light config:
   the setting changes. The counters show `light_failed=true`.
 
 **Wake lock.** As before, the wake lock is held while the supervisor runs the node. That includes the
-config check, a profile restart and a crash restart's wait, because a phone asleep there could keep the
-node down past its grace period. It is now let go while a snapshot import holds the node, which keeps its
-own lock. The light profile does not let the phone sleep, because a sleeping node falls behind.
+config check and a crash restart's wait, because a phone asleep there could keep the node down past its
+grace period. It is now let go while a snapshot import holds the node, which keeps its own lock. The
+light profile does not let the phone sleep, because a sleeping node falls behind.
 
 ## Counters (for measuring)
 
@@ -144,11 +139,10 @@ or `_stopped` belongs to that profile.
 | `waku_rx_bytes_*`, `waku_tx_bytes_*` | the messaging node's own counters. The node's bytes ≈ uid − waku. |
 | `node_log_lines_*`, `node_log_bytes_*` | what the node printed to stdout |
 | `tip_age_s_sum_*`, `tip_age_samples_*`, `tip_age_s_max_*` | the age of the node's latest block while Online (quality) |
-| `switches` | profile restarts |
-| `waits_busy` | minutes a switch waited on the wallet or the screen |
+| `restarts_user` | "Restart node now" taps that restarted the node |
 | `light_failed` | whether the light config was given up |
 | `node_peers`, `node_connections`, `node_height`, `node_state` | the latest readings |
-| `mode`, `profile`, `plugged`, `unmetered`, `why`, `waiting_for`, `wakelock_held`, `updated` | the latest state |
+| `mode`, `profile`, `plugged`, `unmetered`, `why`, `wakelock_held`, `updated` | the latest state (`plugged` and `unmetered` are recorded only, they change nothing) |
 
 The other files:
 
@@ -235,8 +229,15 @@ start and the end of a run.
 
 ```
 adb shell am start-foreground-service -n io.github.jefdiesel.logosnode/.NodeService \
-  -a io.github.jefdiesel.logosnode.MOBILE_MODE --es mode <off|light> --ez reset true
-# wait 2 minutes: the mode applies once the screen is off and the node is Online; the reset at the next minute
+  -a io.github.jefdiesel.logosnode.MOBILE_MODE --es mode <off|on> --ez reset true
+# the setting applies at the node's next start: restart it (refused while the wallet is busy or the node
+# isn't online long enough; then wait and repeat), give it a few minutes to be Online again
+adb shell am start-foreground-service -n io.github.jefdiesel.logosnode/.NodeService \
+  -a io.github.jefdiesel.logosnode.MOBILE_MODE --ez restart true
+adb shell run-as io.github.jefdiesel.logosnode cat files/node/mobile-state.json   # "restart": the answer
+# after it is Online again, reset the counters once more so the restart isn't in the run
+adb shell am start-foreground-service -n io.github.jefdiesel.logosnode/.NodeService \
+  -a io.github.jefdiesel.logosnode.MOBILE_MODE --ez reset true
 adb shell input keyevent KEYCODE_SLEEP
 adb shell run-as io.github.jefdiesel.logosnode cat files/node/battery-stats.txt   # profile= as wanted, light_failed=false
 adb shell run-as io.github.jefdiesel.logosnode grep -A6 'swarm:' files/node/user_config.yaml   # light: the three keys; full: nothing
@@ -249,7 +250,7 @@ adb shell dumpsys battery | grep -E 'level|charge counter'
 Do one hour unplugged for each, under the same conditions: Wi-Fi, Messages on, the screen off except for
 the opening below.
 - **Run A:** `mode off`, the full profile, the baseline.
-- **Run B:** `mode light`, the light profile.
+- **Run B:** `mode on`, the light profile.
 
 During each run:
 - From a second wallet, send a Messages message to the phone's name every 10 minutes and note the send
@@ -307,14 +308,15 @@ in `files/node/profile.txt` (only `max_inbound_requests` changes), then with
 - `grep -iE 'nat|external addr|mapped|gateway' files/node/logs/*` shows whether the phone mapped a port
   on the router and became reachable.
 
-### Checking the switch itself (plugged in, about 15 min)
+### Checking the setting itself (plugged in, about 10 min)
 
-1. Run `mode auto`, then `adb shell dumpsys battery unplug` and `adb shell input keyevent KEYCODE_SLEEP`.
-   - After about 1 min plus the checks, `output.log` shows `restarting the node on the light profile`, then
-     `node started on the light profile`.
-2. Run `adb shell dumpsys battery reset`.
-   - After 60 s it waits for the 5 min gap, then switches back to full.
-3. Turn the screen on and open the wallet during a pending switch.
-   - `waiting_for` shows `the screen is on` or `the wallet is open`, and no restart happens.
-4. Mark the Wi-Fi network as metered in the phone's settings, while charging.
-   - The node switches to light.
+1. Run `mode off`, then open Settings → Node.
+   - It says "Applies the next time the node starts" and shows **Restart node now**.
+   - The node keeps running untouched (`output.log` has no restart).
+2. Tap **Restart node now** while a send waits for its block, or within a minute of the node going Online.
+   - It refuses and says why.
+3. Tap it when the wallet is idle and the node has been Online for a while.
+   - `output.log` shows `restarting the node on the full profile, as asked`, then
+     `node started on the full profile`.
+4. Run `mode on`, then stop and start the node from the Node screen.
+   - It starts on the light profile with no extra restart.

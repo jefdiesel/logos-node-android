@@ -7,18 +7,24 @@ import java.util.Locale
 import java.util.TimeZone
 
 /**
- * Mobile mode (android/BATTERY.md): the node runs a lighter config on battery or mobile data and the full
- * one when charging on Wi-Fi. Everything here is plain logic, without Android, so it is unit-tested
- * (BatteryTest); NodeService feeds it the charger, the network and the wallet's files.
+ * Mobile mode (android/BATTERY.md): On (the default) runs the node on the light profile, which only cuts what
+ * the node sends to other nodes; Off runs the node's own defaults. A change applies the next time the node
+ * starts, or at once with "Restart node now"; the app never restarts the node by itself for it. Everything
+ * here is plain logic, without Android, so it is unit-tested (BatteryTest).
  */
 
-/** The user's setting. AUTO is the default. */
+/** The user's setting. ON is the default. */
 enum class MobileMode(val key: String) {
-    AUTO("auto"), OFF("off"), LIGHT("light");
+    ON("on"), OFF("off");
 
     companion object {
-        fun parse(text: String?): MobileMode? = values().firstOrNull { it.key == text?.trim() }
-        val DEFAULT = AUTO
+        /** "auto" and "light" are the earlier test build's names for On. */
+        fun parse(text: String?): MobileMode? = when (text?.trim()) {
+            "on", "auto", "light" -> ON
+            "off" -> OFF
+            else -> null
+        }
+        val DEFAULT = ON
     }
 }
 
@@ -26,71 +32,34 @@ enum class MobileMode(val key: String) {
 enum class NodeProfile(val key: String) { FULL("full"), LIGHT("light") }
 
 object MobilePolicy {
-    /**
-     * The profile the node should run. Auto: full only while plugged in AND on an unmetered network, light
-     * otherwise. Null when a needed fact is unknown (no network, no battery reading): then nothing changes.
-     */
-    fun desired(mode: MobileMode, plugged: Boolean?, unmetered: Boolean?, lightFailed: Boolean = false): NodeProfile? {
-        val want = when (mode) {
-            MobileMode.OFF -> NodeProfile.FULL
-            MobileMode.LIGHT -> NodeProfile.LIGHT
-            MobileMode.AUTO -> when {
-                plugged == null || unmetered == null -> return null
-                plugged == true && unmetered == true -> NodeProfile.FULL
-                else -> NodeProfile.LIGHT
-            }
-        }
-        // a light config the node refused (or kept crashing on) is not tried again until the setting changes
-        return if (want == NodeProfile.LIGHT && lightFailed) NodeProfile.FULL else want
-    }
-
-    /** The profile for a node start when [desired] has no answer: full when the user turned the mode off, else light. */
-    fun atStart(mode: MobileMode, plugged: Boolean?, unmetered: Boolean?, lightFailed: Boolean): NodeProfile =
-        desired(mode, plugged, unmetered, lightFailed)
-            ?: if (mode == MobileMode.OFF || lightFailed) NodeProfile.FULL else NodeProfile.LIGHT
+    /** On: light, unless the light config failed on this phone (then full until the setting changes). Off: full. */
+    fun profile(mode: MobileMode, lightFailed: Boolean): NodeProfile =
+        if (mode == MobileMode.ON && !lightFailed) NodeProfile.LIGHT else NodeProfile.FULL
 
     /** Why, in words, for the screens and the stats file. */
-    fun why(mode: MobileMode, plugged: Boolean?, unmetered: Boolean?, lightFailed: Boolean): String = when {
+    fun why(mode: MobileMode, lightFailed: Boolean): String = when {
         mode == MobileMode.OFF -> "mobile mode is off"
-        lightFailed && mode != MobileMode.OFF -> "the light config failed on this phone, so full"
-        mode == MobileMode.LIGHT -> "always light"
-        plugged == null || unmetered == null -> "waiting to know the charger and the network"
-        plugged == true && unmetered == true -> "charging on Wi-Fi"
-        plugged == false && unmetered == false -> "on battery and mobile data"
-        plugged == false -> "on battery"
-        else -> "on mobile data"
+        lightFailed -> "the light config failed on this phone, so the node's defaults"
+        else -> "mobile mode is on"
     }
 }
 
 /**
- * When a running node may be restarted on its new profile. A restart costs a replay of the stored blocks
- * (about half a minute of CPU) and a short gap, so it never happens on a charger blip, never twice within
- * a few minutes, never while the wallet is busy with the node, and never before the node is Online (a
- * restart then would start its one-hour bootstrap wait again).
+ * "Restart node now" (the user's tap, never automatic): why it is refused, or null to restart. A restart
+ * replays the stored blocks (about half a minute of CPU) and the node is not Online for about a minute, so
+ * not while the wallet is busy with the node, and not before the node has been Online for a while (it saves
+ * its state once a minute; a restart before a saved Online state starts the one-hour bootstrap wait again).
  */
-object ProfileSwitch {
-    const val SETTLE_MS = 60_000L            // the charger and the network must hold still this long
-    const val MIN_GAP_MS = 5 * 60_000L       // between two profile restarts (not for the user's own change)
-    const val MIN_UPTIME_MS = 3 * 60_000L    // the node ran this long on its current config
-    const val RETRY_MS = 60_000L
+object RestartNow {
+    const val ONLINE_SETTLE_MS = 90_000L
 
-    sealed class Decision {
-        object Keep : Decision()
-        object Switch : Decision()
-        data class Wait(val reason: String, val retryMs: Long) : Decision()
-    }
-
-    fun decide(
-        desired: NodeProfile?, running: NodeProfile?, now: Long, inputsChangedAt: Long, lastSwitchAt: Long,
-        nodeStartedAt: Long, userChange: Boolean, busy: String?, online: Boolean?,
-    ): Decision {
-        if (desired == null || running == null || desired == running) return Decision.Keep
-        if (!userChange && now - inputsChangedAt < SETTLE_MS) return Decision.Wait("settling", SETTLE_MS - (now - inputsChangedAt) + 1000)
-        if (!userChange && now - lastSwitchAt < MIN_GAP_MS) return Decision.Wait("the last switch was moments ago", MIN_GAP_MS - (now - lastSwitchAt) + 1000)
-        if (now - nodeStartedAt < MIN_UPTIME_MS) return Decision.Wait("the node only just started", MIN_UPTIME_MS - (now - nodeStartedAt) + 1000)
-        if (busy != null) return Decision.Wait(busy, RETRY_MS)
-        if (online != true) return Decision.Wait("the node isn't Online yet", RETRY_MS)
-        return Decision.Switch
+    fun refusal(running: Boolean, otherJob: Boolean, pending: Boolean, busy: String?, onlineForMs: Long): String? = when {
+        !running -> "The node isn't running. It uses the setting when it starts."
+        otherJob -> "A snapshot import or a stop is running."
+        !pending -> "The node already runs this setting."
+        busy != null -> "Not now: $busy. Try again when it has finished."
+        onlineForMs < ONLINE_SETTLE_MS -> "Not yet: the node isn't online long enough, and a restart now would make it wait again. Try again in a few minutes."
+        else -> null
     }
 }
 
@@ -158,8 +127,8 @@ object NodeProfileConfig {
 
 /**
  * Whether the wallet is using the node right now, from the wallet's own files (server.py writes them; this
- * app only reads them): a bridge in progress, a send not yet in a block, a running name change (the
- * `names` signer process), or the wallet screen open. Null when it is free. Old entries don't count, so a
+ * app only reads them): a bridge in progress, a send not yet in a block, or a running name change (the
+ * `names` signer process). Null when it is free. Old entries don't count, so a
  * record stuck at "pending" can't hold the node on one profile forever.
  */
 object WalletBusy {
@@ -167,10 +136,8 @@ object WalletBusy {
     val BRIDGE_ACTIVE = setOf("splitting", "ready", "depositing", "sent")
     const val SEND_MAX_AGE_MS = 60 * 60_000L
     const val BRIDGE_MAX_AGE_MS = 2 * 60 * 60_000L
-    const val VISIBLE_FRESH_MS = 90_000L
 
-    fun reason(bridgeJson: String?, historyJson: String?, namesRunning: Boolean, visibleAt: Long?, now: Long): String? {
-        if (visibleAt != null && now - visibleAt in 0..VISIBLE_FRESH_MS) return "the wallet is open"
+    fun reason(bridgeJson: String?, historyJson: String?, namesRunning: Boolean, now: Long): String? {
         if (namesRunning) return "a name change is running"
         try {
             if (bridgeJson != null) {

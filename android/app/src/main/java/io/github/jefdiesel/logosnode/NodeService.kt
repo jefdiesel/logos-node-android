@@ -52,16 +52,11 @@ class NodeService : Service() {
             context.getSharedPreferences("messaging", android.content.Context.MODE_PRIVATE)
 
         /**
-         * Mobile mode (android/BATTERY.md): set it with --es mode auto|off|light (the wallet page's Settings >
-         * Node does the same); --ez reset true clears files/node/battery-stats.txt for a new measurement.
+         * Mobile mode (android/BATTERY.md): --es mode on|off sets it (the wallet page's Settings > Node does the
+         * same), --ez restart true is "Restart node now" (refused while the wallet is busy), and --ez reset true
+         * clears the counters (files/node/battery-stats.txt) at the next minute, for a new measurement.
          */
         const val ACTION_MOBILE_MODE = "io.github.jefdiesel.logosnode.MOBILE_MODE"
-        /**
-         * Whether a profile change restarts a running node (about 30 s of replay CPU and about a minute not
-         * Online, only with the screen off and the wallet idle). False: the new profile waits for the node's
-         * next start (app start, Start, crash restart), so mobile mode never restarts anything.
-         */
-        const val SWITCH_BY_RESTART = true
         /** One line for the Node screen: the setting and what it does now. */
         @Volatile var mobileSummary = ""
 
@@ -71,17 +66,10 @@ class NodeService : Service() {
                 ?: MobileMode.DEFAULT
     }
 
-    // ---- mobile mode: the node's profile from the charger and the network (Battery.kt, BATTERY.md) ----
+    // ---- mobile mode: the node's profile, applied at each node start (Battery.kt, BATTERY.md) ----
 
     private val batteryWork = java.util.concurrent.Executors.newSingleThreadExecutor()
-    private var powerReceiver: android.content.BroadcastReceiver? = null
-    private var batteryNetCallback: android.net.ConnectivityManager.NetworkCallback? = null
     private lateinit var stats: BatteryStats
-    @Volatile private var plugged: Boolean? = null
-    @Volatile private var unmetered: Boolean? = null
-    @Volatile private var inputsChangedAt = 0L
-    @Volatile private var lastSwitchAt = 0L
-    @Volatile private var userChangePending = false
     @Volatile private var lightFailed = false
     @Volatile private var lightQuickExits = 0
     @Volatile private var lastCheckedLight: String? = null
@@ -89,19 +77,14 @@ class NodeService : Service() {
     @Volatile private var runningProfile: NodeProfile? = null
     @Volatile private var startingProfile = NodeProfile.FULL
     @Volatile private var nodeStartedAt = 0L
-    /** Set when the service itself stops the node to start it on another profile: no crash backoff then. */
+    /** Set when the service stops the node for "Restart node now": no crash backoff then. */
     @Volatile private var plannedRestart: String? = null
-    @Volatile private var lastWait = ""
+    /** The answer to the last "Restart node now", for the page. */
+    @Volatile private var restartAnswer = ""
     private val nodeLines = java.util.concurrent.atomic.AtomicLong()
     private val nodeBytes = java.util.concurrent.atomic.AtomicLong()
 
-    private val evaluateRunnable = Runnable { batteryWork.execute { evaluateProfile() } }
-
-    private fun scheduleEvaluate(delayMs: Long) {
-        main.removeCallbacks(evaluateRunnable)
-        main.postDelayed(evaluateRunnable, maxOf(0L, delayMs))
-    }
-
+    /** For the counters only: is the phone plugged in, is the network unmetered (null: unknown). */
     private fun stickyPlugged(): Boolean? = try {
         registerReceiver(null, android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED))
             ?.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, -1)?.takeIf { it >= 0 }?.let { it > 0 }
@@ -109,56 +92,12 @@ class NodeService : Service() {
         null
     }
 
-    private fun unmeteredNow(): Boolean? {
+    private fun unmeteredNow(): Boolean? = try {
         val cm = getSystemService(android.net.ConnectivityManager::class.java)
-        return cm.activeNetwork?.let { cm.getNetworkCapabilities(it) }
+        cm.activeNetwork?.let { cm.getNetworkCapabilities(it) }
             ?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
-    }
-
-    /** A new reading of the charger or the network; a change waits SETTLE_MS before it can switch anything. */
-    private fun onInputs(newPlugged: Boolean?, newUnmetered: Boolean?) {
-        if (newPlugged == plugged && newUnmetered == unmetered) return
-        plugged = newPlugged
-        unmetered = newUnmetered
-        inputsChangedAt = System.currentTimeMillis()
-        log.app("mobile mode: plugged in=${newPlugged ?: "?"}, unmetered network=${newUnmetered ?: "?"}")
-        publishMobileState()
-        scheduleEvaluate(ProfileSwitch.SETTLE_MS + 1000)
-    }
-
-    private fun watchPowerAndNetwork() {
-        plugged = stickyPlugged()
-        unmetered = unmeteredNow()
-        val r = object : android.content.BroadcastReceiver() {
-            override fun onReceive(c: android.content.Context, i: Intent) {
-                onInputs(i.action == Intent.ACTION_POWER_CONNECTED, unmetered)
-            }
-        }
-        val filter = android.content.IntentFilter().apply {
-            addAction(Intent.ACTION_POWER_CONNECTED); addAction(Intent.ACTION_POWER_DISCONNECTED)
-        }
-        if (Build.VERSION.SDK_INT >= 33) registerReceiver(r, filter, RECEIVER_NOT_EXPORTED) else registerReceiver(r, filter)
-        powerReceiver = r
-        val cb = object : android.net.ConnectivityManager.NetworkCallback() {
-            override fun onCapabilitiesChanged(network: android.net.Network, caps: android.net.NetworkCapabilities) {
-                onInputs(plugged, caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED))
-            }
-
-            override fun onLost(network: android.net.Network) = onInputs(plugged, null)
-        }
-        try {
-            getSystemService(android.net.ConnectivityManager::class.java).registerDefaultNetworkCallback(cb)
-            batteryNetCallback = cb
-        } catch (e: Exception) {
-            log.app("mobile mode: can't watch the network: $e")
-        }
-    }
-
-    private fun unwatchPowerAndNetwork() {
-        powerReceiver?.let { try { unregisterReceiver(it) } catch (_: Exception) {} }
-        powerReceiver = null
-        batteryNetCallback?.let { try { getSystemService(android.net.ConnectivityManager::class.java).unregisterNetworkCallback(it) } catch (_: Exception) {} }
-        batteryNetCallback = null
+    } catch (_: Exception) {
+        null
     }
 
     private fun readOrNull(f: File): String? = try { if (f.isFile) f.readText() else null } catch (_: Exception) { null }
@@ -170,13 +109,8 @@ class NodeService : Service() {
         }
 
     private fun walletBusy(now: Long): String? {
-        // a switch takes the node off Online for about a minute (the restart's replay): only while nobody looks
-        if (getSystemService(PowerManager::class.java).isInteractive) return "the screen is on"
         val w = WalletServer.dataDir(this)
-        return WalletBusy.reason(
-            readOrNull(File(w, "wallet-bridge.json")), readOrNull(File(w, "wallet-history.json")), namesRunning(),
-            files.walletVisible.takeIf { it.exists() }?.lastModified(), now,
-        )
+        return WalletBusy.reason(readOrNull(File(w, "wallet-bridge.json")), readOrNull(File(w, "wallet-history.json")), namesRunning(), now)
     }
 
     /** GET on the node's API, parsed; null when it doesn't answer. */
@@ -192,54 +126,37 @@ class NodeService : Service() {
 
     /** When the node was first seen Online with no other state seen since (0: not Online now). */
     @Volatile private var onlineSince = 0L
-    private val ONLINE_SETTLE_MS = 90_000L
 
     private fun noteState(state: String?, now: Long) {
         if (state == "Online") { if (onlineSince == 0L) onlineSince = now } else onlineSince = 0L
     }
 
-    /** How long the node has been seen Online without a break, reading it now. */
+    /** How long the node has been seen Online without a break, reading it now (-1: not Online). */
     private fun onlineFor(now: Long): Long {
         noteState(chainInfo()?.optString("state"), now)
         return if (onlineSince == 0L) -1L else now - onlineSince
     }
 
-    /** On the batteryWork thread: switch the running node to the profile it should have, when that is safe. */
-    private fun evaluateProfile() {
-        try {
-            val mode = mobileMode(this)
-            val desired = MobilePolicy.desired(mode, plugged, unmetered, lightFailed)
-            // SWITCH_BY_RESTART false: never restart for mobile mode; a new profile waits for the node's next start
-            val running = runningProfile.takeIf { SWITCH_BY_RESTART && process != null && !hold && !importRunning && !stopping && !stopRequested }
-            val now = System.currentTimeMillis()
-            val differs = desired != null && running != null && desired != running
-            val busy = if (differs) walletBusy(now) else null
-            // Online on readings at least 90 s apart: the node saves its Online state once a minute, and a
-            // restart right after it turned Online would start the one-hour bootstrap wait again
-            val online = if (differs && busy == null) onlineFor(now) >= ONLINE_SETTLE_MS else null
-            when (val d = ProfileSwitch.decide(desired, running, now, inputsChangedAt, lastSwitchAt, nodeStartedAt, userChangePending, busy, online)) {
-                ProfileSwitch.Decision.Keep -> {
-                    lastWait = ""
-                    if (desired != null && desired == running) userChangePending = false
-                }
-                is ProfileSwitch.Decision.Wait -> {
-                    if (d.reason != lastWait) log.app("mobile mode: switching to ${desired?.key} when possible: ${d.reason}")
-                    lastWait = d.reason
-                    if (d.reason == busy) stats.add("waits_busy", 1)
-                    scheduleEvaluate(d.retryMs)
-                }
-                ProfileSwitch.Decision.Switch -> {
-                    lastWait = ""
-                    userChangePending = false
-                    lastSwitchAt = now
-                    stats.add("switches", 1)
-                    log.app("mobile mode: restarting the node on the ${desired!!.key} profile (${MobilePolicy.why(mode, plugged, unmetered, lightFailed)})")
-                    plannedRestart = "mobile mode: ${desired.key}"
-                    killNode()
-                }
-            }
-        } catch (e: Exception) {
-            log.app("mobile mode: $e")
+    /** The profile the setting asks for now. */
+    private fun wantedProfile() = MobilePolicy.profile(mobileMode(this), lightFailed)
+
+    /** "Restart node now", on the batteryWork thread: restarts the node on the new setting, or says why not. */
+    private fun restartNow() {
+        val now = System.currentTimeMillis()
+        val running = process != null && runningProfile != null
+        val pending = running && runningProfile != wantedProfile()
+        val busy = if (running && pending) walletBusy(now) else null
+        val onlineMs = if (running && pending && busy == null) onlineFor(now) else -1L
+        val no = RestartNow.refusal(running, hold || importRunning || stopping || stopRequested, pending, busy, onlineMs)
+        if (no != null) {
+            restartAnswer = no
+            log.app("mobile mode: restart refused: $no")
+        } else {
+            restartAnswer = "Restarting the node on the new setting; it is back online in about a minute."
+            stats.add("restarts_user", 1)
+            log.app("mobile mode: restarting the node on the ${wantedProfile().key} profile, as asked")
+            plannedRestart = "mobile mode (asked for)"
+            killNode()
         }
         publishMobileState()
     }
@@ -247,18 +164,18 @@ class NodeService : Service() {
     /** files/node/mobile-state.json for the wallet page, and the Node screen's line. */
     private fun publishMobileState() {
         val mode = mobileMode(this)
-        val why = MobilePolicy.why(mode, plugged, unmetered, lightFailed)
         val running = runningProfile
-        val desired = MobilePolicy.desired(mode, plugged, unmetered, lightFailed)
+        val wanted = wantedProfile()
+        val pending = running != null && running != wanted
         val now = when {
-            running == null -> "The node isn't running."
-            desired != null && desired != running && lastWait.isNotEmpty() ->
-                "Running ${running.key}; switching to ${desired.key} ($why) once possible: $lastWait."
-            else -> "Running ${running.key} ($why)."
+            running == null -> "The node isn't running; it uses this setting when it starts."
+            pending -> "The node runs the ${if (running == NodeProfile.LIGHT) "lighter" else "full"} profile. Applies the next time the node starts."
+            else -> "The node runs the ${if (running == NodeProfile.LIGHT) "lighter" else "full"} profile (${MobilePolicy.why(mode, lightFailed)})."
         }
         mobileSummary = "Mobile mode: ${mode.key}. $now"
         try {
-            val o = org.json.JSONObject().put("mode", mode.key).put("profile", running?.key ?: "").put("now", now)
+            val o = org.json.JSONObject().put("mode", mode.key).put("profile", running?.key ?: "")
+                .put("pending", pending).put("now", now).put("restart", restartAnswer)
             files.mobileState.writeText(o.toString())
         } catch (_: Exception) {}
     }
@@ -287,7 +204,7 @@ class NodeService : Service() {
     private fun statsTick() {
         try {
             val now = System.currentTimeMillis()
-            stickyPlugged()?.let { p -> if (p != plugged) onInputs(p, unmetered) }    // a missed broadcast
+            val plugged = stickyPlugged(); val unmetered = unmeteredNow()
             val p = runningProfile?.key ?: "stopped"
             if (lastTickAt > 0) stats.add("seconds_$p", minOf(now - lastTickAt, 5 * 60_000L) / 1000)
             lastTickAt = now
@@ -344,8 +261,8 @@ class NodeService : Service() {
             val mode = mobileMode(this)
             stats.set("mode", mode.key); stats.set("profile", p)
             stats.set("plugged", plugged); stats.set("unmetered", unmetered)
-            stats.set("light_failed", lightFailed); stats.set("waiting_for", lastWait)
-            stats.set("why", MobilePolicy.why(mode, plugged, unmetered, lightFailed))
+            stats.set("light_failed", lightFailed)
+            stats.set("why", MobilePolicy.why(mode, lightFailed))
             stats.set("wakelock_held", wakeLock?.isHeld == true)
             stats.set("updated", now)
             if (resetRequested) {
@@ -564,7 +481,6 @@ class NodeService : Service() {
         )
         files.mkdirs()
         stats = BatteryStats(files.batteryStats)
-        watchPowerAndNetwork()
         publishMobileState()
     }
 
@@ -611,11 +527,11 @@ class NodeService : Service() {
                 if (m != null && m != mobileMode(this)) {
                     getSharedPreferences("battery", MODE_PRIVATE).edit().putString("mode", m.key).commit()
                     lightFailed = false; lightQuickExits = 0; lastCheckedLight = null
-                    userChangePending = true
-                    log.app("mobile mode set to ${m.key}")
+                    restartAnswer = ""
+                    log.app("mobile mode set to ${m.key}; it applies the next time the node starts")
                 }
                 publishMobileState()
-                scheduleEvaluate(0)
+                if (intent.getBooleanExtra("restart", false)) batteryWork.execute { restartNow() }
                 main.post { stopIfIdle() }
                 return START_STICKY
             }
@@ -772,8 +688,6 @@ class NodeService : Service() {
         stopRequested = true
         thread(name = "node-stop-on-destroy") { killNode() }
         unwatchNetwork()
-        unwatchPowerAndNetwork()
-        main.removeCallbacks(evaluateRunnable)
         messaging?.let { m -> if (m.running) thread(name = "messaging-stop-on-destroy") { m.stop("the app's service stopped") } }
         messaging = null
         active = false
@@ -940,7 +854,7 @@ class NodeService : Service() {
         }
         // mobile mode: this start's profile, from the setting, the charger and the network (BATTERY.md)
         val mode = mobileMode(this)
-        var profile = MobilePolicy.atStart(mode, plugged, unmetered, lightFailed)
+        var profile = MobilePolicy.profile(mode, lightFailed)
         val overrides = files.profileOverrideLines()
         fun swarmFor(p: NodeProfile): List<String> {
             val v = NodeProfileConfig.values(p, overrides) ?: run {
@@ -958,7 +872,6 @@ class NodeService : Service() {
         }
         files.writeConfig(swarm)
         startingProfile = profile
-        if (MobilePolicy.desired(mode, plugged, unmetered, lightFailed) == profile) userChangePending = false
         files.linkBinary()
         // a node left over from an earlier run of the app would hold the database lock and the ports
         for (pid in NodeProcesses.pids()) {
@@ -1002,7 +915,6 @@ class NodeService : Service() {
             nodeStartedAt = System.currentTimeMillis()
             log.app("node started on the ${startingProfile.key} profile (mobile mode ${mobileMode(this).key})")
             publishMobileState()
-            scheduleEvaluate(ProfileSwitch.MIN_UPTIME_MS + 1000)   // a change that came while it was starting
             setStatus(if (startingProfile == NodeProfile.LIGHT) "node running (light)" else "node running")
             try {
                 p.inputStream.bufferedReader().forEachLine { line ->
