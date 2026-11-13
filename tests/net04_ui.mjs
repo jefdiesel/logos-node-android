@@ -187,6 +187,7 @@ await val("#n4-watch", BASECAMP); await click("#n4-add");
 await waitFor("LEZ 0.4 with the phone's account and a watched one", `document.getElementById("n4-watch-m").textContent.includes(${JSON.stringify(BASECAMP)}) && document.querySelectorAll("#n4-accts .n4-acct").length === 2 && /LEZ: 23,786,858/.test(document.getElementById("n4-accts").innerText)`, 20000);
 await val("#n4-watch", "typed, not sent");
 await js(`lockedNow(); true`);
+await waitFor("locked: the page loaded again, into the lock screen", `!document.getElementById("v-locked").hidden && !document.documentElement.classList.contains("relock")`);
 const left = await js(`(() => { const h = document.documentElement.outerHTML, v = document.getElementById("net04");
   return { own: h.includes(${JSON.stringify(OWN)}), watched: h.includes(${JSON.stringify(BASECAMP)}), amounts: /23,786,858|wETH: /.test(v.textContent),
     accts: document.getElementById("n4-accts").textContent, msg: document.getElementById("n4-watch-m").textContent, state: document.getElementById("n4-state").textContent,
@@ -198,19 +199,21 @@ check("after the unlock: LEZ 0.3", (await js(`document.getElementById("nw-03").g
 // a Watch answered after a lock writes nothing
 await click("#nw-04");
 await waitFor("LEZ 0.4 again", `/LEZ: 23,786,858/.test(document.getElementById("n4-accts").innerText)`, 20000);
-const lateW = await js(`(async () => { document.getElementById("n4-watch").value = ${JSON.stringify(LATE)}; document.getElementById("n4-add").click(); lockedNow();
-  await new Promise(ok => setTimeout(ok, 1500));
-  return { html: document.documentElement.outerHTML.includes(${JSON.stringify(LATE)}), msg: document.getElementById("n4-watch-m").textContent, accts: document.getElementById("n4-accts").textContent }; })()`);
+await js(`document.getElementById("n4-watch").value = ${JSON.stringify(LATE)}; document.getElementById("n4-add").click(); lockedNow(); true`);
+await waitFor("locked with the Watch on its way", `!document.getElementById("v-locked").hidden && !document.documentElement.classList.contains("relock")`);
+await sleep(1500);
+const lateW = await js(`({ html: document.documentElement.outerHTML.includes(${JSON.stringify(LATE)}), msg: document.getElementById("n4-watch-m").textContent, accts: document.getElementById("n4-accts").textContent })`);
 check("a Watch answered after the lock writes nothing behind it", !lateW.html && !lateW.msg && !lateW.accts, lateW);
 await relock();
 await post("/api/wallet/net04/watch", { remove: LATE }, session);
 
 // ---- a read still on its way when the page locks renders nothing behind the lock ----
-const late = await js(`(async () => { const p = api("/api/wallet/accounts"), q = loadAccounts(); lockedNow(); const r = await p; await q;
+// (relockPage, the reload, held back so the page that is locking can be looked at)
+const late = await js(`(async () => { relockPage = () => {}; document.getElementById("accts").replaceChildren();
+  const p = api("/api/wallet/accounts"), q = loadAccounts(); lockedNow(); const r = await p; await q;
   await new Promise(ok => setTimeout(ok, 300));
-  return { status: r.status, ok: r.ok, accts: document.querySelectorAll(".acct").length, total: document.getElementById("bal-total").textContent,
-    locked: !document.getElementById("v-locked").hidden }; })()`);
-check("a read answered after a lock is dropped: nothing rendered behind the lock", late.locked && !late.ok && late.status === 0 && late.accts === 0 && !/[0-9]/.test(late.total), late);
+  return { status: r.status, ok: r.ok, stale: r.stale, accts: document.querySelectorAll("#accts .acct").length, hidden: document.documentElement.classList.contains("relock") }; })()`);
+check("a read answered after a lock is dropped: stale, nothing rendered, the page hidden", late.stale && !late.ok && late.status === 0 && late.accts === 0 && late.hidden, late);
 
 check("no page errors", errors.length === 0, errors);
 stop();

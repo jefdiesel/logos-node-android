@@ -35,7 +35,12 @@
     <p class="msg" id="n4-watch-m" role="status"></p>`;
 
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
-  const hhmm = t => { try { return new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); } catch (e) { return ""; } };
+  const hhmm = t => {            // the time, and the date too when it isn't today
+    try {
+      const d = new Date(t * 1000), tm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      return d.toDateString() === new Date().toDateString() ? tm : d.toLocaleDateString([], { day: "numeric", month: "short" }) + " " + tm;
+    } catch (e) { return ""; }
+  };
   const amt = v => (typeof balHidden !== "undefined" && balHidden) ? MASK : v;
 
   function render(d) {

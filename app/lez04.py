@@ -393,7 +393,8 @@ class Net04:
                                 dst = actor_states(rpc("getAccount", [definition])) or {}
                                 name = decode_definition_name(dst.get(tp, b""))
                             except (ValueError, Unreachable):
-                                pass
+                                if time.monotonic() > end:     # out of time: read the list again next time,
+                                    raise Unreachable("too slow")  # rather than keep it an hour without names
                             sym = symbols.get(eth) if isinstance(symbols.get(eth), str) else None
                             toks.append({"definition": definition, "decimals": decimals,
                                          "symbol": (sym or "token " + short(definition))[:16], "name": name})
@@ -451,8 +452,8 @@ class Net04:
     def view(self, own):
         s = self.state
         toks = s.get("tokens") or []
-        # a read that has run past its deadline (an answer trickling in, or none) counts as "can't reach" now
-        slow = self.reading and self.clock() - self.last_try > DEADLINE
+        # a read that has run past its own deadline (an answer trickling in, or none) counts as "can't reach" now
+        slow = self.reading and self.clock() - self.last_try > REFRESH_DEADLINE + 5
         out = {"network": NETWORK, "short": "LEZ 0.4", "private": PRIVATE_TEXT, "tokens_error": s.get("tokens_error"),
                "reset": RESET_TEXT if s.get("reset_at") and self.clock() - s["reset_at"] < 86400 else None, "unreachable": UNREACHABLE_TEXT if s.get("unreachable") or slow else None,
                "height": s.get("height") if type(s.get("height")) is int else None,

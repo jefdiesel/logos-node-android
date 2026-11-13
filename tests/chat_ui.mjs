@@ -52,7 +52,7 @@ ws.addEventListener("message", (e) => {
   if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
   if (m.method === "Runtime.exceptionThrown") errors.push(m.params.exceptionDetails.exception?.description || m.params.exceptionDetails.text);
   // (a wrong PIN, tried on purpose, answers 401: the browser logs that, and it is no page error)
-  if (m.method === "Log.entryAdded" && m.params.entry.level === "error" && !(m.params.entry.source === "network" && /\/api\/wallet\/unlock$/.test(m.params.entry.url || "") && / 401 /.test(m.params.entry.text))) errors.push(m.params.entry.text);
+  if (m.method === "Log.entryAdded" && m.params.entry.level === "error" && !(m.params.entry.source === "network" && /\/api\/wallet\/unlock$/.test(m.params.entry.url || "") && / 401 /.test(m.params.entry.text))) errors.push(m.params.entry.text + (m.params.entry.url ? " " + m.params.entry.url.replace(/^https?:\/\/[^/]+/, "") : ""));
 });
 const cdp = (method, params = {}) => new Promise((ok) => { const id = ++seq; waiting.set(id, ok); ws.send(JSON.stringify({ id, method, params })); });
 await cdp("Runtime.enable"); await cdp("Log.enable"); await cdp("Page.enable");
@@ -163,6 +163,8 @@ function pngPixels(buf) {
 }
 // what the QR code in `sel` says, read off a screenshot of the screen as shown (null: none readable)
 async function qrOnScreen(sel) {
+  // (the QR is drawn once its library has loaded: after a lock's reload that is a fetch away)
+  await waitFor(`${sel} is drawn`, `!!document.querySelector(${JSON.stringify(sel)})`, 10000);
   await js(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) throw new Error("no ${sel}"); e.scrollIntoView({ block: "center" }); return true; })()`);
   await sleep(200);
   if (!await seen(sel)) return null;
@@ -573,26 +575,23 @@ await mgsWait("Back: Messages' list", "list");
 await click("#b-settings-back");
 await stWait("Back again returns to Messages", "closed");
 check("Messages, as it was", await js(`!document.getElementById("page-msg").hidden && !document.getElementById("mg-home").hidden`));
-// a lock (auto-lock) and unlock comes back to the same Settings page
+// a lock (auto-lock) and unlock comes back to the same Settings page, at its first step (a page inside it, like
+// Messages > Name, starts again from the group's own page)
 for (const [id, label] of [["sec", "Security"], ["msg", "Messages"]]) {
   await click("#nav-wallet"); await click("#b-gear"); await stWait("Settings", "home");
+  await waitFor(`its ${label} row (after the lock's reload, once the page has read it again)`, `!document.getElementById("go-${id}").hidden`, 15000);
   await click(`#go-${id}`); await stWait(label, id);
   if (id === "msg") { await click("#mgs-go-name"); await mgsWait("Messages > Name", "name"); }
   await js(`lockedNow(); true`);
-  await waitFor("locked", `!document.getElementById("lock").hidden`);
+  await waitFor("locked (the page loaded again, into the lock screen)", `!document.getElementById("lock").hidden && !document.documentElement.classList.contains("relock")`);
   check(`locked on Settings > ${label}: nothing of it shows`, !/Auto-lock|alice|Your messaging address/.test(await js(`document.body.innerText`)));
   check(`locked: the Settings rows keep no name, not even hidden`, !/alice/.test(await js(`document.getElementById("s-groups").textContent + [...document.querySelectorAll("#s-groups [aria-label]")].map(e => e.getAttribute("aria-label")).join()`)));
   check(`locked: Settings > Messages keeps none of it, not even hidden (no name, no messaging address)`, await js(`(() => { const m = document.getElementById("s-msg"), t = m.textContent + [...m.querySelectorAll("[aria-label]")].map(e => e.getAttribute("aria-label")).join() + [...m.querySelectorAll("input")].map(i => i.value).join();
     return !/alice/.test(t) && !/[0-9a-f]{20,}/.test(t) && !m.querySelector(".qr"); })()`));
   await unlock();
   await stWait(`unlocked: back on Settings > ${label}`, id);
-  const want = id === "msg" ? "Name" : label;
-  check(`with its title, ${want}`, (await text("#h-settings")) === want);
-  if (id === "msg") {
-    await waitFor("back on Messages > Name, filled in again", `!document.getElementById("s-msg").hidden && !document.getElementById("mgs-name").hidden && document.getElementById("mg-name").value === "alice"`, 15000);
-    await js(`history.back(); true`);
-    await mgsWait("the phone's Back: Messages' list", "list");
-  }
+  check(`with its title, ${label}`, (await text("#h-settings")) === label);
+  if (id === "msg") await mgsWait("at Messages' own list, its first step", "list");
   await js(`history.back(); true`);
   await stWait("the phone's Back still goes up one level", "home");
   await click("#b-settings-back");
@@ -988,26 +987,22 @@ await shot("messages-home");
   await waitFor("Use the last saved copy: the chats are back", `document.querySelectorAll("#mg-rows .crow").length >= 3 && document.getElementById("mg-store-warn").hidden`, 30000);
   check("(the file is readable again)", readFileSync(join(A.data, "wallet-chat.json"), "utf8").length > 10 && good.length > 10);
 }
-// ---- a message read that is answered after a lock shows nothing, and the message is read again after the unlock ----
+// ---- answers that come after a lock: the page's api() and Messages' own background requests (bgApi) drop them
+// (stale, no data), and send nothing once the page is locking; a message that came in is read again after the unlock ----
 {
-  const held = [];
-  let holding = true;
-  ws.addEventListener("message", (e) => {
-    const m = JSON.parse(e.data);
-    if (m.method !== "Fetch.requestPaused" || !/\/api\/messages\/inbox\?/.test(m.params.request.url)) return;
-    if (holding) held.push(m.params.requestId); else cdp("Fetch.continueRequest", { requestId: m.params.requestId });
-  });
-  await cdp("Fetch.enable", { patterns: [{ urlPattern: "*/api/messages/inbox?*" }] });
   const top = async () => Math.max(0, ...(await A.call("/api/messages/inbox")).d.items.map(i => i.n)), before = await top();
   await bob.send("d:alice", "sent while the page locked");
-  await until("bob's message is on alice's server, and a read of the page's is held", async () => await top() > before && held.length > 0, 20000);
-  await js(`lockedNow(); true`);
-  await waitFor("locked, with the page's inbox read still on its way", `!document.getElementById("v-locked").hidden`);
-  holding = false;
-  for (const id of held.splice(0)) await cdp("Fetch.continueRequest", { requestId: id });
-  await sleep(800);
-  check("the read answered after the lock rendered nothing behind it", !(await js(`document.body.textContent`)).includes("sent while the page locked"));
-  await cdp("Fetch.disable");
+  await until("bob's message is on alice's server", async () => await top() > before, 20000);
+  // (relockPage, the reload, held back so the page that is locking can be looked at)
+  const late = await js(`(async () => { relockPage = () => {}; const bgApi = window.MSG.bgApi;
+    const a = api("/api/messages/inbox?after=0"), b = bgApi("/api/messages/inbox?dropped=1"), c = bgApi("/api/messages/status", {});
+    lockedNow();
+    const ra = await a, rb = await b, rc = await c, rd = await bgApi("/api/messages/inbox?after=0");
+    return { a: !!ra.stale && !ra.data.items, b: !!rb.stale && !rb.data.items, c: !!rc.stale, d: !!rd.stale }; })()`);
+  check("a read (api), a background read and a background POST (bgApi) answered after the lock are stale, with no data; one made after it too",
+    late.a && late.b && late.c && late.d, late);
+  await load();
+  await waitFor("the page loads, locked", `!document.getElementById("v-locked").hidden`);
   await unlock();
   await click("#nav-msg");
   await waitFor("after the unlock the message is read again and shows", `document.getElementById("mg-rows").innerText.includes("sent while the page locked")`, 20000);
@@ -1025,7 +1020,7 @@ check("fingerprint unlock is on for the Android app", r0.code === 200, r0);
 await E.call("/api/wallet/lock", {});
 const erinBob = await chatOf(w, B);
 await erinBob.lookup("erin", true); await erinBob.startDirect("erin"); await erinBob.send("d:erin", "hi erin");
-await cdp("Page.addScriptToEvaluateOnNewDocument", { source: "window.__fp = 0; window.__scans = 0; window.LogosAndroid = { unlockWithFingerprint() { window.__fp++; }, openNode() {}, scanQr() { window.__scans++; } };" });
+await cdp("Page.addScriptToEvaluateOnNewDocument", { source: "Object.defineProperty(window, '__fp', { configurable: true, get: () => Number(sessionStorage.getItem('__fp') || 0) }); window.__scans = 0; window.LogosAndroid = { unlockWithFingerprint() { sessionStorage.setItem('__fp', String(window.__fp + 1)); }, openNode() {}, scanQr() { window.__scans++; } };" });
 await cdp("Page.navigate", { url: E.base + "/" });
 await waitFor("the lock screen", `!!document.getElementById("lock") && !document.getElementById("lock").hidden`);
 await sleep(600);
@@ -1109,18 +1104,20 @@ await js(`closeSettings(); true`); await click("#nav-msg");
 await waitFor("back on Messages with erin's chats", `[...document.querySelectorAll("#mg-rows .crow")].some(r => r.innerText.includes("bob"))`, 15000);
 await js(`[...document.querySelectorAll("#mg-rows .crow")].find(r => r.innerText.includes("bob")).click(); true`);
 await waitFor("the chat is open", `!!document.querySelector(".ov .cmp")`);
-await js(`lockedNow(); true`);                    // what an auto-lock does
-await waitFor("auto-locked: the lock screen", `!document.getElementById("lock").hidden`);
+await E.call("/api/wallet/lock", {});               // the server's auto-lock; the open chat's next request meets it (a 401)
+await waitFor("auto-locked: the lock screen, through the page's one lock (a reload)", `!document.getElementById("lock").hidden && !document.documentElement.classList.contains("relock") && document.getElementById("v-open").hidden`, 20000);
 await sleep(400);
 check("after an auto-lock the fingerprint check comes up by itself", await js(`window.__fp`) === 3);
-const behind = await js(`document.body.innerText`);
-check("nothing behind the lock screen: no chats, names, balances", !/bob|hi erin|erin/.test(behind) && (await js(`document.querySelectorAll(".crow, .bub, .acct, .ov").length`)) === 0, behind.slice(0, 300));
+// the whole page: every element (hidden ones too), every attribute and title, every field's value; not the scripts' source
+const behind = await js(`(() => { const c = document.documentElement.cloneNode(true); c.querySelectorAll("script, style").forEach(x => x.remove());
+  return c.outerHTML + "\\n" + [...document.querySelectorAll("input, textarea, select")].map(i => i.value).join("\\n"); })()`);
+check("nothing behind the lock screen, hidden or not: no chats, names, balances", !/\b(bob|erin|zed)\b/i.test(behind) && (await js(`document.querySelectorAll(".crow, .bub, .acct, .ov").length`)) === 0,
+  (behind.match(/.{0,60}\b(bob|erin|zed)\b.{0,60}/i) || [""])[0]);
 await vis("hidden"); await sleep(2800); await vis("visible"); await sleep(400);
 check("coming back to the app later: it comes up again", await js(`window.__fp`) === 4);
 await click("#b-enter-pin");
 await enterPin(E.pin, "unlocking after an auto-lock");
-await waitFor("after unlocking: back in the same chat", `!document.getElementById("page-msg").hidden && !!document.querySelector(".ov .cmp") && document.querySelector(".ov .ov-top").innerText.includes("bob")`, 15000);
-await js(`history.back(); true`);
+await waitFor("after unlocking: back on Messages, at its list (a chat isn't kept open across a lock)", `!document.getElementById("page-msg").hidden && !document.querySelector(".ov") && [...document.querySelectorAll("#mg-rows .crow")].some(r => r.innerText.includes("bob"))`, 15000);
 await click("#nav-wallet");
 await js(`document.getElementById("b-lock").click(); true`);
 await waitFor("locked by hand", `!document.getElementById("lock").hidden`);
@@ -1228,7 +1225,8 @@ await waitFor("taken back", `document.getElementById("sf-state").textContent ===
 await click("#sf-scan"); await js(`window.logosScanned(${JSON.stringify("msg:" + hex(B.id.publicKey))}); true`);
 await waitFor("their own messaging address QR: it matches, but that checks one way only, so it marks nothing",
   `document.querySelector(".ov[aria-label='Safety code']").innerText.includes("To check both ways, scan their safety code") && document.getElementById("sf-state").textContent === "Not checked"`);
-check("no script errors in the page (the 401s are the lock tests' own, the 500s the store test's)", errors.filter(e => !/status of (401|500)/.test(e)).length === 0, errors);
+// (the 404: Messages' status read as a page opens, on the app where messages aren't turned on yet)
+check("no script errors in the page (the 401s are the lock tests' own, the 500s the store test's)", errors.filter(e => !/status of (401|500)/.test(e) && !/status of 404 .* \/api\/messages\/status$/.test(e)).length === 0, errors);
 ws.close(); stopAll();
 console.log("all checks passed" + (SHOTS ? ` (screenshots in ${SHOTS})` : ""));
 process.exit(0);

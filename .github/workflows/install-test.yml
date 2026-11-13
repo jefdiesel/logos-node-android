@@ -175,6 +175,8 @@ jobs:
         run: CHROME="$(command -v google-chrome || command -v chromium)" node tests/lns_ui.mjs
       - name: The Wallet's network switch (LEZ 0.3 | LEZ 0.4) and the watch field in a real browser, LEZ 0.4 read-only
         run: CHROME="$(command -v google-chrome || command -v chromium)" node tests/net04_ui.mjs
+      - name: The lock - every way it comes, one lock that reloads the page; nothing left, nothing sent after it
+        run: CHROME="$(command -v google-chrome || command -v chromium)" node tests/lock_ui.mjs
       - name: Android app key in a real browser - the page's requests carry the cookie, its scripts can't read it
         run: CHROME="$(command -v google-chrome || command -v chromium)" node tests/app_key_ui.mjs
   wallet-send:

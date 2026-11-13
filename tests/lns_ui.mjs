@@ -278,12 +278,12 @@ await waitFor("and shows them again", `/LEZ$/.test(document.querySelector("#tok-
 await click("#t-recv");
 await js(`lockedNow(); true`);
 await waitFor("locked", `!document.getElementById("v-locked").hidden`);
-check("the lock clears the LEZ balance and address", await js(`document.querySelector("#tok-lez .tok-amt").textContent === "" && document.getElementById("lez-addr").textContent === "" && !document.querySelector("#lez-qr svg")`));
+check("the lock clears the LEZ balance and address", await js(`(document.querySelector("#tok-lez .tok-amt") || { textContent: "" }).textContent === "" && document.getElementById("lez-addr").textContent === "" && !document.querySelector("#lez-qr svg")`));
 check("and every LEZ field, the hidden ones too (reviews, amounts, lines)", await js(`["lns-brr-to", "lns-brr-amt", "lns-brr-fee", "lns-brs", "lez-rv-amt", "lez-rv-to", "lez-rv-fee", "m-lez-send", "lez-rows", "lns-steps"].every(id => document.getElementById(id).textContent === "")
   && ["lez-to", "lez-amt", "lns-br-amt"].every(id => document.getElementById(id).value === "")`));
 await js(`(async () => { window.__late = true; })(); LNS.home(true); lockedNow(); true`);
 await sleep(1500);
-check("a LEZ answer that comes back after the lock writes nothing", await js(`document.querySelector("#tok-lez .tok-amt").textContent === ""`));
+check("a LEZ answer that comes back after the lock writes nothing", await js(`(document.querySelector("#tok-lez .tok-amt") || { textContent: "" }).textContent === ""`));
 
 // ---- Settings > Appearance ----
 await post("/api/wallet/lock", {}, session);

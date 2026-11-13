@@ -316,24 +316,67 @@ def _read_capped(r, cap, end):
     return bytes(out)
 
 
+def _fetch_within(url, data, method, headers, cap, timeout, total):
+    """One request with an overall limit of `total` seconds for all of it: connecting, TLS, the status line, the
+    headers and the body. A timer shuts the socket at the limit, which wakes any read waiting on it. TLS is verified
+    (the default context); a redirect is answered as it is, never followed. (status, bytes), or raises."""
+    import ssl
+    u = urllib.parse.urlsplit(url)
+    end = time.monotonic() + total
+    per = max(0.1, min(timeout, total))
+    if u.scheme == "https":
+        conn = http.client.HTTPSConnection(u.hostname, u.port, timeout=per, context=ssl.create_default_context())
+    else:
+        conn = http.client.HTTPConnection(u.hostname, u.port, timeout=per)
+    cut = []
+
+    def stop():
+        cut.append(1)
+        sk = conn.sock
+        try:
+            if sk is not None:
+                sk.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+    timer = threading.Timer(total, stop)
+    timer.daemon = True
+    timer.start()
+    try:
+        path = (u.path or "/") + ("?" + u.query if u.query else "")
+        conn.request(method, path, body=data, headers=headers)
+        r = conn.getresponse()
+        return r.status, _read_capped(r, cap, end)
+    except Exception:
+        if cut or time.monotonic() > end:
+            raise TimeoutError("answer too slow")
+        raise
+    finally:
+        timer.cancel()
+        conn.close()
+
+
 def fetch_outside(url, body=None, cap=65536, timeout=8, total=None):
     """GET (or POST `body` as JSON) to a fixed outside URL: no redirects, at most `cap` bytes, `timeout` seconds per
-    socket operation and, with `total`, that many seconds for the answer in all.
+    socket operation and, with `total`, that many seconds for the whole request (connecting and the headers too).
     Returns (http status, bytes); raises on a bad URL, no answer, an answer that is too big or too slow."""
     if not outside_url_ok(url):
         raise ValueError("refused URL")
-    end = None if total is None else time.monotonic() + total
-    req = urllib.request.Request(url, data=None if body is None else json.dumps(body).encode(),
-                                 method="GET" if body is None else "POST",
-                                 headers={"Content-Type": "application/json", "User-Agent": "logos-node-app"})
-    try:
-        with _outside.open(req, timeout=timeout if total is None else max(0.1, min(timeout, total))) as r:
-            code, data = r.status, _read_capped(r, cap, end)
-    except urllib.error.HTTPError as e:
-        code, data = e.code, _read_capped(e, cap, end)
-    if len(data) > cap:
+    data = None if body is None else json.dumps(body).encode()
+    method = "GET" if body is None else "POST"
+    headers = {"Content-Type": "application/json", "User-Agent": "logos-node-app"}
+    if total is not None:
+        code, raw = _fetch_within(url, data, method, headers, cap, timeout, total)
+    else:
+        req = urllib.request.Request(url, data=data, method=method, headers=headers)
+        try:
+            with _outside.open(req, timeout=timeout) as r:
+                code, raw = r.status, r.read(cap + 1)
+        except urllib.error.HTTPError as e:
+            with e:
+                code, raw = e.code, e.read(cap + 1)
+    if len(raw) > cap:
         raise ValueError("answer too big")
-    return code, data
+    return code, raw
 
 
 # ---- LNS names: the page resolves names itself; this only forwards the one read it needs -----
