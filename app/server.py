@@ -301,19 +301,36 @@ def outside_url_ok(url):
     return bool(u.hostname) and (u.scheme == "https" or (u.scheme == "http" and u.hostname in ("127.0.0.1", "localhost", "::1")))
 
 
-def fetch_outside(url, body=None, cap=65536, timeout=8):
-    """GET (or POST `body` as JSON) to a fixed outside URL: no redirects, at most `cap` bytes.
-    Returns (http status, bytes); raises on a bad URL, no answer or an answer that is too big."""
+def _read_capped(r, cap, end):
+    """At most cap + 1 bytes of an answer, a piece at a time; raises TimeoutError once time.monotonic() passes `end`
+    (an answer that trickles in a byte at a time is cut off, not waited for)."""
+    read = getattr(r, "read1", None) or r.read
+    out = bytearray()
+    while len(out) <= cap:
+        if end is not None and time.monotonic() > end:
+            raise TimeoutError("answer too slow")
+        piece = read(min(16384, cap + 1 - len(out)))
+        if not piece:
+            break
+        out += piece
+    return bytes(out)
+
+
+def fetch_outside(url, body=None, cap=65536, timeout=8, total=None):
+    """GET (or POST `body` as JSON) to a fixed outside URL: no redirects, at most `cap` bytes, `timeout` seconds per
+    socket operation and, with `total`, that many seconds for the answer in all.
+    Returns (http status, bytes); raises on a bad URL, no answer, an answer that is too big or too slow."""
     if not outside_url_ok(url):
         raise ValueError("refused URL")
+    end = None if total is None else time.monotonic() + total
     req = urllib.request.Request(url, data=None if body is None else json.dumps(body).encode(),
                                  method="GET" if body is None else "POST",
                                  headers={"Content-Type": "application/json", "User-Agent": "logos-node-app"})
     try:
-        with _outside.open(req, timeout=timeout) as r:
-            code, data = r.status, r.read(cap + 1)
+        with _outside.open(req, timeout=timeout if total is None else max(0.1, min(timeout, total))) as r:
+            code, data = r.status, _read_capped(r, cap, end)
     except urllib.error.HTTPError as e:
-        code, data = e.code, e.read(cap + 1)
+        code, data = e.code, _read_capped(e, cap, end)
     if len(data) > cap:
         raise ValueError("answer too big")
     return code, data
@@ -3707,10 +3724,7 @@ def msg_key_mark():
 
 
 def msg_key_save(d, quiet=False):
-    fd = os.open(MSG_KEY_FILE + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(d, f)
-    os.replace(MSG_KEY_FILE + ".tmp", MSG_KEY_FILE)
+    _fsync_write(MSG_KEY_FILE, json.dumps(d).encode())      # synced: a power cut leaves the old key or the new one
     if not quiet:
         with msg_lock:
             msg_state["subscribed"] = None        # the inbox topic may have changed: subscribe again
@@ -4248,7 +4262,21 @@ def store_replace_keeping_aside(why, blob, out=None):
             raise
     if out is not None:
         out["aside"] = name
-    os.replace(tmp, STORE_FILE)
+    try:
+        os.replace(tmp, STORE_FILE)
+    except Exception:                     # (an I/O error: space was found above) the old file goes back in place
+        if name:
+            try:
+                os.rename(name, STORE_FILE)
+                if out is not None:
+                    out["aside"] = None
+            except Exception:
+                event("saved chats left aside as " + os.path.basename(name) + " (couldn't be put back)")
+        try:
+            os.unlink(tmp)
+        except Exception:
+            pass
+        raise
     _fsync_dir(STORE_FILE)
     return rev
 
@@ -5174,7 +5202,7 @@ def net04():
     if not _net04:
         try:
             import lez04
-            _net04.append(lez04.Net04(DATA_DIR, APP_DIR, lambda url, body, cap, timeout: fetch_outside(url, body, cap=cap, timeout=timeout)))
+            _net04.append(lez04.Net04(DATA_DIR, APP_DIR, lambda url, body, cap, total: fetch_outside(url, body, cap=cap, total=total)))
         except Exception:
             _net04.append(None)
     return _net04[0]

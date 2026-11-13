@@ -252,10 +252,10 @@ await js(`document.getElementById("f-lez-send").requestSubmit(); true`);
 await waitFor("more than the account holds is refused", `/^Not enough/.test(document.getElementById("m-lez-send").innerText)`);
 await val("#lez-amt", "1,000");
 await js(`document.getElementById("f-lez-send").requestSubmit(); true`);
-await waitFor("the review: amount, to, fee, can't be undone", `!document.getElementById("lez-rv").hidden && document.getElementById("lez-rv-amt").innerText === "1,000 LEZ" && document.getElementById("lez-rv-to").innerText === ${JSON.stringify(TO)} && /^Up to [0-9,]+ LEZ$/.test(document.getElementById("lez-rv-fee").innerText) && /Can't be undone\./.test(document.getElementById("lez-rv").innerText)`);
+await waitFor("the review: amount, to, fee, can't be undone", `!document.getElementById("lez-rv").hidden && document.getElementById("lez-rv-amt").innerText === "1,000 LEZ" && document.getElementById("lez-rv-to").innerText === ${JSON.stringify(TO)} && /^Up to [0-9,]+ LEZ$/.test(document.getElementById("lez-rv-fee").innerText) && /Can't be undone\./.test(document.getElementById("lez-rv").innerText) && /Network\s*LEZ 0\.3, public Logos testnet/.test(document.getElementById("lez-rv").textContent)`);
 await shot("lez-send-review");
 await click("#b-lez-go");
-await waitFor("sent: the balance moved", `document.getElementById("m-lez-send").innerText === "Sent 1,000 LEZ."`, 20000);
+await waitFor("sent: the balance moved", `document.getElementById("m-lez-send").innerText === "Sent 1,000 LEZ on LEZ 0.3, public Logos testnet."`, 20000);
 
 // ---- scans go where they belong ----
 await click("#b-lez-scan");

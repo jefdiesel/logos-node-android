@@ -240,6 +240,34 @@ time.sleep(0.5)
 check("nothing reads unless the page looks", len(ch.calls) == calls)
 check("at most 10 watched addresses", all(n.watch(lez04.b58encode(bytes([i + 1] * 32)))[0] == 200 for i in range(9)) and n.watch(lez04.b58encode(bytes([99] * 32)))[0] == 400)
 
+# ---- the bridge's token list can't be read: it says so, never "none" ----------------------------------------------------------
+check("the Config's address isn't pinned in lez04.json: it is derived from the bridge program",
+      "config_account" not in json.load(open(os.path.join(APP, "lez04.json"))) and lez04.config_address(BRIDGE) == REC["config_account"])
+ch = Chain()
+ch.accounts.pop(REC["config_account"])
+n = reader(ch)
+n.state = {}
+now[0] += 10
+n.refresh(OWNER)
+v = n.view(OWNER)
+check("no Config on a first read: 'Bridged tokens can't be listed right now', the native balance still shown",
+      v["tokens_error"] == "Bridged tokens can't be listed right now." and v["accounts"][0].get("native") == "23,786,858" and not v["reset"], v)
+
+# ---- a slow read: cut off at its deadline, and meanwhile the view says it can't reach the network --------------------------------
+ch = Chain()
+n = reader(ch)
+try:
+    n.rpc("https://lez.example/", "getChannelId", [], time.monotonic() - 1)
+    check("a request with no time left isn't made", False)
+except lez04.Unreachable:
+    check("a request with no time left isn't made", ch.calls == [])
+n.refresh(None)
+n.reading, n.last_try = True, now[0] - lez04.DEADLINE - 1
+v = n.view(None)
+check("a read running past its deadline: 'Can't reach the bridge test network now.', the last numbers kept with their time",
+      v["unreachable"] == lez04.UNREACHABLE_TEXT and v["read_at"] and v["accounts"] and v["accounts"][0].get("native") == "23,786,858", v)
+n.reading = False
+
 # ---- the module stands apart: it imports and names nothing of the wallet ----------------------------------------------------
 tree = ast.parse(open(os.path.join(APP, "lez04.py")).read())
 imports = {a.name for node_ in ast.walk(tree) if isinstance(node_, (ast.Import, ast.ImportFrom)) for a in node_.names} | \
@@ -317,6 +345,32 @@ time.sleep(0.6)
 code, v = W.call("/api/wallet/net04", session=s)
 check("garbage from the network is 'can't reach', the old numbers kept", code == 200 and v["unreachable"] and v["accounts"][0].get("native") == "23,786,858", v)
 W.call("/api/wallet/net04/watch", {"remove": OWNER}, session=s)
+
+
+class Trickle(http.server.BaseHTTPRequestHandler):
+    """An answer that comes a byte every half second: each byte is within the per-read timeout."""
+    def do_POST(self):
+        self.rfile.read(int(self.headers["Content-Length"]))
+        self.send_response(200); self.send_header("Content-Length", "100000"); self.end_headers()
+        try:
+            for _ in range(40):
+                self.wfile.write(b" "); self.wfile.flush(); time.sleep(0.5)
+        except Exception:
+            pass
+
+    def log_message(self, *a):
+        pass
+
+
+slow = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Trickle)
+threading.Thread(target=slow.serve_forever, daemon=True).start()
+t0, err = time.monotonic(), None
+try:
+    server.fetch_outside("http://127.0.0.1:%d/" % slow.server_address[1], {"x": 1}, cap=1 << 20, total=2)
+except Exception as e:
+    err = e
+check("an answer trickling in is cut off at its overall deadline (2 s here), not waited for", isinstance(err, TimeoutError) and time.monotonic() - t0 < 4, (err, time.monotonic() - t0))
+slow.shutdown()
 check("nothing on the 0.4 path reached a send, the node, the names service, the 0.3 balances or the messages", not tripped, tripped)
 print("all checks passed" if not FAILS else "%d FAILED" % len(FAILS))
 sys.exit(1 if FAILS else 0)

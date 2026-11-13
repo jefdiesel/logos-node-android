@@ -286,6 +286,7 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
           <div><dt>To</dt><dd class="hash" id="r-to"></dd></div>
           <div><dt>From</dt><dd id="r-from"></dd></div>
           <div><dt>Fee</dt><dd>Added on top. Shown after sending.</dd></div>
+          <div><dt>Network</dt><dd>Logos blockchain, public Logos testnet</dd></div>
         </dl>
         <p class="note" id="r-name-note" hidden>This address came from the name service. For a large amount, check it with the person you're paying.</p>
         <p class="note">This can't be undone.</p>
@@ -299,6 +300,7 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
           <div><dt>Status</dt><dd id="s-state">Confirming…</dd></div>
           <div><dt>Fee paid</dt><dd id="s-fee">-</dd></div>
           <div><dt>Transaction</dt><dd class="hash" id="s-hash"></dd></div>
+          <div><dt>Network</dt><dd>Logos blockchain, public Logos testnet</dd></div>
         </dl>
         <button type="button" id="b-again" class="primary">Done</button>
       </div>
@@ -477,6 +479,7 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
     <div class="pop-card">
       <h2 id="pop-h"></h2>
       <div id="pop-list"></div>
+      <p class="runs">On the Logos blockchain, public Logos testnet.</p>
       <button type="button" class="primary" id="pop-ok">OK</button>
     </div>
   </div>
@@ -605,6 +608,7 @@ function show(view) {
     for (const id of ["r-amount", "r-to", "r-from", "r-name", "s-hash"]) $(id).textContent = "";
     openPanel(null);
     if (window.LNS && window.LNS.home) window.LNS.home(false);   // the LEZ row and panels empty too
+    if (window.NET04) window.NET04.lock();                         // and the LEZ 0.4 view, back on LEZ 0.3
   }
   settingsUi();
   if (view === "v-locked" && !wasLocked) lockAppeared();
