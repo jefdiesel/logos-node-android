@@ -67,6 +67,8 @@ h3{font-size:15px;font-weight:650;margin:16px 0 6px}
 .wtabs{display:flex;gap:6px;margin:16px 0 0;border-bottom:1px solid var(--line)}
 .wtabs button{flex:1;margin:0;min-height:46px;border:0;border-radius:0;background:none;font-weight:600;color:var(--dim);box-shadow:inset 0 -3px 0 transparent}
 .wtabs button[aria-selected="true"]{color:var(--ink);box-shadow:inset 0 -3px 0 var(--accent)}
+.steps{margin:10px 0 0;padding:0;list-style:none}.steps li{padding:5px 0;color:var(--dim);font-size:15px}
+.steps li.done{color:var(--ink)}.steps li.now{color:var(--ink);font-weight:620}.steps li.bad{color:var(--bad);font-weight:620}
 .recv-addr{font-family:var(--mono);font-size:13px;overflow-wrap:anywhere;text-align:center;margin:8px 0 0}
 .seg{display:flex;gap:8px}.seg label{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;min-height:44px;border:1px solid var(--line);border-radius:10px;margin:0;font-weight:500;color:var(--ink)}
 .seg input{width:auto;min-height:0;margin:0}.seg label:has(input:checked){border-color:var(--ink);box-shadow:inset 0 0 0 1px var(--ink)}
@@ -552,6 +554,7 @@ function walletShow() {
   for (const x of TOKENS) {
     x.row.setAttribute("aria-checked", String(x === t));
     for (const k of ["send", "recv", "hist"]) { const p = x.panels && $(x.panels[k]); if (p) p.hidden = !(x === t && k === wTab); }
+    const top = x.panels && x.panels.top && $(x.panels.top); if (top) top.hidden = x !== t;     // e.g. Get LEZ, whatever the tab
   }
   for (const [b, k] of [["t-send", "send"], ["t-recv", "recv"], ["t-act", "hist"]]) {
     $(b).setAttribute("aria-selected", String(k === wTab)); $(b).setAttribute("aria-controls", (t.panels && t.panels[k]) || "");
@@ -1412,9 +1415,14 @@ function histRow(e) {
   top.append(span(KIND[e.kind] || e.kind, "kind"), span(money, "amt" + (e.kind === "received" ? " in" : "")));
   const sub = document.createElement("div"); sub.className = "sub";
   sub.append(span(when(e.time)));
-  if (e.kind === "sent") {
+  if (e.kind === "sent" && e.bridge) {        // a bridge to LEZ: the amount set aside first, then the deposit
+    const split = e.bridge === "split";
+    top.replaceChildren(span(split ? "Set aside for the bridge" : "Bridged to LEZ", "kind"), span(split ? (e.fee != null ? "−" + amtH(e.fee) : "") : "−" + amtH(e.amount), "amt"));
+    sub.append(span("from " + e.label + (split ? ": " + amtH(e.bridge_amount || "0") + " kept apart for it" : " to your name account")));
+    sub.append(span(e.status === "pending" ? "Confirming…" : e.status === "in block" ? (e.fee != null ? "fee " + amtH(e.fee) : "in a block") : "not in a block"));
+  } else if (e.kind === "sent") {
     sub.append(span("from " + e.label + " to " + (e.name ? e.name + " " : "") + (e.to_label ? e.to_label + " " : "") + "(" + short(e.to) + ")"), copyBtn(e.to, "Copy address"));
-    sub.append(span(e.status === "in block" ? "fee " + amtH(e.fee) : "Confirming…"));
+    sub.append(span(e.status === "in block" ? "fee " + amtH(e.fee) : e.status === "pending" ? "Confirming…" : "not in a block"));
   } else if (e.kind === "tracking started") {
     sub.append(span("Earlier activity isn't listed."));
   } else {

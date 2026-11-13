@@ -9,7 +9,7 @@ Runs the app the way the Android app does (APP_EMBEDDED=android, server.py impor
 127.0.0.1:8099. The fake signer prints a recovery phrase when it makes the wallet, and noise with that phrase
 in every registration: the test checks it reaches no reply, no log and no file other than the wallet's own.
 """
-import atexit, base64, http.server, json, os, shutil, stat, sys, tempfile, threading, time
+import atexit, base64, http.server, json, os, re, shutil, stat, sys, tempfile, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -175,7 +175,7 @@ for bad in ("Bad Name", "-x", "a" * 33, "", "alice;rm"):
     check("register refuses %r" % bad, call("/api/wallet/lns/register", {"name": bad}, session=s)[0] == 400)
 seen.clear()
 code, d = call("/api/wallet/lns/register", {"name": "Alice"}, session=s)
-check("register starts", code == 200 and d == {"started": "register"}, (code, d))
+check("register starts, with the job's id", code == 200 and d.get("started") == "register" and re.fullmatch(r"[0-9a-f]{16}", d.get("job", "")) is not None, (code, d))
 d = wait_job(s)
 check("register finished", d["job"]["state"] == "done" and d["job"]["kind"] == "register" and d["name"] == "alice", d)
 c = calls()[-1]
@@ -215,6 +215,7 @@ call("/api/wallet/lns/register", {"name": "taken"}, session=s)
 d = wait_job(s)
 check("a refused registration says why, as the app's own text", d["job"]["state"] == "failed" and d["job"]["error"] == "taken is already registered", d["job"])
 check("and the name stays unset", d["name"] == "", d)
+check("and a failed registration no longer holds LEZ back from Send (reg_pending cleared)", "reg_pending" not in server.lns_state() and d["reg_pending"] == "", d.get("reg_pending"))
 call("/api/wallet/lns/register", {"name": "leaky"}, session=s)
 d = wait_job(s)
 check("an error that isn't a known one shows only the app's fixed text",
@@ -651,12 +652,17 @@ server.lns_state_save(name="android")
 server.lns_state = recording_state
 code1, _ = server.lns_register({"name": "zz9"})
 server.lns_state = real_state
+reg_seen = list(seen_locked)
 server.lns_state_save(name="")
+del seen_locked[:]
 server.lns_state = recording_state
 code2, _ = server.lns_text({"entry": "blockchain"})
 server.lns_state = real_state
-check("register and set-text read the state only with the lock held", code1 == 409 and code2 == 409 and seen_locked
-      and all(seen_locked), seen_locked)
+# set-text reads the name once before the lock, only to ask the name service (which can take minutes, so never
+# under the lock); everything it decides on is read again with the lock held
+check("register reads the state only with the lock held; set-text decides only on a read under the lock",
+      code1 == 409 and code2 == 409 and reg_seen and all(reg_seen) and seen_locked[0] is False and seen_locked[1:] and all(seen_locked[1:]),
+      (reg_seen, seen_locked))
 server.lns_state_save(name="android")
 
 # 7. check folders left by a stop are swept at start

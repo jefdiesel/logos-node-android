@@ -401,11 +401,10 @@ const INVENTORY = {
         show: ["h-s-bk", "bk-state", "bk-what", "bk-pw1", "bk-show", "bk-pw2", "bk-hist", "bk-pin", "b-bk", "h-s-rs", "rs-file"] },
   about: { all: ["s-about", "h-s-about", "about-version", "about-upd", "about-talk"], show: ["about-version", "about-talk"] },
   look: { all: ["s-look", "h-s-look", "th-system", "th-light", "th-dark"], show: ["th-system", "th-light", "th-dark"] },
-  name: { all: ["s-lns", "h-s-lns", "lns-none", "b-lns-acct", "lns-acct", "lns-addr", "lns-copy", "lns-bal", "lns-cost", "lns-need", "lns-get", "b-lns-faucet",
-                "b-lns-br", "lns-brf", "lns-br-from", "lns-br-amt", "b-lns-br-x", "b-lns-br-rev", "lns-brr", "b-lns-br-back", "b-lns-br-go", "lns-brs", "b-lns-br-stop",
-                "lns-bk", "b-lns-bk", "lns-noname", "lns-in", "b-lns-reg", "lns-why", "b-lns-link", "lns-has", "lns-name", "b-lns-bc", "b-lns-msg", "lns-step",
-                "lns-notes", "m-lns", "lns-more"],
-          show: ["b-lns-acct", "lns-more"] },
+  name: { all: ["s-lns", "h-s-lns", "lns-none", "lns-in", "b-lns-get", "lns-cost", "b-lns-link", "lns-flow", "lns-flow-name", "lns-steps", "lns-need",
+                "b-lns-addlez", "lns-keep", "lns-flow-err", "lns-flow-acts", "b-lns-stop", "b-lns-retry", "lns-has", "lns-name", "lns-ent-bc", "lns-ent-msg",
+                "lns-bk", "b-lns-bk", "lns-notes", "b-lns-putback", "m-lns", "lns-more", "lns-manual", "b-lns-bc", "b-lns-msg"],
+          show: ["lns-in", "b-lns-get", "lns-more"] },
 };
 // and the words, as they were (a few from each)
 const WORDS = {
@@ -416,7 +415,7 @@ const WORDS = {
   bk: ["Back up", "Saves this wallet", "Backup password (at least 8 characters)", "Include message history", "Save backup file", "Restore from a backup", "Restoring replaces this wallet's accounts"],
   about: ["Version", "This page is served by the app on this device", "Testnet."],
   look: ["System", "Light", "Dark"],
-  name: ["Hold an LNS name on this phone", "Make a name account", "Details"],
+  name: ["LNS name", "Get this name", "I already hold it", "More"],
 };
 await click("#nav-wallet");
 await click("#b-gear");
@@ -830,7 +829,7 @@ const wantRows = JSON.stringify(GROUPS.map(g => g[1]).filter(l => l !== "Message
 for (let i = 0; i < 50 && JSON.stringify(await rowsNow()) !== wantRows; i++) await sleep(200);
 check("in the Android app with the signer, the list has Your name first after Messages: " + GROUPS.map(g => g[1]).join(", "),
   JSON.stringify(await rowsNow()) === wantRows && await js(`(() => { const r = [...document.querySelectorAll("#s-groups .grow")]; return r.indexOf(document.getElementById("go-name")) === r.indexOf(document.getElementById("go-msg")) + 1; })()`), await rowsNow());
-await waitFor("the Your name row says where it stands", `document.querySelector("#go-name small").textContent === "No name account yet"`);
+await waitFor("the Your name row says where it stands", `document.querySelector("#go-name small").textContent === "No name yet"`);
 await groupPage("name", "Your name");
 check("Your name's ids are all on its page", [...seenIds].filter(x => INVENTORY.name.all.includes(x)).length === INVENTORY.name.all.length);
 await click("#b-settings-back"); await stWait("out of Settings", "closed");
@@ -866,7 +865,7 @@ await openOwn("zed, pointed now");
 await waitFor("now: zed · messages come to this phone", `document.getElementById("mg-own-m").textContent === "zed · messages come to this phone"`, 20000);
 await until("and messages go out under zed", async () => (await E.call("/api/messages/key")).d.name === "zed", 10000);
 await js(`closeSettings(); true`); await js(`openSettings("s-lns"); true`);
-await waitFor("Your name shows the same state on its button", `document.getElementById("b-lns-msg").textContent === "Messages come to this phone ✓" && document.getElementById("b-lns-msg").disabled`, 15000);
+await waitFor("Your name shows the same state, as done, and doesn't offer it again", `document.getElementById("lns-ent-msg").textContent === "Messages come to this phone ✓" && document.getElementById("b-lns-msg").hidden`, 15000);
 await js(`closeSettings(); true`); await click("#nav-msg");
 await waitFor("back on Messages with erin's chats", `[...document.querySelectorAll("#mg-rows .crow")].some(r => r.innerText.includes("bob"))`, 15000);
 await js(`[...document.querySelectorAll("#mg-rows .crow")].find(r => r.innerText.includes("bob")).click(); true`);

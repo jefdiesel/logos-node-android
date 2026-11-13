@@ -22,7 +22,7 @@ def record(**extra):
     except Exception:
         pass
     with open(os.path.join(home, "..", "fake-names-calls.jsonl"), "a") as f:
-        f.write(json.dumps(dict(args=args, gas=gas, rpc=os.environ.get("LOGOS_NAMES_RPC"),
+        f.write(json.dumps(dict(args=args, gas=gas, at=time.time(), rpc=os.environ.get("LOGOS_NAMES_RPC"),
                                 program=os.environ.get("LOGOS_NAMES_PROGRAM"), env=sorted(os.environ), **extra)) + "\n")
 
 
@@ -44,9 +44,11 @@ def chain():
         return {}
 
 
-def chain_set(name, key=None, value=None):
+def chain_set(name, key=None, value=None, owner=None):
     c = chain()
     c.setdefault(name, {})
+    if owner:
+        c[name]["_owner"] = owner
     if key:
         c[name][key] = value
     json.dump(c, open(CHAIN, "w"))
@@ -98,10 +100,18 @@ def main():
         sys.exit(0)
     if args[:1] == ["resolve"] and len(args) == 2:   # read-only: the name's record as the name service has it
         record()
+        if os.path.exists(os.path.join(home, "..", "fake-resolve-down")):
+            fail("error sending request for url (connection refused)")
         c = chain()
         if args[1] not in c:
             fail("%s is not registered" % args[1])
-        print(json.dumps({"name": args[1], "held_by": None, "texts": c[args[1]], "page": None}, indent=2))
+        rec = dict(c[args[1]])
+        owner = rec.pop("_owner", None)
+        try:                                  # held_by only when this wallet holds the owner's key
+            mine = owner in (json.load(open(storage)).get("public") or {})
+        except Exception:
+            mine = False
+        print(json.dumps({"name": args[1], "held_by": owner if mine else None, "texts": rec, "page": None}, indent=2))
         sys.exit(0)
     if not os.path.exists(storage):
         fail("there is no wallet")       # the real one would make a new wallet and print its phrase here
@@ -115,6 +125,14 @@ def main():
             fail("gas limit %s, not 250000" % gas)
         if name == "taken":
             fail("taken is already registered\n\nCaused by:\n    held")
+        flag = lambda f: os.path.exists(os.path.join(home, "..", f))
+        if flag("fake-register-lost-commit"):     # the commit goes out, the wallet stops waiting before saving it
+            rpc("sendTransaction", [{"Public": "commit"}])
+            fail("the transaction was not included in a block")
+        once = os.path.join(home, "..", "fake-register-fail-once")
+        if os.path.exists(once):              # one passing failure (the name service didn't answer)
+            os.remove(once)
+            fail("error sending request for url (connection refused)")
         if name == "leaky":                   # an error that is none of the known ones, full of things never to show
             fail("something odd happened at %s\n\nCaused by:\n    0: 1. Abandon, 2. Ability, 3. Able, 4. About, 5. Above, "
                  "6. Absent,\n    1: 7. absorb 8. abstract 9. absurd 10. abuse 11. access 12. accident\n    2: seed %s"
@@ -135,19 +153,35 @@ def main():
         rpc("getLastBlockId", [])
         print("submitted %s" % (rpc("sendTransaction", [{"Public": "commit"}])))
         print("applied in block 7")
+        nj = os.path.join(home, "names.json")      # as the real one: the commitment is saved once the commit landed
+        try:
+            dflt = json.load(open(nj))
+        except Exception:
+            dflt = {}
+        dflt.setdefault("pending", {})[name] = {"commit": "x"}
+        json.dump(dflt, open(nj, "w"))
         print("noise that must not be shown: " + FAKE_PHRASE)
         print("payments to %s will arrive privately at Private/7AqUabc" % name)
         print("step 2 of 2: registering %s at 1700000000000 for a deposit of 1000000" % name)
         print("submitted %s" % (rpc("sendTransaction", [{"Public": "reveal"}])))
         print("applied in block 9")
         print("%s is registered" % name)
-        chain_set(name)
+        chain_set(name, owner=ACCOUNT)
+        dflt = json.load(open(nj))
+        dflt["pending"].pop(name, None)
+        json.dump(dflt, open(nj, "w"))
         sys.exit(0)
     if args[:3] == ["wallet", "auth-transfer", "send"]:      # a plain public transfer, as LEZ's own wallet prints it
         record()
         o = dict(zip(args[3::2], args[4::2]))
         if sorted(o) != ["--amount", "--from", "--to"] or o["--from"] != "Public/" + ACCOUNT or not o["--amount"].isdigit():
             fail("unexpected arguments")
+        if o["--amount"] == "19":             # sent and billed, but the wallet never saw it in a block
+            print("Transaction hash is " + rpc("sendTransaction", [{"Public": "transfer", "amount": 19}]), flush=True)
+            fail("Transaction not found in preconfigured amount of blocks")
+        if o["--amount"] == "21":             # handed to the sequencer, whose answer never came back
+            rpc("sendTransaction", [{"Public": "transfer", "amount": 21}])
+            fail("error sending request for url (operation timed out)")
         if o["--amount"] == "13":             # the wallet gives up waiting (as a late inclusion looks)
             print("Transaction hash is " + "ef" * 32, flush=True)
             fail("Transaction not found in 30 blocks")
@@ -163,6 +197,16 @@ def main():
             fail("gas limit %s, not 120000" % gas)
         if args[1] == "nothold":
             fail("this wallet does not hold nothold")
+        if os.path.exists(os.path.join(home, "..", "fake-settext-billed")):        # included, billed, didn't take effect
+            print("submitted %s" % (rpc("sendTransaction", [{"Public": "set-text"}])))
+            fail("%s was included in block 5 but its changes were not applied" % args[1])
+        if os.path.exists(os.path.join(home, "..", "fake-settext-fail-always")):   # sent, billed, never takes
+            rpc("sendTransaction", [{"Public": "set-text"}])
+            fail("error sending request for url (connection refused)")
+        once = os.path.join(home, "..", "fake-settext-fail-once")
+        if os.path.exists(once):              # one passing failure (the name service didn't answer)
+            os.remove(once)
+            fail("error sending request for url (connection refused)")
         print("submitted %s" % (rpc("sendTransaction", [{"Public": "set-text"}])))
         print("applied in block 11")
         chain_set(args[1], args[2], args[3])
