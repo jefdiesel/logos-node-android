@@ -231,18 +231,27 @@ server. No configuration closes this: `api.backend.listen_address` is a TCP sock
 **What it changes.** With the environment variable `LOGOS_API_UNIX_SOCKET=<path>` set for the
 node process, the API listens on a Unix domain socket at that path, **and on no TCP port**. The
 same router, layers (timeouts, body limits, CORS, metrics) and handlers serve it; only the
-listener differs. Before binding, a socket file left at the path by an earlier run is removed;
-any other kind of file there is left alone and the start fails. The socket is made owner-only
-(0600) right after binding. Access is then a file-system question: the app puts the socket in
-its private files directory (0700, its own SELinux category), which no other app can enter.
-Unset or empty: upstream behaviour, nothing changes.
+listener differs.
+
+- The value must be an absolute path whose directory is a real directory (not a symlink) owned
+  by the node's user with no group or other permissions. In such a directory no other user can
+  reach the socket at any moment, whatever the socket's own mode.
+- The socket is created under umask 077 (restored right after; meanwhile other threads' new
+  files get no group or other permissions, never less for their owner) and then set to 0600.
+- A socket left at the path by an earlier run is removed only if nothing answers on it. A live
+  socket (another node still running) or any other kind of file is left alone.
+- **Once the variable is set the API never falls back to TCP.** If the value is empty or
+  relative, the directory is not private, the socket is live, another file is there, or binding
+  fails, the API service panics and the binary's panic hook logs it and exits the node.
+- Unset: upstream behaviour, nothing changes.
 
 **What is not changed.** Routes, handlers, wallet and signing logic, the config file format,
 the database, consensus, the wire format. `--version` is unchanged.
 
-**Code.** `nodes/node/binary/src/api/unix_socket.rs` (new: reading the variable, binding,
-serving, tests) and a few lines in `backend.rs` (if the variable is set, serve there and return
-before the TCP bind), one `mod` line in `api/mod.rs`. Unix only (`#[cfg(unix)]`). The start
+**Code.** `nodes/node/binary/src/api/unix_socket.rs` (new: reading and checking the variable,
+binding, serving, tests; `umask` and `geteuid` declared from libc directly, no new crate) and a
+few lines in `backend.rs` (if the variable is set, serve there and return before the TCP bind),
+one `mod` line in `api/mod.rs`. Unix only (`#[cfg(unix)]`). The start
 logs one line with the socket path, the patch name and the patch-set id:
 
 ```
@@ -250,16 +259,23 @@ logos-node-android patched node: the HTTP API listens on this Unix socket only, 
 ```
 
 **Tests** (run by `patched-crate-tests`): HTTP over the socket answers (200 for a route, 404
-for none), the socket is 0600, a stale socket is replaced, a regular file at the path is not
-removed and the bind fails, and an unset variable means TCP.
+for none) and the socket is 0600; a dead socket is replaced; a live socket is refused and left;
+a regular file is refused and left; empty, relative and root values are refused; directories
+with group or other permissions, a symlinked directory and a missing directory are refused; an
+unusable value stops (panics) instead of serving TCP.
 
 **Clients.** Every client of the node API must speak HTTP over the socket instead of TCP: on
 the phone, `server.py`'s `node()` and the app's own Kotlin status calls (NodeService, Battery,
 NodeActivity). Neither is switched yet: the app keeps the unpatched node until this patch has
 had an independent review.
 
-**Trust.** Who can connect is decided by the socket file's directory and mode. Root, and the
-app's own user (anything running as the app, which can read its keys anyway), still can.
+**Trust.** Who can connect is decided by the socket's directory (checked at start) and mode.
+Root, and the app's own user (anything running as the app, which can read its keys anyway),
+still can.
+
+**Source pin.** The workflow builds the tag `NODE_VERSION` and fails unless it is the commit
+`NODE_COMMIT` (`native/check-source.sh`); every artifact carries `SOURCE.txt` (version, commit,
+variant, patch-set id) in its `SHA256SUMS`, and `PATCHES.txt` names the commit.
 
 **Upstream.** A general form (a `unix:` listen address in the config, or a bearer token) is
 worth proposing upstream; not done yet.

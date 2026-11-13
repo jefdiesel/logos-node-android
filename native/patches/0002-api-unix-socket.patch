@@ -1,30 +1,37 @@
 From: logos-node-android
 Subject: [PATCH 0002] The HTTP API on a Unix socket instead of TCP, when asked for
 
-Against logos-blockchain/logos-blockchain tag 0.3.4. Applied with
-`git apply -p1` by native/apply-patches.sh. See native/patches/README.md.
+Against logos-blockchain/logos-blockchain tag 0.3.4 (commit
+f7ab0323346d36840660908be049d5a62c905516). Applied with `git apply -p1` by
+native/apply-patches.sh. See native/patches/README.md.
 
 On Android any installed app may connect to 127.0.0.1, so the node API's
 wallet endpoints (transfer-funds, sign, channel deposit) answer every app on
 the phone. With LOGOS_API_UNIX_SOCKET=<path> set for the node process, the
-API listens on that socket file (0600, a stale socket from an earlier run is
-removed, any other file there is left alone and the start fails) and on no
-TCP port. Unset or empty: upstream behaviour. Routes, handlers, wallet logic,
-config format and wire format are unchanged. Independent of patch 0001.
+API listens on that socket file and on no TCP port. The value must be an
+absolute path in a directory owned by the node's user with no group or other
+access; the socket is created under umask 077 and set to 0600; a socket left
+by an earlier run is removed only if nothing answers on it. If the variable
+is set but anything about the socket is wrong (empty, relative, a shared
+directory, a live socket, any other file there, a bind error), the node
+stops instead of opening TCP. Unset: upstream behaviour. Routes, handlers,
+wallet logic, config format and wire format are unchanged. Independent of
+patch 0001.
 
 diff --git a/nodes/node/binary/src/api/backend.rs b/nodes/node/binary/src/api/backend.rs
-index daec592..e6581dd 100644
+index daec592..0855292 100644
 --- a/nodes/node/binary/src/api/backend.rs
 +++ b/nodes/node/binary/src/api/backend.rs
-@@ -258,6 +258,13 @@ where
+@@ -258,6 +258,14 @@ where
              app.merge(pprof_routes)
          };
  
 +        // logos-node-android patch 0002-api-unix-socket: with LOGOS_API_UNIX_SOCKET set,
-+        // the API listens on that Unix socket and on no TCP port (see api/unix_socket.rs)
++        // the API listens on that Unix socket and on no TCP port; if the socket can't be
++        // used the node stops rather than open TCP (see api/unix_socket.rs)
 +        #[cfg(unix)]
-+        if let Some(path) = super::unix_socket::path_from_env() {
-+            return super::unix_socket::serve(&path, app).await;
++        if let Some(raw) = super::unix_socket::requested() {
++            return super::unix_socket::serve_or_stop(&raw, app).await;
 +        }
 +
          let listener = TcpListener::bind(&self.settings.address)
@@ -42,44 +49,103 @@ index 39016a8..f7083e3 100644
 +pub mod unix_socket;
 diff --git a/nodes/node/binary/src/api/unix_socket.rs b/nodes/node/binary/src/api/unix_socket.rs
 new file mode 100644
-index 0000000..fef2cbd
+index 0000000..10f8e04
 --- /dev/null
 +++ b/nodes/node/binary/src/api/unix_socket.rs
-@@ -0,0 +1,153 @@
+@@ -0,0 +1,270 @@
 +//! logos-node-android patch 0002-api-unix-socket: serve the HTTP API on a Unix
 +//! domain socket instead of TCP.
 +//!
 +//! On a phone every installed app may open TCP connections to 127.0.0.1, so an
 +//! API on a loopback port is open to all of them, wallet endpoints included.
 +//! With `LOGOS_API_UNIX_SOCKET=<path>` set for the node process, the API listens
-+//! on a socket file at that path and on no TCP port at all; who may connect is
-+//! then decided by the file system (put the path in a directory only the node's
-+//! user can enter). Unset or empty: upstream behaviour, TCP on
-+//! `api.backend.listen_address`. Routes, handlers and the wire format are
-+//! unchanged.
++//! on a socket file at that path and on no TCP port at all. Unset: upstream
++//! behaviour, TCP on `api.backend.listen_address`. Routes, handlers and the
++//! wire format are unchanged.
++//!
++//! Once the variable is set the node never opens TCP for the API: if the value
++//! is empty or not an absolute path, if the socket's directory is not private
++//! (a directory owned by the node's user with no group or other access), if
++//! another process already serves the socket, or if binding fails, the node
++//! stops (the binary's panic hook logs and exits).
 +
-+use std::{io, path::Path};
++use std::{
++    ffi::OsStr,
++    io,
++    path::{Path, PathBuf},
++};
 +
 +/// The environment variable that turns the Unix socket on.
 +pub const ENV: &str = "LOGOS_API_UNIX_SOCKET";
 +/// The patch's name, also logged at start so the binary can be checked for it.
 +pub const PATCH: &str = "0002-api-unix-socket";
 +
-+/// The socket path from the environment, if set and not empty.
-+#[must_use]
-+pub fn path_from_env() -> Option<std::path::PathBuf> {
-+    std::env::var_os(ENV)
-+        .filter(|v| !v.is_empty())
-+        .map(std::path::PathBuf::from)
++// mode_t and uid_t are 32-bit on Linux and Android (glibc and bionic).
++unsafe extern "C" {
++    safe fn umask(mask: u32) -> u32;
++    safe fn geteuid() -> u32;
 +}
 +
-+/// Binds the socket: removes a socket file left by an earlier run (only a
-+/// socket, never another kind of file), binds, then makes the file
-+/// owner-only (0600).
++/// The variable's value when it is set at all (even empty): from then on the
++/// API never listens on TCP.
++#[must_use]
++pub fn requested() -> Option<std::ffi::OsString> {
++    std::env::var_os(ENV)
++}
++
++/// The socket path, if the value is usable: not empty, absolute, and in a
++/// directory (not a symlink) owned by this process's user with no group or
++/// other permissions. In such a directory no other user can reach the socket,
++/// whatever its own mode is at any moment.
++pub fn checked_path(raw: &OsStr) -> io::Result<PathBuf> {
++    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
++    let bad = |why: String| io::Error::new(io::ErrorKind::InvalidInput, why);
++    if raw.is_empty() {
++        return Err(bad(format!("{ENV} is set but empty")));
++    }
++    let path = PathBuf::from(raw);
++    if !path.is_absolute() {
++        return Err(bad(format!("{ENV} must be an absolute path, not {}", path.display())));
++    }
++    let dir = path
++        .parent()
++        .filter(|d| !d.as_os_str().is_empty())
++        .ok_or_else(|| bad(format!("{} has no directory", path.display())))?;
++    let meta = std::fs::symlink_metadata(dir)?;
++    let mode = meta.permissions().mode();
++    if !meta.file_type().is_dir() || meta.uid() != geteuid() || mode & 0o077 != 0 {
++        return Err(io::Error::new(
++            io::ErrorKind::PermissionDenied,
++            format!(
++                "the socket's directory {} must be a directory owned by this user with no group or other access (it is {:o}, uid {})",
++                dir.display(),
++                mode & 0o7777,
++                meta.uid()
++            ),
++        ));
++    }
++    Ok(path)
++}
++
++/// Binds the socket. A socket file left by an earlier run is removed only if
++/// nothing answers on it; a live socket (another node) or any other kind of
++/// file is left alone and binding fails. The socket is created under umask
++/// 077 and then set to 0600.
 +pub fn bind(path: &Path) -> io::Result<tokio::net::UnixListener> {
 +    use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};
 +    match std::fs::symlink_metadata(path) {
-+        Ok(meta) if meta.file_type().is_socket() => std::fs::remove_file(path)?,
++        Ok(meta) if meta.file_type().is_socket() => {
++            match std::os::unix::net::UnixStream::connect(path) {
++                Ok(_) => {
++                    return Err(io::Error::new(
++                        io::ErrorKind::AddrInUse,
++                        format!("another process already serves {}", path.display()),
++                    ));
++                }
++                Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => std::fs::remove_file(path)?,
++                Err(e) => return Err(e),
++            }
++        }
 +        Ok(_) => {
 +            return Err(io::Error::new(
 +                io::ErrorKind::AlreadyExists,
@@ -89,7 +155,12 @@ index 0000000..fef2cbd
 +        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
 +        Err(e) => return Err(e),
 +    }
-+    let listener = tokio::net::UnixListener::bind(path).map_err(|e| {
++    // umask is per process: other threads creating files meanwhile get no
++    // group or other permissions either, never less for their owner
++    let old = umask(0o077);
++    let bound = tokio::net::UnixListener::bind(path);
++    umask(old);
++    let listener = bound.map_err(|e| {
 +        io::Error::new(
 +            e.kind(),
 +            format!("Failed to bind to socket {}: {e}", path.display()),
@@ -105,9 +176,15 @@ index 0000000..fef2cbd
 +    Ok(listener)
 +}
 +
-+/// Serves `app` on the socket at `path` until the listener fails.
-+pub async fn serve(path: &Path, app: axum::Router) -> io::Result<()> {
-+    let listener = bind(path)?;
++/// Serves `app` on the socket named by `raw` (the variable's value). If the
++/// socket can't be used the node stops instead of falling back to TCP.
++pub async fn serve_or_stop(raw: &OsStr, app: axum::Router) -> io::Result<()> {
++    let listener = match checked_path(raw).and_then(|path| bind(&path)) {
++        Ok(listener) => listener,
++        Err(e) => panic!(
++            "logos-node-android patch {PATCH}: {ENV} is set but the API socket can't be used, so the node stops rather than open the API on TCP: {e}"
++        ),
++    };
 +    axum::serve(listener, app.into_make_service()).await
 +}
 +
@@ -116,13 +193,22 @@ index 0000000..fef2cbd
 +    use std::{
 +        io::{Read as _, Write as _},
 +        os::unix::{fs::PermissionsExt as _, net::UnixStream},
-+        path::PathBuf,
 +        time::Duration,
 +    };
 +
 +    use axum::{Router, routing::get};
 +
 +    use super::*;
++
++    async fn tip() -> &'static str {
++        "tip"
++    }
++
++    fn private_dir() -> tempfile::TempDir {
++        let dir = tempfile::tempdir().unwrap();
++        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
++        dir
++    }
 +
 +    /// A plain HTTP/1.1 GET over the socket, from a blocking thread (std only).
 +    async fn get_over(path: &Path, uri: &str) -> String {
@@ -154,17 +240,17 @@ index 0000000..fef2cbd
 +    }
 +
 +    #[tokio::test]
-+    async fn serves_http_on_the_socket_owner_only_and_replaces_a_stale_one() {
-+        let dir = tempfile::tempdir().unwrap();
++    async fn serves_http_on_the_socket_owner_only_and_replaces_a_dead_one() {
++        let dir = private_dir();
 +        let path = dir.path().join("api.sock");
-+        // a socket file left by an earlier run must not stop the start
++        // a socket file left by an earlier run (nothing listens on it) must not stop the start
 +        drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
 +        assert!(path.exists());
 +
-+        let app = Router::new().route("/cryptarchia/info", get(|| async { "tip" }));
++        let app = Router::new().route("/cryptarchia/info", get(tip));
 +        let task = tokio::spawn({
 +            let path = path.clone();
-+            async move { serve(&path, app).await }
++            async move { serve_or_stop(path.as_os_str(), app).await }
 +        });
 +        wait_for(path.clone()).await;
 +        let reply = get_over(&path, "/cryptarchia/info").await;
@@ -177,25 +263,63 @@ index 0000000..fef2cbd
 +        task.abort();
 +    }
 +
-+    #[test]
-+    fn refuses_to_remove_a_file_that_is_not_a_socket() {
-+        let dir = tempfile::tempdir().unwrap();
-+        let path = dir.path().join("api.sock");
-+        std::fs::write(&path, b"keep me").unwrap();
++    fn bind_now(path: &Path) -> io::Result<()> {
 +        let rt = tokio::runtime::Builder::new_current_thread()
 +            .enable_all()
 +            .build()
 +            .unwrap();
-+        let err = rt.block_on(async { bind(&path).map(|_| ()) }).unwrap_err();
++        rt.block_on(async { bind(path).map(|_| ()) })
++    }
++
++    #[test]
++    fn refuses_a_live_socket() {
++        let dir = private_dir();
++        let path = dir.path().join("api.sock");
++        let other = std::os::unix::net::UnixListener::bind(&path).unwrap();
++        let err = bind_now(&path).unwrap_err();
++        assert_eq!(err.kind(), io::ErrorKind::AddrInUse, "{err}");
++        assert!(path.exists());
++        drop(other);
++    }
++
++    #[test]
++    fn refuses_to_remove_a_file_that_is_not_a_socket() {
++        let dir = private_dir();
++        let path = dir.path().join("api.sock");
++        std::fs::write(&path, b"keep me").unwrap();
++        let err = bind_now(&path).unwrap_err();
 +        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
 +        assert_eq!(std::fs::read(&path).unwrap(), b"keep me");
 +    }
 +
 +    #[test]
-+    fn unset_means_tcp() {
-+        // read only: nothing in the test run sets the variable
-+        if std::env::var_os(ENV).is_none() {
-+            assert!(path_from_env().is_none());
++    fn refuses_unusable_values_and_shared_directories() {
++        assert_eq!(checked_path(OsStr::new("")).unwrap_err().kind(), io::ErrorKind::InvalidInput);
++        assert_eq!(checked_path(OsStr::new("api.sock")).unwrap_err().kind(), io::ErrorKind::InvalidInput);
++        assert_eq!(checked_path(OsStr::new("/")).unwrap_err().kind(), io::ErrorKind::InvalidInput);
++        let dir = private_dir();
++        let ok = dir.path().join("api.sock");
++        assert_eq!(checked_path(ok.as_os_str()).unwrap(), ok);
++        for mode in [0o750, 0o705, 0o755, 0o777] {
++            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(mode)).unwrap();
++            let err = checked_path(ok.as_os_str()).unwrap_err();
++            assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{mode:o}: {err}");
 +        }
++        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
++        // a symlink to a private directory is not accepted as the directory
++        let real = private_dir();
++        let link = dir.path().join("link");
++        std::os::unix::fs::symlink(real.path(), &link).unwrap();
++        let err = checked_path(link.join("api.sock").as_os_str()).unwrap_err();
++        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{err}");
++        // a directory that doesn't exist
++        assert!(checked_path(dir.path().join("none/api.sock").as_os_str()).is_err());
++    }
++
++    #[tokio::test]
++    #[should_panic(expected = "the node stops rather than open the API on TCP")]
++    async fn an_unusable_value_stops_instead_of_tcp() {
++        let app = Router::new().route("/cryptarchia/info", get(tip));
++        serve_or_stop(OsStr::new(""), app).await.unwrap();
 +    }
 +}

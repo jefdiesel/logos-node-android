@@ -13,6 +13,9 @@ on:
       node_version:
         description: Node release tag to build
         default: "0.3.4"
+      node_commit:
+        description: The commit that tag must point at (the build fails otherwise)
+        default: "f7ab0323346d36840660908be049d5a62c905516"
 permissions:
   contents: read
 # "shell: bash" runs every step with -eo pipefail (the default is -e only), so a failing command
@@ -22,6 +25,8 @@ defaults:
     shell: bash
 env:
   NODE_VERSION: ${{ inputs.node_version || '0.3.4' }}
+  # the commit tag NODE_VERSION must resolve to: a tag can be moved, a commit can't (native/check-source.sh)
+  NODE_COMMIT: ${{ inputs.node_commit || 'f7ab0323346d36840660908be049d5a62c905516' }}
   ANDROID_API: "28"
   # pinned NDK; installed with sdkmanager if the runner image does not have it
   NDK_VERSION: "30.0.16248370"
@@ -42,7 +47,9 @@ jobs:
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL /usr/local/.ghcup
           df -h /
       - name: Node source
-        run: git clone -q --depth 1 --branch "$NODE_VERSION" https://github.com/logos-blockchain/logos-blockchain.git node
+        run: |
+          git clone -q --depth 1 --branch "$NODE_VERSION" https://github.com/logos-blockchain/logos-blockchain.git node
+          native/check-source.sh node
       - name: Apply patches (fails if one does not apply cleanly)
         if: matrix.variant != 'upstream'
         run: |
@@ -142,8 +149,9 @@ jobs:
             native/check-binary.sh out/logos-blockchain-node upstream
           else
             native/check-binary.sh out/logos-blockchain-node "${{ matrix.variant }}" "$LOGOS_NODE_PATCHES_ID"
-            { echo "logos-blockchain $NODE_VERSION with these patches (patch set id $LOGOS_NODE_PATCHES_ID):"; cat node/PATCHES.txt; } > out/PATCHES.txt
+            { echo "logos-blockchain $NODE_VERSION (commit $NODE_COMMIT) with these patches (patch set id $LOGOS_NODE_PATCHES_ID):"; cat node/PATCHES.txt; } > out/PATCHES.txt
           fi
+          echo "logos-blockchain $NODE_VERSION, source commit $(git -C node rev-parse HEAD), variant ${{ matrix.variant }}, patch set id ${LOGOS_NODE_PATCHES_ID:-none}" > out/SOURCE.txt
           (cd out && sha256sum * > SHA256SUMS)
           cat out/SHA256SUMS; ls -la out
       - uses: actions/upload-artifact@v4
@@ -160,6 +168,7 @@ jobs:
       - name: Node source, patched
         run: |
           git clone -q --depth 1 --branch "$NODE_VERSION" https://github.com/logos-blockchain/logos-blockchain.git node
+          native/check-source.sh node
           native/apply-patches.sh node
           # built with the patch-set id like the shipped node, and the tests check it arrived
           echo "LOGOS_NODE_PATCHES_ID=$(cat node/PATCHES.id)" >> "$GITHUB_ENV"
@@ -202,7 +211,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Node source
-        run: git clone -q --depth 1 --branch "$NODE_VERSION" https://github.com/logos-blockchain/logos-blockchain.git node
+        run: |
+          git clone -q --depth 1 --branch "$NODE_VERSION" https://github.com/logos-blockchain/logos-blockchain.git node
+          native/check-source.sh node
       - name: Apply patches (fails if one does not apply cleanly)
         if: matrix.variant != 'upstream'
         run: |
@@ -237,9 +248,10 @@ jobs:
             native/check-binary.sh out/logos-blockchain-node upstream
           else
             native/check-binary.sh out/logos-blockchain-node "${{ matrix.variant }}" "$LOGOS_NODE_PATCHES_ID"
-            { echo "logos-blockchain $NODE_VERSION with these patches (patch set id $LOGOS_NODE_PATCHES_ID):"; cat node/PATCHES.txt; } > out/PATCHES.txt
+            { echo "logos-blockchain $NODE_VERSION (commit $NODE_COMMIT) with these patches (patch set id $LOGOS_NODE_PATCHES_ID):"; cat node/PATCHES.txt; } > out/PATCHES.txt
           fi
-          (cd out && sha256sum * > SHA256SUMS); cat out/SHA256SUMS
+          echo "logos-blockchain $NODE_VERSION, source commit $(git -C node rev-parse HEAD), variant ${{ matrix.variant }}, patch set id ${LOGOS_NODE_PATCHES_ID:-none}" > out/SOURCE.txt
+          (cd out && sha256sum * > SHA256SUMS); cat out/SOURCE.txt out/SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: logos-blockchain-node-linux-arm64-${{ env.NODE_VERSION }}${{ matrix.variant != 'upstream' && format('-{0}', matrix.variant) || '' }}
