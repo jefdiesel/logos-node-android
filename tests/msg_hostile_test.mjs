@@ -38,6 +38,15 @@ const api = async (path, body) => {
     if (body.rev !== srv.store.rev) return { ok: false, status: 409, data: { rev: srv.store.rev } };
     srv.store = { rev: srv.store.rev + 1, blob: body.blob }; return { ok: true, status: 200, data: { rev: srv.store.rev } };
   }
+  if (path === "/api/messages/inbox/sort") {      // as server.py: c, r (read), d (read); a "c" is never demoted
+    for (const i of srv.inbox) {
+      const k = (body.chat || []).includes(i.n) ? "c" : (body.drop || []).includes(i.n) ? "d" : (body.request || []).includes(i.n) ? "r" : null;
+      if (!k || (i.k === "c" && k !== "c")) continue;
+      i.k = k; if (k !== "c") i.read = true;
+    }
+    return { ok: true, status: 200, data: {} };
+  }
+  if (path === "/api/messages/inbox/delete") { srv.inbox = srv.inbox.filter((i) => !body.ids.includes(i.n)); return { ok: true, status: 200, data: {} }; }
   if (path === "/api/messages/inbox/read") { for (const i of srv.inbox) if (body.ids.includes(i.n)) i.read = true; return { ok: true, status: 200, data: {} }; }
   return { ok: true, status: 200, data: {} };
 };
@@ -64,7 +73,11 @@ for (const from of PROTO) {
 let threw = null;
 try { await chat.sync(); await chat.sync(); } catch (e) { threw = e; }
 check("messages from \"constructor\", \"__proto__\", \"toString\", \"hasOwnProperty\", \"valueOf\", \"keys\" and other prototype names: sync() doesn't throw", threw === null, threw && threw.message);
-check("\"constructor\" (a valid LNS name) gets its own chat like any first message, and its profile is its own", !!chat.convo("d:constructor") && chat.profile("constructor") && Array.isArray(chat.profile("constructor").keys));
+await chat.checkRequests();
+const creq = chat.requests().find((g) => g.name === "constructor");
+check("\"constructor\" (a valid LNS name) is a request like any first message, proven by its name", !!creq && creq.proof === "name");
+await chat.acceptRequest(creq.id);
+check("accepted, it is a chat with its own profile", !!chat.convo("d:constructor") && chat.profile("constructor") && Array.isArray(chat.profile("constructor").keys));
 check("a name that is no profile reads as none", chat.profile("toString") === null && chat.profile("__proto__") === null && chat.profile("hasOwnProperty") === null);
 deliver(MC.sealMessage({ to: me.publicKey, from: "bob", fromSecret: bob.secretKey, text: "still here" }));
 await chat.sync();
@@ -87,14 +100,15 @@ for (let i = 0; i < 200; i++) {
   else deliver(sealRaw(me.publicKey, { v: 1, from, fromKey: junkKey(), text: "fuzz " + i, ts: Math.random() < 0.5 ? Date.now() : "x", auth: Math.random() < 0.5 ? "0".repeat(64) : null }));
   if (i % 40 === 39) { try { await chat.sync(); } catch (e) { threw = e; break; } }
 }
-try { await chat.sync(); chat.conversations(); chat.unreadTotal(); } catch (e) { threw = e; }
-check("200 random and hostile `from` strings and sender keys: sync(), the list and the unread count never throw", threw === null, threw && threw.stack);
+try { await chat.sync(); chat.conversations(); chat.unreadTotal(); await chat.checkRequests(); chat.requests(); chat.blockedList(); for (const g of chat.requests()) chat.lookalike(g.claimed || g.name || "x"); } catch (e) { threw = e; }
+check("200 random and hostile `from` strings and sender keys: sync(), the list, the unread count and Requests never throw", threw === null, threw && threw.stack);
+check("and every one of them was sorted (none left unsorted, none set aside)", srv.inbox.every((i) => i.k) && chat.bad.size === 0, [srv.inbox.filter((i) => !i.k).length, chat.bad.size]);
 deliver(MC.sealMessage({ to: me.publicKey, from: "bob", fromSecret: bob.secretKey, text: "after the fuzz" }));
 await chat.sync();
 check("and a contact's message after them still shows", chat.messages("d:bob").some((m) => m.text === "after the fuzz"));
 const again = newChat();
 await again.loadStore(); await again.sync();
-check("the store saves and loads again, with the chats", !!again.convo("d:bob") && !!again.convo("d:constructor") && again.messages("d:bob").length === 2);
+check("the store saves and loads again, with the chats", !!again.convo("d:bob") && !!again.convo("d:constructor") && again.messages("d:bob").length === 2 && Object.getPrototypeOf(again.store.profiles) === null);
 check("nothing was added to Object.prototype", Object.getOwnPropertyNames(Object.prototype).sort().join() === protoBefore && ({}).keys === undefined);
 console.log("all checks passed");
 process.exit(0);

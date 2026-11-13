@@ -8,7 +8,7 @@
 // in the wallet backup. Sealing, opening and the encryption of what is kept happen here: the server only
 // stores sealed or encrypted bytes. Everything locks with the wallet.
 
-import { Chat, convoIdOf, isAddressId, parseAddress, shortFp, shareable, MAX_TEXT } from "./chat-core.js";
+import { Chat, convoIdOf, isAddressId, parseAddress, shortFp, shareable, MAX_TEXT, safetyGroups, safetyQr, readSafetyScan } from "./chat-core.js";
 import { icon } from "./icon.js";
 import { newIdentity } from "./identity.js";
 import { toHex, fromHex } from "./msg-crypto.js";
@@ -40,6 +40,27 @@ const openNode = () => { try { window.LogosAndroid.openNode(); } catch (e) {} };
 let names = null;
 const namesLib = async () => names || (names = await import("/names/names.js"));
 const resolve = async name => (await namesLib()).resolveName(NAMES_RPC, namesProgram, name);
+// What the page does on its own (reading and sorting the inbox, the chain reads that follow, the store writes
+// they cause) goes with "X-Background: 1", so the server doesn't count it as the user being active: a stranger
+// writing every few seconds must not keep the wallet from locking. The user's own taps and keys still count
+// (the page reports them). A chain read is marked while any background read runs (resolveName does its own
+// fetch); one the user starts at that moment is then marked too, which only means it isn't counted twice.
+let quietRpc = 0;
+const fetchBg = window.fetch;
+window.fetch = (url, opt = {}) => quietRpc > 0 && String(url) === NAMES_RPC
+  ? fetchBg(url, { ...opt, headers: { ...(opt.headers || {}), "X-Background": "1" } }) : fetchBg(url, opt);
+const resolveBg = async name => { quietRpc++; try { return await resolve(name); } finally { quietRpc--; } };
+async function bgApi(path, body) {
+  const opt = { headers: { "X-Background": "1" }, cache: "no-store" }, sent = token;
+  if (token) opt.headers["X-Session"] = token;
+  if (body !== undefined) { opt.method = "POST"; opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
+  try {
+    const r = await fetch(path, opt);
+    let data = null; try { data = await r.json(); } catch (e) {}
+    if (r.status === 401 && sent !== token) return { ok: false, status: 0, data: { error: "Try again." } };
+    return { ok: r.ok, status: r.status, data: data || {} };
+  } catch (e) { return { ok: false, status: 0, data: { error: "The app on this device isn't answering." } }; }
+}
 
 // ---- look ----------------------------------------------------------------------------------------------
 document.head.append(el("style", { textContent: `
@@ -94,6 +115,7 @@ body.kb #nav{display:none}body.kb.has-nav main{padding-bottom:24px}
 .meta.note-w{font-size:13px;color:var(--warn)}.meta .ic{color:var(--dim)}
 .cv-empty{margin:auto;text-align:center;color:var(--dim);font-size:14px;padding:30px 20px;max-width:320px}
 .cv-empty .av{margin:0 auto 12px}
+.cv-empty .lnk{border:0;background:none;color:var(--accent);font-weight:600;font-size:14px;padding:0 6px;width:auto}
 .cmp{flex:none;display:flex;align-items:flex-end;gap:8px;padding:8px 10px calc(8px + env(safe-area-inset-bottom));background:var(--card);border-top:1px solid var(--line)}
 .cmp .wrap{flex:1;max-width:640px;margin:0 auto;display:flex;align-items:flex-end;gap:8px}
 .cmp textarea{flex:1;min-width:0;font:inherit;font-size:16px;color:var(--ink);background:var(--field);border:1.5px solid var(--field-line);border-radius:22px;padding:10px 15px;resize:none;height:46px;max-height:150px;line-height:1.35}
@@ -134,6 +156,16 @@ body.kb #nav{display:none}body.kb.has-nav main{padding-bottom:24px}
 .hint-card{display:flex;gap:10px;align-items:flex-start;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 8px 12px 14px;margin:0 0 14px;font-size:14px}
 .hint-card p{margin:0;flex:1}.hint-card .lnk{border:0;background:none;padding:0;min-height:0;color:var(--accent);font-weight:600;font-size:14px}
 .hint-card .x{width:44px;min-height:44px;padding:0;border:0;display:inline-flex;align-items:center;justify-content:center;color:var(--dim);flex:none}
+.req-line{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;min-height:48px;margin:0 0 12px;padding:8px 14px;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--ink);font-weight:600;font-size:14.5px;text-align:left}
+.req-line .ic{color:var(--dim)}
+.rq-row{display:flex;gap:12px;align-items:center;width:100%;min-height:60px;text-align:left;border:0;border-top:1px solid var(--line);border-radius:0;background:none;padding:8px 0;font-weight:400;color:var(--ink)}
+.rq-row:first-child{border-top:0}.rq-row .t{flex:1;min-width:0}.rq-row b{display:block;font-size:15.5px;overflow-wrap:anywhere}
+.rq-row small{display:block;font-size:13px;color:var(--dim);overflow-wrap:anywhere}.rq-row small.warn{color:var(--warn)}
+.rq-row .un{flex:none;min-height:44px;font-size:13.5px;padding:4px 14px}
+.rq-acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}.rq-acts button{flex:1 1 30%;min-height:44px;margin-top:0}
+.sfc{display:flex;flex-wrap:wrap;justify-content:center;gap:8px 14px;max-width:15.5em;margin:14px auto;font-family:var(--mono);font-size:19px;letter-spacing:.04em;color:var(--ink)}
+.sfc span{white-space:nowrap}
+.sf-acts{display:flex;flex-direction:column;gap:8px;margin-top:12px}.sf-acts button{width:100%;min-height:44px;margin-top:0}
 @media (prefers-reduced-motion:reduce){.sw::after{transition:none}}
 ` }));
 const vp = document.querySelector('meta[name="viewport"]');               // keep the composer above the keyboard
@@ -201,6 +233,8 @@ page.innerHTML = `
     <div class="mtop"><div><h1 id="h-chats">Messages</h1><div class="mnode" id="mg-node" role="status" hidden></div></div><div class="acts"><button type="button" class="ic-b" id="mg-new" aria-label="New chat" title="New chat"></button><button type="button" class="ic-b" id="mg-me" aria-label="Settings" title="Settings"></button></div></div>
     <p class="note" id="mg-loading" hidden>Loading chats…</p>
     <div class="hint-card" id="mg-hint" hidden></div>
+    <button type="button" class="req-line" id="mg-req-line" hidden></button>
+    <div class="hint-card" id="mg-lost" hidden></div>
     <button type="button" class="notice" id="mg-bk" hidden>Your last backup doesn't include Messages. Make a new one.</button>
     <p class="msg warn" id="mg-store-warn" hidden style="margin:0 2px 12px">Saved chats from an earlier messaging address can't be opened on this one. Restore the backup that has that address to read them.</p>
     <div id="mg-rows" class="rows"></div>
@@ -250,6 +284,18 @@ msgSettings.innerHTML = `
   <div class="qr-wrap" id="mg-addr-qr" hidden></div>
   <div class="row"><button type="button" id="mg-addr-show" aria-controls="mg-addr" aria-expanded="false">Show</button><button type="button" id="mg-addr-copy">Copy</button></div>
   <p class="msg" id="mg-addr-m" role="status"></p>
+  </div>
+  <div class="card" id="mgs-req" hidden>
+  <h3 class="vh">Requests</h3>
+  <p class="note" style="margin-top:0">Messages from people not in your chats wait here. They never notify you.</p>
+  <div class="tg" id="mg-only-row"><span>Only people I've written to<small>Messages from anyone else are deleted unread.</small></span><button type="button" class="sw" role="switch" id="mg-only" aria-label="Only people I've written to" aria-checked="false"></button></div>
+  <p class="hint" id="mg-req-dropped" hidden></p>
+  <div id="mg-req-rows"></div>
+  </div>
+  <div class="card" id="mgs-blocked" hidden>
+  <h3 class="vh">Blocked</h3>
+  <p class="note" style="margin-top:0">Messages from these are deleted unread or hidden.</p>
+  <div id="mg-blk-rows"></div>
   </div>`;
 $("s-slot").append(msgSettings);
 // Settings > Messages and the gear on Messages open this same page (Settings' Messages group): a short list,
@@ -260,7 +306,20 @@ const MSG_GROUPS = [
   { id: "name", label: "Name", icon: '<circle cx="12" cy="8.5" r="3.6"/><path d="M5 19.5c.9-3.4 3.7-5.3 7-5.3s6.1 1.9 7 5.3"/>', state: nameState1 },
   { id: "addr", label: "Address", icon: '<rect x="4" y="4" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1"/><path d="M13.5 13.5h2.5v2.5M20 13.5v.1M16 20h4v-3.5"/>',
     state: () => "Show it, copy it, or let them scan it" },
+  { id: "req", label: "Requests", icon: '<path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h11A2.5 2.5 0 0 1 20 7.5v7a2.5 2.5 0 0 1-2.5 2.5H10l-4 3v-3.2A2.5 2.5 0 0 1 4 14.5z"/><path d="M12 8.5v3.2M12 14v.1"/>', state: reqState },
+  { id: "blocked", label: "Blocked", icon: '<circle cx="12" cy="12" r="8"/><path d="M6.4 6.4l11.2 11.2"/>', state: blockedState },
 ];
+function reqState() {
+  if (!chat || !chat.ready) return "";
+  if (chat.onlyKnown()) return "Only people you've written to";
+  const n = chat.requests().length;
+  return n ? n + (n === 1 ? " waiting" : " waiting") : "None";
+}
+function blockedState() {
+  if (!chat || !chat.ready) return "";
+  const n = chat.blockedList().length;
+  return n ? n + " blocked" : "Nobody";
+}
 function nameState1() {         // "linked" only once the name service said so
   if (!me) return "";
   if (!me.name) return "None yet";
@@ -293,6 +352,8 @@ function mgsShow(sub) {
   for (const x of MSG_GROUPS) $("mgs-" + x.id).hidden = x !== g;
   if (!$("page-settings").hidden && $("st-msg") && !$("st-msg").hidden) $("h-settings").textContent = g ? g.label : "Messages";
   msgRows();
+  if (mgsSub === "req") renderReqs(true);
+  if (mgsSub === "blocked") renderBlocked();
 }
 function mgsOpen(sub) { history.pushState({ st: "msg", sub }, ""); mgsShow(sub); window.scrollTo(0, 0); }
 const mgsHere = () => !$("page-settings").hidden && !!$("st-msg") && !$("st-msg").hidden;
@@ -336,8 +397,10 @@ $("mg-me").append(svg(P.gear, 22));
 
 let chat = null, me = null, status = null, view = "home", loading = null;
 const forget = () => {        // nothing of the chats stays in the page while it is locked
-  chat = null; me = null; loading = null; closeAll();
-  for (const id of ["mg-rows", "mg-found", "mg-hint", "mg-addr-qr"]) $(id).replaceChildren();
+  chat = null; me = null; loading = null; closeAll(); loadFails = 0; loadNext = 0;
+  for (const id of ["mg-rows", "mg-found", "mg-hint", "mg-addr-qr", "mg-req-rows", "mg-blk-rows", "mg-req-line", "mg-lost"]) $(id).replaceChildren();
+  $("mg-lost").hidden = true; delete $("mg-lost").dataset.text;
+  $("mg-req-line").hidden = true; $("mg-req-dropped").textContent = ""; $("mg-req-dropped").hidden = true; $("mg-only").setAttribute("aria-checked", "false");
   for (const id of ["mg-to", "mg-name"]) $(id).value = "";
   for (const id of ["mg-cmd", "mg-addr", "mg-check-m", "mg-name-m", "mg-addr-m", "mg-own-m"]) $(id).textContent = "";
   own = null;
@@ -365,20 +428,27 @@ window.show = v => {
 const unlocked = () => !$("v-open").hidden && token;
 function locked401(r) { if (r && r.status === 401) { lockedNow(); return true; } return false; }
 
+let loadFails = 0, loadNext = 0, loadBad = false;
 /** Loads status, the key and the chats; quick when they're loaded already. */
 async function refresh() {
   if (!unlocked()) return render();
   const r = await api("/api/messages/status");
   if (locked401(r) || !r.ok) return render();
   status = r.data;
-  if (status.key && (!me || me.public !== status.key)) {
+  // the chats load once per unlock; when that fails, nothing is shown or sorted, and it is tried again later
+  // (2 s, 4 s, ... up to a minute): never "ready" on an empty store, which would make every contact a stranger
+  if (status.key && (!me || me.public !== status.key) && Date.now() >= loadNext) {
     const k = await api("/api/messages/key");
     if (locked401(k) || !k.ok) return;
     me = { secret: fromHex(k.data.secret), public: k.data.public, name: k.data.name || "", groups: k.data.groups };
-    chat = new Chat({ me, api, resolve });
+    chat = new Chat({ me, api, resolve, bgApi, bgResolve: resolveBg });
     const c = chat;
-    loading = chat.loadStore().then(() => chat.sync()).then(() => { c.ready = true; })
-      .catch(e => { if (e.status === 401) lockedNow(); else c.ready = true; });
+    loading = chat.loadStore().then(() => chat.sync()).then(() => { c.ready = true; loadFails = 0; })
+      .catch(e => {
+        if (e.status === 401) return lockedNow();
+        loadFails++; loadNext = Date.now() + Math.min(60000, 1000 * 2 ** loadFails); loadBad = Boolean(e.unreadable);
+        if (chat === c) { chat = null; me = null; }
+      });
   }
   if (!status.key) { me = null; chat = null; }
   if (loading) { await loading; loading = null; }
@@ -401,7 +471,11 @@ function render() {
   $("mg-nokey").hidden = !open || !status || !!status.key;
   const ready = open && !!chat && !!chat.ready;
   $("mg-home").hidden = !ready || view !== "home";
-  if (open && status && status.key && !ready) { $("mg-home").hidden = false; $("mg-loading").hidden = false; $("mg-rows").replaceChildren(); return; }
+  if (open && status && status.key && !ready) {
+    $("mg-home").hidden = false; $("mg-loading").hidden = false; $("mg-rows").replaceChildren(); $("mg-req-line").hidden = true;
+    $("mg-loading").textContent = loadBad ? "Your saved chats can't be read. Restore a backup to get them back." : loadFails ? "Couldn't load your chats. Trying again…" : "Loading chats…";
+    return;
+  }
   $("mg-loading").hidden = true;
   $("mg-newv").hidden = !ready || view !== "new";
   updateBadge();
@@ -418,7 +492,9 @@ function render() {
   const bk = status.backup || {};
   $("mg-bk").hidden = !(bk.last && (bk.messaging === false || (bk.messaging == null && bk.key_created && bk.last < bk.key_created)));
   renderBackupCopy();
-  renderHint(); if (view === "home") renderList();
+  renderHint(); renderReqLine(); renderLost(); if (view === "home") renderList();
+  if (mgsHere() && mgsSub === "req") renderReqs(false);
+  if (mgsHere() && mgsSub === "blocked") renderBlocked();
 }
 $("mg-bk").addEventListener("click", () => openSettings("s-bk", "bk-pw1"));
 // with Messages on, the backup and restore texts say what else is in the file
@@ -444,7 +520,7 @@ function renderHint() {
   h.replaceChildren(el("p", {}, "People can write to you at your messaging address. To be found by your LNS name, link it in ", go, "."), x);
 }
 function updateBadge() {
-  const n = chat && unlocked() ? chat.unreadTotal() : 0;
+  const n = chat && chat.ready && unlocked() ? chat.unreadTotal() : 0;     // nothing before the inbox is sorted
   badge.hidden = !n; badge.textContent = n > 99 ? "99+" : String(n);
   navMsg.setAttribute("aria-label", n ? `Messages, ${n} unread` : "Messages");
 }
@@ -507,9 +583,9 @@ function renderList() {
   }));
   // chats whose names haven't been read from the chain yet: read them, for pictures and key checks
   const again = () => { if (view === "home" && !cv.id) render(); };
-  for (const c of list) for (const m of c.convo.members) if (m.name && !chat.chainOf(m.name)) chat.lookup(m.name).then(again).catch(() => {});
+  for (const c of list) for (const m of c.convo.members) if (m.name && !chat.chainOf(m.name)) chat.lookup(m.name, false, true).then(again).catch(() => {});
   // a "Not verified" row may only be one the name service couldn't be asked about yet
-  for (const c of list) if (c.convo.unverified && !isAddressId(c.convo.claimed) && !chat.chainOf(c.convo.claimed)) chat.lookup(c.convo.claimed).then(() => chat.sync()).then(again).catch(() => {});
+  for (const c of list) if (c.convo.unverified && !isAddressId(c.convo.claimed) && !chat.chainOf(c.convo.claimed)) chat.lookup(c.convo.claimed, false, true).then(() => chat.sync()).then(again).catch(() => {});
 }
 
 // ---- new chat ------------------------------------------------------------------------------------------
@@ -718,6 +794,8 @@ function popOv(fromHistory = false) {
 let ignorePop = 0;
 addEventListener("popstate", () => { if (ignorePop) { ignorePop--; return; } if (stack.length) popOv(true); });
 function closeAll() { while (stack.length) popOv(); }
+/** Closes the top `n` overlays in one history step (two back()s in a row may be taken as one). */
+function popOvs(n) { let k = 0; while (k < n && stack.length) { stack.pop().close(); k++; } if (k) { ignorePop++; history.go(-k); } }
 
 // ---- a conversation --------------------------------------------------------------------------------------
 const cv = { id: null, node: null };
@@ -767,9 +845,9 @@ async function sendNow() {
   } finally { if (cv.node) cv.node.go.disabled = !cv.node.ta.value.trim() || !!cv.node.blocker; }
 }
 /** Whether this chat can send now: a banner or a note instead of the composer when it can't. */
-async function checkSend(fresh) {
+async function checkSend(fresh, bg = false) {
   const id = cv.id; if (!id) return;
-  const why = await chat.sendBlocker(id, fresh).catch(() => ({ code: "offline", text: "Couldn't reach the name service." }));
+  const why = await chat.sendBlocker(id, fresh, bg).catch(() => ({ code: "offline", text: "Couldn't reach the name service." }));
   if (cv.id !== id || !cv.node) return;
   const n = cv.node; n.blocker = why && why.code !== "offline" ? why : null;
   n.ban.hidden = true; n.note.hidden = true; n.cmp.hidden = false;
@@ -782,6 +860,21 @@ async function checkSend(fresh) {
       " That happens when they set up a new phone, or when someone else took over the name. Check with " + why.name + " another way if you can. Until you accept it, nothing is sent to the new address, and messages from it are marked."),
       el("div", { className: "row" }, look, accept));
     n.ban.hidden = false; n.cmp.hidden = true;
+  } else if (why && why.code === "changed-checked") {
+    // checked in person before: nothing goes to the new address until the codes are compared again, or the
+    // user accepts it on purpose (and the contact is no longer checked)
+    const cmpB = el("button", { type: "button", className: "primary", textContent: "Compare codes" });
+    const anyway = el("button", { type: "button", textContent: "Accept without checking" });
+    cmpB.addEventListener("click", () => openSafety(why.name));
+    anyway.addEventListener("click", () => confirmSheet("Accept without checking?", why.name + " won't show as checked any more.", "Accept", true,
+      async () => { try { await chat.acceptKey(why.name, { unchecked: true }); } catch (e) { if (e.status === 401) return lockedNow(); } checkSend(true); renderConvo(); }));
+    n.ban.replaceChildren(el("p", {}, el("b", { textContent: why.name + "'s messaging address changed since you checked it." }), " Nothing is sent until you compare codes again."),
+      el("div", { className: "row" }, cmpB, anyway));
+    n.ban.hidden = false; n.cmp.hidden = true;
+  } else if (why && why.code === "blocked-key") {     // block wins over a chat: say so, with the way back
+    const un = el("button", { type: "button", textContent: "Unblock" });
+    un.addEventListener("click", async () => { un.disabled = true; try { await chat.unblock({ kind: "key", key: why.key }); } catch (e) { if (e.status === 401) return lockedNow(); } checkSend(false); renderConvo(); });
+    n.note.replaceChildren("You blocked this messaging address, so nothing is sent or shown.", un); n.note.hidden = false; n.cmp.hidden = true;
   } else if (why && why.code === "blocked") {
     const un = el("button", { type: "button", textContent: "Unblock" });
     un.addEventListener("click", async () => { await chat.setProfile(why.name, { blocked: false }); checkSend(false); renderConvo(); });
@@ -800,7 +893,7 @@ function renderWho() {
   if (c.unverified) { sub = "Not verified"; cls = "warn"; }
   else if (pid && isAddressId(pid)) sub = "No LNS name";
   else if (pid) {
-    if (st.changed) { sub = "Address changed"; cls = "warn"; }
+    if (st.changed) { sub = chat.isChecked(pid) ? "Address changed since you checked it" : "Address changed"; cls = "warn"; }
     else if (st.chain === null) { sub = "Messages off"; cls = "warn"; }
     else sub = p && p.nickname ? pid : "";
   }
@@ -824,7 +917,9 @@ function renderConvo(toBottom = false) {
   const kids = [];
   if (!list.length) {
     const pid = c.kind === "direct" ? chat.peer(c) : null;
-    kids.push(el("div", { className: "cv-empty" }, el("p", { style: "margin:0", textContent: "Say hello. Only " + (pid ? chat.label(pid) : "the people in this chat") + " can read this." })));
+    const teach = pid && !chat.isChecked(pid) ? el("button", { type: "button", className: "lnk", id: "cv-teach", style: "margin-top:10px;min-height:44px", textContent: "Compare a safety code to be sure this is them." }) : null;
+    if (teach) teach.addEventListener("click", () => openSafety(pid));
+    kids.push(el("div", { className: "cv-empty" }, el("p", { style: "margin:0", textContent: "Say hello. Only " + (pid ? chat.label(pid) : "the people in this chat") + " can read this." }), teach));
   }
   let lastDay = null, prev = null;
   list.forEach((m, i) => {
@@ -963,7 +1058,14 @@ function renderProfile() {
     c && c.display && c.display !== pid ? el("p", { textContent: c.display }) : null,
     state[1] ? el("span", { className: "state " + state[0], textContent: state[1] }) : null);
   const parts = [head];
-  if (st.changed) {
+  if (st.changed && chat.isChecked(pid)) {
+    const cmpB = el("button", { type: "button", className: "primary", textContent: "Compare codes", style: "width:100%;margin-top:14px" });
+    cmpB.addEventListener("click", () => openSafety(pid));
+    const anyway = el("button", { type: "button", textContent: "Accept without checking", style: "width:100%;margin-top:8px" });
+    anyway.addEventListener("click", () => confirmSheet("Accept without checking?", pid + " won't show as checked any more.", "Accept", true,
+      async () => { await chat.acceptKey(pid, { unchecked: true }).catch(() => {}); renderProfile(); if (cv.id) checkSend(true); }));
+    parts.push(el("section", { className: "card" }, el("p", { className: "msg warn", style: "margin:0", textContent: pid + "'s messaging address changed since you checked it. Nothing is sent until you compare codes again." }), cmpB, anyway));
+  } else if (st.changed) {
     const acc = el("button", { type: "button", textContent: "Accept the change", style: "width:100%;margin-top:14px" });
     acc.addEventListener("click", async () => { acc.disabled = true; await chat.acceptKey(pid).catch(() => {}); renderProfile(); if (cv.id) checkSend(true); });
     parts.push(el("section", { className: "card" }, el("p", { className: "msg warn", style: "margin:0", textContent: pid + "'s messaging address changed. That happens with a new phone, or when someone else took over the name. Check with them another way if you can." }), acc));
@@ -990,12 +1092,15 @@ function renderProfile() {
   // details: the messaging address, short unless asked for
   const full = el("code", { className: "cmd", hidden: true, textContent: shareable(st.pinned || "") });
   const reveal = el("button", { type: "button", className: "small", textContent: "Show full address" });
+  const safetyB = el("button", { type: "button", className: "small", id: "pv-safety", textContent: "Compare safety code", style: "margin-right:8px" });
+  safetyB.addEventListener("click", () => openSafety(pid));
   reveal.addEventListener("click", () => { full.hidden = !full.hidden; reveal.textContent = full.hidden ? "Show full address" : "Hide"; });
   const det = el("details", { className: "card", style: "padding:14px 16px" }, el("summary", { textContent: "Details" }),
     el("dl", { style: "margin-top:8px" },
       el("div", {}, el("dt", { textContent: "Messaging address" }), el("dd", { className: "fp", textContent: st.pinned ? shortFp(st.pinned) : "none yet" })),
-      st.changed ? el("div", {}, el("dt", { textContent: "New messaging address" }), el("dd", { className: "fp", textContent: shortFp(st.chain) })) : null),
-    st.pinned ? reveal : null, full,
+      st.changed ? el("div", {}, el("dt", { textContent: "New messaging address" }), el("dd", { className: "fp", textContent: shortFp(st.chain) })) : null,
+      st.pinned ? el("div", {}, el("dt", { textContent: "Safety code" }), el("dd", { id: "pv-checked", textContent: chat.isChecked(pid) ? "Checked in person" : "Not checked" })) : null),
+    st.pinned ? safetyB : null, st.pinned ? reveal : null, full,
     el("p", { className: "note", textContent: addr
       ? "Messages from this address prove they hold it; there's no name to check it against. Compare the short code with them if it matters."
       : "Kept from your first contact. If " + pid + "'s messaging address ever changes, the chat asks you to accept the change before anything is sent to it." }));
@@ -1033,6 +1138,206 @@ function profileNotes(name, p) {
   return mine;
 }
 
+// ---- requests: people not in your chats -------------------------------------------------------------------
+// Nothing from a request shows outside Requests: not in the list, not in the unread count. The home screen gets
+// one neutral line (how many wait), and Requests shows who each is from, plainly: an LNS name only when the
+// chain gives it this sender's address, otherwise "Unnamed contact" with what it says. A request's text shows
+// only on its own page, as plain text.
+const REQ_ICON = '<path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>';
+/** A request's title and one line about it: [title, line, warn]. Never shows a claimed name as the name. */
+function reqWho(g) {
+  if (g.proof === "name") return g.lookalike ? [g.name, "LNS name · not " + g.lookalike + " from your chats", true] : [g.name, "LNS name", false];
+  if (g.proof === "address") return ["Unnamed contact", "No LNS name · " + shortFp(g.key), false];
+  if (g.proof === "claim") return ["Unnamed contact", "Says it's " + g.claimed + (g.chainRead ? ". Not proven." : ". Not checked yet."), true];
+  return ["Unknown sender", "Can't tell who sent this.", true];
+}
+const reqIcon = (g, size) => g.proof === "name" ? icon(g.name, { key: g.key, size }) : icon("", { key: g.authentic ? g.key : "", size, letters: "?", color: "#6d6960" });
+/** Messages the app couldn't keep (a flood filled the room for unsorted messages while the page was away). */
+function renderLost() {
+  const box = $("mg-lost"), lost = status && status.lost, seen = ((chat.store.ui || {}).lostSeen) || 0;
+  const n = lost && lost.count > seen ? lost.count - seen : 0;
+  box.hidden = !n || view !== "home";
+  if (box.hidden) { box.replaceChildren(); return; }
+  const text = n + (n === 1 ? " message was" : " messages were") + " lost while too many came in at once" + (lost.last ? " (last " + shortWhen(Date.parse(lost.last)) + ")." : ".");
+  if (box.dataset.text === text) return;
+  box.dataset.text = text;
+  const x = el("button", { type: "button", className: "x", ariaLabel: "Close" }, svg(P.close, 18));
+  x.addEventListener("click", async () => { box.hidden = true; const c = lost.count; try { await chat.mutate(st => { st.ui = Object.assign({}, st.ui, { lostSeen: c }); }); } catch (e) {} });
+  box.replaceChildren(el("p", { textContent: text }), x);
+}
+function renderReqLine() {
+  const line = $("mg-req-line"), n = chat && chat.ready && view === "home" ? chat.requests().length : 0;
+  line.hidden = !n;
+  if (!n) { line.replaceChildren(); return; }
+  const text = n === 1 ? "1 message request" : n + " message requests";
+  if (line.textContent !== text) line.replaceChildren(el("span", { textContent: text }), svg(REQ_ICON, 18));
+}
+$("mg-req-line").addEventListener("click", () => { openMsgSettings(); mgsOpen("req"); });
+$("mg-only-row").addEventListener("click", e => { if (e.target !== $("mg-only")) $("mg-only").click(); });
+$("mg-only").addEventListener("click", () => {
+  if (!chat) return;
+  const on = !chat.onlyKnown(), n = chat.requests().length;
+  const go = async () => { try { await chat.setOnlyKnown(on); } catch (e) { if (e.status === 401) return lockedNow(); } renderReqs(false); msgRows(); render(); };
+  if (on && n) confirmSheet("Delete the " + (n === 1 ? "request" : n + " requests") + " waiting?", "From now on, messages from people you haven't written to are deleted unread.", "Turn on", true, go);
+  else go();
+});
+let reqLook = 0;
+/** Settings > Messages > Requests: the switch, what was deleted, and the list. `look`: read claimed names on chain. */
+function renderReqs(look) {
+  if (!chat || !chat.ready) return;
+  $("mg-only").setAttribute("aria-checked", String(chat.onlyKnown()));
+  const d = chat.dropped(), gone = d.blocked + d.only + d.caps + d.age;
+  $("mg-req-dropped").hidden = !gone; $("mg-req-dropped").textContent = gone ? "Deleted unread so far: " + gone + "." : "";
+  const list = chat.requests(), box = $("mg-req-rows");
+  if (!list.length) box.replaceChildren(el("p", { className: "note", style: "margin:12px 0 0", textContent: chat.onlyKnown() ? "No requests: they're deleted unread." : "No requests." }));
+  else box.replaceChildren(...list.map(g => {
+    const [title, line, warn] = reqWho(g), n = g.list.length;
+    const row = el("button", { type: "button", className: "rq-row" }, reqIcon(g, 40),
+      el("span", { className: "t" }, el("b", { textContent: title }), el("small", { className: warn ? "warn" : "", textContent: line }),
+        el("small", { textContent: (n === 1 ? "1 message · " : n + " messages · ") + shortWhen(g.at) })));
+    row.setAttribute("aria-label", title + ". " + line);
+    row.addEventListener("click", () => openRequest(g.id));
+    return row;
+  }));
+  msgRows();
+  // names they claim: read on the chain only now that Requests is open (a stranger can't make the phone work)
+  if (look && list.some(g => g.proof === "claim" && !g.chainRead) && Date.now() - reqLook > 5000) {
+    reqLook = Date.now();
+    chat.checkRequests(10, () => mgsHere() && mgsSub === "req").then(any => { if (any && mgsHere() && mgsSub === "req") renderReqs(false); }).catch(() => {});
+  }
+}
+/** One request: who it says it's from, its messages as plain text, and Accept, Delete, Block. */
+function openRequest(id) {
+  const g = chat && chat.requests().find(x => x.id === id);
+  if (!g) return;
+  const back = el("button", { type: "button", className: "back", ariaLabel: "Back", title: "Back" }, svg(P.back));
+  back.addEventListener("click", () => popOv());
+  const [title, line, warn] = reqWho(g);
+  const head = el("div", { className: "pv-head" }, reqIcon(g, 72), el("h3", { textContent: title }), el("p", { className: warn ? "warn" : "", style: warn ? "color:var(--warn)" : "", textContent: line }));
+  const msgs = el("div", { className: "cv-in", style: "min-height:0" }, ...g.list.flatMap(m => [
+    el("div", { className: "bub in", style: "cursor:default", textContent: m.text }),
+    el("div", { className: "meta in" }, el("span", { textContent: fullWhen(m.received) }))]));
+  const say = el("p", { className: "msg bad", role: "alert" });
+  const acts = el("div", { className: "rq-acts" });
+  const done = () => { popOv(); renderReqs(false); render(); };
+  const act = async (b, fn) => { b.disabled = true; say.textContent = ""; try { await fn(); } catch (e) { b.disabled = false; if (e.status === 401) return lockedNow(); say.textContent = e.message || "That didn't work."; } };
+  if (g.proof === "name" || g.proof === "address") {
+    const acc = el("button", { type: "button", className: "primary", textContent: "Accept" });
+    acc.addEventListener("click", () => act(acc, async () => { const cid = await chat.acceptRequest(g.id); done(); say.textContent = ""; acceptedNote(cid); }));
+    acts.append(acc);
+  }
+  const del = el("button", { type: "button", textContent: "Delete" });
+  del.addEventListener("click", () => act(del, async () => { await chat.deleteRequest(g.id); done(); }));
+  acts.append(del);
+  if (g.authentic) {
+    const blk = el("button", { type: "button", className: "danger", textContent: "Block" });
+    blk.addEventListener("click", () => sheet((card, close) => {      // Block closes this sheet and the request together
+      const no = el("button", { type: "button", textContent: "Cancel" }), yes = el("button", { type: "button", className: "danger", textContent: "Block" });
+      yes.style.marginTop = "0"; no.addEventListener("click", close);
+      yes.addEventListener("click", async () => {
+        yes.disabled = true; popOvs(2);
+        try { await chat.blockRequest(g.id); } catch (e) { if (e.status === 401) return lockedNow(); sheetNote("Not blocked", e.message || "That didn't work."); }
+        renderReqs(false); render();
+      });
+      card.append(el("h2", { textContent: "Block " + (g.proof === "name" ? g.name : "this sender") + "?" }),
+        el("p", { className: "note", textContent: "Their messages are deleted unread from now on. Unblock in Messages settings." }), el("div", { className: "row" }, no, yes));
+    }));
+    acts.append(blk);
+  }
+  const why = g.proof === "name" && g.lookalike ? "Not " + g.lookalike + " from your chats: another LNS name that looks like it." : g.proof === "claim" ? (g.chainRead ? g.claimed + "'s messaging address is a different one. Don't trust what it says." : "The name service hasn't answered yet, so this isn't checked.")
+    : g.proof === "none" ? "This message doesn't prove where it came from."
+    : "Accept to chat. Compare a safety code to be sure this is them.";
+  const inner = el("div", { className: "pv-in" }, head, el("p", { className: "note", textContent: why }), msgs, acts, say);
+  const box = el("div", { className: "ov", role: "dialog", ariaModal: "true", ariaLabel: "Request" },
+    el("div", { className: "ov-top bar" }, back, el("h2", { className: "bar-t", textContent: "Request" })), el("div", { className: "pv-scroll" }, inner));
+  document.body.append(box);
+  pushOv("rq", () => box.remove());
+}
+/** After Accept: one line on Requests saying where the chat is. */
+function acceptedNote(cid) {
+  const c = chat && chat.convo(cid);
+  if (!c) return;
+  const m = el("p", { className: "msg ok", role: "status", textContent: chat.title(c) + " is in your chats now." });
+  $("mg-req-rows").prepend(m);
+}
+/** Settings > Messages > Blocked: everyone blocked, each with Unblock. */
+function renderBlocked() {
+  if (!chat || !chat.ready) return;
+  const list = chat.blockedList(), box = $("mg-blk-rows");
+  if (!list.length) return box.replaceChildren(el("p", { className: "note", style: "margin:12px 0 0", textContent: "Nobody is blocked." }));
+  box.replaceChildren(...list.map(e => {
+    const title = e.kind === "profile" ? chat.label(e.pid) : e.name || "Unnamed contact";
+    const line = e.kind === "profile" ? (isAddressId(e.pid) ? "In your chats · no LNS name" : "In your chats")
+      : e.claimed ? "Said it was " + e.claimed + " · " + shortFp(e.key) : (e.name ? "LNS name · " : "No LNS name · ") + shortFp(e.key);
+    const un = el("button", { type: "button", className: "un", textContent: "Unblock" });
+    un.setAttribute("aria-label", "Unblock " + title);
+    un.addEventListener("click", async () => { un.disabled = true; try { await chat.unblock(e); } catch (err) { if (err.status === 401) return lockedNow(); } renderBlocked(); msgRows(); render(); });
+    return el("div", { className: "rq-row" }, e.kind === "profile" ? iconOf(e.pid, 40) : icon(e.name || "", { key: e.key, size: 40, letters: e.name ? undefined : "?" }),
+      el("span", { className: "t" }, el("b", { textContent: title }), el("small", { textContent: line })), un);
+  }));
+}
+
+// ---- safety code: compare it, or scan theirs ------------------------------------------------------------
+// "Checked in person" (in the profile's Details) only after the user compared the code or scanned their QR.
+// Never a "verified" badge: this is the user's own check, nothing the app can know.
+function openSafety(pid) {
+  const back = el("button", { type: "button", className: "back", ariaLabel: "Back", title: "Back" }, svg(P.back));
+  back.addEventListener("click", () => popOv());
+  const inner = el("div", { className: "pv-in" });
+  const box = el("div", { className: "ov", role: "dialog", ariaModal: "true", ariaLabel: "Safety code" },
+    el("div", { className: "ov-top bar" }, back, el("h2", { className: "bar-t", textContent: "Safety code" })), el("div", { className: "pv-scroll" }, inner));
+  document.body.append(box);
+  pushOv("sf", () => box.remove());
+  let qrOn = false;
+  const draw = (sayText = "", sayCls = "") => {
+    const sf = chat && chat.safetyFor(pid);
+    if (!sf) return inner.replaceChildren(el("p", { className: "note", textContent: "There's no messaging address to compare yet." }));
+    const who = chat.label(pid), checked = chat.isChecked(pid) && !sf.changed;
+    const parts = [el("p", { className: "note", style: "margin-top:0", textContent: "Compare it with the code on " + who + "'s phone." })];
+    if (sf.changed) parts.push(el("p", { className: "msg warn", textContent: who + "'s messaging address changed. This code is for the new one." }));
+    parts.push(el("div", { className: "sfc", id: "sf-code", ariaLabel: "Safety code" }, ...safetyGroups(sf.code).map(x => el("span", { textContent: x }))));
+    parts.push(el("p", { className: checked ? "msg ok" : "note", id: "sf-state", textContent: checked ? "Checked in person" : "Not checked" }));
+    const acts = el("div", { className: "sf-acts" });
+    if (!checked) {
+      const match = el("button", { type: "button", className: "primary", id: "sf-match", textContent: "The codes match" });
+      match.addEventListener("click", async () => { match.disabled = true; try { await chat.markChecked(pid, sf.key, "code"); draw("Checked.", "ok"); afterCheck(); } catch (e) { if (e.status === 401) return lockedNow(); draw(e.message, "bad"); } });
+      acts.append(match);
+    }
+    if (typeof SCAN !== "undefined" && SCAN) {
+      const scan = el("button", { type: "button", id: "sf-scan", textContent: "Scan their code" });
+      scan.addEventListener("click", () => {
+        const started = startScan({ ok: async text => {
+          const got = readSafetyScan(text), cur = chat && chat.safetyFor(pid);
+          if (!got || !cur) return draw("That isn't a safety code or a messaging address.", "bad");
+          if ((got.code && got.code !== cur.code) || (got.key && got.key !== cur.key)) return draw(got.code ? "The codes don't match. Don't mark them as checked." : "That's not " + chat.label(pid) + "'s messaging address.", "bad");
+          // their address QR checks one way only (theirs to you): it isn't a check of both, so it marks nothing
+          if (got.key) return draw("That's their messaging address, and it matches. To check both ways, scan their safety code.", "ok");
+          try { await chat.markChecked(pid, cur.key, "scan"); draw("They match. Checked.", "ok"); afterCheck(); } catch (e) { if (e.status === 401) return lockedNow(); draw(e.message, "bad"); }
+        }, fail: m => draw(m, "bad") });
+        if (!started) draw("The scanner didn't open.", "bad");
+      });
+      acts.append(scan);
+    }
+    const show = el("button", { type: "button", id: "sf-show", textContent: qrOn ? "Hide my code" : "Show my code" });
+    show.setAttribute("aria-expanded", String(qrOn));
+    show.addEventListener("click", () => { qrOn = !qrOn; draw(); });
+    acts.append(show);
+    if (checked) {
+      const clear = el("button", { type: "button", id: "sf-clear", textContent: "Mark as not checked" });
+      clear.addEventListener("click", async () => { clear.disabled = true; try { await chat.clearChecked(pid); } catch (e) { if (e.status === 401) return lockedNow(); } draw(); afterCheck(); });
+      acts.append(clear);
+    }
+    parts.push(acts);
+    const qr = el("div", { className: "qr-wrap", id: "sf-qr", hidden: !qrOn });
+    parts.push(qr);
+    if (qrOn) { const text = safetyQr(sf.code); qrSvg(text).then(q => { if (box.isConnected && !qr.hidden) { q.querySelector("svg").setAttribute("aria-label", "QR code of the safety code"); qr.replaceChildren(q); } }).catch(() => {}); }
+    if (sayText) parts.push(el("p", { className: "msg " + sayCls, role: "status", textContent: sayText }));
+    inner.replaceChildren(...parts);
+  };
+  const afterCheck = () => { if (pv.name) renderProfile(); if (cv.id) { checkSend(true); renderConvo(); } };
+  draw();
+}
+
 // ---- the backup: message history goes along unless unticked --------------------------------------------
 const hist = el("label", { style: "display:flex;gap:10px;align-items:flex-start;color:var(--ink);font-size:14px;margin-top:14px" },
   el("input", { type: "checkbox", id: "bk-hist", checked: true, style: "width:auto;min-height:0;margin-top:3px" }),
@@ -1053,6 +1358,6 @@ setInterval(() => {                 // every 4 s on the Messages screen, every 1
   if (tab === "msg" || cv.id || ++tick % 4 === 0) refresh().then(() => { if (cv.id && cv.node) checkSendLater(); });
 }, 4000);
 let lastCheck = 0;
-function checkSendLater() { if (Date.now() - lastCheck > 60000) { lastCheck = Date.now(); checkSend(false); } }
+function checkSendLater() { if (Date.now() - lastCheck > 60000) { lastCheck = Date.now(); checkSend(false, true); } }
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && cv.id) renderConvo(); });
 refresh();

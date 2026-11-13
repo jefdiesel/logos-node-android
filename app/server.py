@@ -8,7 +8,7 @@ Python standard library only. Wallet calls need a PIN that is set on first use.
 import base64, calendar, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.9.19"
+APP_VERSION = "0.9.20"
 # APP_EMBEDDED=android: this app runs inside the Android app (embedded Python, page in a WebView).
 # Then it never updates or restarts itself (the Android app brings new versions), and fingerprint
 # unlock goes through the phone's own fingerprint check instead of a passkey. Unset: nothing changes.
@@ -3495,6 +3495,24 @@ def set_waku_api(url):
 MSG_KEY_FILE = os.path.join(DATA_DIR, "wallet-msgkey.json")
 INBOX_FILE = os.path.join(DATA_DIR, "wallet-inbox.json")
 INBOX_MAX, SEEN_MAX, PAYLOAD_MAX = 2000, 8000, 16384    # messages kept, hashes remembered, bytes per message
+# Requests (0.9.14): this code can't open a message, so it can't tell who sent it. The page sorts each incoming
+# message once it has opened it ("k": "c" a chat, "r" a request, "d" dropped, POST /api/messages/inbox/sort).
+# Until then a message is unsorted. Unsorted and request messages together are a ring of PENDING_MAX messages /
+# PENDING_BYTES bytes: a new arrival always gets in, and the oldest request, then the oldest unsorted message,
+# makes room (counted in inbox["lost"], which the page shows). So a flood while the page is away can't stop a
+# contact's later message from arriving; it can push out one that came before the flood. The node offers no way
+# to fetch such a message again (no Store query in its API; history comes only around its own start), so the
+# page says how many were lost and when. Chat messages are capped apart (INBOX_MAX), so strangers can't push
+# them out.
+PENDING_MAX = int(os.environ.get("MESSAGING_PENDING_MAX", "2000"))
+PENDING_BYTES = int(os.environ.get("MESSAGING_PENDING_BYTES", "8388608"))
+# What the page drops by its rules (over a cap, blocked, "only people I've written to") is not deleted at once: it
+# is marked "d" (hidden, read, not counted, not in backups) and deleted DROP_GRACE later, so a sorting mistake can
+# still be undone for a while (the page puts a dropped message back as a chat message when its sender turns out to
+# be a contact). Dropped messages have their own cap (DROPPED_MAX / DROPPED_BYTES, oldest deleted first), so a
+# flood of them can't take the room of anything else. A Delete the user taps still deletes at once.
+DROP_GRACE = float(os.environ.get("MESSAGING_DROP_GRACE_SECONDS", str(7 * 86400)))
+DROPPED_MAX, DROPPED_BYTES = 2000, 8388608
 # The chat history the page keeps, all of it sealed or encrypted by the page under a key made from the messaging
 # key: this code stores and returns opaque blobs and never decrypts them.
 OUTBOX_FILE = os.path.join(DATA_DIR, "wallet-outbox.json")     # my sent messages: the page's encrypted copy, and
@@ -3625,25 +3643,47 @@ def inbox_topic(public_hex):
 
 
 def inbox_load():
+    d = None
     try:
         with open(INBOX_FILE) as f:
             d = json.load(f)
-        if isinstance(d.get("items"), list) and isinstance(d.get("seen"), list):
-            return d
+        if not (isinstance(d, dict) and isinstance(d.get("items"), list) and isinstance(d.get("seen"), list)):
+            d = None
     except Exception:
-        pass
-    return {"version": 1, "items": [], "seen": [], "next": 1}
+        d = None
+    d = d or {"version": 1, "items": [], "seen": [], "next": 1}
+    if not isinstance(d.get("sort_from"), int) or isinstance(d.get("sort_from"), bool):
+        # the first start of 0.9.14 or later: what is here already came before Requests, and stays a chat
+        d["sort_from"] = d.get("next", 1) if isinstance(d.get("next"), int) else 1
+        for i in d["items"]:
+            if isinstance(i, dict):
+                i["k"] = "c"
+    return d
 
 
-inbox = {"version": 1, "items": [], "seen": [], "next": 1}
+inbox = {"version": 1, "items": [], "seen": [], "next": 1, "sort_from": 1}
 _waku["feature"] = EMBEDDED or bool(waku_api())          # messages exist here at all (decided once)
 if _waku["feature"]:
     inbox.update(inbox_load())
 
 
 def inbox_save():
-    """Writes the inbox; the caller holds msg_lock. It holds sealed payloads only."""
-    inbox["items"] = inbox["items"][-INBOX_MAX:]
+    """Writes the inbox; the caller holds msg_lock. It holds sealed payloads only. Chat messages and the rest
+    (unsorted, requests) are trimmed apart, oldest first: INBOX_MAX and PENDING_MAX. Dropped ones ("d") go once
+    DROP_GRACE has passed, or oldest first past DROPPED_MAX / DROPPED_BYTES."""
+    chat = [i for i in inbox["items"] if i.get("k") == "c"]
+    rest = [i for i in inbox["items"] if i.get("k") not in ("c", "d")]
+    gone = [i for i in inbox["items"] if i.get("k") == "d"]
+    now, size, keep = time.time(), 0, 0
+    old = set()
+    for i in reversed(gone):                     # newest first: keep within the caps and the grace
+        size += len(i.get("payload") or "") * 3 // 4
+        keep += 1
+        if keep > DROPPED_MAX or size > DROPPED_BYTES or now - float(i.get("dropped_at") or 0) > DROP_GRACE:
+            old.add(id(i))
+    drop = {id(i) for i in chat[:max(0, len(chat) - INBOX_MAX)]} | {id(i) for i in rest[:max(0, len(rest) - PENDING_MAX)]} | old
+    if drop:
+        inbox["items"] = [i for i in inbox["items"] if id(i) not in drop]
     inbox["seen"] = inbox["seen"][-SEEN_MAX:]
     fd = os.open(INBOX_FILE + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
@@ -3653,11 +3693,11 @@ def inbox_save():
 
 def messaging_inbox_count():
     """How many incoming messages are unread (for a notification without content). No HTTP route.
-    The page marks messages read when they are shown (POST /api/messages/inbox/read). This code can't open
-    a message, so it can't tell a muted or blocked sender apart: those count until the page has been open
-    once after they came (it marks them read then)."""
+    The page marks messages read when they are shown (POST /api/messages/inbox/read), and a request read as
+    soon as it has sorted it. This code can't open a message, so it can't tell a request, a muted or a blocked
+    sender apart: those count until the page has been open once after they came."""
     with msg_lock:
-        return sum(1 for i in inbox["items"] if not i.get("read")) if messaging_on() else 0
+        return sum(1 for i in inbox["items"] if not i.get("read") and i.get("k") != "r") if messaging_on() else 0
 
 
 def waku(method, path, body=None, timeout=6):
@@ -3756,6 +3796,9 @@ def messaging_round():
         return
     changed = False
     with msg_lock:
+        pending = [i for i in inbox["items"] if i.get("k") not in ("c", "d")]
+        pend_n, pend_bytes = len(pending), sum(len(i.get("payload") or "") * 3 // 4 for i in pending)
+        evict = sorted(pending, key=lambda i: (i.get("k") != "r", i["n"]))     # requests first, then unsorted; oldest first
         for r in records:
             if not isinstance(r, dict):
                 continue
@@ -3780,13 +3823,27 @@ def messaging_round():
                 ids.add("h:" + r["messageHash"].lower())
             if ids & set(inbox["seen"]):
                 continue                                    # delivered before (live and again from history)
+            while evict and (pend_n >= PENDING_MAX or pend_bytes + len(payload) > PENDING_BYTES):
+                old = evict.pop(0)                          # the ring is full: the oldest makes room (PENDING_MAX)
+                inbox["items"] = [i for i in inbox["items"] if i is not old]
+                pend_n -= 1
+                pend_bytes -= len(old.get("payload") or "") * 3 // 4
+                lost = inbox.setdefault("lost", {"count": 0, "first": None, "last": None})
+                lost["count"] += 1
+                lost["first"] = lost["first"] or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                lost["last"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                changed = True
+            pend_n += 1
+            pend_bytes += len(payload)
             inbox["seen"].extend(sorted(ids))
             inbox["items"].append({"n": inbox["next"], "payload": base64.b64encode(payload).decode(),
                                    "source": r.get("source") if r.get("source") in ("live", "history") else None,
                                    "received": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "read": False})
+            evict.append(inbox["items"][-1])                # newest last: it can make room for later ones too
             inbox["next"] += 1
             changed = True
-        if changed:
+        now = time.time()                               # dropped ones past their grace go even when nothing comes in
+        if changed or any(i.get("k") == "d" and now - float(i.get("dropped_at") or 0) > DROP_GRACE for i in inbox["items"]):
             inbox_save()
 
 
@@ -3913,6 +3970,22 @@ def store_load():
     return _json_load(STORE_FILE, lambda d: isinstance(d.get("rev"), int), lambda: {"rev": 0, "blob": None})
 
 
+def store_read():
+    """(ok, store) for the page: no file is an empty store, but a file that is there and can't be read is an
+    error, never "empty" (an empty store would make every contact a stranger to the page)."""
+    try:
+        with open(STORE_FILE) as f:
+            d = json.load(f)
+    except FileNotFoundError:
+        return True, {"rev": 0, "blob": None}
+    except Exception:
+        return False, None
+    if isinstance(d, dict) and isinstance(d.get("rev"), int) and not isinstance(d.get("rev"), bool) \
+            and (d.get("blob") is None or isinstance(d.get("blob"), str)):
+        return True, d
+    return False, None
+
+
 def messaging_start():
     """Loads the inbox and starts the messaging loop and the sender, once."""
     try:
@@ -4020,6 +4093,32 @@ def messaging_post(path, body, req):
             if marked:
                 inbox_save()
         return 200, {"marked": marked}
+    if path == "/api/messages/inbox/sort":
+        # the page opened these: which are chat messages, which are requests (a request counts as read), and
+        # which it drops unread (marked "d": hidden, deleted after DROP_GRACE). Not a user action: the page does
+        # this on its timer too, so it doesn't hold off auto-lock (a stranger writing every few seconds mustn't
+        # keep the wallet open). A chat message stays one: nothing here turns a "c" into a request or a drop, so
+        # a page that lost track of its contacts can't throw their messages away.
+        chat, req, drop = _ints(body.get("chat")), _ints(body.get("request")), _ints(body.get("drop"))
+        with msg_lock:
+            sorted_, refused = 0, 0
+            for i in inbox["items"]:
+                k = "c" if i["n"] in chat else "d" if i["n"] in drop else "r" if i["n"] in req else None
+                if k in ("r", "d") and i.get("k") == "c":
+                    refused += 1
+                    continue
+                if k and (i.get("k") != k or (k != "c" and not i.get("read"))):
+                    i["k"] = k
+                    if k != "c":
+                        i["read"] = True
+                    if k == "d":
+                        i["dropped_at"] = time.time()
+                    else:
+                        i.pop("dropped_at", None)
+                    sorted_ += 1
+            if sorted_:
+                inbox_save()
+        return 200, {"sorted": sorted_, "refused": refused}
     if path == "/api/messages/store":
         # one encrypted blob (profiles, notes, conversations), replaced as a whole; rev stops two pages
         # overwriting each other's changes
@@ -4027,7 +4126,9 @@ def messaging_post(path, body, req):
         if not _b64_ok(blob, STORE_MAX):
             return 413, {"error": "The saved chats are too large."}
         with msg_lock:
-            cur = store_load()
+            ok, cur = store_read()
+            if not ok:                               # don't write over a file that can't be read
+                return 500, {"error": "The saved chats file can't be read.", "unreadable": True}
             if rev != cur["rev"] or isinstance(rev, bool):
                 return 409, {"error": "Changed elsewhere; load it again.", "rev": cur["rev"]}
             _json_save(STORE_FILE, {"rev": cur["rev"] + 1, "blob": blob})
@@ -4106,14 +4207,15 @@ def messaging_get(path, query):
         key = msg_key_load()
         with msg_lock:
             st = dict(msg_state)
-            count = sum(1 for i in inbox["items"] if not i.get("read"))
+            count = sum(1 for i in inbox["items"] if not i.get("read") and i.get("k") != "r")
+            lost = dict(inbox.get("lost") or {"count": 0, "first": None, "last": None})
         return 200, {"node": {"configured": st.get("configured", bool(waku_api())), "reachable": st["reachable"],
                               "starting": bool(st.get("starting")),
                               "health": st["health"], "connection": st["connection"],
                               "checked_s_ago": round(time.time() - st["checked"]) if st["checked"] else None},
                      "key": key["public"] if key else None, "name": (key or {}).get("name", ""),
                      "topic": inbox_topic(key["public"]) if key else None, "subscribed": bool(key and st["subscribed"]),
-                     "inbox": count, "unread": count, "missed": st["missed"],
+                     "inbox": count, "unread": count, "missed": st["missed"], "lost": lost,
                      "backup": {"last": last_backup(), "messaging": backup_has_messaging(),
                                 "key_created": (key or {}).get("created")}}
     if path == "/api/messages/key":
@@ -4128,6 +4230,7 @@ def messaging_get(path, query):
         after = num("after")                       # only what came after this number
         with msg_lock:
             return 200, {"items": [dict(i) for i in inbox["items"] if i["n"] > after], "next": inbox["next"],
+                         "sort_from": inbox.get("sort_from", 1),
                          "unread": [i["n"] for i in inbox["items"] if not i.get("read")]}
     if path == "/api/messages/outbox":
         after, since = num("after"), num("since")  # new items in full; older ones only when a send changed
@@ -4138,7 +4241,8 @@ def messaging_get(path, query):
                          "rev": outbox.get("rev", 0), "next": outbox["next"]}
     if path == "/api/messages/store":
         with msg_lock:
-            return 200, store_load()
+            ok, cur = store_read()
+            return (200, cur) if ok else (500, {"error": "The saved chats file can't be read.", "unreadable": True})
     m = re.match(r"^/api/messages/send/([A-Za-z0-9_.:-]{1,128})$", path)
     if m:
         code, st = waku("GET", "/messaging/v1/events/send/" + m.group(1), timeout=6)
@@ -4299,7 +4403,8 @@ def chat_backup(history):
     and encrypted sent copies, newest first up to HISTORY_BACKUP_MAX. None when there is nothing."""
     with msg_lock:
         store = store_load().get("blob")
-        ins = [{"payload": i["payload"], "received": i.get("received"), "read": bool(i.get("read"))} for i in inbox["items"]]
+        ins = [{"payload": i["payload"], "received": i.get("received"), "read": bool(i.get("read")), "k": "c" if i.get("k") == "c" else ""}
+               for i in inbox["items"] if i.get("k") not in ("r", "d")]   # requests and dropped ones aren't chats: not in a backup
         outs = [{"copy": i["copy"], "at": i["at"], "states": [x["state"] for x in i["sends"]]} for i in outbox["items"]]
     chat = {"store": store, "inbox": [], "outbox": [], "truncated": False}
     if history:
@@ -4328,8 +4433,14 @@ def chat_restore(chat, replace_store):
         for r in chat.get("inbox") or []:
             if isinstance(r, dict) and _b64_ok(r.get("payload"), PAYLOAD_MAX) and r["payload"] not in have:
                 have.add(r["payload"])
-                inbox["items"].append({"n": inbox["next"], "payload": r["payload"], "source": "backup",
-                                       "received": str(r.get("received") or "")[:32], "read": bool(r.get("read", True))})
+                # a chat message comes back as one (backups from before 0.9.14 have no sort: all were chats then);
+                # one that was unsorted at backup time comes back unsorted, for the page to sort
+                is_chat = r.get("k", "c") == "c"
+                item = {"n": inbox["next"], "payload": r["payload"], "source": "backup",
+                        "received": str(r.get("received") or "")[:32], "read": bool(r.get("read", True)) or not is_chat}
+                if is_chat:
+                    item["k"] = "c"
+                inbox["items"].append(item)
                 inbox["seen"].append("p:" + hashlib.sha256(base64.b64decode(r["payload"])).hexdigest())
                 inbox["next"] += 1
                 added += 1
@@ -4922,7 +5033,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if code == 200:
                 event("fingerprint key added", self, total=obj.get("passkeys"))
             return self.reply(code, obj)
-        if path in self.USER_ACTIONS and self.authed():
+        # "X-Background: 1": the messages page doing something on its own (sorting what came in, the chain reads
+        # and store writes that follow); not the user, so it doesn't hold off auto-lock
+        if path in self.USER_ACTIONS and self.headers.get("X-Background") != "1" and self.authed():
             session_touch(visible=True)
         if path == "/api/wallet/lock":
             had = self.authed()

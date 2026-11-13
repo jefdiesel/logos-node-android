@@ -145,7 +145,9 @@ jobs:
             mkdir -p "$OLD/$(dirname "$f")" && curl -fsSL -o "$OLD/$f" "$base/$f"
           done
           NAMES_MSG_CRYPTO="$RUNNER_TEMP/names-msg-crypto.js" OLD_APP="$OLD" node tests/chat_test.mjs
-      - name: Hostile sender names (constructor, __proto__, ...) and 200 random ones never stop the chats
+      - name: Messages step 1 - padding read by the names project's own build, safety-code vectors, requests and their caps, checked contacts
+        run: NAMES_MSG_CRYPTO="$RUNNER_TEMP/names-msg-crypto.js" node tests/msg_v2_test.mjs
+      - name: Hostile sender names (constructor, __proto__, ...) and 200 random ones never stop the chats or Requests
         run: node tests/msg_hostile_test.mjs
   chat-ui:
     # The Messages screen in headless Chrome at phone width (x64 runner: Chrome has no Linux arm64 build)
