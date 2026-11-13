@@ -378,6 +378,75 @@ After 0.5.20 (branch `sockets-e`, versions unchanged; review of 503b141, E1 to E
   one deadline over a plain socket. Test: `theTcpPathGivesUpOnDrippingHeaders`.
 - E5: a transfer the node gave no answer about (status 0: a timeout or an answer cut short) says it may have been
   sent; the next send from that account is refused until its balance moves or three minutes pass; the page doesn't
-  re-enable Send on that review. Test: `tests/send_unsure_test.py`.
+  re-enable Send on that review. (Replaced on branch `send-hold-2`: see "Transfers" below.)
 - `tests/node_socket_test.py` now counts connections to the old TCP port (with `NODE_TCP_GUARD` set as 0.5.17-0.5.19
   set it): zero; it fails on the 0.5.17 server.py.
+
+## Transfers: known by what they spend and by their hash (branch `send-hold-2`)
+
+Reviews DELTA4 to DELTA6 failed on one thing: telling a transfer's fate from the account's total. The app no longer
+does that. Every transfer from a wallet key (a send, or setting an amount aside for a bridge) is made in the two
+steps the node's API has, and is settled by its own identity.
+
+What the real node does (CI probe runs 43494895877 and 43496529313, the pinned "api" node, Linux arm64; source at
+f7ab0323):
+- `POST /wallet/fund` builds, funds and signs a transfer and **submits nothing** (`handlers.rs` `fund`). Its answer
+  names the notes it spends, in the form `/wallet/{pk}/balance` lists them, and the outputs (the payment and the
+  change). It keeps those notes apart in memory: a second fund can't use them until they are seen spent, 10
+  finalised blocks pass, or the node restarts (`services/wallet/src/lib.rs`, `pending_note_expiry_blocks`).
+- `POST /mempool/add/tx` submits a signed transfer and answers **200 with an empty body**, also for one already in
+  the pool, and for one whose notes are already spent. Its answer proves nothing.
+- The same signed transfer submitted twice is in the pool once and lands once. Two different transfers that spend
+  a common note can both be in the pool; exactly one lands.
+- The hash is blake2b-256 of `MANTLE_TXHASH_V1` and the ops' binary encoding. The app computes it before it
+  submits (`xfer_hash`); it matched the node's hash on every transfer tried, and the node's own test vectors
+  (`tests/xfer_test.py`).
+- `GET /cryptarchia/transaction/{hash}` only reads the pool's store (it answered 200 for a transfer that never
+  landed), so it isn't used. `GET /cryptarchia/blocks_range` (one JSON object per line) lists the blocks with their
+  transactions' hashes: that is the proof.
+- The pool keeps a transfer 9 hours (`DEFAULT_TX_TTL`).
+
+What the app does (`app/server.py`, "transfers from the wallet"):
+1. Records the transfer (fsync'd) and its Activity entry, then asks `/wallet/fund`. Any failure of the fund sent
+   nothing: the entry goes, the account is free.
+2. Checks the funded transfer is the one asked for (its notes are the account's, one output of the amount to the
+   recipient, the rest back to the account, a fee within 100,000), computes its hash, and saves the whole signed
+   transfer. If it can't be saved, it isn't submitted.
+3. Submits it. Whatever the answer, it submits **the same saved transfer** again every minute until its hash is in a
+   block, or 30 minutes pass. It never funds a new one for the same send. A crash between steps 2 and 3 is picked up
+   at the next start: the saved transfer is submitted then (CI job `node-socket`: `tests/xfer_real.py`, with the
+   real node, kills the app there, starts it again, and the transfer lands once).
+4. When one of its notes leaves the balance, it reads the chain since the transfer was funded: its hash in a block
+   gives "in block" with the fee the funded transfer names. If the chain was read to its tip without the hash, a note
+   it needs went elsewhere and it can never land: "not in a block". If the chain can't be read, nothing changes.
+5. One transfer at a time per account: while one is unsettled and younger than 30 minutes, sends and bridges from that
+   account are refused, with no text asking to send again.
+6. At 30 minutes an unsettled transfer reads "can't tell: check your balance" and stops holding the account. It is
+   no longer submitted, but it is watched until 10 hours after its last submit (the pool's 9 and one more): if it
+   lands it reads "in block". Meanwhile a new transfer from that account goes to the network **only if it spends a
+   note the old one spends** (then at most one of the two can land); otherwise nothing is sent and the page says why.
+   At 10 hours it reads "not in a block".
+7. A bridge deposit (`/channel/deposit`, unchanged) is settled by its note; any "sent" entry no record settles reads
+   "can't tell" after 40 minutes. Nothing stays pending for good (DELTA6 M1, S4). Stopping a bridge during its split
+   leaves the split to its own record (S2).
+
+Time is the boot clock within the same boot (kernel boot id; where it can't be read, a boot clock not behind the
+record), else the wall clock (S1). Records: `DATA_DIR/wallet-transfers.json`, owner-only, fsync'd; a file that can't
+be read holds every account for 30 minutes.
+
+Tests (`tests/xfer_test.py`, against `tests/fake_chain.py`, which models the pool, the 10-block reservation, a
+restart dropping it, conflicting transfers of which exactly one lands, 200-with-nothing answers, lost answers and
+realistic fees): the encoder vectors; fixed cases for DELTA6 P1, P1b (M1), P2, P3, P4, P5b, P5c/d, P6 (S1), P8 (S2),
+a crash at every step, an outside spend, an unreadable chain and an unreadable file; and 2,000 seeded random runs
+(5,000 run locally) checking after every step:
+- I1: no new transfer reaches the pool beside one of the same account that may still land unless they share a note,
+  and no payment made again after "can't tell" is paid twice;
+- I2: no entry reads "in block" unless its hash is in a block;
+- I3: no entry stays pending past 30 minutes;
+- I4: the account is free within 30 minutes.
+Each invariant was checked to fail when the code is broken the matching way (no overlap rule, settling on the
+balance, no cap, funding anew, no hold).
+
+Not covered: a wall clock set back and then a reboot, where the boot id can't be read (the age then reads short, and
+the account is held longer than 30 minutes). Past 30 minutes, a new transfer that the node funds from other notes than
+a transfer still in the pool is refused until that one settles (up to 10 hours): the money-safe side of I1 over I4.

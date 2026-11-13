@@ -104,7 +104,8 @@ Settings → Your name.
   `0101…01`) and checks that its own node knows it (`GET /channel/<id>` answers 200).
 - **A deposit moves whole notes.** It credits the sum of the notes it spends, and its fee comes
   from other notes of the same key. So the app first sends the exact amount to the same key (one
-  ordinary transfer, `/wallet/transactions/transfer-funds`), waits until that note is in a block,
+  ordinary transfer: funded, saved, submitted and found by its hash, as every transfer (LOCAL-APIS.md,
+  "Transfers")), waits until that note is in a block,
   and deposits that one note. Nothing more than the amount typed is moved. The key must hold the
   amount plus room for two fees.
 - **Fees:** the deposit's fee is capped at 100,000 (`max_tx_fee`, as `names bridge` does). Fees

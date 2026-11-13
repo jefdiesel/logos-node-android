@@ -300,6 +300,7 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
           <div><dt>Fee paid</dt><dd id="s-fee">-</dd></div>
           <div><dt>Transaction</dt><dd class="hash" id="s-hash"></dd></div>
         </dl>
+        <p class="note" id="s-note" hidden></p>
         <button type="button" id="b-again" class="primary">Done</button>
       </div>
 
@@ -602,7 +603,7 @@ function show(view) {
     for (const id of ["hist", "accts", "accts-more", "from", "pop-list", "recv-qr", "m-scan"]) $(id).replaceChildren();
     $("m-scan").hidden = true; scanHandler = null;   // a scan answered after a lock fills nothing
     $("bal-total").replaceChildren(phSpan());
-    for (const id of ["r-amount", "r-to", "r-from", "r-name", "s-hash"]) $(id).textContent = "";
+    for (const id of ["r-amount", "r-to", "r-from", "r-name", "s-hash", "s-note"]) $(id).textContent = "";
     openPanel(null);
     if (window.LNS && window.LNS.home) window.LNS.home(false);   // the LEZ row and panels empty too
   }
@@ -1417,11 +1418,14 @@ $("b-go").addEventListener("click", async () => {
   }
   if (!r.ok) return void (m.textContent = r.data.error || "The transfer failed.");
   const hash = r.data.hash; $("s-hash").textContent = hash; $("s-state").textContent = "Confirming…"; $("s-fee").textContent = "-";
+  $("s-note").textContent = r.data.note || ""; $("s-note").hidden = !r.data.note;
   $("v-review").hidden = true; $("v-sent").hidden = false; $("to").value = ""; $("amount").value = "";
   clearInterval(txTimer);
   txTimer = setInterval(async () => {
     const s = await api("/api/wallet/tx?hash=" + encodeURIComponent(hash));
-    if (s.ok && s.data.state === "in_block") { clearInterval(txTimer); $("s-state").textContent = "Confirmed"; $("s-fee").textContent = amt(s.data.fee); loadAccounts(); loadHistory(); }
+    if (s.ok && s.data.state === "in_block") { clearInterval(txTimer); $("s-state").textContent = "Confirmed"; $("s-fee").textContent = amt(s.data.fee); $("s-note").hidden = true; loadAccounts(); loadHistory(); }
+    else if (s.ok && s.data.state === "not_in_block") { clearInterval(txTimer); $("s-state").textContent = "Not in a block: nothing was sent"; loadAccounts(); loadHistory(); }
+    else if (s.ok && s.data.state === "unknown") { clearInterval(txTimer); $("s-state").textContent = "Can't tell: check your balance"; loadAccounts(); loadHistory(); }
   }, 5000);
 });
 $("b-again").addEventListener("click", () => { resetSend(); loadAccounts(); loadHistory(); });
@@ -1435,6 +1439,12 @@ function copyBtn(text, label) {
   return b;
 }
 const span = (t, cls) => Object.assign(document.createElement("span"), { textContent: t, className: cls || "" });
+// a transfer's state: in a block only once its hash is found in a block; "can't tell" when it went unsettled for
+// the 30 minutes the app waits (it may still land, and then reads in a block)
+function sentState(e) {
+  return e.status === "pending" ? "Confirming…" : e.status === "in block" ? (e.fee != null ? "fee " + amtH(e.fee) : "in a block")
+    : e.status === "unknown" ? "can't tell: check your balance" : "not in a block";
+}
 function histRow(e) {
   const d = document.createElement("div"); d.className = "hrow";
   const top = document.createElement("div"); top.className = "top";
@@ -1450,10 +1460,10 @@ function histRow(e) {
     const split = e.bridge === "split";
     top.replaceChildren(span(split ? "Set aside for the bridge" : "Bridged to LEZ", "kind"), span(split ? (e.fee != null ? "−" + amtH(e.fee) : "") : "−" + amtH(e.amount), "amt"));
     sub.append(span("from " + e.label + (split ? ": " + amtH(e.bridge_amount || "0") + " kept apart for it" : " to your name account")));
-    sub.append(span(e.status === "pending" ? "Confirming…" : e.status === "in block" ? (e.fee != null ? "fee " + amtH(e.fee) : "in a block") : "not in a block"));
+    sub.append(span(sentState(e)));
   } else if (e.kind === "sent") {
     sub.append(span("from " + e.label + " to " + (e.name ? e.name + " " : "") + (e.to_label ? e.to_label + " " : "") + "(" + short(e.to) + ")"), copyBtn(e.to, "Copy address"));
-    sub.append(span(e.status === "in block" ? "fee " + amtH(e.fee) : e.status === "pending" ? "Confirming…" : "not in a block"));
+    sub.append(span(sentState(e)));
   } else if (e.kind === "tracking started") {
     sub.append(span("Earlier activity isn't listed."));
   } else {
