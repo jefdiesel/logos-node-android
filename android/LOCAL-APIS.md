@@ -318,4 +318,6 @@ patch helps Termux only if Termux runs the patched node with `LOGOS_API_UNIX_SOC
   and its check), `NodeService.setUpMessaging` (`--api-socket`), `LogosApp.watchMessaging`
   (`set_waku_api(unix:...)`), `NodeActivity` (the API line); `server.py`: `unix_http()`, the `unix:` branch
   of `waku()`, `_loopback_url` accepting `unix:<absolute path>`; `android/messaging-run.txt` and
-  `messaging.sha256` (the new runner); tests `tests/messaging_socket_test.py`, `MessagingTest`.
+  `messaging.sha256`: waku-build run 43445078866 (branch `waku-socket`), runner sha256
+  `ebe88149ecc2ea0df0327d7c6fe244974d69d96d85a76a7cffdfe11fbc65dc7e`, library unchanged and byte-identical
+  to the earlier build (`c2a6b96c…e340`); tests `tests/messaging_socket_test.py`, `MessagingTest`.
