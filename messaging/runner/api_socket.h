@@ -535,6 +535,9 @@ static const char *api_config_opens(const char *config) {
     const char *p = config, *end = config + strlen(config);
     static char found[64];
     while (p < end) {
+        // JSON has no '/' outside strings, but the library's parser takes // and /* */ comments, and a quote
+        // inside a comment would put this scanner out of step: refuse any (review E2)
+        if (*p == '/') return "a comment";
         if (*p != '"') { p++; continue; }
         const char *s = ++p;                                   // a string token: skip it whole
         int escaped = 0;
@@ -568,6 +571,43 @@ static const char *api_config_opens(const char *config) {
         }
     }
     return NULL;
+}
+
+// The library also reads every option it isn't given on the command line from the environment, as
+// <PROGRAM>_<OPTION> (nim-confutils load(), envVarsPrefix = the program's name, e.g. LIBWAKURUNNER_REST_ADMIN).
+// With the api socket the runner removes every such variable for the network APIs before it creates the node,
+// whatever its prefix, so only the config decides, and the config check above covers that (review E4).
+// Returns how many were removed.
+static int api_clear_env(void) {
+    extern char **environ;
+    static const char *suffixes[] = {"_REST", "_REST_ADMIN", "_METRICS_SERVER", "_WEBSOCKET_SUPPORT",
+                                     "_WEBSOCKET_SECURE_SUPPORT", NULL};
+    int removed = 0;
+    for (int again = 1; again;) {
+        again = 0;
+        for (char **e = environ; e && *e; e++) {
+            const char *eq = strchr(*e, '=');
+            if (!eq) continue;
+            size_t n = (size_t)(eq - *e);
+            char name[256];
+            if (n == 0 || n >= sizeof name) continue;
+            for (size_t i = 0; i < n; i++) name[i] = (char)(((*e)[i] >= 'a' && (*e)[i] <= 'z') ? (*e)[i] - 'a' + 'A' : (*e)[i]);
+            name[n] = '\0';
+            for (const char **s = suffixes; *s; s++) {
+                size_t sl = strlen(*s);
+                if (n > sl && strcmp(name + n - sl, *s) == 0) {
+                    memcpy(name, *e, n);                       // the variable's own spelling
+                    name[n] = '\0';
+                    unsetenv(name);
+                    removed++;
+                    again = 1;                                 // environ changed: start over
+                    break;
+                }
+            }
+            if (again) break;
+        }
+    }
+    return removed;
 }
 
 // Opens the socket at `path` and serves it on a thread of its own. The path's directory must be a
