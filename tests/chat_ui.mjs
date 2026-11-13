@@ -8,13 +8,13 @@
 // Three apps on a fake messaging network: the browser shows alice's; bob and carol write from Node with the
 // page's own chat model. Checks what the screen shows; with SHOTS, saves a PNG of each state.
 import { spawn } from "node:child_process";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { noGreenOrBlue } from "./hue_check.mjs";
 import { join } from "node:path";
 import { inflateSync } from "node:zlib";
 import { createRequire } from "node:module";
-import { world, app, person, chatOf, check, until, sleep, procs, stopAll, MC, ID, hex, b64, here } from "./chat_world.mjs";
+import { world, app, person, chatOf, check, until, sleep, procs, stopAll, MC, ID, CORE, hex, b64, here } from "./chat_world.mjs";
 
 const jsQR = createRequire(import.meta.url)("./vendor/jsQR.js");   // test only: reads the QR codes back off the screen
 const CHROME = process.env.CHROME || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -100,6 +100,26 @@ const barOk = async (where, bar) => {
   check(`${where}: one top bar, Back (a 44 px chevron) and the title "${m && m.title}" on one line, ${m && m.px} px`,
     !!m && m.label === "Back" && m.words === "" && m.bw >= 44 && m.bh >= 44 && m.sameLine && m.beside && m.oneLine && m.px <= 20 && m.px >= 16, m);
   return m;
+};
+// larger text, as a phone set to a bigger font size shows it: the page drawn at 115% and 130% (CSS zoom on the
+// body; the page sets its sizes in px). On the screen in `sel`: no sideways scroll, no row title or line cut
+// ("…" or clipped), each safety-code group whole on one line, every control still 44 px or more.
+const bigText = async (where, sel) => {
+  for (const z of [1.15, 1.3]) {
+    await js(`document.body.style.zoom = "${z}"; true`); await sleep(250);
+    const r = await js(`(() => { const out = [], root = document.querySelector(${JSON.stringify(sel)});
+      if (!root) return ["no " + ${JSON.stringify(sel)}];
+      if (document.documentElement.scrollWidth > innerWidth + 1) out.push("sideways scroll");
+      for (const e of [root, ...root.querySelectorAll(".pv-scroll, .cv-in, .rq-acts, .sf-acts")]) if (e.scrollWidth > e.clientWidth + 1) out.push((e.className || e.id) + " overflows");
+      for (const e of root.querySelectorAll(".rq-row b, .rq-row small, .pv-head h3, .pv-head p")) if (getComputedStyle(e).textOverflow === "ellipsis" || e.scrollWidth > e.clientWidth + 1) out.push("cut: " + e.textContent);
+      for (const g of root.querySelectorAll("#sf-code span")) { const lh = parseFloat(getComputedStyle(g).fontSize) * 1.6; if (g.getBoundingClientRect().height > lh * ${z}) out.push("code group breaks: " + g.textContent); }
+      for (const b of root.querySelectorAll("button")) { const q = b.getBoundingClientRect(); if (b.classList.contains("sw") && b.closest(".tg") && b.closest(".tg").getBoundingClientRect().height >= 44) continue;   // the whole row is the switch
+        if (q.width && q.height && !b.classList.contains("lnk") && (q.height < 43.5 || q.width < 43.5)) out.push("small: " + (b.textContent || b.getAttribute("aria-label") || b.className)); }
+      return out; })()`);
+    check(`${where} at ${Math.round(z * 100)}% text: nothing cut or sideways, controls 44 px`, r.length === 0, r);
+    if (z === 1.3) await shot(where.replace(/[^a-z]+/gi, "-").toLowerCase() + "-large-text");
+  }
+  await js(`document.body.style.zoom = ""; true`); await sleep(150);
 };
 // Settings: which page shows ("closed", "home", or a group's id)
 const stAt = () => js(`(() => { if (document.getElementById("page-settings").hidden) return "closed"; if (!document.getElementById("s-home").hidden) return "home";
@@ -333,7 +353,7 @@ const mgsWait = (name, want) => waitFor(name, `!document.getElementById("page-se
 await click("#mg-me");
 await waitFor("Settings, at Messages", `!document.getElementById("page-settings").hidden && !document.getElementById("s-msg").hidden`);
 check("the gear opens Settings > Messages at its list", await mgsAt() === "list" && (await text("#h-settings")) === "Messages");
-check("the list: Name, then Address", JSON.stringify(await js(`[...document.querySelectorAll("#mgs-list .grow")].filter(b => !b.hidden).map(b => b.querySelector("b").textContent)`)) === '["Name","Address"]');
+check("the list: Name, Address, then Requests and Blocked (0.9.14)", JSON.stringify(await js(`[...document.querySelectorAll("#mgs-list .grow")].filter(b => !b.hidden).map(b => b.querySelector("b").textContent)`)) === '["Name","Address","Requests","Blocked"]');
 await shot("settings-messages");
 await click("#mgs-go-name");
 await mgsWait("Name opens its own page", "name");
@@ -391,8 +411,9 @@ const LINUX_GROUPS = GROUPS.filter(g => !ANDROID_ONLY.has(g[0]));
 // Everything Settings had in 0.9.7, by id, and the group page it now lives on. `show`: on screen whenever that page is
 // (the rest come and go with the state: fingerprint on or off, an update available, a file picked...).
 const INVENTORY = {
-  msg: { all: ["s-msg", "h-s-msg", "mg-own", "mg-own-m", "mg-own-go", "mg-else", "mg-else-s", "mg-check-m", "mg-name", "mg-name-save", "mg-name-m", "mg-link", "mg-check", "mg-cmd-d", "mg-cmd", "mg-copy", "mg-addr", "mg-addr-qr", "mg-addr-show", "mg-addr-copy", "mg-addr-m"],
-         show: ["mgs-go-name", "mgs-go-addr"] },
+  msg: { all: ["s-msg", "h-s-msg", "mg-own", "mg-own-m", "mg-own-go", "mg-else", "mg-else-s", "mg-check-m", "mg-name", "mg-name-save", "mg-name-m", "mg-link", "mg-check", "mg-cmd-d", "mg-cmd", "mg-copy", "mg-addr", "mg-addr-qr", "mg-addr-show", "mg-addr-copy", "mg-addr-m",
+              "mg-only-row", "mg-only", "mg-req-dropped", "mg-req-rows", "mg-blk-rows"],
+         show: ["mgs-go-name", "mgs-go-addr", "mgs-go-req", "mgs-go-blocked"] },
   node: { all: ["s-nodec", "h-node", "height", "nodeline", "syncline", "state", "peers", "rate", "b-open-node"], show: ["height", "nodeline", "state", "peers", "rate"] },
   sec: { all: ["s-sec", "h-s-sec", "s-fp", "h-s-fp", "fp-off", "b-fp-set", "fp-on", "b-fp-off", "fp-confirm", "b-fp-yes", "b-fp-no", "nfp-on-form", "nfp-pin", "b-nfp-on", "fp-host", "m-fp", "s-lock", "h-s-lock", "al-min", "al-grace", "m-al", "b-lock"],
          show: ["h-s-fp", "h-s-lock", "al-min", "al-grace", "b-lock"] },
@@ -452,6 +473,9 @@ const MSG_SUB = [
     words: ["Your name", "alice, linked to this phone", "Without a name you can still write and get messages", "Link your name to this phone"] }],
   ["addr", "Address", { all: ["mg-addr", "mg-addr-qr", "mg-addr-show", "mg-addr-copy", "mg-addr-m"], show: ["mg-addr-show", "mg-addr-copy"],
     words: ["Your messaging address", "Anyone can write to this phone at this address", "Coins go to your wallet address"] }],
+  ["req", "Requests", { all: ["mg-only-row", "mg-only", "mg-req-dropped", "mg-req-rows"], show: ["mg-only-row", "mg-only", "mg-req-rows"],
+    words: ["Messages from people not in your chats wait here", "Only people I've written to", "Messages from anyone else are deleted unread", "No requests"] }],
+  ["blocked", "Blocked", { all: ["mg-blk-rows"], show: ["mg-blk-rows"], words: ["Nobody is blocked"] }],
 ];
 async function msgSubPages() {
   const seen = new Set(["s-msg", "h-s-msg"]);
@@ -595,6 +619,7 @@ await shot("chat-new");
 
 // ---- a conversation: yesterday's messages, replies both ways, a long one ----
 const bob = await chatOf(w, B), carol = await chatOf(w, C);
+await bob.startDirect("alice");          // (0.9.14) bob writes to alice below, so she is in his chats, not a request
 const yesterday = Date.now() - 864e5;
 for (const [t, txt] of [[yesterday - 600000, "Are you coming to the meetup tomorrow?"], [yesterday - 540000, "It starts at 7, at the usual place"]]) {
   const sealed = MC.sealMessage({ to: MC.fromHex(key.public), from: "bob", fromSecret: B.id.secretKey, text: txt, ts: t });
@@ -654,6 +679,7 @@ D.pin = "444555"; D.session = (await D.call("/api/wallet/setup", { pin: D.pin })
 const did = ID.newIdentity();
 await D.call("/api/messages/key", { seed: hex(did.seed), secret: hex(did.secretKey), public: hex(did.publicKey) });
 const dchat = await chatOf(w, D);
+await dchat.startDirect("alice");        // (0.9.14) they are about to write to each other: alice is in their chats
 await click("#mg-new");
 check("no Scan in New chat without the Android app's scanner", await js(`document.getElementById("mg-scan").hidden`));
 const wallet = await js(`accts.length ? accts[0].key : ""`);
@@ -695,8 +721,60 @@ await carol.startDirect("alice");
 await carol.send("d:alice", "Hi Alice, it's Carol from the workshop. Do you still have the notes?");
 const forged = MC.sealMessage({ to: MC.fromHex(key.public), from: "dave", fromSecret: MC.newKeyPair().secretKey, text: "Hey, it's Dave. Can you send me 50 Logos?" });
 await w.control("inject/0", { topic: MC.inboxTopic(MC.fromHex(key.public)), payload: b64(forged) });
+// (0.9.14) alice never wrote to either: both are requests. One neutral line on the list, nothing else.
+await waitFor("two message requests: one line on the list", `!document.getElementById("mg-req-line").hidden && document.getElementById("mg-req-line").innerText.includes("2 message requests")`, 15000);
+check("nothing of them in the chat list, the page or the unread count", !/carol|dave|workshop|50 Logos|Not verified/i.test(await js(`document.getElementById("page-msg").innerText`))
+  && await js(`document.querySelector("#nav .badge").hidden`) && !/carol|dave/.test(await js(`document.getElementById("mg-rows").textContent`)));
+await shot("list-with-requests");
+await bigTargets("the chat list with requests");
+await click("#mg-req-line");
+await mgsWait("the line opens Settings > Messages > Requests", "req");
+check("titled Requests", (await text("#h-settings")) === "Requests");
+await barOk("Settings > Messages > Requests", "#page-settings .bar");
+await waitFor("both requests listed, carol's name read on the chain", `document.querySelectorAll("#mg-req-rows .rq-row").length === 2 && document.getElementById("mg-req-rows").innerText.includes("LNS name")`, 15000);
+{
+  const rows = await js(`[...document.querySelectorAll("#mg-req-rows .rq-row")].map(r => [r.querySelector("b").textContent, r.querySelector("small").textContent])`);
+  check("carol, with her LNS name proven; the other as Unnamed contact that says it's dave, not proven", rows.some(r => r[0] === "carol" && r[1] === "LNS name") && rows.some(r => r[0] === "Unnamed contact" && r[1] === "Says it's dave. Not proven."), rows);
+  check("no request is titled dave, and no text of them shows before a tap", !rows.some(r => r[0] === "dave") && !/workshop|50 Logos/.test(await text("#mgs-req")));
+}
+await shot("requests");
+await bigTargets("Requests");
+await bigText("Requests", "#mgs-req");
+await js(`[...document.querySelectorAll("#mg-req-rows .rq-row")].find(r => r.querySelector("b").textContent === "Unnamed contact").click(); true`);
+await waitFor("the claim's page", `!!document.querySelector(".ov[aria-label=Request]")`);
+await barOk("a request", ".ov[aria-label=Request] .bar");
+check("its text, as plain text, and only Delete and Block (no Accept for a claim)", (await text(".ov[aria-label=Request]")).includes("50 Logos")
+  && JSON.stringify(await js(`[...document.querySelectorAll(".ov[aria-label=Request] .rq-acts button")].map(b => b.textContent)`)) === '["Delete","Block"]');
+check("it says the name isn't theirs", (await text(".ov[aria-label=Request]")).includes("dave's messaging address is a different one"));
+await shot("request-claim");
+await js(`[...document.querySelectorAll(".ov[aria-label=Request] .rq-acts button")].find(b => b.textContent === "Block").click(); true`);
+await waitFor("Block asks first", `!!document.querySelector(".sheet") && document.querySelector(".sheet").innerText.includes("Block this sender?")`);
+await js(`[...document.querySelectorAll(".sheet button")].find(b => b.textContent === "Block").click(); true`);
+await waitFor("blocked: one request left", `!document.querySelector(".ov[aria-label=Request]") && document.querySelectorAll("#mg-req-rows .rq-row").length === 1`, 10000);
+await waitFor("(and the page's history is back on Requests, in one step)", `history.state && history.state.sub === "req"`);
+await js(`[...document.querySelectorAll("#mg-req-rows .rq-row")].find(r => r.querySelector("b").textContent === "carol").click(); true`);
+await waitFor("carol's request", `!!document.querySelector(".ov[aria-label=Request]") && document.querySelector(".ov[aria-label=Request]").innerText.includes("workshop")`);
+check("Accept, Delete and Block", JSON.stringify(await js(`[...document.querySelectorAll(".ov[aria-label=Request] .rq-acts button")].map(b => b.textContent)`)) === '["Accept","Delete","Block"]');
+await shot("request");
+await bigTargets("a request");
+await bigText("A request", ".ov[aria-label=Request]");
+await js(`[...document.querySelectorAll(".ov[aria-label=Request] .rq-acts button")].find(b => b.textContent === "Accept").click(); true`);
+await waitFor("accepted: carol is in the chats", `!document.querySelector(".ov[aria-label=Request]") && document.getElementById("mg-req-rows").innerText.includes("carol is in your chats now")`, 10000);
+await waitFor("(the page's history is back on Requests)", `history.state && history.state.sub === "req"`);
+await click("#b-settings-back");
+await mgsWait("Back: Messages' list", "list");
+check("Blocked has the claim, as what it said", (await text("#mgs-go-blocked")).includes("1 blocked"));
+await click("#mgs-go-blocked"); await mgsWait("Blocked", "blocked");
+check("listed as an Unnamed contact that said it was dave, with Unblock", (await text("#mg-blk-rows")).includes("Said it was dave") && (await text("#mg-blk-rows")).includes("Unblock"));
+await shot("blocked");
+await bigTargets("Blocked");
+await bigText("Blocked", "#mgs-blocked");
+await click("#b-settings-back"); await mgsWait("Back", "list");
+await click("#b-settings-back"); await stWait("and out", "closed");
+await waitFor("no requests left: the line goes", `document.getElementById("mg-req-line").hidden && document.getElementById("mg-rows").innerText.includes("carol")`);
+await carol.send("d:alice", "Did you get my message?");
 await waitFor("carol's chat shows up, unread", `document.getElementById("mg-rows").innerText.includes("carol") && !!document.querySelector("#mg-rows .badge")`, 15000);
-await waitFor("and the one claiming to be dave, marked", `document.getElementById("mg-rows").innerText.includes("Not verified")`, 15000);
+check("and the claim isn't in the list", !/Not verified|dave/.test(await text("#mg-rows")));
 await waitFor("the bar has an unread count", `!document.querySelector("#nav .badge").hidden`);
 await shot("list");
 await bigTargets("the chat list");
@@ -718,6 +796,83 @@ await waitFor("back on the list", `!document.querySelector(".ov")`);
 
 check("no keys on the everyday screens: list", !/[0-9a-f]{20,}/.test(await js(`document.getElementById("page-msg").innerText`)));
 check("no errors in the page", errors.length === 0, errors);
+
+// ---- a safety code: compared with bob; then bob's address changes after the check ----
+const openChat = async (who) => { await js(`[...document.querySelectorAll("#mg-rows .crow")].find(r => r.innerText.includes(${JSON.stringify(who)})).click(); true`); await waitFor(`${who}'s chat`, `!!document.querySelector(".ov .cv-in")`); };
+await openChat("Bob (meetup)");
+await click(".ov .who");
+await waitFor("bob's profile", `!!document.getElementById("pv-note")`);
+check("Details: the safety code is not checked", (await js(`document.getElementById("pv-checked").textContent`)) === "Not checked");
+await js(`document.querySelector(".pv-in details").open = true; true`);
+await click("#pv-safety");
+await waitFor("the safety code page", `!!document.querySelector(".ov[aria-label='Safety code'] #sf-code")`);
+await barOk("the safety code", ".ov[aria-label='Safety code'] .bar");
+const bobCode = CORE.safetyCode(key.public, hex(B.id.publicKey));
+check("12 groups of 5 digits: the code of alice's and bob's messaging addresses (the one bob's phone shows)",
+  JSON.stringify(await js(`[...document.querySelectorAll("#sf-code span")].map(x => x.textContent)`)) === JSON.stringify(CORE.safetyGroups(bobCode)) && bobCode === (await chatOf(w, B)).safetyFor("alice").code);
+check("not checked yet, and no 'verified' anywhere", (await text("#sf-state")) === "Not checked" && !/verified/i.test(await text(".ov[aria-label='Safety code']")));
+check("no Scan without the Android app's scanner", !(await js(`!!document.getElementById("sf-scan")`)));
+await click("#sf-show");
+check("Show my code: a QR of the safety code", await qrOnScreen("#sf-qr .qr") === "names-safety:1:" + bobCode, { read: await qrOnScreen("#sf-qr .qr") });
+await shot("safety-code");
+await bigTargets("the safety code");
+await bigText("The safety code", ".ov[aria-label='Safety code']");
+await click("#sf-match");
+await waitFor("The codes match: checked", `document.getElementById("sf-state") && document.getElementById("sf-state").textContent === "Checked in person"`);
+await js(`history.back(); true`);
+await waitFor("the profile says it, in Details", `!document.querySelector(".ov[aria-label='Safety code']") && document.getElementById("pv-checked").textContent === "Checked in person"`);
+check("and only there: no badge on the profile's head or the chat's header", !/checked|verified/i.test(await text(".pv-head")) && !/checked|verified/i.test(await js(`document.querySelectorAll(".ov")[0].querySelector(".ov-top").innerText`)));
+await shot("profile-checked");
+await js(`history.back(); true`); await sleep(200);
+await js(`history.back(); true`);
+await waitFor("back on the list", `!document.querySelector(".ov")`);
+const bobNew = ID.newIdentity();
+await w.register("bob", { msg: hex(bobNew.publicKey) });
+await openChat("Bob (meetup)");
+await waitFor("bob's address changed after the check: its own banner", `!!document.querySelector(".cv-ban:not([hidden])") && document.querySelector(".cv-ban").innerText.includes("changed since you checked it")`, 15000);
+check("nothing can be sent, and no one-tap accept", await js(`document.querySelector(".cmp").hidden`) && JSON.stringify(await js(`[...document.querySelectorAll(".cv-ban button")].map(b => b.textContent)`)) === '["Compare codes","Accept without checking"]');
+check("the header says so", (await text(".ov .ov-top")).includes("Address changed since you checked it"));
+await shot("key-changed-checked");
+await bigTargets("a checked contact's changed address");
+await js(`[...document.querySelectorAll(".cv-ban button")].find(b => b.textContent === "Compare codes").click(); true`);
+await waitFor("the code to compare is for the new address", `!!document.querySelector(".ov[aria-label='Safety code'] #sf-code") && document.querySelector(".ov[aria-label='Safety code']").innerText.includes("changed")`);
+check("and it is the new address's code", JSON.stringify(await js(`[...document.querySelectorAll("#sf-code span")].map(x => x.textContent)`)) === JSON.stringify(CORE.safetyGroups(CORE.safetyCode(key.public, hex(bobNew.publicKey)))));
+await click("#sf-match");
+await waitFor("compared again: checked", `document.getElementById("sf-state").textContent === "Checked in person"`);
+await js(`history.back(); true`);
+await waitFor("back in the chat: the new address is accepted, sending works", `!document.querySelector(".ov[aria-label='Safety code']") && !document.querySelector(".cmp").hidden && document.querySelector(".cv-ban").hidden`, 10000);
+// back to bob's own phone for the rest: this time accepted without checking, on purpose
+await w.register("bob", { msg: hex(B.id.publicKey) });
+await js(`history.back(); true`);
+await waitFor("back on the list", `!document.querySelector(".ov")`);
+await openChat("Bob (meetup)");
+await waitFor("changed again since the check", `!!document.querySelector(".cv-ban:not([hidden])") && document.querySelector(".cv-ban").innerText.includes("changed since you checked it")`, 15000);
+await js(`[...document.querySelectorAll(".cv-ban button")].find(b => b.textContent === "Accept without checking").click(); true`);
+await waitFor("it asks first", `!!document.querySelector(".sheet") && document.querySelector(".sheet").innerText.includes("won't show as checked")`);
+await js(`[...document.querySelectorAll(".sheet button")].find(b => b.textContent === "Accept").click(); true`);
+await waitFor("accepted on purpose: sending works, and bob isn't checked any more", `!document.querySelector(".cmp").hidden && document.querySelector(".cv-ban").hidden`, 10000);
+await click(".ov .who");
+await waitFor("bob's profile", `!!document.getElementById("pv-checked")`);
+check("Details: not checked", (await js(`document.getElementById("pv-checked").textContent`)) === "Not checked");
+await js(`history.back(); true`); await sleep(200);
+await js(`history.back(); true`);
+await waitFor("back on the list", `!document.querySelector(".ov")`);
+// a lock clears all of it from the page (with Requests and Blocked filled in first)
+await click("#mg-me"); await stWait("Settings > Messages", "msg");
+await click("#mgs-go-blocked"); await mgsWait("Blocked", "blocked");
+await click("#b-settings-back"); await mgsWait("Back", "list");
+await click("#mgs-go-req"); await mgsWait("Requests", "req");
+await js(`lockedNow(); true`);
+await waitFor("locked", `!document.getElementById("lock").hidden`);
+check("locked: no overlay, no request, no safety code, no blocked entry kept in the page, not even hidden", await js(`(() => {
+  const t = document.body.textContent + [...document.querySelectorAll("[aria-label]")].map(e => e.getAttribute("aria-label")).join(" ");
+  return !document.querySelector(".ov, .sheet") && !/carol|dave|workshop|Checked in person|Said it was|message request/.test(t) && !t.includes(${JSON.stringify(bobCode.slice(0, 15))}); })()`));
+check("locked: Requests, Blocked and the request line are empty", await js(`["mg-req-rows", "mg-blk-rows", "mg-req-line"].every(id => document.getElementById(id).childElementCount === 0) && document.getElementById("mg-req-line").hidden && !/Deleted unread/.test(document.getElementById("mg-req-dropped").textContent)`));
+await unlock();
+await stWait("unlocked: back on Settings", "msg");
+await js(`history.back(); true`); await sleep(200);
+await click("#b-settings-back"); await stWait("and out", "closed");
+await waitFor("back on the list", `!document.querySelector(".ov") && !document.getElementById("mg-home").hidden && document.getElementById("mg-rows").innerText.includes("carol")`, 15000);
 // ---- a backup with message history, made in the page and restored through the page ----
 for (let i = 0; i < 130; i++) {                 // enough history for a file over 60 KB
   const p = MC.sealMessage({ to: MC.fromHex(key.public), from: "bob", fromSecret: B.id.secretKey, text: "filler " + i + " ".repeat(200) });
@@ -786,6 +941,47 @@ await click("#nav-msg");
 await waitFor("Messages home", `!document.getElementById("mg-home").hidden`);
 await shot("messages-home");
 
+// ---- the chats don't load (the store read fails): nothing shows, nothing is sorted or dropped; it tries again ----
+{
+  const itemsA = async () => JSON.stringify((await A.call("/api/messages/inbox")).d.items.map(i => i.n + ":" + (i.k || "")));
+  const before = await itemsA();
+  let failStore = true;
+  ws.addEventListener("message", (e) => {
+    const m = JSON.parse(e.data);
+    if (m.method !== "Fetch.requestPaused") return;
+    const q = m.params;
+    if (failStore && q.request.method === "GET") cdp("Fetch.fulfillRequest", { requestId: q.requestId, responseCode: 500, body: Buffer.from('{"error":"test"}').toString("base64") });
+    else cdp("Fetch.continueRequest", { requestId: q.requestId });
+  });
+  await cdp("Fetch.enable", { patterns: [{ urlPattern: "*/api/messages/store*" }] });
+  await load();
+  await waitFor("the page loads", `!document.getElementById("v-open").hidden || !document.getElementById("v-locked").hidden`);
+  if (await js(`!document.getElementById("v-locked").hidden`)) await unlock();
+  await click("#nav-msg");
+  await waitFor("the chats didn't load: it says so, and shows no chat and no request", `document.getElementById("mg-loading").textContent.includes("Couldn't load your chats") && !document.querySelector("#mg-rows .crow") && document.getElementById("mg-req-line").hidden`, 20000);
+  await sleep(6000);                              // a few tries, 2 s, 4 s apart
+  check("meanwhile nothing on the server was sorted, dropped or deleted", await itemsA() === before);
+  check("and the unread badge shows nothing", await js(`document.querySelector("#nav .badge").hidden`));
+  await shot("chats-not-loaded");
+  failStore = false;
+  await waitFor("once the store loads, the chats are back", `document.querySelectorAll("#mg-rows .crow").length >= 3`, 70000);
+  await cdp("Fetch.disable");
+  // a store file that can't be read (as after a power cut): it says so, and the last saved copy brings the chats back
+  const good = readFileSync(join(A.data, "wallet-chat.json"), "utf8");
+  check("(each save keeps the copy it replaces)", existsSync(join(A.data, "wallet-chat.json.prev")));
+  writeFileSync(join(A.data, "wallet-chat.json"), "");
+  await load();
+  await waitFor("the page loads", `!document.getElementById("v-open").hidden || !document.getElementById("v-locked").hidden`);
+  if (await js(`!document.getElementById("v-locked").hidden`)) await unlock();
+  await click("#nav-msg");
+  await waitFor("the file can't be read: one plain card, with the last saved copy and Start fresh", `!document.getElementById("mg-store-warn").hidden && document.getElementById("mg-store-why").textContent.includes("can't be read") && !document.getElementById("mg-store-prev").hidden && !document.querySelector("#mg-rows .crow")`, 20000);
+  await shot("chats-file-unreadable");
+  await bigTargets("the saved chats card");
+  await click("#mg-store-prev");
+  await waitFor("Use the last saved copy: the chats are back", `document.querySelectorAll("#mg-rows .crow").length >= 3 && document.getElementById("mg-store-warn").hidden`, 30000);
+  check("(the file is readable again)", readFileSync(join(A.data, "wallet-chat.json"), "utf8").length > 10 && good.length > 10);
+}
+
 // ---- the lock screen inside the Android app, with fingerprint on (a stand-in bridge counts the prompts) ----
 // erin's app is the Android app's, with the LNS signer (a stand-in), so Settings has Your name too
 const signerDir = mkdtempSync(join(tmpdir(), "signer-"));
@@ -836,6 +1032,16 @@ await groupPage("name", "Your name");
 check("Your name's ids are all on its page", [...seenIds].filter(x => INVENTORY.name.all.includes(x)).length === INVENTORY.name.all.length);
 await click("#b-settings-back"); await stWait("out of Settings", "closed");
 await click("#nav-msg");
+// (0.9.14) bob wrote first: his message is a request until erin accepts it, here in the Android app's page
+await waitFor("bob's request on erin's phone: one line", `!document.getElementById("mg-req-line").hidden && !/bob|hi erin/.test(document.getElementById("page-msg").innerText)`, 15000);
+await click("#mg-req-line"); await mgsWait("Requests", "req");
+await waitFor("bob, with his LNS name", `[...document.querySelectorAll("#mg-req-rows .rq-row")].some(r => r.querySelector("b").textContent === "bob" && r.innerText.includes("LNS name"))`, 15000);
+await js(`[...document.querySelectorAll("#mg-req-rows .rq-row")].find(r => r.querySelector("b").textContent === "bob").click(); true`);
+await waitFor("his request", `!!document.querySelector(".ov[aria-label=Request]") && document.querySelector(".ov[aria-label=Request]").innerText.includes("hi erin")`);
+await js(`[...document.querySelectorAll(".ov[aria-label=Request] .rq-acts button")].find(b => b.textContent === "Accept").click(); true`);
+await waitFor("accepted", `!document.querySelector(".ov[aria-label=Request]") && history.state && history.state.sub === "req"`, 10000);
+await click("#b-settings-back"); await mgsWait("Back", "list");
+await click("#b-settings-back"); await stWait("out of Settings", "closed");
 await waitFor("erin's chat with bob", `[...document.querySelectorAll("#mg-rows .crow")].some(r => r.innerText.includes("bob"))`, 15000);
 // ---- Messages > Name with the phone's own name: nothing to type, one action shared with Your name ----
 const openOwn = async (what) => {
@@ -964,6 +1170,34 @@ check("and nothing is started until asked: Start chat is offered", await js(`[..
 check("nothing scanned ran", await js(`!window.__pwned`));
 await shot("new-chat-scanned");
 await js(`history.back(); true`);
+// ---- the safety code with the scanner: only their matching code, or their own address, marks it checked ----
+await waitFor("back on Messages", `!document.getElementById("mg-home").hidden && !document.querySelector(".ov")`, 15000);
+await js(`[...document.querySelectorAll("#mg-rows .crow")].find(r => r.innerText.includes("bob")).click(); true`);
+await waitFor("erin's chat with bob", `!!document.querySelector(".ov .cv-in")`);
+await click(".ov .who");
+await waitFor("bob's profile", `!!document.getElementById("pv-safety")`);
+await js(`document.querySelector(".pv-in details").open = true; true`);
+await click("#pv-safety");
+await waitFor("the safety code, with Scan their code", `!!document.getElementById("sf-scan") && !!document.getElementById("sf-code")`);
+const ebCode = CORE.safetyCode(hex(E.id.publicKey), hex(B.id.publicKey));
+const sfSay = () => js(`[...document.querySelectorAll(".ov[aria-label='Safety code'] .msg")].map(e => e.textContent).join(" | ")`);
+for (const [t, want] of [["names-safety:1:" + "1".repeat(60), "The codes don't match"], ["msg:" + otherHex, "That's not bob's messaging address"],
+  ["<img src=x onerror=window.__pwned=1>", "That isn't a safety code"], [someHex, "That isn't a safety code"], ["x".repeat(5000), "That isn't a safety code"]]) {
+  await click("#sf-scan"); await js(`window.logosScanned(${JSON.stringify(t)}); true`);
+  await waitFor(`scanned ${JSON.stringify(t.slice(0, 30))}: refused, says why`, `document.querySelector(".ov[aria-label='Safety code']").innerText.includes(${JSON.stringify(want)})`);
+  check(`and still not checked`, (await text("#sf-state")) === "Not checked");
+}
+await bigTargets("the safety code with Scan");
+await click("#sf-scan"); await js(`window.logosScanned(${JSON.stringify("names-safety:1:" + ebCode)}); true`);
+await waitFor("their matching code: checked", `document.getElementById("sf-state").textContent === "Checked in person" && document.querySelector(".ov[aria-label='Safety code']").innerText.includes("They match")`);
+check("nothing scanned ran", await js(`!window.__pwned && !document.querySelector(".ov img")`));
+await shot("safety-code-scanned");
+await click("#sf-clear");
+await waitFor("taken back", `document.getElementById("sf-state").textContent === "Not checked"`);
+await click("#sf-scan"); await js(`window.logosScanned(${JSON.stringify("msg:" + hex(B.id.publicKey))}); true`);
+await waitFor("their own messaging address QR: it matches, but that checks one way only, so it marks nothing",
+  `document.querySelector(".ov[aria-label='Safety code']").innerText.includes("To check both ways, scan their safety code") && document.getElementById("sf-state").textContent === "Not checked"`);
+check("no script errors in the page (the 401s are the lock tests' own, the 500s the store test's)", errors.filter(e => !/status of (401|500)/.test(e)).length === 0, errors);
 ws.close(); stopAll();
 console.log("all checks passed" + (SHOTS ? ` (screenshots in ${SHOTS})` : ""));
 process.exit(0);

@@ -1,7 +1,7 @@
 // Chats between LNS names (0.9.0): the page's chat model (app/messages/chat-core.js) against three apps on
 // a fake messaging network, without a browser.
 //
-//   [NAMES_MSG_CRYPTO=<the names project's msg-crypto.js>] [OLD_APP=<an 0.8.1 app folder>] node tests/chat_test.mjs
+//   [NAMES_MSG_CRYPTO=<the names project's msg-crypto.js>] [OLD_APP=<an 0.8.1 app folder>] [PORT_SHIFT=<n>] node tests/chat_test.mjs
 //
 // The messaging identity (an Ed25519 seed, and the X25519 key derived from it); 1:1 chats both ways, with
 // history after an app restart; own messages never coming back as incoming; duplicates; delivery states;
@@ -35,8 +35,9 @@ check("RFC 8032 test 1 seed: the Ed25519 key is the RFC's", hex(rfc.edPublicKey)
 }
 
 // ---- the world -----------------------------------------------------------------------------------------
-const w = await world(18580, 5);
-const A = await app(w, 8121, w.NODES[0]), B = await app(w, 8122, w.NODES[1]), C = await app(w, 8123, w.NODES[2]);
+const PS = Number(process.env.PORT_SHIFT || 0);     // moves every port up by n (when the defaults are busy)
+const w = await world(18580 + PS, 5);
+const A = await app(w, 8121 + PS, w.NODES[0]), B = await app(w, 8122 + PS, w.NODES[1]), C = await app(w, 8123 + PS, w.NODES[2]);
 await person(w, A, "alice", "111222"); await person(w, B, "bob", "222333"); await person(w, C, "carol", "333444");
 const rec = JSON.parse(readFileSync(join(A.data, "wallet-msgkey.json"), "utf8"));
 check("the key record: version 2 with the seed, the X25519 pair and the name",
@@ -44,7 +45,7 @@ check("the key record: version 2 with the seed, the X25519 pair and the name",
 let r = await A.call("/api/messages/key");
 check("the page gets the seed and the key", r.d.seed === hex(A.id.seed) && r.d.public === hex(A.id.publicKey) && r.d.groups === true && r.d.version === 2);
 {
-  const D = await app(w, 8124, w.NODES[3]);
+  const D = await app(w, 8124 + PS, w.NODES[3]);
   D.session = (await D.call("/api/wallet/setup", { pin: "444555" })).d.session;
   const id = ID.newIdentity(), wrong = ID.newIdentity();
   r = await D.call("/api/messages/key", { seed: hex(wrong.seed), secret: hex(id.secretKey), public: hex(id.publicKey) });
@@ -63,7 +64,7 @@ check("the page gets the seed and the key", r.d.seed === hex(A.id.seed) && r.d.p
 
 // ---- an 0.8.1 phone updating: its key file and inbox become a chat ----
 {
-  const H = await app(w, 8129, w.NODES[4]);
+  const H = await app(w, 8129 + PS, w.NODES[4]);
   H.pin = "121212"; H.session = (await H.call("/api/wallet/setup", { pin: H.pin })).d.session;
   const kp = MC.newKeyPair();
   const sealed = MC.sealMessage({ to: kp.publicKey, from: "bob", fromSecret: B.id.secretKey, text: "sent to the 0.8.1 phone" });
@@ -87,20 +88,26 @@ const id = await a.startDirect("bob");
 check("a chat with bob: direct, one member, bob's key pinned", id === "d:bob" && a.convo(id).kind === "direct" && a.convo(id).members.length === 1 && a.pinned("bob") === hex(B.id.publicKey));
 await a.send(id, "hi bob");
 await until("alice's message gets to stored", async () => { await a.sync(); const m = a.messages(id)[0]; return m && m.sends[0].state === "sent"; }, 10000);
-await until("bob's app gets it, in a new chat with alice", async () => { await b.sync(); return b.convo("d:alice") && b.messages("d:alice").length === 1; });
-let m = b.messages("d:alice")[0];
-check("it is alice's text, from alice, verified, unread", m.text === "hi bob" && m.sender === "alice" && b.trust(m) === "ok" && b.unread.has(m.n));
-check("bob pinned alice's key at first contact (it matched the chain)", b.pinned("alice") === hex(A.id.publicKey));
-r = await B.call("/api/messages/status");
-check("bob's status: 1 unread", r.d.unread === 1, r.d);
+// (0.9.14) bob never wrote to alice: her first message is a request on bob's phone until he accepts it
+await until("bob's app gets it, as a request from alice (no chat yet)", async () => { await b.sync(); return b.requests().length === 1 && !b.convo("d:alice") && b.conversations().length === 0; });
 const count = (data) => execFileSync("python3", ["-c", "import sys; sys.path.insert(0, sys.argv[1]); import server; print(server.messaging_inbox_count())", join(ROOT, "app")],
   { env: { ...process.env, APP_DATA: data, WAKU_API: "http://127.0.0.1:1" } }).toString().trim();
-check("messaging_inbox_count() is the unread count", count(B.data) === "1");
-await b.markRead("d:alice");
-check("read: the count goes to 0", count(B.data) === "0" && (await B.call("/api/messages/status")).d.unread === 0);
+check("a request counts nowhere: bob's status, messaging_inbox_count(), the page", (await B.call("/api/messages/status")).d.unread === 0 && count(B.data) === "0" && b.unreadTotal() === 0);
+await b.checkRequests();
+check("Requests shows it is from alice's LNS name (her address on chain)", b.requests()[0].proof === "name" && b.requests()[0].name === "alice");
+check("bob accepts it: a chat with alice", await b.acceptRequest(b.requests()[0].id) === "d:alice" && b.messages("d:alice").length === 1);
+let m = b.messages("d:alice")[0];
+check("it is alice's text, from alice, verified, and read (seen in Requests)", m.text === "hi bob" && m.sender === "alice" && b.trust(m) === "ok" && !b.unread.has(m.n));
+check("bob pinned alice's key at first contact (it matched the chain)", b.pinned("alice") === hex(A.id.publicKey));
 await b.send("d:alice", "hi alice");
 await b.send("d:alice", "how are you?");
 await until("alice gets both replies", async () => { await a.sync(); return a.messages(id).filter(x => x.dir === "in").length === 2; });
+check("in alice's chat with bob (she wrote first), both unread", a.messages(id).filter(x => x.dir === "in").every(x => a.unread.has(x.n)) && a.unreadTotal() === 2);
+r = await A.call("/api/messages/status");
+check("alice's status: 2 unread", r.d.unread === 2, r.d);
+check("messaging_inbox_count() is the unread count", count(A.data) === "2");
+await a.markRead(id);
+check("read: the count goes to 0", count(A.data) === "0" && (await A.call("/api/messages/status")).d.unread === 0);
 const list = a.messages(id);
 check("alice's chat: her message, then bob's two, in order", list.map(x => x.dir + ":" + x.text).join("|") === "out:hi bob|in:hi alice|in:how are you?", list.map(x => x.text));
 check("her own message never came back as incoming", [...a.inbox.values()].filter(Boolean).every(x => x.sender === "bob"));
@@ -170,11 +177,15 @@ const stranger = MC.newKeyPair();
 const forged = MC.sealMessage({ to: A.id.publicKey, from: "carol", fromSecret: stranger.secretKey, text: "it's carol, honest" });
 await w.control("inject/0", { topic: MC.inboxTopic(A.id.publicKey), payload: b64(forged) });
 const xid = "x:" + hex(stranger.publicKey);
-await until("a message claiming to be carol", async () => { await a.sync(); return a.messages(xid).length === 1; });
-check("is unverified, and nothing is pinned from it", a.trust(a.messages(xid)[0]) === "unverified" && a.pinned("carol") === null);
-check("it has its own thread, never carol's: no chat with carol, a row titled 'Not verified: carol'",
-  !a.convo("d:carol") && a.messages("d:carol").length === 0 && a.conversations().some(c => c.convo.id === xid && c.title === "Not verified: carol"));
-check("and it can't be answered", (await a.sendBlocker(xid)).code === "unverified");
+// (0.9.14) alice never wrote to it: a request, shown as a claim, never as carol
+const sreq = () => a.requests().find(g => g.key === hex(stranger.publicKey));
+await until("a message claiming to be carol", async () => { await a.sync(); return !!sreq(); });
+check("is unverified, and nothing is pinned from it", a.trust(sreq().list[0]) === "unverified" && a.pinned("carol") === null);
+await a.checkRequests();
+check("it is never carol's: no chat with carol, no row in the list; in Requests it is a claim the chain doesn't back",
+  !a.convo("d:carol") && a.messages("d:carol").length === 0 && a.messages(xid).length === 0 && !a.conversations().some(c => c.convo.id === xid)
+  && sreq().proof === "claim" && sreq().claimed === "carol" && sreq().chainRead);
+check("and it can't be answered: it can't become a chat", (await a.acceptRequest(sreq().id).catch(e => e)).code === "unproven" && (await a.sendBlocker(xid)).code === "gone");
 
 // ---- 6b. someone with no LNS name, by messaging address ----
 {
@@ -187,7 +198,7 @@ check("and it can't be answered", (await a.sendBlocker(xid)).code === "unverifie
   check("bare hex that can't be a messaging address is called a wallet address", parse(off).wallet === true && parse("msg:" + off).bad === true);
   check("a name isn't an address", parse("alice") === null);
 }
-const F = await app(w, 8127, w.NODES[3]);
+const F = await app(w, 8127 + PS, w.NODES[3]);
 F.session = (await F.call("/api/wallet/setup", { pin: "777888" })).d.session;
 F.id = ID.newIdentity();
 await F.call("/api/messages/key", { seed: hex(F.id.seed), secret: hex(F.id.secretKey), public: hex(F.id.publicKey) });
@@ -196,7 +207,11 @@ check("no name: messages go out as from the address", f.fromName() === "msg-" + 
 await f.startDirect("alice");
 await f.send("d:alice", "hello from someone with no name");
 const fid = "k:" + hex(F.id.publicKey);
-await until("alice gets it in a chat with the address", async () => { await a.sync(); return a.messages(fid).length === 1; });
+// (0.9.14) a first message from an address alice never wrote to: a request, which she accepts
+const freq = () => a.requests().find(g => g.key === hex(F.id.publicKey));
+await until("alice gets it, as a request from the address", async () => { await a.sync(); return !!freq(); });
+check("Requests shows it as an address with no name, proven", freq().proof === "address" && freq().authentic);
+check("alice accepts it: a chat with the address", await a.acceptRequest(freq().id) === fid && a.messages(fid).length === 1);
 m = a.messages(fid)[0];
 check("from the address, proven, not verified by any name", m.sender === fid && a.trust(m) === "address" && a.convo(fid).members[0].key === hex(F.id.publicKey) && a.convo(fid).members[0].name === null);
 check("it is never titled with hex: Unnamed contact until it gets a nickname", a.title(a.convo(fid)) === "Unnamed contact");
@@ -240,18 +255,24 @@ let mergeErr = null; try { await a.mergeAddress(hex(MC.newKeyPair().publicKey), 
 check("an address that isn't the name's can't be merged into it", mergeErr !== null);
 
 // ---- the name service is out when a new person writes: no lasting "Not verified" ----
+// (0.9.14: the first message is a request; Requests says it isn't checked yet, then shows the name)
 {
   const real = a.resolveRaw;
   a.resolveRaw = async () => { throw new Error("name service unreachable"); };
-  const G = await app(w, 8130, w.NODES[4]);
+  const G = await app(w, 8130 + PS, w.NODES[4]);
   await person(w, G, "gina", "343434");
   const g = await chatOf(w, G);
   await g.startDirect("alice"); await g.send("d:alice", "hello from gina");
   const gx = "x:" + hex(G.id.publicKey);
-  await until("while the name service is out, gina's message waits as not verified", async () => { await a.sync(); return a.messages(gx).length === 1; });
+  const greq = () => a.requests().find(x => x.key === hex(G.id.publicKey));
+  await until("while the name service is out, gina's message waits in Requests", async () => { await a.sync(); return !!greq(); });
+  await a.checkRequests();
+  check("as a name not checked yet, and nowhere else", greq().proof === "claim" && greq().claimed === "gina" && !greq().chainRead && a.messages(gx).length === 0 && !a.conversations().some(c => c.convo.id === gx));
   a.resolveRaw = real; a.failed.clear();
-  await a.sync();
-  check("once it answers, the message moves to a chat with gina, verified, and the not-verified row is gone",
+  await a.checkRequests();
+  check("once it answers, Requests shows gina's LNS name", greq().proof === "name" && greq().name === "gina");
+  await a.acceptRequest(greq().id);
+  check("accepted: a chat with gina, verified, and no not-verified row",
     a.messages("d:gina").length === 1 && a.trust(a.messages("d:gina")[0]) === "ok" && !a.conversations().some(c => c.convo.id === gx) && a.pinned("gina") === hex(G.id.publicKey));
   G.proc.kill();
 }
@@ -259,10 +280,14 @@ check("an address that isn't the name's can't be merged into it", mergeErr !== n
 // ---- 7. blocking ----
 const c = await chatOf(w, C);
 await c.startDirect("alice"); await c.send("d:alice", "real carol here");
-await until("carol's real message", async () => { await a.sync(); return a.messages("d:carol").some(x => x.text === "real carol here"); });
-check("the real carol gets her own chat, verified and pinned; the stranger stays apart",
+const creq = () => a.requests().find(x => x.key === hex(C.id.publicKey));
+await until("carol's real message, a request", async () => { await a.sync(); return !!creq(); });
+await a.checkRequests();
+check("the real carol proves her name in Requests, apart from the one claiming it", creq().proof === "name" && sreq().proof === "claim" && creq().id !== sreq().id);
+await a.acceptRequest(creq().id);
+check("the real carol gets her own chat, verified and pinned; the stranger stays apart (still a request)",
   a.trust(a.messages("d:carol").find(x => x.text === "real carol here")) === "ok" && a.pinned("carol") === hex(C.id.publicKey)
-  && a.messages("d:carol").length === 1 && a.messages(xid).length === 1);
+  && a.messages("d:carol").length === 1 && !!sreq() && a.messages(xid).length === 0);
 await a.setProfile("carol", { blocked: true });
 check("blocked: her messages are hidden and read", a.messages("d:carol").filter(x => x.dir === "in").length === 0 && a.conversations().find(x => x.convo.id === "d:carol").unread === 0);
 check("and nothing can be sent", (await a.sendBlocker("d:carol")).code === "blocked");
@@ -312,13 +337,13 @@ r = await A.call("/api/wallet/backup", { password: "alice backup password", pin:
 const small = r.d.backup;
 check("without history it is smaller", JSON.stringify(small).length < JSON.stringify(full).length && JSON.stringify(full).length > 65536 && JSON.stringify(small).length < 65536, [JSON.stringify(small).length, JSON.stringify(full).length]);
 {
-  const G = await app(w, 8128, null, { WAKU_API: null });
+  const G = await app(w, 8128 + PS, null, { WAKU_API: null });
   G.session = (await G.call("/api/wallet/setup", { pin: "888999" })).d.session;
   r = await G.call("/api/wallet/restore", { backup: full, password: "alice backup password", pin: "888999" });
   check("an app without messages restores the keys from a backup with history (over 64 KiB), and leaves the chats", r.code === 200 && r.d.ok && !("messages_restored" in r.d), r);
   G.proc.kill();
 }
-const E = await app(w, 8125, w.NODES[4]);
+const E = await app(w, 8125 + PS, w.NODES[4]);
 E.session = (await E.call("/api/wallet/setup", { pin: "555666" })).d.session;
 r = await E.call("/api/wallet/restore", { backup: full, password: "alice backup password", pin: "555666" });
 check("restoring alice's backup on a new phone brings the key and the messages", r.code === 200 && r.d.messaging_key_restored && r.d.messages_restored > 0, r);
@@ -340,7 +365,7 @@ check("restoring the same backup again adds nothing twice", e.messages("d:bob").
 
 // an 0.8.1 app restores the keys from a 0.9 backup without history
 if (process.env.OLD_APP) {
-  const O = await app(w, 8126, w.NODES[4], {}, null, join(process.env.OLD_APP, "server.py"));
+  const O = await app(w, 8126 + PS, w.NODES[4], {}, null, join(process.env.OLD_APP, "server.py"));
   O.session = (await O.call("/api/wallet/setup", { pin: "666777" })).d.session;
   r = await O.call("/api/wallet/restore", { backup: small, password: "alice backup password", pin: "666777" });
   check("an 0.8.1 app restores a 0.9 backup (without history): keys and messaging key", r.code === 200 && r.d.messaging_key_restored, r);

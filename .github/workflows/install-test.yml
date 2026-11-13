@@ -86,7 +86,7 @@ jobs:
     # The in-app update with the app started the way Termux's start script starts it: in the background
     # of a shell that then execs another program. A local HTTP server stands in for the GitHub repository.
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    timeout-minutes: 20      # the messages tests grew (requests, floods, store recovery): about 10 minutes in all
     steps:
       - uses: actions/checkout@v4
       - name: release.json matches the app files, the version and both installers
@@ -153,7 +153,9 @@ jobs:
             mkdir -p "$OLD/$(dirname "$f")" && curl -fsSL -o "$OLD/$f" "$base/$f"
           done
           NAMES_MSG_CRYPTO="$RUNNER_TEMP/names-msg-crypto.js" OLD_APP="$OLD" node tests/chat_test.mjs
-      - name: Hostile sender names (constructor, __proto__, ...) and 200 random ones never stop the chats
+      - name: Messages step 1 - padding read by the names project's own build, safety-code vectors, requests and their caps, checked contacts
+        run: NAMES_MSG_CRYPTO="$RUNNER_TEMP/names-msg-crypto.js" node tests/msg_v2_test.mjs
+      - name: Hostile sender names (constructor, __proto__, ...) and 200 random ones never stop the chats or Requests
         run: node tests/msg_hostile_test.mjs
   chat-ui:
     # The Messages screen in headless Chrome at phone width (x64 runner: Chrome has no Linux arm64 build)
