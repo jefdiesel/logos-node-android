@@ -321,8 +321,11 @@ class NodeService : Service() {
             launch = { config ->
                 // a runner left over from an earlier run of the app would hold the ports
                 runnerPids().forEach { android.os.Process.sendSignal(it, 9) }
+                // the wallet's calls on a Unix socket in a 0700 folder; the library's REST API is off
+                mf.privateApiDir()
                 ProcessBuilder(File(libDir, "libwakurunner.so").path, config.path,
-                    "--status-every", MessagingSettings.STATUS_EVERY_SECONDS.toString())
+                    "--status-every", MessagingSettings.STATUS_EVERY_SECONDS.toString(),
+                    "--api-socket", mf.apiSocket.absolutePath)
                     .directory(mf.dir)
                     .redirectErrorStream(true)
                     .apply {

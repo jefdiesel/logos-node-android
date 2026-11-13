@@ -95,6 +95,17 @@ def node_tcp_taken():
 _tcp_warned = {"at": 0.0}
 
 
+def unix_http(sock_path, method, path, data=None, headers=None, timeout=8, limit=4 * 1024 * 1024):
+    """One HTTP request over a Unix socket: (status, body bytes). Raises when there is no answer."""
+    conn = _UnixHTTPConnection(sock_path, timeout)
+    try:
+        conn.request(method, path, body=data, headers=headers or {})
+        r = conn.getresponse()
+        return r.status, r.read(limit + 1)
+    finally:
+        conn.close()
+
+
 def node(path, body=None, timeout=8):
     """Calls the node. Returns (http status, parsed JSON or text). Status 0 means no answer."""
     data = None if body is None else json.dumps(body).encode()
@@ -104,16 +115,11 @@ def node(path, body=None, timeout=8):
                 _tcp_warned["at"] = time.time()
                 event("node call refused: something answers on the node's old TCP port", guard=os.environ.get("NODE_TCP_GUARD", ""))
             return 0, None
-        conn = _UnixHTTPConnection(NODE_API[len("unix:"):], timeout)
         try:
-            conn.request("GET" if data is None else "POST", path, body=data,
-                         headers={"Content-Type": "application/json"} if data is not None else {})
-            r = conn.getresponse()
-            raw, code = r.read(), r.status
+            code, raw = unix_http(NODE_API[len("unix:"):], "GET" if data is None else "POST", path, data,
+                                  {"Content-Type": "application/json"} if data is not None else {}, timeout)
         except Exception:
             return 0, None
-        finally:
-            conn.close()
         try:
             return code, json.loads(raw)
         except Exception:
@@ -3295,10 +3301,13 @@ def native_unlock():
 # the node, and collects the sealed payloads that arrive on this device's inbox topic.
 
 def _loopback_url(raw):
-    """The node REST URL if it is plain http on this device, else "" (refused)."""
+    """The node REST URL if it is plain http on this device, or "unix:<absolute path>" (the Android app's runner
+    serves the same calls on a Unix socket, android/LOCAL-APIS.md), else "" (refused)."""
     raw = (raw or "").strip()
     if not raw:
         return ""
+    if raw.startswith("unix:/") and "\x00" not in raw and len(raw) < 110:
+        return raw
     try:
         u = urllib.parse.urlsplit(raw)
         if u.scheme == "http" and u.hostname in ("127.0.0.1", "localhost", "::1") and u.port and u.path.strip("/") == "" \
@@ -3510,6 +3519,16 @@ def waku(method, path, body=None, timeout=6):
     api = waku_api()
     if not api:
         return 0, None
+    if api.startswith("unix:"):
+        try:
+            code, data = unix_http(api[len("unix:"):], method, path, None if body is None else json.dumps(body).encode(),
+                                   {"Content-Type": "application/json", "Accept": "application/json"}, timeout)
+        except Exception:
+            return 0, None
+        try:
+            return code, json.loads(data) if data else None
+        except Exception:
+            return code, data.decode(errors="replace")[:300]
     req = urllib.request.Request(api + path, data=None if body is None else json.dumps(body).encode(), method=method,
                                  headers={"Content-Type": "application/json", "Accept": "application/json"})
     try:

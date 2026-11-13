@@ -122,7 +122,8 @@ object WalletServer {
      * Never reads the node's messages itself: only server.py does.
      */
     private fun watchMessaging(context: Context) {
-        val state = MessagingFiles(File(context.filesDir, "waku")).state
+        val mf = MessagingFiles(File(context.filesDir, "waku"))
+        val state = mf.state
         thread(name = "wallet-waku-api", isDaemon = true) {
             var last: Boolean? = null
             while (true) {
@@ -130,8 +131,8 @@ object WalletServer {
                 if (running != last) {
                     try {
                         val taken = Python.getInstance().getModule("logos_embed")
-                            .callAttr("set_waku_api", if (running) MessagingSettings.WAKU_API else null)?.toBoolean() ?: false
-                        log(context, (if (running) "messaging node on: set_waku_api(${MessagingSettings.WAKU_API})" else "messaging node off: set_waku_api(None)") +
+                            .callAttr("set_waku_api", if (running) mf.wakuApi else null)?.toBoolean() ?: false
+                        log(context, (if (running) "messaging node on: set_waku_api(${mf.wakuApi})" else "messaging node off: set_waku_api(None)") +
                             if (taken) "" else " was refused")
                     } catch (e: Exception) {
                         log(context, "couldn't tell the web app about the messaging node: $e")

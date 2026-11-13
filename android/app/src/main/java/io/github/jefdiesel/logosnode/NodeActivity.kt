@@ -57,7 +57,7 @@ class NodeActivity : Activity() {
             if (s.inPerMinute != null && s.outPerMinute != null) {
                 lines += "Now: ${MessagingPolicy.mb(s.inPerMinute)}/min in, ${MessagingPolicy.mb(s.outPerMinute)}/min out"
             }
-            lines += "API on ${MessagingSettings.WAKU_API}"
+            lines += "API on its own socket in the app's files (no TCP port)"
         }
         lines += today
         return lines.joinToString("\n")
