@@ -29,8 +29,9 @@ class MessagingTest {
         val o = JSONObject(f.config.readText())
         assertFalse(o.has("messagingOverrides"))
         assertEquals("Core", o.getString("mode")); assertEquals("logos.test", o.getString("preset"))
-        assertEquals(true, o.getBoolean("rest")); assertEquals("127.0.0.1", o.getString("rest-address"))
-        assertEquals(18645, o.getInt("rest-port")); assertEquals("none", o.getString("nat"))
+        // the library's REST API (TCP, reachable by any app) stays off: the runner's own socket instead
+        assertEquals(false, o.getBoolean("rest")); assertFalse(o.has("rest-address")); assertFalse(o.has("rest-port"))
+        assertEquals("none", o.getString("nat"))
         assertEquals(key, o.getString("nodekey"))
         assertEquals(f.data.absolutePath, o.getString("local-storage-path"))
         // the one-shard relay, at the top level (rc3 ignores these in the structured shape)
@@ -45,12 +46,20 @@ class MessagingTest {
         val good = MessagingConfig.build(key, "/data")
         assertNull(MessagingConfig.problem(good, key))
         for (bad in listOf(good.dropLast(3), "{\"mode\":\"Core\",\"preset\":\"logos.test\",\"messagingOverrides\":{\"nodekey\":\"$key\"}}",
-            good.replace("logos.test", "logos.dev"), good.replace(key, "cd".repeat(32)), good.replace("18645", "8090"),
+            good.replace("logos.test", "logos.dev"), good.replace(key, "cd".repeat(32)), JSONObject(good).apply { put("rest", true) }.toString(),
+            JSONObject(good).apply { remove("rest") }.toString(), JSONObject(good).apply { put("rest-port", 18645) }.toString(),
             JSONObject(good).apply { remove("shard") }.toString(), JSONObject(good).apply { put("filter", true) }.toString())) {
             val p = MessagingConfig.problem(bad, key)
             assertNotNull(p)
             assertFalse("problem text must not carry the key: $p", p!!.contains(key))
         }
+    }
+
+    @Test fun apiSocketFolderIsPrivate() {
+        val f = files()
+        f.privateApiDir()
+        assertEquals("rwx------", perms(f.apiDir))
+        assertTrue(f.wakuApi.startsWith("unix:/") && f.wakuApi.endsWith("/api/api.sock"))
     }
 
     @Test fun nodeKeyIsMadeOnceAndKept() {

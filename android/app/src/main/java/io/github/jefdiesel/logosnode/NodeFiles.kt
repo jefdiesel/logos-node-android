@@ -21,6 +21,15 @@ class NodeFiles(context: Context) {
     val previousState = File(home, "state.previous")    // kept by an import (see Snapshot.kt)
     val replayInfo = File(home, "replay-info.txt")      // how the last start replayed its stored blocks (ReplayInfo)
     val binaryRecord = File(home, "state-node.sha256")  // the node binary that last ran on the state (NodeBinaryRecord)
+    /** files/node/api: the node API's Unix socket folder (0700; patch 0002, NodeApi), and the socket in it. */
+    val apiDir = File(home, "api")
+    val apiSocket = File(apiDir, "api.sock")
+
+    /** Creates [apiDir] owner-only: the patched node refuses to start its API in a folder anyone else can enter. */
+    fun privateApiDir() {
+        apiDir.mkdirs()
+        android.system.Os.chmod(apiDir.path, 448)                  // 0700
+    }
 
     /**
      * files/node/logos-blockchain-node, a link to the bundled binary. Started through it, the node's
@@ -86,6 +95,11 @@ class NodeFiles(context: Context) {
                 "api:",
                 "  backend:",
                 "    listen_address: 127.0.0.1:$API_PORT",
+                // with no origin listed the node answers CORS with "*", so any website open in the phone's
+                // browser could send JSON to the wallet endpoints; this lets only the wallet's page origin in, as
+                // install.sh's --http-cors-origin does. Other apps are not browsers: see android/LOCAL-APIS.md.
+                "    cors_origins:",
+                "    - http://127.0.0.1:${WalletServer.PORT}",
                 "tracing:",
                 "  logger:",
                 "    file:",

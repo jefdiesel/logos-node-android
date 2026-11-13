@@ -8,7 +8,7 @@ Python standard library only. Wallet calls need a PIN that is set on first use.
 import base64, calendar, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.9.15"
+APP_VERSION = "0.9.18"
 # APP_EMBEDDED=android: this app runs inside the Android app (embedded Python, page in a WebView).
 # Then it never updates or restarts itself (the Android app brings new versions), and fingerprint
 # unlock goes through the phone's own fingerprint check instead of a passkey. Unset: nothing changes.
@@ -27,6 +27,16 @@ DATA_DIR = os.environ.get("APP_DATA", APP_DIR)
 PORT = int(os.environ.get("APP_PORT", "8090"))
 HOSTS = {"127.0.0.1:%d" % PORT, "localhost:%d" % PORT}
 ORIGINS = {"http://" + h for h in HOSTS}
+# APP_KEY: a secret the Android app makes at every start and gives only to its own WebView, as the cookie
+# APP_KEY_COOKIE (android/LOCAL-APIS.md). Any app on a phone can open a TCP connection to 127.0.0.1 and send
+# any Host and Origin, so with APP_KEY set every request needs the cookie, except the page's public files and
+# the names forwarder (its own secret path). Unset (Linux, Termux): nothing changes.
+APP_KEY = os.environ.pop("APP_KEY", "")     # taken out, so the child processes this app starts don't inherit it
+APP_KEY_COOKIE = "app_key"
+# Set while this process holds PORT and serves it. The Android app asks for it in-process before it loads the
+# page and hands the WebView the cookie: an answer on the port alone could come from another app that took the
+# port first (android/LOCAL-APIS.md).
+SERVING = threading.Event()
 PIN_FILE = os.path.join(DATA_DIR, "wallet-pin.json")
 PIN_RE = re.compile(r"^\d{6,12}$")
 KEY_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -48,9 +58,72 @@ keys_cache = {"keys": [], "at": 0.0}
 
 # ---- node API -------------------------------------------------------------------------------
 
+# NODE_API "unix:<path>": the node serves its API on that Unix socket and on no TCP port (the Android app with
+# node patch 0002, android/LOCAL-APIS.md). Then NODE_TCP_GUARD ("127.0.0.1:18180") names the TCP address where
+# nothing may answer: if something does, nothing is sent to the node (another app, or a node that opened TCP).
+import errno, http.client, socket  # noqa: E402
+
+
+class _UnixHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, path, timeout):
+        super().__init__("localhost", timeout=timeout)
+        self.unix_path = path
+
+    def connect(self):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(self.timeout)
+        try:
+            s.connect(self.unix_path)
+        except Exception:
+            s.close()
+            raise
+        self.sock = s
+
+
+def node_tcp_taken():
+    """With the node on its socket: whether something answers on NODE_TCP_GUARD, where nothing should."""
+    host, _, port = os.environ.get("NODE_TCP_GUARD", "").rpartition(":")
+    if not host or not port.isdigit():
+        return False
+    try:
+        socket.create_connection((host, int(port)), timeout=1).close()
+        return True
+    except OSError:
+        return False
+
+
+_tcp_warned = {"at": 0.0}
+
+
+def unix_http(sock_path, method, path, data=None, headers=None, timeout=8, limit=4 * 1024 * 1024):
+    """One HTTP request over a Unix socket: (status, body bytes). Raises when there is no answer."""
+    conn = _UnixHTTPConnection(sock_path, timeout)
+    try:
+        conn.request(method, path, body=data, headers=headers or {})
+        r = conn.getresponse()
+        return r.status, r.read(limit + 1)
+    finally:
+        conn.close()
+
+
 def node(path, body=None, timeout=8):
     """Calls the node. Returns (http status, parsed JSON or text). Status 0 means no answer."""
     data = None if body is None else json.dumps(body).encode()
+    if NODE_API.startswith("unix:"):
+        if data is not None and node_tcp_taken():
+            if time.time() - _tcp_warned["at"] > 60:
+                _tcp_warned["at"] = time.time()
+                event("node call refused: something answers on the node's old TCP port", guard=os.environ.get("NODE_TCP_GUARD", ""))
+            return 0, None
+        try:
+            code, raw = unix_http(NODE_API[len("unix:"):], "GET" if data is None else "POST", path, data,
+                                  {"Content-Type": "application/json"} if data is not None else {}, timeout)
+        except Exception:
+            return 0, None
+        try:
+            return code, json.loads(raw)
+        except Exception:
+            return code, raw.decode(errors="replace")
     req = urllib.request.Request(NODE_API + path, data=data, method="GET" if body is None else "POST")
     if data is not None:
         req.add_header("Content-Type", "application/json")
@@ -3450,10 +3523,13 @@ def native_unlock():
 # the node, and collects the sealed payloads that arrive on this device's inbox topic.
 
 def _loopback_url(raw):
-    """The node REST URL if it is plain http on this device, else "" (refused)."""
+    """The node REST URL if it is plain http on this device, or "unix:<absolute path>" (the Android app's runner
+    serves the same calls on a Unix socket, android/LOCAL-APIS.md), else "" (refused)."""
     raw = (raw or "").strip()
     if not raw:
         return ""
+    if raw.startswith("unix:/") and "\x00" not in raw and len(raw) < 110:
+        return raw
     try:
         u = urllib.parse.urlsplit(raw)
         if u.scheme == "http" and u.hostname in ("127.0.0.1", "localhost", "::1") and u.port and u.path.strip("/") == "" \
@@ -3463,7 +3539,7 @@ def _loopback_url(raw):
         pass
     if raw not in _waku["refused"]:
         _waku["refused"].add(raw)
-        sys.stderr.write("WAKU_API refused: it must be http://127.0.0.1:<port>, a node on this device\n")
+        sys.stderr.write("WAKU_API refused: it must be http://127.0.0.1:<port> or unix:<absolute path>, a node on this device\n")
     return ""
 
 
@@ -3665,6 +3741,16 @@ def waku(method, path, body=None, timeout=6):
     api = waku_api()
     if not api:
         return 0, None
+    if api.startswith("unix:"):
+        try:
+            code, data = unix_http(api[len("unix:"):], method, path, None if body is None else json.dumps(body).encode(),
+                                   {"Content-Type": "application/json", "Accept": "application/json"}, timeout)
+        except Exception:
+            return 0, None
+        try:
+            return code, json.loads(data) if data else None
+        except Exception:
+            return code, data.decode(errors="replace")[:300]
     req = urllib.request.Request(api + path, data=None if body is None else json.dumps(body).encode(), method=method,
                                  headers={"Content-Type": "application/json", "Accept": "application/json"})
     try:
@@ -4657,6 +4743,8 @@ def passkey_unlock(body):
 
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "LogosNodeApp"
+    # an idle or slow connection is closed after this many seconds, so nobody can hold the server's threads
+    timeout = float(os.environ.get("APP_IDLE_TIMEOUT", "30"))
 
     def reply(self, code, obj=None, ctype="application/json", raw=None):
         data = raw if raw is not None else json.dumps(obj, separators=(",", ":")).encode()
@@ -4691,6 +4779,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def authed(self):
         return session_ok(self.headers.get("X-Session", ""))
 
+    def key_ok(self):
+        """With APP_KEY set (the Android app): whether the request carries it as the app_key cookie, which only
+        the app's own WebView holds. Without APP_KEY: always (Linux, Termux)."""
+        if not APP_KEY:
+            return True
+        got = ""
+        for part in self.headers.get("Cookie", "").split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == APP_KEY_COOKIE:
+                got = value
+        return hmac.compare_digest(got.encode(), APP_KEY.encode())
+
+    @staticmethod
+    def public_file(path):
+        """The page's own files, the same for everyone (from this repository): served without the app key, so a
+        resource the WebView fetches without cookies still loads. Everything else needs it."""
+        return (path in ("/", "/manifest.webmanifest", "/lns/lns.js", QR_FILE,
+                         "/lambda-192.png", "/lambda-512.png", "/lambda-maskable-512.png")
+                or bool(MESSAGES_FILE_RE.match(path)) or bool(NAMES_FILE_RE.match(path)))
+
+    KEY_REFUSED = {"error": "this app only answers its own page", "app_key": False}
+
     # POSTs that are the user doing something; they count as activity for auto-lock. Everything the
     # page does on a timer (status, accounts, history, receipts, transfer status) does not.
     USER_ACTIONS = {"/api/wallet/activity", "/api/wallet/send", "/api/wallet/backup", "/api/wallet/restore",
@@ -4713,6 +4823,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # endpoints answer whatever Host name a request carries (they hold nothing private). The wallet
         # answers only requests addressed to 127.0.0.1 or localhost, so a web page that points another
         # name at this address (DNS rebinding) can't reach it.
+        if not self.public_file(path) and not self.key_ok():
+            return self.reply(403, self.KEY_REFUSED)
         if (path.startswith("/api/wallet") or path.startswith("/api/messages")) and not self.host_ok():
             return self.reply(403, {"error": "The wallet only opens on the device that runs the node.", "local_only": True})
         if path == "/":
@@ -4835,6 +4947,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path.startswith("/lez-rpc/"):
             return self.lez_rpc()
+        if not self.key_ok():
+            return self.reply(403, self.KEY_REFUSED)
         if not self.host_ok() or self.headers.get("Origin", "") not in ORIGINS:
             return self.reply(403, {"error": "this app only accepts requests from its own page"})
         if not self.headers.get("Content-Type", "").startswith("application/json"):
@@ -5104,7 +5218,24 @@ def main():
     if messaging_on():
         messaging_start()
     threading.Thread(target=session_watch, daemon=True).start()
-    http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    while True:
+        try:
+            httpd = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+            break
+        except OSError as e:
+            # inside the Android app another app may hold the port: wait for it to be free (the app's cover
+            # says so) instead of stopping; elsewhere a service manager restarts the app
+            if not EMBEDDED or e.errno != errno.EADDRINUSE:
+                raise
+            if not getattr(main, "port_taken", False):
+                main.port_taken = True
+                event("port taken", port=PORT)
+            time.sleep(5)
+    SERVING.set()
+    try:
+        httpd.serve_forever()
+    finally:
+        SERVING.clear()
 
 
 if __name__ == "__main__":

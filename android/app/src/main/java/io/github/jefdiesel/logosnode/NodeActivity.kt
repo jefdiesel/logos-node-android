@@ -13,8 +13,6 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.concurrent.Executors
 
 /** The Node screen: Start and Stop, the node's status from its own API, and the end of its log. */
@@ -59,7 +57,7 @@ class NodeActivity : Activity() {
             if (s.inPerMinute != null && s.outPerMinute != null) {
                 lines += "Now: ${MessagingPolicy.mb(s.inPerMinute)}/min in, ${MessagingPolicy.mb(s.outPerMinute)}/min out"
             }
-            lines += "API on ${MessagingSettings.WAKU_API}"
+            lines += "API on its own socket in the app's files (no TCP port)"
         }
         lines += today
         return lines.joinToString("\n")
@@ -195,8 +193,9 @@ class NodeActivity : Activity() {
             text(
                 11f,
                 "Node binary: ${BuildConfig.NODE_VERSION} (${BuildConfig.NODE_VARIANT}), sha256 ${BuildConfig.NODE_SHA256}\n" +
-                    "App ${BuildConfig.VERSION_NAME}, wallet ${BuildConfig.WEB_APP_VERSION}. Node API on " +
-                    "127.0.0.1:${NodeFiles.API_PORT}, wallet on 127.0.0.1:${WalletServer.PORT}."
+                    "App ${BuildConfig.VERSION_NAME}, wallet ${BuildConfig.WEB_APP_VERSION}. Node API " +
+                    (if (NodeApi.onSocket) "on its own socket in the app's files (no TCP port)" else "on 127.0.0.1:${NodeFiles.API_PORT}") +
+                    ", wallet on 127.0.0.1:${WalletServer.PORT}."
             )
         )
         return ScrollView(this).apply { addView(column, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)) }
@@ -316,14 +315,10 @@ class NodeActivity : Activity() {
         "Node API not answering yet (${e.javaClass.simpleName}: ${e.message})"
     }
 
+    /** GET on the node's API (its Unix socket with patch 0002, NodeApi); throws when it doesn't answer 200. */
     private fun get(path: String): String {
-        val c = URL("http://127.0.0.1:${NodeFiles.API_PORT}$path").openConnection() as HttpURLConnection
-        c.connectTimeout = 2000
-        c.readTimeout = 3000
-        return try {
-            c.inputStream.bufferedReader().readText()
-        } finally {
-            c.disconnect()
-        }
+        val (code, body) = NodeApi.get(files, path, 3000) ?: throw java.io.IOException("no answer")
+        if (code != 200) throw java.io.IOException("HTTP $code")
+        return body
     }
 }

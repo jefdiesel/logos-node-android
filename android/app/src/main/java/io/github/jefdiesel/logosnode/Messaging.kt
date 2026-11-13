@@ -20,9 +20,12 @@ object MessagingSettings {
     const val PRESET = "logos.test"
     const val TCP_PORT = 60000
     const val DISCV5_UDP_PORT = 9000
-    const val REST_PORT = 18645
-    const val REST_ADDRESS = "127.0.0.1"
-    const val WAKU_API = "http://$REST_ADDRESS:$REST_PORT"
+    /**
+     * The library's REST API stays off ("rest": false): it is TCP only, and every app on a phone can reach
+     * 127.0.0.1. The runner serves the wallet's calls on a Unix socket in files/waku/api instead
+     * (--api-socket, messaging/runner/api_socket.h; android/LOCAL-APIS.md).
+     */
+    const val REST = false
     /** Seconds between the runner's status lines (traffic metrics come with every second one). */
     const val STATUS_EVERY_SECONDS = 15
     /** Stops the node for the rest of the day once its traffic (in + out) reaches this. */
@@ -46,11 +49,28 @@ class MessagingFiles(val dir: File) {
     val data = File(dir, "data")
     val output = File(dir, "output.log")
     val usage = File(dir, "usage.txt")
-    /** "running" while the runner runs (its REST API is up then), else "stopped: <reason>"; read by the wallet process. */
+    /** "running" while the runner runs (its API socket is up then), else "stopped: <reason>"; read by the wallet process. */
     val state = File(dir, "state.txt")
+    /** files/waku/api (0700) and the runner's API socket in it. */
+    val apiDir = File(dir, "api")
+    val apiSocket = File(apiDir, "api.sock")
+    /** What server.py is told (set_waku_api) while the runner runs. */
+    val wakuApi: String get() = "unix:${apiSocket.absolutePath}"
 
     fun mkdirs() {
         dir.mkdirs(); data.mkdirs()
+    }
+
+    /** Creates [apiDir] owner-only: the runner refuses to open its socket in a folder anyone else can enter. */
+    fun privateApiDir() {
+        apiDir.mkdirs()
+        try {
+            Files.setPosixFilePermissions(apiDir.toPath(), setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE))
+        } catch (_: Exception) {
+            apiDir.setReadable(false, false); apiDir.setReadable(true, true)
+            apiDir.setWritable(false, false); apiDir.setWritable(true, true)
+            apiDir.setExecutable(false, false); apiDir.setExecutable(true, true)
+        }
     }
 
     /** The node's private key: 32 random bytes, hex, made once and kept. */
@@ -102,9 +122,7 @@ object MessagingConfig {
         o.put("nat", "none")                                        // never ask the router to open ports
         o.put("tcp-port", MessagingSettings.TCP_PORT)
         o.put("discv5-udp-port", MessagingSettings.DISCV5_UDP_PORT)
-        o.put("rest", true)
-        o.put("rest-address", MessagingSettings.REST_ADDRESS)
-        o.put("rest-port", MessagingSettings.REST_PORT)
+        o.put("rest", MessagingSettings.REST)
         o.put("local-storage-path", dataPath)
         o.put("nodekey", key)
         for ((k, v) in MessagingSettings.EXTRA) o.put(k, if (v is List<*>) JSONArray(v) else v)
@@ -117,7 +135,7 @@ object MessagingConfig {
         if (o.has("messagingOverrides")) return "the messaging config isn't in the flat shape"
         if (o.optString("mode") != MessagingSettings.MODE || o.optString("preset") != MessagingSettings.PRESET) return "the messaging config has the wrong mode or preset"
         if (o.optString("nodekey") != key || !MessagingFiles.KEY.matches(key)) return "the messaging config has no valid node key"
-        if (o.optString("rest-address") != MessagingSettings.REST_ADDRESS || o.optInt("rest-port") != MessagingSettings.REST_PORT) return "the messaging config's REST address is wrong"
+        if (!o.has("rest") || o.optBoolean("rest", true) != MessagingSettings.REST || o.has("rest-address") || o.has("rest-port")) return "the messaging config must keep the REST API off"
         if (o.optString("local-storage-path").isEmpty()) return "the messaging config has no storage path"
         for ((k, v) in MessagingSettings.EXTRA) {
             val want = if (v is List<*>) JSONArray(v).toString() else v.toString()

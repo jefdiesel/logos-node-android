@@ -113,14 +113,8 @@ class NodeService : Service() {
         return WalletBusy.reason(readOrNull(File(w, "wallet-bridge.json")), readOrNull(File(w, "wallet-history.json")), namesRunning(), now)
     }
 
-    /** GET on the node's API, parsed; null when it doesn't answer. */
-    private fun nodeJson(path: String): org.json.JSONObject? = try {
-        val c = java.net.URL("http://127.0.0.1:${NodeFiles.API_PORT}$path").openConnection() as java.net.HttpURLConnection
-        c.connectTimeout = 3000; c.readTimeout = 5000
-        try { if (c.responseCode == 200) org.json.JSONObject(c.inputStream.bufferedReader().readText()) else null } finally { c.disconnect() }
-    } catch (_: Exception) {
-        null
-    }
+    /** GET on the node's API (its Unix socket with patch 0002, NodeApi), parsed; null when it doesn't answer. */
+    private fun nodeJson(path: String): org.json.JSONObject? = NodeApi.json(files, path)
 
     private fun chainInfo(): org.json.JSONObject? = nodeJson("/cryptarchia/info")?.let { it.optJSONObject("cryptarchia_info") ?: it }
 
@@ -327,8 +321,11 @@ class NodeService : Service() {
             launch = { config ->
                 // a runner left over from an earlier run of the app would hold the ports
                 runnerPids().forEach { android.os.Process.sendSignal(it, 9) }
+                // the wallet's calls on a Unix socket in a 0700 folder; the library's REST API is off
+                mf.privateApiDir()
                 ProcessBuilder(File(libDir, "libwakurunner.so").path, config.path,
-                    "--status-every", MessagingSettings.STATUS_EVERY_SECONDS.toString())
+                    "--status-every", MessagingSettings.STATUS_EVERY_SECONDS.toString(),
+                    "--api-socket", mf.apiSocket.absolutePath)
                     .directory(mf.dir)
                     .redirectErrorStream(true)
                     .apply {
@@ -783,8 +780,14 @@ class NodeService : Service() {
                 wakeLock?.let { if (!it.isHeld) it.acquire() }
                 val started = System.currentTimeMillis()
                 val exit = try {
-                    prepare()
-                    runNode()
+                    prepare()                                // also stops a node left over from an earlier run
+                    // the node's API must not be on a TCP port other apps can reach (android/LOCAL-APIS.md)
+                    if (NodeApi.onSocket && NodeApi.tcpAnswers()) {
+                        blockApi("before the start")
+                        null
+                    } else {
+                        runNode()
+                    }
                 } catch (e: InterruptedException) {
                     break
                 } catch (e: Exception) {
@@ -909,8 +912,17 @@ class NodeService : Service() {
                 if (hold || stopRequested) return -1                    // an import took the state meanwhile
                 processBuilder(listOf(launcher.path, files.config.name))
                     .apply { if (forceFull) environment()["LOGOS_REPLAY_VERIFY"] = "full" }
+                    .apply {
+                        // patch 0002: the API on a Unix socket in a 0700 folder, no TCP port; the node stops
+                        // rather than open TCP if anything about the socket is wrong
+                        if (NodeApi.onSocket) {
+                            files.privateApiDir()
+                            environment()["LOGOS_API_UNIX_SOCKET"] = files.apiSocket.path
+                        }
+                    }
                     .start().also { process = it }
             }
+            if (NodeApi.onSocket) watchTcp(p)
             runningProfile = startingProfile
             lastRunProfile = startingProfile
             nodeStartedAt = System.currentTimeMillis()
@@ -938,6 +950,32 @@ class NodeService : Service() {
     }
 
     @Volatile private var lastRunProfile: NodeProfile? = null
+
+    /**
+     * While [p] runs: 10 s after the start and then every 15 s, check that nothing answers on 127.0.0.1:18180.
+     * With the API on its socket nothing should; if something does, the node is stopped and stays off.
+     */
+    private fun watchTcp(p: Process) = thread(name = "node-tcp-guard", isDaemon = true) {
+        try {
+            Thread.sleep(10_000)
+            while (p.isAlive && !stopRequested) {
+                if (NodeApi.tcpAnswers()) {
+                    blockApi("while it ran")
+                    return@thread
+                }
+                Thread.sleep(15_000)
+            }
+        } catch (_: InterruptedException) {
+        }
+    }
+
+    /** Something answers on 127.0.0.1:18180 in socket mode: stop the node, say so in one line, don't restart it. */
+    private fun blockApi(moment: String) {
+        log.app("something answers on 127.0.0.1:${NodeFiles.API_PORT} ($moment); the node is stopped and not restarted")
+        setStatus(NodeApi.TCP_BLOCK_LINE)
+        stopRequested = true
+        killNode()
+    }
 
     private fun killNode() {
         val p = process ?: return

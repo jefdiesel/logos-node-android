@@ -25,13 +25,22 @@ jobs:
           prop() { sed -n "s/^$1=//p" android/node.properties | tr -d '[:space:]'; }
           VARIANT=$(prop variant); VERSION=$(prop version); RUN=$(prop run); SHA=$(prop "$VARIANT.sha256")
           case "$VARIANT" in patched) NAME="logos-blockchain-node-android-arm64-$VERSION-patched" ;;
+                             api) NAME="logos-blockchain-node-android-arm64-$VERSION-api" ;;
                              unpatched) NAME="logos-blockchain-node-android-arm64-$VERSION" ;;
-                             *) echo "::error::variant must be patched or unpatched, not '$VARIANT'"; exit 1 ;; esac
+                             *) echo "::error::variant must be api, patched or unpatched, not '$VARIANT'"; exit 1 ;; esac
           [ -n "$SHA" ] && [ -n "$RUN" ] || { echo "::error::android/node.properties is incomplete"; exit 1; }
           gh run download "$RUN" -R "$GITHUB_REPOSITORY" -n "$NAME" -D dl
           [ "$(sha256sum dl/logos-blockchain-node | cut -d' ' -f1)" = "$SHA" ] \
             || { echo "::error::$NAME from run $RUN doesn't match the pinned sha256"; exit 1; }
           [ -f dl/PATCHES.txt ] && { echo "== PATCHES.txt"; cat dl/PATCHES.txt; }
+          if [ "$VARIANT" = api ]; then
+            # patch 0002 alone, on the pinned source commit (android/LOCAL-APIS.md, "The node the app ships")
+            COMMIT=$(prop commit); echo "== SOURCE.txt"; cat dl/SOURCE.txt
+            grep -q " commit $COMMIT, variant api," dl/SOURCE.txt && grep -q "^logos-blockchain $VERSION (commit $COMMIT) " dl/PATCHES.txt \
+              || { echo "::error::the api node isn't from the pinned commit $COMMIT"; exit 1; }
+            [ "$(grep -cE '^[0-9a-f]{64}  [0-9]{4}-' dl/PATCHES.txt)" = 1 ] && grep -qE '^[0-9a-f]{64}  0002-api-unix-socket\.patch$' dl/PATCHES.txt \
+              || { echo "::error::the api node must carry patch 0002 and nothing else"; exit 1; }
+          fi
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
           cp dl/logos-blockchain-node android/app/src/main/jniLibs/arm64-v8a/liblogosnode.so
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"

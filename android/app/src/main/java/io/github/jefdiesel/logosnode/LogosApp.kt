@@ -34,6 +34,19 @@ object WalletServer {
     private const val TAG = "LogosWallet"
     @Volatile private var started = false
 
+    /**
+     * The app key (android/LOCAL-APIS.md): 32 random bytes made once per wallet process, given to server.py
+     * (APP_KEY) and to this app's own WebView as the cookie [APP_KEY_COOKIE], never written to a file or a log.
+     * Any app on the phone can connect to 127.0.0.1:[PORT]; without this cookie server.py answers it only
+     * with the page's public files.
+     */
+    val appKey: String = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
+        .joinToString("") { "%02x".format(it) }
+    const val APP_KEY_COOKIE = "app_key"
+
+    /** The cookie as the WebView is given it: this host only, all paths, not readable by the page's scripts. */
+    fun appKeyCookie() = "$APP_KEY_COOKIE=$appKey; Path=/; HttpOnly; SameSite=Strict"
+
     /** What went wrong starting the wallet in this process, for the wallet screen; null if nothing. */
     @Volatile var problem: String? = null
 
@@ -63,8 +76,12 @@ object WalletServer {
                 val env = JSONObject(
                     mapOf(
                         "APP_PORT" to PORT.toString(),
+                        // every request but the page's public files needs it (the WebView's cookie)
+                        "APP_KEY" to appKey,
                         "APP_DATA" to dataDir(app).path,
-                        "NODE_API" to "http://127.0.0.1:${NodeFiles.API_PORT}",
+                        // with node patch 0002 the API is a Unix socket and must not answer on TCP (NodeApi)
+                        "NODE_API" to (if (NodeApi.onSocket) "unix:${files.apiSocket.path}" else "http://127.0.0.1:${NodeFiles.API_PORT}"),
+                        "NODE_TCP_GUARD" to (if (NodeApi.onSocket) "127.0.0.1:${NodeFiles.API_PORT}" else ""),
                         "NODE_BIN" to files.launcher.path,
                         "NODE_CFG" to files.config.path,
                         // the node's service restarts the node when it exits, so stopping it is a restart
@@ -83,10 +100,11 @@ object WalletServer {
                 fail(app, "the wallet did not start: $e", e)
                 return@thread
             }
+            watchPortState(app)
             // say in the log whether it came up, and if not, why
             val until = System.currentTimeMillis() + 60_000
-            while (!listening() && System.currentTimeMillis() < until) Thread.sleep(250)
-            if (listening()) {
+            while (!ours() && System.currentTimeMillis() < until) Thread.sleep(250)
+            if (ours()) {
                 log(app, "the wallet answers on $URL, ${System.currentTimeMillis() - t0} ms after starting")
             } else {
                 val crash = crashFile(app).takeIf { it.exists() }?.readText()?.trim()?.lines()?.lastOrNull()
@@ -104,7 +122,8 @@ object WalletServer {
      * Never reads the node's messages itself: only server.py does.
      */
     private fun watchMessaging(context: Context) {
-        val state = MessagingFiles(File(context.filesDir, "waku")).state
+        val mf = MessagingFiles(File(context.filesDir, "waku"))
+        val state = mf.state
         thread(name = "wallet-waku-api", isDaemon = true) {
             var last: Boolean? = null
             while (true) {
@@ -112,8 +131,8 @@ object WalletServer {
                 if (running != last) {
                     try {
                         val taken = Python.getInstance().getModule("logos_embed")
-                            .callAttr("set_waku_api", if (running) MessagingSettings.WAKU_API else null)?.toBoolean() ?: false
-                        log(context, (if (running) "messaging node on: set_waku_api(${MessagingSettings.WAKU_API})" else "messaging node off: set_waku_api(None)") +
+                            .callAttr("set_waku_api", if (running) mf.wakuApi else null)?.toBoolean() ?: false
+                        log(context, (if (running) "messaging node on: set_waku_api(${mf.wakuApi})" else "messaging node off: set_waku_api(None)") +
                             if (taken) "" else " was refused")
                     } catch (e: Exception) {
                         log(context, "couldn't tell the web app about the messaging node: $e")
@@ -144,9 +163,42 @@ object WalletServer {
         }
     }
 
-    /** For the Node screen (another process): the wallet's state, from its port and its log. */
+    /** files/wallet/server-state.txt: "<pid of the wallet process> ours|taken|down", for the Node screen. */
+    fun stateFile(context: Context) = File(dataDir(context), "server-state.txt")
+
+    /** In the wallet process: every 3 s, whether the port is its own server's, another program's, or free. */
+    private fun watchPortState(context: Context) = thread(name = "wallet-port-state", isDaemon = true) {
+        var last = ""
+        while (true) {
+            val state = when {
+                ours() -> "ours"
+                listening() -> "taken"
+                else -> "down"
+            }
+            if (state != last) {
+                try { stateFile(context).writeText("${android.os.Process.myPid()} $state\n") } catch (_: Exception) {}
+                if (state == "taken") log(context, "another program answers on 127.0.0.1:$PORT; the wallet waits for the port")
+                last = state
+            }
+            Thread.sleep(3000)
+        }
+    }
+
+    /** What the wallet process last wrote to [stateFile], if that process still runs. */
+    private fun recordedState(context: Context): String? = try {
+        val (pid, state) = stateFile(context).readText().trim().split(' ', limit = 2)
+        val alive = File("/proc/$pid/cmdline").readText().substringBefore('\u0000').endsWith(PROCESS_SUFFIX)
+        if (alive) state else null
+    } catch (_: Exception) {
+        null
+    }
+
+    /** For the Node screen (another process): the wallet's state, from its port, its process and its log. */
     fun describe(context: Context): String {
-        if (listening()) return "Wallet: answering on 127.0.0.1:$PORT"
+        if (listening()) {
+            return if (recordedState(context) == "ours") "Wallet: answering on 127.0.0.1:$PORT"
+            else "Wallet: another program answers on 127.0.0.1:$PORT, so the wallet can't open there until that port is free"
+        }
         val last = try {
             logFile(context).readLines().lastOrNull { it.isNotBlank() && !it.startsWith(" ") && !it.startsWith("\t") }
         } catch (_: Exception) {
@@ -158,6 +210,23 @@ object WalletServer {
             "Wallet: not running (it starts when the app's wallet screen opens)"
         }
     }
+
+    /**
+     * Whether the wallet on [PORT] is this process's own server.py: it says so in-process (logos_embed.serving)
+     * and the port answers. Another app could take the port first and answer on it; the page, the app key
+     * cookie and the native bridge must never go to it (android/LOCAL-APIS.md).
+     */
+    fun ours(): Boolean = serving() && listening()
+
+    /** In the wallet process: its own server.py holds the port and serves it (logos_embed.serving). */
+    fun serving(): Boolean = try {
+        com.chaquo.python.Python.getInstance().getModule("logos_embed").callAttr("serving")?.toBoolean() ?: false
+    } catch (_: Exception) {
+        false
+    }
+
+    /** In the wallet process: something answers on the port, but not this process's server.py. */
+    fun portTaken(): Boolean = !serving() && listening()
 
     @Volatile var lastConnectError: String? = null
 

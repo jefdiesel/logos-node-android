@@ -14,6 +14,7 @@ import android.os.Looper
 import android.util.Base64
 import android.util.Log
 import android.webkit.ConsoleMessage
+import android.webkit.CookieManager
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -106,7 +107,9 @@ class WalletActivity : Activity() {
 
     /** native_fingerprint from the wallet's GET /api/wallet; null if it doesn't answer. */
     private fun walletSetting(): Boolean? = try {
+        if (!WalletServer.ours()) throw IllegalStateException("not this process's wallet")    // never send the key elsewhere
         val c = java.net.URL(WalletServer.URL + "api/wallet").openConnection() as java.net.HttpURLConnection
+        c.setRequestProperty("Cookie", "${WalletServer.APP_KEY_COOKIE}=${WalletServer.appKey}")
         c.connectTimeout = 2000
         c.readTimeout = 5000
         try {
@@ -240,24 +243,38 @@ class WalletActivity : Activity() {
         if (waiting) return
         waiting = true
         thread(name = "wallet-wait") {
-            var shown = false
+            var shown: String? = null
             val started = System.currentTimeMillis()
-            while (!WalletServer.listening()) {
+            while (!WalletServer.ours()) {             // this process's own server, not just anything on the port
                 val problem = WalletServer.problem
-                if (!shown && (problem != null || System.currentTimeMillis() - started > 20_000)) {
-                    shown = true
-                    val why = problem ?: "It hasn't answered yet (${WalletServer.lastConnectError})."
-                    main.post {
-                        showCover("The wallet didn't start. $why\n\nThe node is not affected. This screen keeps trying; " +
-                            "the full error is in the app's files/wallet/wallet-app.log.")
-                    }
+                val text = when {
+                    // another app holds the wallet's port: server.py waits for it (android/LOCAL-APIS.md)
+                    WalletServer.portTaken() ->
+                        "Another app is using the wallet's port (127.0.0.1:${WalletServer.PORT}), so the wallet can't open.\n\n" +
+                            "The node is not affected. The wallet opens by itself as soon as that port is free " +
+                            "(closing or uninstalling the other app frees it)."
+                    problem != null || System.currentTimeMillis() - started > 20_000 ->
+                        "The wallet didn't start. ${problem ?: "It hasn't answered yet (${WalletServer.lastConnectError ?: "no answer"})."}\n\n" +
+                            "The node is not affected. This screen keeps trying; the full error is in the app's files/wallet/wallet-app.log."
+                    else -> null
+                }
+                if (text != null && text != shown) {
+                    shown = text
+                    main.post { showCover(text) }
                 }
                 Thread.sleep(500)
             }
             Log.i(TAG, "wallet server answering after ${System.currentTimeMillis() - started} ms")
             main.post {
-                waiting = false
-                web.loadUrl(WalletServer.URL)
+                // the app key first (android/LOCAL-APIS.md): server.py answers only requests carrying it,
+                // and the WebView sends it with every request of the page from then on
+                val cookies = CookieManager.getInstance()
+                cookies.setAcceptCookie(true)
+                cookies.setCookie(WalletServer.URL, WalletServer.appKeyCookie()) { ok ->
+                    if (!ok) Log.w(TAG, "the WebView did not take the app key cookie")
+                    waiting = false
+                    web.loadUrl(WalletServer.URL)
+                }
             }
         }
     }
@@ -291,9 +308,17 @@ class WalletActivity : Activity() {
         debugFromIntent(intent)
     }
 
-    /** Debug builds, from adb: --ez probe true (structure check), --ez crashrenderer true (renderer-loss test). */
+    /**
+     * Debug builds, from adb only: `am start -n io.github.jefdiesel.logosnode/.WalletDebug --ez probe true` (structure
+     * check) or `--ez crashrenderer true` (renderer-loss test). WalletDebug is an alias of this screen that only
+     * holders of android.permission.DUMP (the adb shell) can start, so other apps can't use these: an intent to
+     * the launcher entry (WalletActivity) is ignored here.
+     */
+    private fun debugAllowed(intent: Intent?) =
+        BuildConfig.DEBUG && intent?.component?.className == "$packageName.WalletDebug"
+
     private fun debugFromIntent(intent: Intent?) {
-        if (!BuildConfig.DEBUG || intent == null) return
+        if (!debugAllowed(intent) || intent == null) return
         if (intent.getBooleanExtra("crashrenderer", false)) {
             Log.w(TAG, "debug: crashing the page's renderer on purpose")
             main.postDelayed({ web.loadUrl("chrome://crash") }, 2000)
@@ -346,7 +371,7 @@ class WalletActivity : Activity() {
             val shown = cover.visibility != View.VISIBLE && FingerprintUnlock.isOwnPage(web.url)
             if (shown) {
                 io.execute {
-                    if (!WalletServer.listening()) main.post { reloadSoon("The wallet stopped answering.") }
+                    if (!WalletServer.ours()) main.post { reloadSoon("The wallet stopped answering.") }
                 }
             }
             main.postDelayed(this, 10_000)
@@ -410,7 +435,7 @@ class WalletActivity : Activity() {
                 nodeButton.visibility = if (WalletPage.hasNodeRow(check.version)) View.GONE else View.VISIBLE
                 Log.i(TAG, "page shown: web app ${check.version}, ${check.children} elements; " +
                     "Node button ${if (nodeButton.visibility == View.VISIBLE) "shown (no Node row in this web app)" else "hidden (the page's Settings has it)"}")
-                if (BuildConfig.DEBUG && intent.getBooleanExtra("probe", false)) {
+                if (debugAllowed(intent) && intent.getBooleanExtra("probe", false)) {
                     // debug builds started with --ez probe true: the page's structure, in logcat. Never the
                     // page's text (it may show balances, chats or keys): only yes/no facts and element states.
                     main.postDelayed({ view.evaluateJavascript(PROBE) { Log.i(TAG, "probe: $it") } }, 3000)

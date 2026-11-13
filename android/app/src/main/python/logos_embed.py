@@ -66,6 +66,15 @@ def set_waku_api(url):
     return True
 
 
+def serving():
+    """True only while this process's server.py holds its port and serves it (web app 0.9.16), so the app never
+    takes another program answering on that port for its own wallet. Older web apps: whether it was started."""
+    if _server is None:
+        return False
+    flag = getattr(_server, "SERVING", None)
+    return flag.is_set() if flag is not None else True
+
+
 def native_unlock():
     """server.native_unlock(): a session token after the phone's fingerprint check, or None."""
     return _server.native_unlock() if _server is not None else None

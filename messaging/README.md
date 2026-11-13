@@ -31,7 +31,8 @@ run.
 
 - `include/`: the C headers (`liblogosdelivery.h` and `generated/`), for calling the library
   directly, for example through JNI, instead of through the runner.
-- `logos-test.json`, `logos-test-rest.json`: the recommended configuration, without and with REST.
+- `logos-test.json`, `logos-test-rest.json`, `logos-test-socket.json`: the recommended configuration,
+  without REST, with REST on TCP, and with REST off for the runner's own API socket (what the app uses).
 - `SHA256SUMS`, `VERSION`.
 
 v0.39.2 also needed `librln.so`. Upstream's Android task linked it even with RLN compiled out,
@@ -59,10 +60,44 @@ Change `WAKU_VERSION` and `WAKU_SHA` in `.github/workflows/waku-build.yml` (the 
 commit it points to; the build fails if they disagree), and the `workflow_dispatch` default, then
 push. You can also run the workflow by hand with any tag or commit sha.
 
+## The runner's own API on a Unix socket
+
+The library's REST server listens on TCP, and on a phone every installed app can connect to
+127.0.0.1: another app could read and empty the received-message buffer (`GET
+/messaging/v1/events/received` clears what it returns), publish, and drop the wallet's
+subscriptions. So the app runs the node with `"rest": false` and the runner serves the calls the
+wallet makes itself, on a Unix socket (`--api-socket PATH`, `runner/api_socket.h`):
+
+| Call | Answer |
+|---|---|
+| `GET /health` | `{"nodeHealth":"Ready","connectionStatus":"<the library's status>"}` |
+| `GET /messaging/v1/subscriptions` | the content topics subscribed through this socket, sorted |
+| `POST` / `DELETE /messaging/v1/subscriptions` | `["topic", ...]`: subscribe / unsubscribe |
+| `POST /messaging/v1/messages` | the message JSON as the library's `send` takes it; `{"requestId":"..."}` |
+| `GET /messaging/v1/events/received` | `[{"seq":N, ...the onMessageReceived event...}, ...]`, then cleared |
+| `GET /messaging/v1/events/send/<requestId>` | `{"requestId":"..","events":[{"kind":"propagated"},{"kind":"sent"}]}` (or `"error"` with its text, `"queued"`), then removed; 404 if none |
+
+These are the same paths and answers as the library's REST API at the pinned commit
+(`rest/messaging_api`), evict-after-poll included, built from the same events, so a client
+changes only its transport. Up to 256 received messages and 256 request ids are kept between polls.
+
+- **Where:** the path must be absolute, in a real directory (not a symlink) owned by the runner's
+  user with no group or other access; the socket is created under umask 077 and set to 0600. A
+  socket left by an earlier run is removed only if nothing answers on it; a live socket (another
+  runner) or any other file is left alone. If the socket can't be opened the runner stops the
+  node and exits: there is no other way in.
+- **Limits:** headers up to 16 KB, bodies up to 1 MB, 16 connections at once, 15 s to send or
+  receive, one request per connection (`Connection: close`).
+- **Logging:** with the socket, the received messages are no longer printed in full to the log,
+  only that one came; send events still are.
+- **Tests:** `runner/test_api_socket.py` builds `runner/api_socket_harness.c` (the same code with a
+  stand-in library) on the build machine and checks all of the above; the `waku-build` workflow runs
+  it before building for Android. The runner with the real library has not run on a phone yet.
+
 ## Running it
 
 ```
-waku-runner <config.json> [--duration SEC] [--status-every SEC] [--topic CONTENT_TOPIC] [--send-every SEC]
+waku-runner <config.json> [--duration SEC] [--status-every SEC] [--topic CONTENT_TOPIC] [--send-every SEC] [--api-socket PATH]
 ```
 
 The runner logs to stdout. It prints the node's identity, then a status line at each interval:
