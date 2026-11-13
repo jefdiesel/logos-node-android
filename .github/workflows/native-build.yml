@@ -132,7 +132,8 @@ jobs:
           if [ "$FAST" = 1 ]; then
             EXTRA=(--config 'profile.release.lto="thin"' --config 'profile.release.codegen-units=16' --config 'profile.release.package."*".codegen-units=16')
           fi
-          cargo build --target $T -p logos-blockchain-node --release "${EXTRA[@]}"
+          # --locked: a lockfile that would need changing fails the build instead of resolving anew
+          cargo build --locked --target $T -p logos-blockchain-node --release "${EXTRA[@]}"
           df -h /
       - name: Describe and package the result
         run: |
@@ -205,7 +206,8 @@ jobs:
       fail-fast: false
       matrix:
         # profile = patched + the bench-only timing patch in native/bench-patches (never shipped)
-        variant: [upstream, patched, profile]
+        # api = patch 0002 alone, as the app ships it: install-test runs it with its socket (review S6)
+        variant: [upstream, patched, profile, api]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
     steps:
@@ -220,6 +222,8 @@ jobs:
           # the profile build also gets the bench-only patch, and so its own patch-set id
           if [ "${{ matrix.variant }}" = profile ]; then
             native/apply-patches.sh node native/bench-patches/9*.patch
+          elif [ "${{ matrix.variant }}" = api ]; then
+            native/apply-patches.sh node --only native/patches/0002-api-unix-socket.patch
           else
             native/apply-patches.sh node
           fi
