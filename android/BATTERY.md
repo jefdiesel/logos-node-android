@@ -71,8 +71,11 @@ checks or publishes itself. The source for each lever is in the next section. li
   how many inbound requests it reads at once. The default is 10 (`nodes/node/binary/src/config/network/serde/chainsync.rs:31-39`).
   The value is NonZero, so serving cannot be switched off.
 - **What happens to the extra requests.** A request over the limit gets a clean close of its stream
-  (`consensus/cryptarchia-sync/src/libp2p/behaviour.rs:282, 346`). Tip requests are never rejected
-  (`:354`).
+  (`consensus/cryptarchia-sync/src/libp2p/behaviour.rs:282, 346`). Once a request has been read, tip
+  requests are not counted against the download limit (`:354`). The read-phase limit (`:282`) applies to
+  every incoming stream before its type is known, though. At 1, a second stream that arrives while one is
+  still being read is closed, even if it is a tip request. Those requests come from other peers; the
+  phone's own requests are not affected.
 - **What it doesn't touch.** The phone's own downloads (catch-up, orphan blocks, tip poll) are outbound
   and are not counted against this limit. No code in the downloader or in chain-network's libp2p adapter
   bans or scores a peer for a rejected stream.
@@ -85,14 +88,17 @@ checks or publishes itself. The source for each lever is in the next section. li
 ## When the profile switches
 
 A running node changes profile by restarting on the new config. A restart replays the blocks stored after
-the last irreversible block (about 1,000 blocks, about 30 s of CPU). The node then goes back to Online,
-measured at under a minute when it was Online before and off for less than the 20-minute grace period.
-During that minute the wallet cannot send. So a switch happens only when nobody can notice it:
+the last irreversible block (about 1,000 blocks, about 30 s of CPU). The node then goes back to Online.
+That took under a minute on a phone running with `bootstrap.txt` overrides (60 s bootstrap, 24 h grace),
+when the node was Online before and off for a short time. With the app's defaults (the node's own 1 h and
+20 min) it is not measured yet, but a restart of seconds is well within the 20-minute grace period.
+During that time the wallet cannot send. So a switch happens only when nobody can notice it:
 
 - the charger and the network have held still for **60 s** (a loose cable never restarts anything);
 - at least **5 min** have passed since the previous switch;
-- the node has run for at least 3 min and is **Online**. A restart before Online would start the
-  one-hour bootstrap wait again;
+- the node has run for at least 3 min and has been **Online** on readings at least 90 s apart. The node
+  saves its state once a minute, and a restart before a saved Online state would start the one-hour
+  bootstrap wait again;
 - the **screen is off**;
 - the wallet is not busy, read from the wallet's own files without changing them:
   - not open: `files/node/wallet-visible` is touched every 10 s while the wallet screen shows;
@@ -108,7 +114,8 @@ The user's own change in Settings skips the 60 s and 5 min waits, but none of th
 waits, Settings and the Node screen say what it waits for.
 
 A node that **starts** (app start, user's Start, crash restart) simply starts on the right profile, at no
-extra cost.
+extra cost. Setting `NodeService.SWITCH_BY_RESTART` to false makes that the only way a profile changes: mobile
+mode then never restarts the node. A phone that stays up for days then keeps the profile it started with.
 
 Two safeguards protect the light config:
 - **Before first use.** It is checked with the node binary's own `--check-config`, on a copy next to
@@ -117,9 +124,10 @@ Two safeguards protect the light config:
 - **After two quick exits.** If the node stops twice within 90 s on the light profile, it runs full until
   the setting changes. The counters show `light_failed=true`.
 
-**Wake lock.** The wake lock is held only while a node process runs. It is released during a crash
-restart's wait and during a snapshot pause. While the node runs it is held, as before: the light profile
-does not let the phone sleep, because a sleeping node falls behind.
+**Wake lock.** As before, the wake lock is held while the supervisor runs the node. That includes the
+config check, a profile restart and a crash restart's wait, because a phone asleep there could keep the
+node down past its grace period. It is now let go while a snapshot import holds the node, which keeps its
+own lock. The light profile does not let the phone sleep, because a sleeping node falls behind.
 
 ## Counters (for measuring)
 
@@ -230,7 +238,8 @@ adb shell am start-foreground-service -n io.github.jefdiesel.logosnode/.NodeServ
   -a io.github.jefdiesel.logosnode.MOBILE_MODE --es mode <off|light> --ez reset true
 # wait 2 minutes: the mode applies once the screen is off and the node is Online; the reset at the next minute
 adb shell input keyevent KEYCODE_SLEEP
-adb shell run-as io.github.jefdiesel.logosnode cat files/node/battery-stats.txt   # profile= as wanted, switches done
+adb shell run-as io.github.jefdiesel.logosnode cat files/node/battery-stats.txt   # profile= as wanted, light_failed=false
+adb shell run-as io.github.jefdiesel.logosnode grep -A6 'swarm:' files/node/user_config.yaml   # light: the three keys; full: nothing
 adb shell dumpsys batterystats --reset
 adb shell dumpsys battery | grep -E 'level|charge counter'
 ```
@@ -273,7 +282,10 @@ adb shell run-as io.github.jefdiesel.logosnode grep -E 'mobile mode|node started
   reference node's height at the same minute (any other node's `/cryptarchia/info`, logged once a
   minute). Report the mean and maximum blocks behind.
 - **Tip age.** Report `tip_age_s_sum / tip_age_samples` and `tip_age_s_max`.
-- **Message delay.** The inbox `received` time minus the send time.
+- **Message delay.** The inbox `received` time minus the send time. That time is when the wallet's
+  server took the message from the Messaging node. If the wallet's process wasn't running, that is when
+  the app was opened, so open the app the same way in both runs. The Messaging node's config is the same
+  in both profiles.
 - **Time-to-usable.** `online_after_ms` in `open-times.txt`.
 
 **What confirms the light profile:**

@@ -56,6 +56,12 @@ class NodeService : Service() {
          * Node does the same); --ez reset true clears files/node/battery-stats.txt for a new measurement.
          */
         const val ACTION_MOBILE_MODE = "io.github.jefdiesel.logosnode.MOBILE_MODE"
+        /**
+         * Whether a profile change restarts a running node (about 30 s of replay CPU and about a minute not
+         * Online, only with the screen off and the wallet idle). False: the new profile waits for the node's
+         * next start (app start, Start, crash restart), so mobile mode never restarts anything.
+         */
+        const val SWITCH_BY_RESTART = true
         /** One line for the Node screen: the setting and what it does now. */
         @Volatile var mobileSummary = ""
 
@@ -184,16 +190,33 @@ class NodeService : Service() {
 
     private fun chainInfo(): org.json.JSONObject? = nodeJson("/cryptarchia/info")?.let { it.optJSONObject("cryptarchia_info") ?: it }
 
+    /** When the node was first seen Online with no other state seen since (0: not Online now). */
+    @Volatile private var onlineSince = 0L
+    private val ONLINE_SETTLE_MS = 90_000L
+
+    private fun noteState(state: String?, now: Long) {
+        if (state == "Online") { if (onlineSince == 0L) onlineSince = now } else onlineSince = 0L
+    }
+
+    /** How long the node has been seen Online without a break, reading it now. */
+    private fun onlineFor(now: Long): Long {
+        noteState(chainInfo()?.optString("state"), now)
+        return if (onlineSince == 0L) -1L else now - onlineSince
+    }
+
     /** On the batteryWork thread: switch the running node to the profile it should have, when that is safe. */
     private fun evaluateProfile() {
         try {
             val mode = mobileMode(this)
             val desired = MobilePolicy.desired(mode, plugged, unmetered, lightFailed)
-            val running = runningProfile.takeIf { process != null && !hold && !importRunning && !stopping && !stopRequested }
+            // SWITCH_BY_RESTART false: never restart for mobile mode; a new profile waits for the node's next start
+            val running = runningProfile.takeIf { SWITCH_BY_RESTART && process != null && !hold && !importRunning && !stopping && !stopRequested }
             val now = System.currentTimeMillis()
             val differs = desired != null && running != null && desired != running
             val busy = if (differs) walletBusy(now) else null
-            val online = if (differs && busy == null) chainInfo()?.optString("state") == "Online" else null
+            // Online on readings at least 90 s apart: the node saves its Online state once a minute, and a
+            // restart right after it turned Online would start the one-hour bootstrap wait again
+            val online = if (differs && busy == null) onlineFor(now) >= ONLINE_SETTLE_MS else null
             when (val d = ProfileSwitch.decide(desired, running, now, inputsChangedAt, lastSwitchAt, nodeStartedAt, userChangePending, busy, online)) {
                 ProfileSwitch.Decision.Keep -> {
                     lastWait = ""
@@ -304,6 +327,7 @@ class NodeService : Service() {
                 val tipAgeS = if (tipSlot != null && curSlot != null) maxOf(0L, curSlot - tipSlot) * slotMs / 1000 else null
                 stats.set("node_peers", peers); stats.set("node_connections", net?.optInt("n_connections", -1))
                 stats.set("node_height", c?.opt("height")); stats.set("node_state", c?.optString("state"))
+                if (c != null) noteState(c.optString("state"), now)
                 if (tipAgeS != null && c?.optString("state") == "Online") {
                     stats.add("tip_age_samples_$p", 1); stats.add("tip_age_s_sum_$p", tipAgeS)
                     if (tipAgeS > stats.get("tip_age_s_max_$p")) stats.set("tip_age_s_max_$p", tipAgeS)
@@ -822,13 +846,16 @@ class NodeService : Service() {
     }
 
     private fun supervise() {
-        // the wake lock is held only while a node process runs (runNode), not in a restart wait or a snapshot pause
+        // the wake lock is held while the supervisor runs the node, including its config check, a profile
+        // restart and a crash restart's wait (a phone asleep there could keep the node down past its grace
+        // period); it is let go only while a snapshot import holds the node, the import keeping its own lock
         wakeLock = getSystemService(PowerManager::class.java)
-            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "logosnode:node").apply { setReferenceCounted(false) }
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "logosnode:node").apply { setReferenceCounted(false); acquire() }
         var backoffSeconds = 5L
         try {
             while (!stopRequested) {
                 if (hold) {                                  // a snapshot import or go-back has the state
+                    wakeLock?.let { if (it.isHeld) it.release() }
                     if (status != "paused for the snapshot") setStatus("paused for the snapshot")
                     try {
                         Thread.sleep(500)
@@ -838,6 +865,7 @@ class NodeService : Service() {
                     backoffSeconds = 5
                     continue
                 }
+                wakeLock?.let { if (!it.isHeld) it.acquire() }
                 val started = System.currentTimeMillis()
                 val exit = try {
                     prepare()
@@ -961,7 +989,7 @@ class NodeService : Service() {
         }
         val started = System.currentTimeMillis()
         try { files.replayInfo.delete() } catch (_: Exception) {}
-        wakeLock?.acquire()
+        onlineSince = 0L
         try {
             val p = synchronized(startLock) {
                 if (hold || stopRequested) return -1                    // an import took the state meanwhile
@@ -991,8 +1019,8 @@ class NodeService : Service() {
             return code
         } finally {
             runningProfile = null
+            onlineSince = 0L
             publishMobileState()
-            wakeLock?.let { if (it.isHeld) it.release() }
         }
     }
 
