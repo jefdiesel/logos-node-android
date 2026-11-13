@@ -208,16 +208,28 @@ for _ in range(40):
     if notes and not set(ins) & set(notes):
         break
     time.sleep(2)
-v = max(notes.values())
-f1 = fund(k, to["key"], v // 2)                # a one-input transfer of that note: its fee (two outputs)
-fee2 = v - sum(o["value"] for o in f1["funded_tx"]["ops"][0]["payload"]["outputs"]) if f1 else None
-f, outs = None, []
-for fee in ([fee2] if fee2 is not None else []):
-    f = fund(k, to["key"], v - fee)            # waits until the node lets go of the note f1 kept apart
+# a transfer with no change: the fee is the same for any one note (same size, same gas), but a fund keeps its note
+# apart for 10 final blocks, so each try uses another note: three notes, made by transfers to itself
+for _ in range(4):
+    notes = balance(k).get("notes") or {}
+    if len([v for v in notes.values() if v > 5000]) >= 3:
+        break
+    g = fund(k, k, max(notes.values()) // 3)
+    node("POST", "/mempool/add/tx", {"mantle_tx": g["funded_tx"], "ops_proofs": [g["transfer_proof"]]})
+    for _ in range(60):
+        if not set(g["funded_tx"]["ops"][0]["payload"]["inputs"]) & set(balance(k).get("notes") or {}):
+            break
+        time.sleep(2)
+vals = sorted((v for v in (balance(k).get("notes") or {}).values() if v > 5000), reverse=True)
+check("three notes to try with", len(vals) >= 3, vals)
+f1 = fund(k, to["key"], 1000, tries=1)          # takes the largest note: the fee of a one-input transfer, two outputs
+fee2 = vals[0] - sum(o["value"] for o in f1["funded_tx"]["ops"][0]["payload"]["outputs"]) if f1 else None
+f = fund(k, to["key"], vals[1] - fee2, tries=1) if fee2 is not None else None   # takes the next note
+outs = f["funded_tx"]["ops"][0]["payload"]["outputs"] if f else []
+if len(outs) == 2:                              # one output costs less: what came back as change is the difference
+    fee1 = fee2 - outs[1]["value"]
+    f = fund(k, to["key"], vals[2] - fee1, tries=1)
     outs = f["funded_tx"]["ops"][0]["payload"]["outputs"] if f else []
-    if len(outs) == 2 and outs[1]["value"] < fee:    # one output costs less: the rest came back as change; once more
-        f = fund(k, to["key"], v - (fee - outs[1]["value"]))
-        outs = f["funded_tx"]["ops"][0]["payload"]["outputs"] if f else []
 check("a transfer with no change funded (one output)", len(outs) == 1, (f, LAST.get("fund"), fee2))
 if f and len(outs) == 1:
     mine = server.xfer_hash(f["funded_tx"])
