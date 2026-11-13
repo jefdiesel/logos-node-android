@@ -3317,7 +3317,7 @@ def _loopback_url(raw):
         pass
     if raw not in _waku["refused"]:
         _waku["refused"].add(raw)
-        sys.stderr.write("WAKU_API refused: it must be http://127.0.0.1:<port>, a node on this device\n")
+        sys.stderr.write("WAKU_API refused: it must be http://127.0.0.1:<port> or unix:<absolute path>, a node on this device\n")
     return ""
 
 

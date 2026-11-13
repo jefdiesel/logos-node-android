@@ -343,7 +343,10 @@ traffic; discovery (discv5) traffic is not in it.
 
 **The config.**
 - It is written by the app in the library's flat shape: `mode`, `preset` and the node options at
-  the top level, REST on `127.0.0.1:18645`, NAT mapping off.
+  the top level, NAT mapping off, and **the library's REST API off** (`"rest": false`; until 0.5.16
+  it was on `127.0.0.1:18645`, where every app on the phone could reach it). The runner serves the
+  wallet's calls itself on a Unix socket, `files/waku/api/api.sock` in a 0700 folder
+  (`--api-socket`, `messaging/runner/api_socket.h`, `LOCAL-APIS.md`).
 - It is parsed back and checked before every start, because the library logs the whole file,
   node key included, when it can't parse it.
 - The node key is 32 random bytes, made once.
@@ -354,7 +357,7 @@ status interval, the cap, the stop grace, and `EXTRA` for further flat options s
 values for a smaller relay will go in `EXTRA`.
 
 **The wallet.** The wallet process tells the web app where the messaging node is:
-- `server.set_waku_api("http://127.0.0.1:18645")` while it runs, and `set_waku_api(None)` while it
+- `server.set_waku_api("unix:<files>/waku/api/api.sock")` while it runs, and `set_waku_api(None)` while it
   doesn't (web app 0.8.0). Older web apps get a `WAKU_API` environment variable instead.
 - This happens when the wallet starts and within a second of every change. It reads
   `files/waku/state.txt`, which the node service writes.

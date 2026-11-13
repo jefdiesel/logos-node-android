@@ -5,7 +5,7 @@ The app runs three local HTTP servers:
 | Where | What | Who uses it |
 |---|---|---|
 | **Unix socket `files/node/api/api.sock`** (a 0700 folder in the app's files; app 0.5.16 and later) — before: `127.0.0.1:18180` | the blockchain node's own API (node 0.3.4 with patch 0002) | `server.py`; the app's Kotlin status calls (NodeService, Battery's open timer, NodeActivity) |
-| `127.0.0.1:18645` | the messaging (Waku) node's REST API, from `liblogosdelivery` | `server.py` only |
+| **Unix socket `files/waku/api/api.sock`** (0700 folder; 0.5.16) — before: `127.0.0.1:18645` | the messaging (Waku) node: the runner's own API (before: the library's REST API) | `server.py` only |
 | `127.0.0.1:18190` | the wallet server, `app/server.py` in the app's `:wallet` process | the app's WebView; the app's `names` child (`/lez-rpc/<secret>` only) |
 
 ## The node the app ships
@@ -212,33 +212,37 @@ with `LOGOS_API_UNIX_SOCKET=<path>` set, the node serves its API on that socket 
 Builds with another variant (`unpatched`, or the older `patched` without 0002) keep TCP on 18180, as
 before (`NodeApi.onSocket` is true only for `api`).
 
-## The messaging REST API (18645): ours to change, not built here
+## The messaging API: on the runner's own socket since 0.5.16
 
 The REST server is the library's (presto, TCP only, no authentication); the process around it is our
-own runner (`messaging/runner/waku_runner.c`), which already drives the library's C API
-(`subscribe`, `unsubscribe`, `send`, connection status, and the `onMessageReceived`, `onMessageSent`,
-`onMessagePropagated`, `onMessageError` events).
+own runner (`messaging/runner/waku_runner.c`), which drives the library's C API (`subscribe`,
+`unsubscribe`, `send`, connection status, and the `onMessageReceived`, `onMessageSent`,
+`onMessagePropagated`, `onMessageError`, `onMessageQueued` events).
 
 - *stdin/stdout or a socketpair*: no. The runner is a child of NodeService (main process); `server.py`
   is in the `:wallet` process.
 - *An abstract-namespace Unix socket*: no. Who may connect would rest on SELinux policy details, not
   on file permissions.
-- **Recommended: REST off (`"rest": false` in `Messaging.kt`'s config) and the runner serves the
-  calls `server.py` makes, as HTTP over a file-system Unix socket `files/waku/api.sock` (0600).**
-  `server.py` uses seven calls: `GET /health`, `GET`/`POST`/`DELETE /messaging/v1/subscriptions`,
-  `POST /messaging/v1/messages`, `GET /messaging/v1/events/received`,
-  `GET /messaging/v1/events/send/<id>`. The runner keeps the same evict-after-poll buffers from the
-  events (the upstream REST does exactly that from the same events), so `server.py` changes only in
-  its transport (`waku()` and `_loopback_url` accept `unix:<path>`); the Linux route has no messaging
-  node. Effort: about 300 lines of C in the runner (socket accept loop, minimal HTTP/1.1, JSON for the
-  event records), a `waku-build` run, a new pin, and a test on a phone, which is why it is not in this
-  branch: the rc3 library itself has not run on the phone yet (`messaging/README.md`), and a runner
-  change that can't be tried on a device would put messages at risk for a fix whose worst case is
-  losing or delaying sealed messages, not coins.
-- Until then: what another app can do here is denial of service (taking or delaying sealed messages,
-  dropping the inbox subscription until the next round) and publishing, which anyone on the messaging
-  network can do anyway (the page checks that a message's sender holds the key it names, the `auth`
-  field in `app/messages/msg-crypto.js`).
+- **Chosen: REST off (`"rest": false`) and the runner serves the calls `server.py` makes, as HTTP over
+  a file-system Unix socket `files/waku/api/api.sock` (folder 0700, socket 0600):** `GET /health`,
+  `GET`/`POST`/`DELETE /messaging/v1/subscriptions`, `POST /messaging/v1/messages`,
+  `GET /messaging/v1/events/received`, `GET /messaging/v1/events/send/<id>`, with the same paths and
+  answers as the library's REST API at the pinned commit, evict-after-poll included, built from the
+  library's events as the REST API's own buffers are (`messaging/runner/api_socket.h`,
+  `messaging/README.md`). The socket must be in a private directory; a live socket is never taken
+  over; if the socket can't be opened the runner stops the node and exits.
+- `server.py` changes only its transport: `waku()` and `_loopback_url` accept `unix:<absolute path>`
+  (the Linux route has no messaging node). The app tells it `set_waku_api("unix:<path>")`.
+- **Tests:** `messaging/runner/test_api_socket.py` (the socket code with a stand-in library: where the
+  socket may be made, every call, evict-after-poll, error text escaping, limits), run by `waku-build`
+  before the Android build; `tests/messaging_socket_test.py` (the app's messaging loop over the socket:
+  subscribe, a message from another sender arrives, a send reaches "sent").
+- **Not verified:** the runner with the real library on the phone (the rc3 library itself has not run
+  on the phone yet, `messaging/README.md`). `"rest": false` is the option's own default
+  (`tools/confutils/cli_args.nim` at the pinned commit: `defaultValue: false, name: "rest"`).
+- What another app could do before: take or delay sealed messages, drop the inbox subscription until
+  the next round, publish (which anyone on the messaging network can do anyway; the page checks that a
+  message's sender holds the key it names, the `auth` field in `app/messages/msg-crypto.js`).
 
 ## Unverified until tried on the phone
 
@@ -250,7 +254,9 @@ None of this has run on a device yet. To check there, in this order:
 - The app's own processes reach the socket: the Node screen shows height and peers (NodeService and
   NodeActivity), the wallet page shows the node's status and can send (`server.py` in `:wallet`), the
   open timer writes `open-times.txt`.
-- Another app can't: `connect()` to the socket from a second test app should fail (EACCES), from
+- The messaging runner opens `files/waku/api/api.sock`, nothing
+  listens on 127.0.0.1:18645, and messages still arrive and go out.
+- Another app can't: `connect()` to either socket from a second test app should fail (EACCES), from
   directory permissions and SELinux categories (`levelFrom=all`); expected, not tried.
 - The WebView takes the `app_key` cookie through `CookieManager` (tested in desktop Chrome only), and
   whether it writes it to its cookie database on disk (in the app's private data; an old key is dead,
@@ -305,3 +311,11 @@ patch helps Termux only if Termux runs the patched node with `LOGOS_API_UNIX_SOC
   `Handler.timeout` (`APP_IDLE_TIMEOUT`, 30 s), the bind retry in `main()` (Android only).
 - Tests: `tests/node_socket_test.py`, `NodeApiTest.kt`; `app_key_test.py` parts 4 (the port freed
   later) and 5 (idle connections).
+- Messaging (merged from branch `waku-socket`): `messaging/runner/api_socket.h` (new), `waku_runner.c`
+  (`--api-socket`, `be_*` backend, `on_event` feeding the buffers, `onMessageQueued`),
+  `api_socket_harness.c` and `test_api_socket.py` (tests), `logos-test-socket.json`; `Messaging.kt`
+  (`MessagingSettings.REST`, `MessagingFiles.apiDir`/`apiSocket`/`wakuApi`/`privateApiDir`, the config
+  and its check), `NodeService.setUpMessaging` (`--api-socket`), `LogosApp.watchMessaging`
+  (`set_waku_api(unix:...)`), `NodeActivity` (the API line); `server.py`: `unix_http()`, the `unix:` branch
+  of `waku()`, `_loopback_url` accepting `unix:<absolute path>`; `android/messaging-run.txt` and
+  `messaging.sha256` (the new runner); tests `tests/messaging_socket_test.py`, `MessagingTest`.
