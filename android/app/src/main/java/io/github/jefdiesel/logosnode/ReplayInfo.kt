@@ -44,7 +44,7 @@ object ReplayInfo {
     /** What the screen says before any of those lines, and for the unpatched node, which logs no choice. */
     fun summary(lines: List<String>, variant: String): List<String> =
         if (lines.isEmpty()) emptyList()
-        else if (lines.none { it.startsWith("Restart check:") } && variant != "patched") listOf("Restart check: full (official node, unpatched)") + lines
+        else if (lines.none { it.startsWith("Restart check:") } && variant != "patched") listOf("Restart check: full (no fast-restart patch)") + lines
         else lines
 
     private fun numberBefore(line: String, marker: String): String =

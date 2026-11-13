@@ -119,8 +119,14 @@ class NodeActivity : Activity() {
         column.addView(
             text(
                 14f,
-                "This app is Names Wallet. It runs a Logos blockchain node on this phone: the official release, " +
-                    "${BuildConfig.NODE_VERSION}. A fresh install " +
+                "This app is Names Wallet. It runs a Logos blockchain node on this phone: version " +
+                    "${BuildConfig.NODE_VERSION}, built from the node's published source" +
+                    (when (BuildConfig.NODE_VARIANT) {
+                        "api" -> " with one patch that keeps its API private to this app"
+                        "patched" -> " with this app's patches (a faster restart, its API private to this app)"
+                        else -> ""
+                    }) +
+                    ". A fresh install " +
                     "syncs the chain from its first block, and that cannot finish on a phone: the node's memory grows " +
                     "with the chain during the first sync. Start it from a snapshot instead: a tar of a synced node's " +
                     "database, made as the project's docs/start-from-a-synced-database.md describes."

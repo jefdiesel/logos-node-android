@@ -38,7 +38,7 @@ class ReplayInfoTest {
     }
 
     @Test fun unpatchedNodeSaysSo() {
-        assertEquals(listOf("Restart check: full (official node, unpatched)", "x"), ReplayInfo.summary(listOf("x"), "unpatched"))
+        assertEquals(listOf("Restart check: full (no fast-restart patch)", "x"), ReplayInfo.summary(listOf("x"), "unpatched"))
         assertEquals(listOf("x"), ReplayInfo.summary(listOf("x"), "patched"))
         assertEquals(emptyList<String>(), ReplayInfo.summary(emptyList(), "unpatched"))
     }
