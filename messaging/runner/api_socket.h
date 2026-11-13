@@ -589,20 +589,20 @@ static int api_clear_env(void) {
             const char *eq = strchr(*e, '=');
             if (!eq) continue;
             size_t n = (size_t)(eq - *e);
-            char name[256];
-            if (n == 0 || n >= sizeof name) continue;
-            for (size_t i = 0; i < n; i++) name[i] = (char)(((*e)[i] >= 'a' && (*e)[i] <= 'z') ? (*e)[i] - 'a' + 'A' : (*e)[i]);
-            name[n] = '\0';
             for (const char **s = suffixes; *s; s++) {
                 size_t sl = strlen(*s);
-                if (n > sl && strcmp(name + n - sl, *s) == 0) {
-                    memcpy(name, *e, n);                       // the variable's own spelling
-                    name[n] = '\0';
-                    unsetenv(name);
-                    removed++;
-                    again = 1;                                 // environ changed: start over
-                    break;
-                }
+                if (n < sl) continue;                          // a name that is exactly the suffix counts too
+                const char *tail = *e + n - sl;                // compared in place, case-insensitively: any length
+                size_t i = 0;
+                while (i < sl && (char)((tail[i] >= 'a' && tail[i] <= 'z') ? tail[i] - 'a' + 'A' : tail[i]) == (*s)[i]) i++;
+                if (i != sl) continue;
+                char *name = strndup(*e, n);                   // the variable's own spelling
+                if (!name) return removed;
+                unsetenv(name);
+                free(name);
+                removed++;
+                again = 1;                                     // environ changed: start over
+                break;
             }
             if (again) break;
         }
