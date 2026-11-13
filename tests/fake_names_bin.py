@@ -123,6 +123,10 @@ def main():
             fail("gas limit %s, not 250000" % gas)
         if name == "taken":
             fail("taken is already registered\n\nCaused by:\n    held")
+        once = os.path.join(home, "..", "fake-register-fail-once")
+        if os.path.exists(once):              # one passing failure (the name service didn't answer)
+            os.remove(once)
+            fail("error sending request for url (connection refused)")
         if name == "leaky":                   # an error that is none of the known ones, full of things never to show
             fail("something odd happened at %s\n\nCaused by:\n    0: 1. Abandon, 2. Ability, 3. Able, 4. About, 5. Above, "
                  "6. Absent,\n    1: 7. absorb 8. abstract 9. absurd 10. abuse 11. access 12. accident\n    2: seed %s"

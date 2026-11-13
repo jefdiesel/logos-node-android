@@ -33,6 +33,7 @@ slot.innerHTML = `
         <p style="margin:0"><b id="lns-name"></b> is yours.</p>
         <p class="note" id="lns-ent-bc"></p>
         <p class="note" id="lns-ent-msg"></p>
+        <button type="button" class="primary" id="b-lns-finish" style="width:100%" hidden></button>
       </div>
       <div id="lns-bk" class="msg warn" hidden>
         <p style="margin:0">Back up now. This key has no other copy.</p>
@@ -188,6 +189,11 @@ function entriesDraw(d) {
     $(bid).hidden = !can; offer = offer || can;
   }
   $("lns-manual").hidden = !(d.name && offer);
+  // a name held with an entry still missing (from before one tap): one button finishes it, as one tap would
+  const fin = d.name && d.entries && !(d.flow && d.flow.step !== "done") && !running
+    && (d.entries.blockchain !== "here" || (d.values.msg && d.entries.msg !== "here"));
+  $("b-lns-finish").hidden = !fin;
+  if (fin) $("b-lns-finish").textContent = "Finish setting up " + d.name;
 }
 const lnsName = () => $("lns-in").value.trim().toLowerCase();
 const nameOk = n => /^(?!-)[a-z0-9-]{1,32}(?<!-)$/.test(n);
@@ -212,6 +218,7 @@ async function lnsDo(path, body) {
 }
 $("b-lns-get").addEventListener("click", () => lnsDo("/api/wallet/lns/get", { name: lnsName() }));
 $("b-lns-link").addEventListener("click", () => lnsDo("/api/wallet/lns/get", { name: lnsName(), mode: "link" }));
+$("b-lns-finish").addEventListener("click", () => lnsDo("/api/wallet/lns/get", { name: lnsLast.name, mode: "link" }));
 $("b-lns-retry").addEventListener("click", () => lnsDo("/api/wallet/lns/get/retry", {}));
 $("b-lns-stop").addEventListener("click", () => lnsDo("/api/wallet/lns/get/stop", {}));
 $("b-lns-putback").addEventListener("click", () => lnsDo("/api/wallet/lns/putback", {}));
@@ -244,7 +251,8 @@ async function brOpen() {
   sel.replaceChildren(...list.map(a => el("option", { value: a.key, textContent: a.label + " (" + amtH(a.balance) + ")" })));
   const one = list.length <= 1; sel.hidden = one; $("l-lns-br-from").hidden = one;
   const f = lnsLast && lnsLast.flow;
-  if (!$("lns-br-amt").value && f && f.step === "fund" && f.short) $("lns-br-amt").value = f.short;
+  // what is missing, but never below the least a bridge takes (its fees can reach that much)
+  if (!$("lns-br-amt").value && f && f.step === "fund" && f.short) $("lns-br-amt").value = String(BigInt(f.short) > 110000n ? f.short : 110000);
   $("lns-brf").hidden = false; $("lns-brr").hidden = true; brSay("");
 }
 $("b-lns-br").addEventListener("click", () => $("lns-brf").hidden ? brOpen() : ($("lns-brf").hidden = true));
@@ -319,6 +327,7 @@ async function home(on) {
     $("f-lez-send").hidden = false;
     return;
   }
+  if (document.hidden) return;                  // off screen: asked again when it comes back
   const e = epoch, r = await api("/api/wallet/lns/balance");
   if (stale(e) || r.status === 401 || !r.ok) return;
   lezAcct = r.data.account; lezBal = r.data.balance;
@@ -424,8 +433,10 @@ $("b-lez-scan").addEventListener("click", () => {
   if (!started) say("bad", "The scanner didn't open. Paste the account instead.");
 });
 
-document.addEventListener("visibilitychange", () => {        // back on screen: ask once, the timers start again
-  if (document.hidden || $("v-open").hidden) return;
+document.addEventListener("visibilitychange", () => {        // off screen: the timers stop; back: ask once, they start again
+  if (document.hidden) { clearTimeout(lnsTimer); clearTimeout(lezTimer); return; }
+  if ($("v-open").hidden) return;
+  home(true);
   if (!$("page-settings").hidden && !$("s-lns").hidden) lnsLoad();
   if (tokSel === "lez") lezLoad();
 });

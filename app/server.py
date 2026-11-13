@@ -962,6 +962,9 @@ BRIDGE_ACTIVE = ("splitting", "ready", "depositing", "sent")             # notes
 BRIDGE_READY_MAX = float(os.environ.get("BRIDGE_READY_MAX", str(10 * 60)))  # a "ready" older than this deposits nothing
 BRIDGE_MIN = 110000                          # less than the fees it may take (up to 100,000 + 10,000) is refused
 BRIDGE_SAME_WAIT = 24 * 3600                 # after an overdue bridge, the same amount waits this long: it may still land
+BRIDGE_SPLIT_WAIT = float(os.environ.get("BRIDGE_SPLIT_WAIT", "60"))      # on after the split's note shows, history or not
+BRIDGE_SLOW = float(os.environ.get("BRIDGE_SLOW", "60"))   # a landed or overdue bridge is looked at once a minute...
+BRIDGE_WATCH = {"landed": 48 * 3600, "overdue": 24 * 3600}               # ...and not after this long
 LEZ_V03_PROBE = {"jsonrpc": "2.0", "id": 1, "method": "getRecoveryBinding", "params": ["11111111111111111111111111111111"]}
 LNS_RESERVE_BYTES = 1500                     # a registration's transaction bytes, generously: billed at the storage fee
 LNS_REG_GAS = (23214, 165000)                # gas a commit and a reveal use, as measured on the testnet (NAMES.md);
@@ -1543,6 +1546,15 @@ def bridge_round():
     if not b or b["state"] not in ("splitting", "ready", "sent", "overdue", "landed"):
         return
     now = time.time()
+    if b["state"] in BRIDGE_WATCH:            # waiting on others (finality, the sequencer): slowly, and not forever
+        since = b.get("landed_at") if b["state"] == "landed" else b.get("sent_at")
+        if now - (since or now) > BRIDGE_WATCH[b["state"]] or now - b.get("polled_at", 0) < BRIDGE_SLOW:
+            return
+        with bridge_lock:
+            cur = bridge_load()
+            if cur and cur.get("id") == b.get("id"):
+                cur["polled_at"] = now
+                bridge_save(cur)
     if b["state"] == "splitting":
         notes = notes_of(b["from"])
         if notes is None:
@@ -1555,9 +1567,10 @@ def bridge_round():
             if new:
                 # on once the history has the split in a block (its fee), or a minute after the note showed: the
                 # history then gets no second pending transfer from this key to mix up
-                b.setdefault("note_seen_at", now)
+                if not b.get("note_seen_at"):
+                    b["note_seen_at"] = now
                 b["split_fee"] = bridge_fee_of(b, "split")
-                if b["split_fee"] is not None or now - b["note_seen_at"] > 60:
+                if b["split_fee"] is not None or now - b["note_seen_at"] > BRIDGE_SPLIT_WAIT:
                     b.update(state="ready", note=new[0])
                     bridge_history_settle(b, "split")
             elif now - b.get("split_at", b["created"]) > BRIDGE_GIVE_UP:
@@ -1942,6 +1955,7 @@ def lns_flow_round_locked():
         if ended == "failed":
             with lns_lock:
                 err = lns_job["error"]
+            fl["job"] = None                  # this result is used once: after the pause, register is sent again
             # a reveal that fails on chain is billed its whole limit: tried once more, not four times
             return lns_flow_fail(fl, step, err, final=(any(f in err for f in LNS_FLOW_FINAL) and held is False) or fl.get("tries", 0) >= 1)
         lns_flow_start_job(fl, "register", lns_register, {"name": fl["name"]})

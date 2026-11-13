@@ -186,6 +186,18 @@ until("and stops again", lambda: flow().get("step") == "failed")
 code, d = call("/api/wallet/lns/get/stop", {}, session=s)
 check("a stopped one can be cleared", code == 200 and call("/api/wallet/lns", session=s)[1]["flow"] is None)
 
+# ---- a register that fails once on a passing error is sent again, and the flow finishes ----
+server.lns_state_save(name="")
+os.path.exists(server.LNS_FLOW_FILE) and os.remove(server.LNS_FLOW_FILE)
+open(os.path.join(data, "fake-register-fail-once"), "w").close()
+n_reg = len(sends("register"))
+code, d = call("/api/wallet/lns/get", {"name": "gina"}, session=s)
+until("a register that failed once is sent again after the pause, and it finishes", lambda: flow().get("step") == "done", tries=300)
+check("two registers for gina, then both entries", [x[1] for x in sends("register")[n_reg:]] == ["gina", "gina"]
+      and chain()["gina"].get("blockchain") == MAIN, sends("register")[n_reg:])
+server.lns_state_save(name="")
+os.remove(server.LNS_FLOW_FILE)
+
 # ---- I already hold it: the hold is checked on chain, then both entries ----
 FAKE_OWNER = FAKE.ACCOUNT
 c = chain(); c["dave"] = {"_owner": FAKE_OWNER}; json.dump(c, open(chain_file, "w"))
@@ -208,6 +220,6 @@ code, d = call("/api/wallet/lns/get", {"name": "frank"}, session=s)
 until("waiting for LEZ", lambda: flow().get("step") == "fund")
 server.lns_flow_save(dict(server.lns_flow_load(), step="blockchain", next_at=time.time() + 60))
 outcome, msg = server.lns_restore({"storage": "{}", "account": FAKE.ACCOUNT}, True)
-check("a restore while getting a name is between changes: busy, nothing changed", outcome in ("busy", "unchecked") and (outcome == "busy" or "couldn't" in msg), (outcome, msg))
+check("a restore while getting a name is between changes: busy, nothing changed", outcome == "busy" and "getting a name" in msg, (outcome, msg))
 print("all checks passed", flush=True)
 os._exit(0)

@@ -206,7 +206,7 @@ seq_url = "http://127.0.0.1:%d/" % seq_srv.server_address[1]
 os.environ.update(APP_EMBEDDED="android", APP_PORT="8097", APP_DATA=data, NODE_BIN=os.path.join(bins, "fake_node_bin.py"),
                   NODE_CFG=os.path.join(nodecfg, "user_config.yaml"), UPDATE_URL="", NODE_RESTART_CMD="",
                   NODE_API="http://127.0.0.1:%d" % node_srv.server_address[1], NAMES_BIN=os.path.join(bins, "libnames.so"),
-                  NAMES_RPC_URL=seq_url, LNS_FAUCET_URL=seq_url + "faucet", BRIDGE_POLL="0.2", BRIDGE_GIVE_UP="3",
+                  NAMES_RPC_URL=seq_url, LNS_FAUCET_URL=seq_url + "faucet", BRIDGE_POLL="0.2", BRIDGE_GIVE_UP="3", BRIDGE_SLOW="0", BRIDGE_SPLIT_WAIT="2",
                   HISTORY_POLL="1")
 sys.path.insert(0, os.path.join(HERE, "..", "app"))
 import server  # noqa: E402
@@ -440,6 +440,19 @@ check("it says nothing was bridged, with the node's words", "nothing was bridged
 check("the refused deposit leaves no history row", not [e for e in history() if e.get("bridge_id") == bridge()["id"]])
 Node.deposit_mode = "ok"
 
+# ---- a split the history can't match (a payment came in the same block) still goes on, after a short wait ----
+until("no transfer pending", lambda: not [e for e in history() if e.get("status") == "pending"])
+n = len(deposits())
+code, d = call("/api/wallet/lns/bridge", {"from": MAIN, "amount": "234567", "confirm": True}, session=s)
+check("a split bridge starts", code == 200 and d["bridge"]["state"] == "splitting", (d, [e for e in server.history["entries"] if e.get("status") == "pending"]))
+Node.notes[MAIN][hexid(805)] = 999          # received in the same block as the split: the history can't tell it apart
+node_include()
+until("the split's note is there, the history couldn't match it, and it goes on anyway", lambda: len(deposits()) == n + 1, tries=100)
+check("the split's row is settled, not left pending", until("settled", lambda: not [e for e in history() if e.get("status") == "pending" and e.get("bridge") == "split"]))
+node_include()
+until("in a block", lambda: bridge().get("state") in ("landed", "arrived"))
+until("its rows settled", lambda: not [e for e in history() if e.get("status") == "pending"])
+
 # ---- a split can be stopped before anything is deposited -----------------------------------------------------
 code, d = call("/api/wallet/lns/bridge", {"from": MAIN, "amount": "123457", "confirm": True}, session=s)
 check("splitting", code == 200 and d["bridge"]["state"] == "splitting", d)
@@ -510,7 +523,7 @@ check("a ready bridge older than its limit deposits nothing; it is stopped and s
 with server.bridge_lock:
     b = server.bridge_load(); b.update(id="busy-1", state="sent", note=hexid(804)); server.bridge_save(b)
 outcome, msg = server.lns_restore({"storage": "{}", "account": ACCOUNT}, True)
-check("a restore while a bridge is on its way: busy", outcome in ("busy", "unchecked") and (outcome == "busy" and "bridge" in msg or outcome == "unchecked"), (outcome, msg))
+check("a restore while a bridge is on its way: busy", outcome == "busy" and "bridge" in msg, (outcome, msg))
 with server.bridge_lock:
     b = server.bridge_load(); b.update(state="arrived"); server.bridge_save(b)
 

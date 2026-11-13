@@ -63,6 +63,8 @@ const val = (sel, v) => js(`(() => { const i = document.querySelector(${JSON.str
 const words = (sel) => js(`(document.querySelector(${JSON.stringify(sel)}) || {}).textContent || ""`);
 // a stand-in for the Android app's scanner: the test answers each scan itself
 await cdp("Page.addScriptToEvaluateOnNewDocument", { source: "window.__scans = 0; window.LogosAndroid = { scanQr() { window.__scans++; }, openNode() {}, unlockWithFingerprint() {}, setTheme(bg) { window.__theme = bg; } };" });
+// counts the page's calls to the server's Your name and LEZ routes (the battery checks)
+await cdp("Page.addScriptToEvaluateOnNewDocument", { source: "window.__lns = 0; const __f = window.fetch; window.fetch = (u, o) => { if (/\\/api\\/wallet\\/lns/.test(String(u))) window.__lns++; return __f(u, o); };" });
 
 // ---- the page with the session already open, as after an unlock ----
 await cdp("Page.navigate", { url: BASE + "/" });
@@ -126,12 +128,19 @@ await waitFor("the bridge form: one account with coins, so no From choice; what 
 await click("#b-lns-br-rev");
 await waitFor("the review", `!document.getElementById("lns-brr").hidden`);
 const rv = await text("#lns-brr");
+const acctNow = (await (await fetch(BASE + "/api/wallet/lns/balance", { headers: { "X-Session": session } })).json()).account;
+check("the review names where it goes: LEZ and the account in full", (await text("#lns-brr-to")) === "LEZ · Public/" + acctNow, await text("#lns-brr-to"));
 check("it shows from, to LEZ, the amount, the fee, and that it takes time and can't be undone",
   /From\s+Main/.test(rv) && /To\s+LEZ/.test(rv) && /2,418,236 Logos → 2,418,236 LEZ/.test(rv) && /Up to 110,000 Logos/.test(rv) && /Takes minutes to hours\. Can't be undone\./.test(rv), rv);
 await shot("bridge-review");
 await click("#b-lns-br-go");
 await waitFor("it starts by setting the amount aside", `/^Bridge 2,418,236: (Setting the amount aside|Sending to the bridge|Sent)/.test(document.getElementById("lns-brs").innerText)`);
 await waitFor("and arrives", `/^Bridge 2,418,236: Arrived\./.test(document.getElementById("lns-brs").innerText)`, 30000);
+await click("#b-eye");
+await js(`LNS.home(true); true`);
+await waitFor("the eye hides the bridge's amount too", `/^Bridge ••••••: Arrived\./.test(document.getElementById("lns-brs").innerText)`);
+await click("#b-eye");
+await waitFor("and shows it again", `/^Bridge 2,418,236:/.test(document.getElementById("lns-brs").innerText)`);
 await click("#tok-logos"); await click("#t-act");
 await waitFor("Logos Activity: the bridge as two rows of its own (set aside, bridged), each with its fee", `(() => { const t = document.getElementById("hist").innerText; return /Set aside for the bridge/.test(t) && /Bridged to LEZ/.test(t) && /−2,418,236 Logos/.test(t) && !/Changed outside this app/.test(t); })()`, 20000);
 
@@ -139,6 +148,14 @@ await waitFor("Logos Activity: the bridge as two rows of its own (set aside, bri
 await js(`openSettings("s-lns"); true`);
 await waitFor("register runs with no tap: the stepper says where it is", `/→ Register · step (1|2) of 2 · (sending|sent)|→ Register · waiting/.test(document.getElementById("lns-steps").innerText)`, 20000);
 check("Keep the app open, in one line", (await text("#lns-keep")) === "Keep the app open.");
+// off screen, the page asks nothing: no polling in the background
+await js(`Object.defineProperty(document, "hidden", { configurable: true, get: () => true }); document.dispatchEvent(new Event("visibilitychange")); true`);
+await sleep(1000);
+const asked = await js(`window.__lns`);
+await sleep(7000);
+check("off screen (the app in the background), the page asks the server nothing for Your name or LEZ", (await js(`window.__lns`)) === asked, [asked, await js(`window.__lns`)]);
+await js(`Object.defineProperty(document, "hidden", { configurable: true, get: () => false }); document.dispatchEvent(new Event("visibilitychange")); true`);
+await waitFor("back on screen it asks again", `window.__lns > ${asked}`);
 check("while it runs, the page doesn't offer a backup", await js(`document.getElementById("lns-bk").hidden`));
 await shot("stepper-register");
 await waitFor("then: slow is yours, paying to this wallet; messages wait for Messages to be on", `!document.getElementById("lns-has").hidden && document.getElementById("lns-name").innerText === "slow"
@@ -210,6 +227,11 @@ await click("#t-recv");
 await js(`lockedNow(); true`);
 await waitFor("locked", `!document.getElementById("v-locked").hidden`);
 check("the lock clears the LEZ balance and address", await js(`document.querySelector("#tok-lez .tok-amt").textContent === "" && document.getElementById("lez-addr").textContent === "" && !document.querySelector("#lez-qr svg")`));
+check("and every LEZ field, the hidden ones too (reviews, amounts, lines)", await js(`["lns-brr-to", "lns-brr-amt", "lns-brr-fee", "lns-brs", "lez-rv-amt", "lez-rv-to", "lez-rv-fee", "m-lez-send", "lez-rows", "lns-steps"].every(id => document.getElementById(id).textContent === "")
+  && ["lez-to", "lez-amt", "lns-br-amt"].every(id => document.getElementById(id).value === "")`));
+await js(`(async () => { window.__late = true; })(); LNS.home(true); lockedNow(); true`);
+await sleep(1500);
+check("a LEZ answer that comes back after the lock writes nothing", await js(`document.querySelector("#tok-lez .tok-amt").textContent === ""`));
 
 // ---- Settings > Appearance ----
 await post("/api/wallet/lock", {}, session);
