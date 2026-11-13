@@ -22,7 +22,7 @@ def record(**extra):
     except Exception:
         pass
     with open(os.path.join(home, "..", "fake-names-calls.jsonl"), "a") as f:
-        f.write(json.dumps(dict(args=args, gas=gas, rpc=os.environ.get("LOGOS_NAMES_RPC"),
+        f.write(json.dumps(dict(args=args, gas=gas, at=time.time(), rpc=os.environ.get("LOGOS_NAMES_RPC"),
                                 program=os.environ.get("LOGOS_NAMES_PROGRAM"), env=sorted(os.environ), **extra)) + "\n")
 
 
@@ -178,6 +178,9 @@ def main():
             fail("gas limit %s, not 120000" % gas)
         if args[1] == "nothold":
             fail("this wallet does not hold nothold")
+        if os.path.exists(os.path.join(home, "..", "fake-settext-fail-always")):   # sent, billed, never takes
+            rpc("sendTransaction", [{"Public": "set-text"}])
+            fail("error sending request for url (connection refused)")
         once = os.path.join(home, "..", "fake-settext-fail-once")
         if os.path.exists(once):              # one passing failure (the name service didn't answer)
             os.remove(once)

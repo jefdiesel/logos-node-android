@@ -19,13 +19,15 @@ import fake_names_bin as FAKE  # noqa: E402
 call, check = W.call, W.check
 PIN, MAIN = "357911", "a1" * 32
 W.BASE = "http://127.0.0.1:8096"
-LEZ = {"balance": 0}
+LEZ = {"balance": 0, "drain": 0}
 
 
 class Seq(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         m = body.get("method")
+        if m == "sendTransaction" and LEZ["drain"]:      # what each change costs, for the spend brake
+            LEZ["balance"] -= LEZ["drain"]
         r = {"jsonrpc": "2.0", "id": body.get("id"),
              "result": {"getAccountBalance": LEZ["balance"], "getLastBlockId": 7, "sendTransaction": "cd" * 32,
                         "getFeeState": {"next_base_fee_exec_ceiling": 9, "next_base_fee_stor_ceiling": 9, "base_fee_exec": 8, "base_fee_stor": 8}}.get(m)}
@@ -55,7 +57,7 @@ for src, dst in (("fake_node_bin.py", "fake_node_bin.py"), ("fake_names_bin.py",
 os.environ.update(APP_EMBEDDED="android", APP_PORT="8096", APP_DATA=data, NODE_BIN=os.path.join(bins, "fake_node_bin.py"),
                   NODE_CFG=os.path.join(node, "user_config.yaml"), UPDATE_URL="", NODE_RESTART_CMD="",
                   NAMES_BIN=os.path.join(bins, "libnames.so"), NAMES_RPC_URL="http://127.0.0.1:%d/" % seq.server_address[1],
-                  LNS_FLOW_POLL="0.2", LNS_FLOW_PAUSES="0.5,0.5,0.5,0.5")
+                  LNS_FLOW_POLL="0.2", LNS_FLOW_PAUSES="0.5,0.5,0.5,0.5", LNS_FLOW_GAP="0.3")
 sys.path.insert(0, os.path.join(HERE, "..", "app"))
 import server  # noqa: E402
 
@@ -221,5 +223,55 @@ until("waiting for LEZ", lambda: flow().get("step") == "fund")
 server.lns_flow_save(dict(server.lns_flow_load(), step="blockchain", next_at=time.time() + 60))
 outcome, msg = server.lns_restore({"storage": "{}", "account": FAKE.ACCOUNT}, True)
 check("a restore while getting a name is between changes: busy, nothing changed", outcome == "busy" and "getting a name" in msg, (outcome, msg))
+# ---- M-1: a slow start never makes a failed change look like someone else's: it is counted, and not re-sent ----
+server.lns_flow_save(dict(server.lns_flow_load(), step="done"))
+os.remove(server.LNS_FLOW_FILE)
+server.lns_state_save(name="")
+LEZ["balance"] = 20000000
+always = os.path.join(data, "fake-settext-fail-always")
+open(always, "w").close()
+real_snapshot = server.lns_snapshot
+server.lns_snapshot = lambda: (time.sleep(1.5), real_snapshot())[1]        # a start that takes over a second
+n_set = len(sends("set-text"))
+code, d = call("/api/wallet/lns/get", {"name": "hank"}, session=s)
+until("an entry that keeps failing stops the flow", lambda: flow().get("step") == "failed", tries=400)
+time.sleep(3)
+hank = [x for x in sends("set-text") if x[1] == "hank"]
+check("M-1: with a slow start, a failing entry is sent at most 3 times, then it stops (it doesn't loop)", 1 <= len(hank) <= 3, len(hank))
+server.lns_snapshot = real_snapshot
+
+# ---- the brakes hold even when matching a job to the flow is broken on purpose ----
+real_job = server.lns_flow_job
+server.lns_flow_job = lambda fl, kind: None                               # every result lost, as M-1 was
+os.remove(server.LNS_FLOW_FILE)
+server.lns_state_save(name="")
+code, d = call("/api/wallet/lns/get", {"name": "ivan"}, session=s)
+until("(a) the count of sends stops it", lambda: flow().get("step") == "failed", tries=400)
+time.sleep(2)
+ivan = [json.loads(l) for l in open(calls_file) if json.loads(l)["args"][:2] == ["set-text", "ivan"]]
+check("(a) at most 3 sends of one entry, whatever the matching says, and it says why", len(ivan) <= 3 and "sent 3 times" in flow()["error"], (len(ivan), flow()["error"]))
+check("(b) at least the gap between two sends of the flow", all(b["at"] - a["at"] >= server.LNS_FLOW_GAP - 0.05 for a, b in zip(ivan, ivan[1:])), [x["at"] for x in ivan])
+server.LNS_FLOW_GAP = 2.0
+os.remove(server.LNS_FLOW_FILE)
+server.lns_state_save(name="")
+code, d = call("/api/wallet/lns/get", {"name": "jane"}, session=s)
+until("(b) with a 2 s gap: it still stops", lambda: flow().get("step") == "failed", tries=600)
+jane = [json.loads(l) for l in open(calls_file) if json.loads(l)["args"][:2] == ["set-text", "jane"]]
+check("(b) two sends of the flow are never closer than the gap, however fast the rounds", len(jane) >= 2 and all(b["at"] - a["at"] >= 1.95 for a, b in zip(jane, jane[1:])), [x["at"] for x in jane])
+server.LNS_FLOW_GAP = 0.3
+os.remove(always)
+os.remove(server.LNS_FLOW_FILE)
+server.lns_state_save(name="")
+LEZ["balance"] = 20000000
+LEZ["drain"] = 9000000                                                    # each change takes far more than it should
+code, d = call("/api/wallet/lns/get", {"name": "kate"}, session=s)
+until("(c) the spend brake stops it", lambda: flow().get("step") == "failed", tries=400)
+check("(c) once it has spent more than the cost at the ceiling plus the margin, nothing more is sent", "spent more than expected" in flow()["error"]
+      and len([x for x in sends() if "kate" in x]) <= 2, (flow()["error"], [x for x in sends() if "kate" in x]))
+LEZ["drain"] = 0
+server.lns_flow_job = real_job
+code, d = call("/api/wallet/lns/get/retry", {}, session=s)
+check("Try again (the person's own tap) starts the counts over", code == 200 and not server.lns_flow_load().get("sends"))
+os.remove(server.LNS_FLOW_FILE)
 print("all checks passed", flush=True)
 os._exit(0)

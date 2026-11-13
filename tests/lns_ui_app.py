@@ -134,7 +134,7 @@ os.environ.update(APP_EMBEDDED="android", APP_PORT=port, APP_DATA=data, NODE_BIN
                   NODE_CFG=os.path.join(node, "user_config.yaml"), UPDATE_URL="", NODE_RESTART_CMD="",
                   NAMES_BIN=os.path.join(bins, "libnames.so"), NAMES_RPC_URL="http://127.0.0.1:%d/" % seq.server_address[1],
                   NODE_API="http://127.0.0.1:%d" % node_api.server_address[1], BRIDGE_POLL="0.5", HISTORY_POLL="1",
-                  LNS_FLOW_POLL="0.5", LNS_FLOW_PAUSES="1,1,1,1", BRIDGE_SLOW="0", BRIDGE_SPLIT_WAIT="3",
+                  LNS_FLOW_POLL="0.5", LNS_FLOW_PAUSES="1,1,1,1", LNS_FLOW_GAP="0.5", BRIDGE_SLOW="0", BRIDGE_SPLIT_WAIT="3",
                   LNS_FAUCET_URL="http://127.0.0.1:%d/faucet" % seq.server_address[1])
 sys.path.insert(0, os.path.join(HERE, "..", "app"))
 import server  # noqa: E402

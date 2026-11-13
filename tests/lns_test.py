@@ -9,7 +9,7 @@ Runs the app the way the Android app does (APP_EMBEDDED=android, server.py impor
 127.0.0.1:8099. The fake signer prints a recovery phrase when it makes the wallet, and noise with that phrase
 in every registration: the test checks it reaches no reply, no log and no file other than the wallet's own.
 """
-import atexit, base64, http.server, json, os, shutil, stat, sys, tempfile, threading, time
+import atexit, base64, http.server, json, os, re, shutil, stat, sys, tempfile, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -175,7 +175,7 @@ for bad in ("Bad Name", "-x", "a" * 33, "", "alice;rm"):
     check("register refuses %r" % bad, call("/api/wallet/lns/register", {"name": bad}, session=s)[0] == 400)
 seen.clear()
 code, d = call("/api/wallet/lns/register", {"name": "Alice"}, session=s)
-check("register starts", code == 200 and d == {"started": "register"}, (code, d))
+check("register starts, with the job's id", code == 200 and d.get("started") == "register" and re.fullmatch(r"[0-9a-f]{16}", d.get("job", "")) is not None, (code, d))
 d = wait_job(s)
 check("register finished", d["job"]["state"] == "done" and d["job"]["kind"] == "register" and d["name"] == "alice", d)
 c = calls()[-1]
