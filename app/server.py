@@ -3179,6 +3179,13 @@ def accounts():
     return out
 
 
+# A transfer the node gave no answer about (a timeout, or an answer cut short) may still have gone through. Until
+# the key's balance shows a change, or SEND_UNSURE_HOLD seconds pass, the next send from that key is refused rather
+# than risk sending twice (review E5). key -> {"before": balance then, "at": time}
+SEND_UNSURE_HOLD = float(os.environ.get("SEND_UNSURE_HOLD_SECONDS", "180"))
+send_unsure = {}
+
+
 def send(body):
     frm, to = str(body.get("from", "")).lower(), str(body.get("to", "")).strip().lower()
     try:
@@ -3202,12 +3209,27 @@ def send(body):
     if bal is None:
         return 502, {"error": "The node didn't return a balance for that key."}
     before = bal[0]
+    with lock:
+        hold = send_unsure.get(frm)
+        if hold and (time.time() - hold["at"] > SEND_UNSURE_HOLD or before != hold["before"]):
+            send_unsure.pop(frm, None)             # it landed (the balance moved) or it's long enough: free
+            hold = None
+    if hold:
+        return 409, {"error": "The last transfer from this account got no answer from the node and may still go through. "
+                              "Check Activity; you can send again once its balance changes or in about %d minutes."
+                              % max(1, round((SEND_UNSURE_HOLD - (time.time() - hold["at"])) / 60)), "unsure": True}
     if before < amount:
         return 400, {"error": "That key holds %d, less than %d." % (before, amount)}
     code, reply = node("/wallet/transactions/transfer-funds", {
         "tip": None, "change_public_key": frm, "funding_public_keys": [frm],
         "recipient_public_key": to, "amount": amount}, timeout=60)
     # the node answers an accepted transfer with 201 Created
+    if code == 0:
+        # no answer, or one cut short: the transfer may have gone through, so don't invite a second one
+        with lock:
+            send_unsure[frm] = {"before": before, "at": time.time()}
+        return 502, {"error": "No answer from the node about this transfer: it may have been sent. Check Activity and "
+                              "the balance before sending again.", "unsure": True}
     if not 200 <= code < 300 or not isinstance(reply, dict) or not reply.get("hash"):
         detail = reply if isinstance(reply, str) else json.dumps(reply)
         return 502, {"error": "The node refused the transfer: %s" % (detail or "no answer")[:300]}

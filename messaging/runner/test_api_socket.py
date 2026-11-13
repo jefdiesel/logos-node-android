@@ -104,11 +104,32 @@ try:
 
     for name, raw, want in (("a key spelled with an escape (re\\u0073t)", '{"mode":"Core","re\\u0073t":true}', 4),
                             ("a value like true in a string elsewhere", '{"mode":"Core","nodekey":"x\\"rest\\":true","rest":false}', 0),
-                            ("rest: false with spaces", '{"rest"  :  false  }', 0), ("rest: falsey", '{"rest":falsey}', 4)):
+                            ("rest: false with spaces", '{"rest"  :  false  }', 0), ("rest: falsey", '{"rest":falsey}', 4),
+                            # review E2: the library's parser takes comments, and a quote in one hid a key from this scanner
+                            ("a comment before the colon", '{"mode":"Core","rest"/**/:true}', 4),
+                            ("a line comment", '{"mode":"Core","rest"//x\n:true}', 4),
+                            ("a quote inside a block comment", '{"mode":"Core","preset":"logos.test", /* " */ "rest": true, "nodekey": "abab" /* " */ }', 4),
+                            ("a quote inside a line comment", '{"mode":"Core", // "\n "metrics-server": true, "nodekey": "abab" // "\n}', 4),
+                            ("websockets behind a comment", '{"mode":"Core", /* " */ "websocket-support": true, "rest": false, "nodekey": "ab" /* " */ }', 4),
+                            ("a slash inside a string (an escaped path)", '{"mode":"Core","rest":false,"local-storage-path":"\\/data\\/x"}', 0)):
         with open(cfg, "w") as f:
             f.write(raw)
         r = subprocess.run([exe, "--config", cfg], capture_output=True, text=True, timeout=10)
         check("config with %s: %s" % (name, "taken" if want == 0 else "refused"), r.returncode == want, (r.returncode, r.stdout))
+
+    for f in ("logos-test-socket.json", "logos-test.json"):
+        r = subprocess.run([exe, "--config", os.path.join(HERE, "..", f)], capture_output=True, text=True, timeout=10)
+        check("the shipped sample %s is taken" % f, r.returncode == 0, r.stdout)
+    r = subprocess.run([exe, "--config", os.path.join(HERE, "..", "logos-test-rest.json")], capture_output=True, text=True, timeout=10)
+    check("the REST sample is refused", r.returncode == 4, r.stdout)
+
+    # ---- review E4: environment variables are a second source of options; the runner removes those ----------------
+    env = dict(os.environ, LIBWAKURUNNER_METRICS_SERVER="true", LIBWAKURUNNER_REST_ADMIN="1", WAKU_RUNNER_REST="true",
+               libwakurunner_websocket_support="true", X_WEBSOCKET_SECURE_SUPPORT="yes", KEEP_ME_RESTFUL="1", REST="x")
+    r = subprocess.run([exe, "--clear-env"], capture_output=True, text=True, timeout=10, env=env)
+    check("the five network options are removed from the environment, whatever the prefix or case",
+          "removed 5" in r.stdout and not any(k in r.stdout for k in ("METRICS_SERVER", "REST_ADMIN", "WAKU_RUNNER_REST=", "websocket_support", "SECURE_SUPPORT")), r.stdout)
+    check("and nothing else (KEEP_ME_RESTFUL stays)", "left KEEP_ME_RESTFUL=1" in r.stdout, r.stdout)
 
     p = subprocess.Popen([exe, sock], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:

@@ -357,6 +357,10 @@ int main(int argc, char **argv) {
     logf_("config %s (%zu bytes)", config_path, strlen(config));
 
     reply_init(&g_create);
+    if (api_socket) {
+        int removed = api_clear_env();
+        if (removed) logf_("removed %d environment variable(s) that could turn on the library's network APIs", removed);
+    }
     if (logosdelivery_ctx_create(config, on_created, NULL) != 0) { logf_("create_node: submit failed"); return 1; }
     if (reply_wait(&g_create, 60000) != 0 || g_ctx == NULL) {
         logf_("create_node failed: %s", g_create.text ? g_create.text : "timeout");

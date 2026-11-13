@@ -209,6 +209,10 @@ with `LOGOS_API_UNIX_SOCKET=<path>` set, the node serves its API on that socket 
      ignored. Only if the socket accepts nothing, four checks in a row (about a minute), is the node stopped
      (it may be running without its socket); then it is not restarted, and the notification and Node screen
      show one line saying why. The thread catches everything, so nothing on it can take the process down.
+   - Strikes are counted only once the node has started its services: it prints "Running chain" (read from its
+     output, as the app reads its other lines), or ten minutes have passed without that line. Until then its API
+     may not be bound yet, so a stranger on 18180 proves nothing (review E1). An unpatched node prints the same
+     line, so a node running without its socket is still caught.
    - `server.py` sends everything over the socket and never looks at TCP.
    - History, so it is not repeated: 0.5.16 stopped the node whenever anything answered there (any app could
      stop the node and block sends). 0.5.17 to 0.5.19 read the answer on that port to judge it: any app could
@@ -216,9 +220,9 @@ with `LOGOS_API_UNIX_SOCKET=<path>` set, the node serves its API on that socket 
      an app imitating the node's answer could get the node stopped on any start whose block replay runs past
      about a minute (review D1). 0.5.17 to 0.5.19 also refused sends while a stranger was on that port and the
      node was slow (review D3). None of these builds reached the phone.
-   - What remains: a stranger on 18180 while the node's socket accepts nothing for a minute (the node not yet
-     serving its API, or wedged) gets the node stopped. The node binds its socket as soon as its API service
-     starts, before the block replay (PHONE: check when the socket first accepts).
+   - What remains: a stranger on 18180 while the node's socket accepts nothing for a minute after its services
+     started (the node wedged) gets the node stopped. On the phone the socket accepted 3 s after a start (phone
+     check, 0.5.20); the API service binds it as soon as services start, before the block replay.
 5. `cors_origins` stays in the config: harmless, and it matters again if the app ever goes back to
    a TCP node.
 
@@ -331,7 +335,7 @@ patch helps Termux only if Termux runs the patched node with `LOGOS_API_UNIX_SOC
 - `WalletActivity.kt`: the cover's text when another app holds the port; `walletSetting()` only when
   `ours()`; `debugAllowed()` (the `.WalletDebug` alias) for the debug extras.
 - `AndroidManifest.xml`: `.WalletDebug` alias, guarded by `android.permission.DUMP`.
-- `app/server.py`: `_UnixHTTPConnection`, `node_tcp_taken()`, the `unix:` branch of `node()`,
+- `app/server.py`: `_UnixHTTPConnection`, the `unix:` branch of `node()`,
   `Handler.timeout` (`APP_IDLE_TIMEOUT`, 30 s), the bind retry in `main()` (Android only).
 - Tests: `tests/node_socket_test.py`, `NodeApiTest.kt`; `app_key_test.py` parts 4 (the port freed
   later) and 5 (idle connections).
@@ -356,9 +360,24 @@ socket settings stop it and nothing opens on TCP; a real transfer through the we
 
 0.5.20 (branch `sockets-on-0518`, the phone's msg-hotfix merged in): review M1 and D1 (the TCP guard never
 reads from TCP; the proof is that the node's socket accepts a connection; the guard thread catches
-everything; `getTcp`, used only by TCP builds, reads at most 4 MiB within a deadline and follows no
+everything; `getTcp`, used only by TCP builds, reads at most 4 MiB of body within a deadline and follows no
 redirect; unit tests with a listener streaming endless bytes, a redirect and a drip), D3 (`server.py`'s
 send guard and `NODE_TCP_GUARD` removed), D4 (`unix_http` takes an answer only whole; test with a node that
 dies mid-answer), D2 (the runner's config refusal compares keys as the library reads them and refuses any
 value but false or null), D5 (these docs), D6 (Gradle also refuses a variant that doesn't match the bundled
 binary's patches; CI checks it).
+
+After 0.5.20 (branch `sockets-e`, versions unchanged; review of 503b141, E1 to E5):
+- E1: guard strikes count only after the node's "Running chain" line (or ten minutes); `TcpGuard.observe(...,
+  counting)`, `NodeApi.guardRound`, `NodeService.servicesStarted`. Tests: `noStrikesBeforeTheNodeHasStartedItsServices`,
+  and `theGuardNeverWritesToOrReadsFromTheTcpPort` (one guard round against a listener streaming endless bytes:
+  not one byte sent to it, closed at once).
+- E2/E4: the runner refuses any `/` outside a string in its config (comments), and removes the network-option
+  environment variables before creating the node; the app writes all five network keys as `false` and checks them.
+- E3: `getTcp` (TCP builds only) reads the whole answer, status line and headers included, through one size cap and
+  one deadline over a plain socket. Test: `theTcpPathGivesUpOnDrippingHeaders`.
+- E5: a transfer the node gave no answer about (status 0: a timeout or an answer cut short) says it may have been
+  sent; the next send from that account is refused until its balance moves or three minutes pass; the page doesn't
+  re-enable Send on that review. Test: `tests/send_unsure_test.py`.
+- `tests/node_socket_test.py` now counts connections to the old TCP port (with `NODE_TCP_GUARD` set as 0.5.17-0.5.19
+  set it): zero; it fails on the 0.5.17 server.py.

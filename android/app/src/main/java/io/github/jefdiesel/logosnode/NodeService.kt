@@ -24,6 +24,8 @@ import kotlin.concurrent.thread
 class NodeService : Service() {
 
     companion object {
+        /** The TCP guard counts strikes from the node's "Running chain" line, or after this long without it. */
+        const val SERVICES_START_LIMIT_MS = 10 * 60_000L
         const val ACTION_START = "io.github.jefdiesel.logosnode.START"
         const val ACTION_STOP = "io.github.jefdiesel.logosnode.STOP"
         /** Start the node from a snapshot: the intent's data is the tar's content URI (from the file picker). */
@@ -921,6 +923,7 @@ class NodeService : Service() {
                     }
                     .start().also { process = it }
             }
+            servicesStarted = false
             if (NodeApi.onSocket) watchTcp(p)
             runningProfile = startingProfile
             lastRunProfile = startingProfile
@@ -930,6 +933,7 @@ class NodeService : Service() {
             setStatus(if (startingProfile == NodeProfile.LIGHT) "node running (light)" else "node running")
             try {
                 p.inputStream.bufferedReader().forEachLine { line ->
+                    if (!servicesStarted && line.contains("Running chain ")) servicesStarted = true
                     nodeLines.incrementAndGet(); nodeBytes.addAndGet(line.length + 1L)
                     log.node(line)
                     ReplayInfo.fromLine(line, System.currentTimeMillis() - started)?.let { note ->
@@ -958,26 +962,30 @@ class NodeService : Service() {
      */
     private fun watchTcp(p: Process) = thread(name = "node-tcp-guard", isDaemon = true) {
         val guard = NodeApi.TcpGuard()
+        val started = System.currentTimeMillis()
         var noted = false
         try {
             Thread.sleep(10_000)
             while (p.isAlive && !stopRequested) {
-                val tcp = NodeApi.tcpAnswers()
-                val verdict = guard.observe(tcp, tcp && NodeApi.socketAccepts(files))
-                when (verdict) {
+                // strikes count only once the node has started its services (review E1)
+                val counting = servicesStarted || System.currentTimeMillis() - started > SERVICES_START_LIMIT_MS
+                when (val verdict = NodeApi.guardRound(guard, counting, { NodeApi.socketAccepts(files) })) {
                     NodeApi.TcpGuard.Verdict.STOP -> { blockApi("while it ran"); return@thread }
                     NodeApi.TcpGuard.Verdict.STRANGER_IGNORED -> if (!noted) {
                         noted = true
                         log.app("another program holds 127.0.0.1:${NodeFiles.API_PORT}; ignored (the node's API is on its socket)")
                     }
                     NodeApi.TcpGuard.Verdict.SUSPECT -> log.app("something accepts on 127.0.0.1:${NodeFiles.API_PORT} and the node's socket doesn't (${guard.strikes}/${NodeApi.TcpGuard.STRIKES})")
-                    NodeApi.TcpGuard.Verdict.FINE -> {}
+                    NodeApi.TcpGuard.Verdict.WAITING, NodeApi.TcpGuard.Verdict.FINE -> {}
                 }
                 Thread.sleep(15_000)
             }
         } catch (_: Throwable) {
         }
     }
+
+    /** The node printed "Running chain" (its services have started, its API with them) in this run. */
+    @Volatile private var servicesStarted = false
 
     /** Something accepts on 127.0.0.1:18180 and the node's socket doesn't: stop the node, say so in one line, don't restart it. */
     private fun blockApi(moment: String) {

@@ -78,16 +78,25 @@ threading.Thread(target=short_srv.serve_forever, daemon=True).start()
 # ---- part 1: node() in-process ---------------------------------------------------------------------------------
 probe = r"""
 import json, os, socket, sys
-os.environ.update(NODE_API="unix:" + sys.argv[1], APP_DATA=sys.argv[3])
+# NODE_TCP_GUARD as 0.5.17-0.5.19 set it: server.py must ignore it and never touch TCP (review D3, E-review)
+os.environ.update(NODE_API="unix:" + sys.argv[1], APP_DATA=sys.argv[3], NODE_TCP_GUARD="127.0.0.1:" + sys.argv[2])
 sys.path.insert(0, sys.argv[4])
 import server
 out = {}
 out["get"] = server.node("/cryptarchia/info")
 out["missing"] = server.node("/nothing")
 out["post"] = server.node("/wallet/transactions/transfer-funds", {"amount": 5})
-l = socket.socket(); l.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); l.bind(("127.0.0.1", int(sys.argv[2]))); l.listen(1)
+l = socket.socket(); l.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); l.bind(("127.0.0.1", int(sys.argv[2]))); l.listen(16)
+l.setblocking(False)
 out["post_squatted"] = server.node("/wallet/transactions/transfer-funds", {"amount": 6})
 out["get_guarded"] = server.node("/cryptarchia/info")
+accepted = 0
+while True:                                      # count every connection anyone made to the old TCP port
+    try:
+        l.accept()[0].close(); accepted += 1
+    except BlockingIOError:
+        break
+out["tcp_connections"] = accepted
 l.close()
 server.NODE_API = "unix:" + sys.argv[1] + ".none"
 out["no_socket"] = server.node("/cryptarchia/info")
@@ -113,6 +122,7 @@ check("the node's 404 comes back as such", (out.get("missing") or [0])[0] == 404
 check("a POST goes over the Unix socket, as JSON", out.get("post") == [201, {"hash": "ab" * 32, "amount": 5}], out.get("post"))
 check("another program on the node's old TCP port doesn't stop a send (review S1, D3)", out.get("post_squatted") == [201, {"hash": "ab" * 32, "amount": 6}], out.get("post_squatted"))
 check("and no extra call is made before a send: the node saw GET, GET, POST, POST, GET", [p[0] for p in seen] == ["GET", "GET", "POST", "POST", "GET"], seen)
+check("server.py never connects to the old TCP port, even with NODE_TCP_GUARD set (review D3)", out.get("tcp_connections") == 0, out.get("tcp_connections"))
 check("an answer that ends short of its Content-Length is no answer, not a cut-short body (review D4)", out.get("short_get") == [0, None] and out.get("short_post") == [0, None], (out.get("short_get"), out.get("short_post")))
 check("unix_http raises on it", out.get("short_raw") == "IncompleteRead", out.get("short_raw"))
 check("reading still works meanwhile", (out.get("get_guarded") or [0])[0] == 200, out.get("get_guarded"))

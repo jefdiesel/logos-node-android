@@ -97,8 +97,14 @@ ones out before a poll (as upstream's own 50-message cache can); they are counte
   `websocket-secure-support`. Keys are compared as the library reads them (case-insensitive, by
   option or field name, so `REST`, `restAdmin`, `metrics_server` count too), any key written with a
   backslash escape is refused, and for those keys any value other than `false` or `null` is refused
-  (the library takes `1`, `"true"`, `"yes"`, `"on"` as true). The app writes `"rest": false` and none
-  of the others (all default to off).
+  (the library takes `1`, `"true"`, `"yes"`, `"on"` as true). A `/` anywhere outside a string is
+  refused too: JSON has none there, but the library's parser accepts `//` and `/* */` comments,
+  which could hide a key from this check. The app writes all five keys as `false`.
+- **Environment:** the library also reads every option it isn't given on the command line from the
+  environment (`<PROGRAM>_<OPTION>`, e.g. `LIBWAKURUNNER_REST_ADMIN`). With `--api-socket` the runner
+  removes every environment variable ending in `_REST`, `_REST_ADMIN`, `_METRICS_SERVER`,
+  `_WEBSOCKET_SUPPORT` or `_WEBSOCKET_SECURE_SUPPORT` (any case, any prefix) before it creates the
+  node. The library has no other source for these options on this path (no TOML config file is read).
 - **Limits:** headers up to 16 KB, bodies up to 1 MB, 16 connections at once, 15 s to send or
   receive, one request per connection (`Connection: close`).
 - **Logging:** with the socket, the received messages are no longer printed in full to the log,
