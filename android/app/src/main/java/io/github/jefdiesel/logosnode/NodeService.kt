@@ -164,7 +164,9 @@ class NodeService : Service() {
         }
 
     private fun walletBusy(now: Long): String? {
-        val w = LogosApp.dataDir(this)
+        // a switch takes the node off Online for about a minute (the restart's replay): only while nobody looks
+        if (getSystemService(PowerManager::class.java).isInteractive) return "the screen is on"
+        val w = WalletServer.dataDir(this)
         return WalletBusy.reason(
             readOrNull(File(w, "wallet-bridge.json")), readOrNull(File(w, "wallet-history.json")), namesRunning(),
             files.walletVisible.takeIf { it.exists() }?.lastModified(), now,
