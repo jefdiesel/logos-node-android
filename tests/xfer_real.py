@@ -155,10 +155,10 @@ import server  # noqa: E402  (only for its encoder, xfer_hash)
 LAST = {}
 
 
-def fund(key, to, amount, tries=200):
+def fund(key, to, amount, tries=200, outputs=None):
     for _ in range(tries):                    # the node keeps a fund's notes apart for 10 final blocks: wait it out
         code, f = node("POST", "/wallet/fund", {"tip": None, "tx_builder": {"mantle_tx": {"ops": []}, "ledger_inputs": [],
-                       "pending_transfer": {"inputs": [], "outputs": [{"value": amount, "pk": to}]}, "channel_multi_sig_proofs": {}},
+                       "pending_transfer": {"inputs": [], "outputs": outputs or [{"value": amount, "pk": to}]}, "channel_multi_sig_proofs": {}},
                        "change_public_key": key, "funding_public_keys": [key], "max_tx_fee": 100000, "priority_fee_percent": 0})
         if code == 200:
             return f
@@ -225,21 +225,22 @@ check("three notes to try with", len(vals) >= 3, vals)
 vmap = balance(k).get("notes") or {}
 paid = lambda g: sum(vmap.get(i, 0) for i in g["funded_tx"]["ops"][0]["payload"]["inputs"]) - \
     sum(o["value"] for o in g["funded_tx"]["ops"][0]["payload"]["outputs"])      # the fee a funded transfer pays
-f1 = fund(k, to["key"], 1000, tries=60)         # one note, two outputs: its fee (the node's view may trail the tip)
-fee2 = paid(f1) if f1 else None
-used = set(f1["funded_tx"]["ops"][0]["payload"]["inputs"]) if f1 else set()
+# The node pays no change only when the inputs cover the amount and the fee exactly (wallet/src/lib.rs, fund_tx). The
+# fee of one input and one output = that of one input and two outputs, less what one more output costs, which is the
+# difference between two and three outputs. Each fund keeps its note apart, so each one takes the next note.
+f2 = fund(k, to["key"], 0, tries=60, outputs=[{"value": 1000, "pk": to["key"]}])
+f3 = fund(k, to["key"], 0, tries=60, outputs=[{"value": 1000, "pk": to["key"]}, {"value": 1000, "pk": to["key"]}])
+print("     notes:", sorted(vmap.values(), reverse=True), "two outputs:", json.dumps(f2 and f2["funded_tx"])[:300],
+      "three:", json.dumps(f3 and f3["funded_tx"])[:300])
 f, outs = None, []
-for _ in range(2):
-    if fee2 is None:
-        break
-    nxt = max(v for i, v in vmap.items() if i not in used)
-    f = fund(k, to["key"], nxt - fee2, tries=60)    # the next note, all of it but the fee
-    outs = f["funded_tx"]["ops"][0]["payload"]["outputs"] if f else []
-    if not f or len(outs) == 1:
-        break
-    used |= set(f["funded_tx"]["ops"][0]["payload"]["inputs"])
-    fee2 = fee2 - outs[-1]["value"]             # one output costs less: what came back as change is the difference
-check("a transfer with no change funded (one output)", len(outs) == 1, (f, LAST.get("fund"), fee2))
+if f2 and f3 and len(f2["funded_tx"]["ops"][0]["payload"]["inputs"]) == len(f3["funded_tx"]["ops"][0]["payload"]["inputs"]) == 1:
+    fee1 = 2 * paid(f2) - paid(f3)
+    used = set(f2["funded_tx"]["ops"][0]["payload"]["inputs"]) | set(f3["funded_tx"]["ops"][0]["payload"]["inputs"])
+    left = [v for i, v in vmap.items() if i not in used]
+    if left:
+        f = fund(k, to["key"], max(left) - fee1, tries=60)
+        outs = f["funded_tx"]["ops"][0]["payload"]["outputs"] if f else []
+check("a transfer with no change funded (one output)", len(outs) == 1, (f and f["funded_tx"], LAST.get("fund")))
 if f and len(outs) == 1:
     mine = server.xfer_hash(f["funded_tx"])
     node("POST", "/mempool/add/tx", {"mantle_tx": f["funded_tx"], "ops_proofs": [f["transfer_proof"]]})
