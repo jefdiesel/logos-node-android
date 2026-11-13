@@ -2,7 +2,7 @@
 # Logos blockchain node on Android through Termux, for phones without the Linux Terminal app.
 # Run once inside Termux:   sh install-termux.sh      then start the node with:   ~/logos-node
 #
-# Termux can't run the official node directly (it is built for normal Linux), so this installs
+# Termux can't run the Logos blockchain node directly (it is built for normal Linux), so this installs
 # a small Ubuntu inside Termux (proot-distro) and runs the node there. No root needed.
 set -e
 V=${NODE_VERSION:-0.3.4}
@@ -19,7 +19,7 @@ apt-get update -qq
 apt-get install -y -qq curl ca-certificates python3 >/dev/null
 mkdir -p /root/node/run && cd /root/node
 if [ ! -x logos-blockchain-node ]; then
-  echo "downloading the official node $V..."
+  echo "downloading the Logos blockchain node $V..."
   curl -fL -o node.tgz "https://github.com/logos-blockchain/logos-blockchain/releases/download/$V/logos-blockchain-node-linux-aarch64-$V.tar.gz"
   tar xzf node.tgz && rm node.tgz
 fi

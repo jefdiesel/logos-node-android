@@ -5,6 +5,7 @@ name: android-app
 on:
   push:
     paths: ['android/**', 'app/**', .github/workflows/android-app.yml]
+  workflow_dispatch:      # build any branch by hand (gh workflow run android-app.yml --ref <branch>), no change needed
 permissions:
   contents: read
   actions: read

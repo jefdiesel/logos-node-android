@@ -1,6 +1,6 @@
 # Native Android build of the Logos node
 
-This builds the official Logos blockchain node (`logos-blockchain-node` from
+This builds the Logos blockchain node (`logos-blockchain-node` from
 [logos-blockchain/logos-blockchain](https://github.com/logos-blockchain/logos-blockchain)) at a
 tagged release, compiled for Android arm64 (`aarch64-linux-android`, API 28) with the Android NDK.
 It is built twice: once from the node source as published (no patches, no fork), and once with
@@ -21,8 +21,8 @@ Linux arm64 runner.
    publishes for Linux, macOS and Windows. `build-circuits.sh` compiles them for Android with the
    NDK, following the exact recipe of upstream's own CI (same circom version, same patches, same
    symbol hiding). It checks that the generated `witness_generator.dat` files are byte-identical to
-   the official release.
-2. The proving and verification keys are copied unchanged from the official circuits release. They
+   the published release.
+2. The proving and verification keys are copied unchanged from the published circuits release. They
    are tied to that release and must never be regenerated.
 3. The prover library (rapidsnark) comes from iden3's prebuilt Android archive, as the node's own
    dependency already does; its GMP is reused for the witness generators so there is one GMP.

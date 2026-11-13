@@ -1,6 +1,6 @@
 # Native Android build of the Logos Messaging (Waku) node
 
-This builds the official Logos Messaging node library, `liblogosdelivery`, from
+This builds the Logos Messaging node library, `liblogosdelivery`, from
 [logos-messaging/logos-delivery](https://github.com/logos-messaging/logos-delivery) (the Nim
 node formerly called nwaku), for Android arm64 (`aarch64-linux-android`, API 28). It uses
 upstream's own make target, `liblogosdelivery-android-arm64`, which upstream's CI also builds.
@@ -192,7 +192,7 @@ Do not treat it alone as "offline".
 
 ## Traffic
 
-Measured on 2026-11-12, on `logos.test`, with the official macOS node releases on a desktop.
+Measured on 2026-11-12, on `logos.test`, with the published macOS node releases on a desktop.
 Each figure is a single 3–4 minute window. **The network load swung about 2x within one
 afternoon**, so read these as rough sizes, not constants.
 

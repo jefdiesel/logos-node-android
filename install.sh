@@ -1,7 +1,7 @@
 #!/bin/sh
 # Logos blockchain node on an Android phone, inside Android's Linux Terminal app.
 # Run once, inside the Terminal app:   sh install.sh
-# It downloads the official node, makes fresh keys, joins the testnet, and sets the node and a
+# It downloads the Logos blockchain node, makes fresh keys, joins the testnet, and sets the node and a
 # small web app (status and wallet) to start whenever the Linux box starts. No computer is needed after this.
 #
 # Before running: Terminal app -> gear -> Advanced -> Memory size: about 2500 MB on an 8 GB phone
@@ -20,7 +20,7 @@ SWAP_GB=${SWAP_GB:-2}
 
 mkdir -p ~/node/run && cd ~/node
 if [ ! -x logos-blockchain-node ]; then
-  echo "downloading the official node $V..."
+  echo "downloading the Logos blockchain node $V..."
   curl -fL -o node.tgz "https://github.com/logos-blockchain/logos-blockchain/releases/download/$V/logos-blockchain-node-linux-aarch64-$V.tar.gz"
   tar xzf node.tgz && rm node.tgz
 fi

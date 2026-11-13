@@ -283,7 +283,7 @@ jobs:
         if: failure()
         run: tail -60 chain/node.log; cat chain/app.log; tail -30 chain/bad.log || true
   termux:
-    # Runs install-termux.sh inside the official Termux Docker image (Termux userland on arm64).
+    # Runs install-termux.sh inside the Termux project's Docker image (Termux userland on arm64).
     # Not a real phone: it tests the script and that the node runs under proot.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20

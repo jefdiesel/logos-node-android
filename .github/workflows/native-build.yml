@@ -1,5 +1,5 @@
 name: native-build
-# Compiles the official Logos node for Android (arm64) with the NDK, twice: unpatched, and with
+# Compiles the Logos blockchain node for Android (arm64) with the NDK, twice: unpatched, and with
 # the patches in native/patches applied. Also runs upstream's tests of the patched crates, and
 # builds both variants for Linux arm64 (for replay measurements on a Linux arm64 machine).
 # To build a newer node, change NODE_VERSION below; the circuits tag, rapidsnark and circom
@@ -185,7 +185,7 @@ jobs:
           echo "patch tests:"; grep -E "replay|trusted|fast_and_full" test.log || true
 
   # Linux arm64 builds (glibc), unpatched and patched, from the same runner and toolchain, so the
-  # replay can be compared on a Linux arm64 machine against the official release binary too.
+  # replay can be compared on a Linux arm64 machine against the released binary too.
   linux-arm64:
     strategy:
       fail-fast: false

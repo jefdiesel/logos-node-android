@@ -1,5 +1,5 @@
 name: waku-build
-# Builds the official Logos Messaging (Waku) node library, liblogosdelivery, for Android
+# Builds the Logos Messaging (Waku) node library, liblogosdelivery, for Android
 # arm64 with upstream's own make target (the one its CI runs), plus the small runner in
 # messaging/runner that turns it into a process. See messaging/README.md.
 # To build a newer release, change WAKU_VERSION and WAKU_SHA below (the tag and the commit it
