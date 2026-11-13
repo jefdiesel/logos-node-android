@@ -114,8 +114,8 @@ def advance(sec, loop=True):
 
 
 def looks():
+    server.xfer_round()                      # as history_loop does: transfers first, then the history
     server.history_round()
-    server.xfer_round()
 
 
 def send(frm, to, amount):
@@ -382,6 +382,20 @@ check("  its split is a transfer of its own, pending, the account held", split a
 chain.block()
 looks()
 check("  it lands: in a block by its hash; the account free", split[0]["status"] == "in block" and server.xfer_spend_check(A) is None)
+check("  the note it set aside is not shown as received, nothing 'changed'",
+      not [e for e in server.history["entries"] if e["kind"] in ("received", "changed")], server.history["entries"][-3:])
+
+# the chain read gives nothing (an empty answer): never "not in a block" on that
+world(a=(600000,))
+h = send(A, BOB, 100000)[1]["hash"]
+chain.spend_outside(A)
+real_raw = chain.raw
+chain.raw = lambda path, timeout=8: (200, b"")
+looks()
+check("an empty answer from the chain: still pending, never 'not in a block'", entry(h)["status"] == "pending")
+chain.raw = real_raw
+looks()
+check("  read whole: 'not in a block' (its note went elsewhere)", entry(h)["status"] == "not in a block")
 
 # no text asks to send again while a transfer is unsettled
 texts = [server.xfer_why(server.xfer_new(A, BOB, 1, "send")), server.xfer_why(server.xfer_new(A, BOB, 1, "unreadable"))]
@@ -390,9 +404,44 @@ check("the texts while a transfer is unsettled don't ask to send again", not any
 # ---- part 3: random runs ------------------------------------------------------------------------------------------------
 RUNS = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.environ.get("XFER_RUNS", "2000"))
 QUIET[0] = True
-bad = {"I1": 0, "I1-paid-twice": 0, "I2": 0, "I3": 0, "I4": 0, "text": 0}
+bad = {"own-output-received": 0, "I1": 0, "I1-paid-twice": 0, "I2": 0, "I3": 0, "I4": 0, "text": 0}
 first_bad = {}
-stats = {"sends": 0, "landed": 0, "unknown": 0, "refused-conflict": 0, "crashes": 0, "reboots": 0, "retries": 0}
+stats = {"bridges": 0, "sends": 0, "landed": 0, "unknown": 0, "refused-conflict": 0, "crashes": 0, "reboots": 0, "retries": 0}
+
+
+server.lez_act_add = lambda *a, **k: None
+server.lez_act_set = lambda *a, **k: None
+
+
+def bridge(rnd):
+    """A bridge from a random account: its split is a transfer like any other; sometimes stopped while the node funds
+    it (DELTA6 S2), sometimes later. (bridge_check's other conditions need the name service; its gate on the account
+    is xfer_spend_check, which the invariants check.)"""
+    b = server.bridge_load()
+    if b and b["state"] in server.BRIDGE_ACTIVE:
+        if rnd.random() < 0.5:
+            server.lns_bridge_cancel()
+        return
+    key = rnd.choice((A, B))
+    why = server.xfer_spend_check(key)
+    if why:
+        return
+    amount = rnd.choice((110000, 150000, 400000))
+    plan = {"from": key, "label": "Main", "to": "acct", "amount": str(amount), "split": True, "note": None, "channel": "cc" * 32,
+            "fee_max": "100000", "split_fee_max": "10000", "balance": "0", "notes_before": sorted(server.notes_of(key) or {})}
+    server.bridge_check = lambda frm, a: (None, plan)
+    real_call = chain.call
+    if rnd.random() < 0.3:
+        def cancel_then(path, body=None, timeout=8):
+            if path == "/wallet/fund":
+                server.lns_bridge_cancel()
+            return real_call(path, body, timeout)
+        chain.call = cancel_then
+    try:
+        server.lns_bridge({"from": key, "amount": str(amount), "confirm": True})
+    finally:
+        chain.call = real_call
+    stats["bridges"] += 1
 
 
 def run(seed):
@@ -491,6 +540,8 @@ def act(rnd, step, payments, pay, back):
             stats["reboots"] += 1
             advance(rnd.choice((0, 60, 1800)), loop=False)
             reboot(mono=rnd.choice((20.0, 300.0)))
+        elif x < 0.95 and step % 3 == 0:
+            bridge(rnd)
         elif x < 0.92:
             chain.credit(rnd.choice((A, B)), rnd.choice((500, 90000, 1500000)))
         elif x < 0.925:
@@ -502,8 +553,21 @@ def act(rnd, step, payments, pay, back):
             chain.fail.clear()
 
 
+def keys_of_tx(tx):
+    """The account a funded transfer spends from: the key its change goes back to (the last output's)."""
+    outs = tx["ops"][0]["payload"]["outputs"]
+    return outs[-1]["pk"] if len(outs) > 1 else None
+
+
 def invariants(seed, step, born, payments):
     if True:
+        # an output a transfer pays back to its own account (change, a split's amount) is never shown as received
+        back = {fake_chain.nid(h, n) for h, tx in chain.funded.items() for n, o in enumerate(tx["ops"][0]["payload"]["outputs"])
+                if o["pk"] == keys_of_tx(tx)}
+        for e in server.history["entries"]:
+            if e["kind"] == "received" and e.get("note") in back:
+                bad["own-output-received"] += 1
+                first_bad.setdefault("own-output-received", (seed, step, e))
         for e in entries():
             if e.get("status") == "in block" and e.get("hash") not in chain.landed:
                 bad["I2"] += 1

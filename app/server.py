@@ -3362,7 +3362,7 @@ def xfer_encode(mantle_tx):
 def xfer_checked(reply, frm, to, amount, notes):
     """The node's funded transfer, if it is the one asked for: one transfer op, inputs that are notes of `frm` (as
     the wallet read them just before), one output of `amount` to `to`, any other outputs back to `frm`, a fee within
-    XFER_MAX_FEE. Returns (signed transfer, hash, inputs, change values, fee), or None."""
+    XFER_MAX_FEE. Returns (signed transfer, hash, inputs, values of the outputs back to `frm`, fee), or None."""
     try:
         tx, proof = reply["funded_tx"], reply["transfer_proof"]
         ops = tx["ops"]
@@ -3381,7 +3381,9 @@ def xfer_checked(reply, frm, to, amount, notes):
         fee = sum(notes[i] for i in ins) - sum(v for v, _ in outs)
         if not 0 <= fee <= XFER_MAX_FEE:
             return None
-        return {"mantle_tx": tx, "ops_proofs": [proof]}, xfer_hash(tx), ins, [v for v, _ in rest], fee
+        # every output paid back to the sending key (the change, and for a split the amount set aside too)
+        return {"mantle_tx": tx, "ops_proofs": [proof]}, xfer_hash(tx), ins, [v for v, pk in outs if pk == frm], fee, \
+            {i: notes[i] for i in ins}
     except Exception:
         return None
 
@@ -3389,15 +3391,17 @@ def xfer_checked(reply, frm, to, amount, notes):
 def xfer_find(r):
     """Looks for the record's hash in the chain since it was funded: ("found", slot) / ("absent", None) when the
     chain was read to its tip without it / ("unknown", None) when the chain couldn't be read whole."""
-    slot_from, seen = r.get("slot_from"), 0
-    if not isinstance(slot_from, int):
+    slot_from, seen, last = r.get("slot_from"), 0, None
+    st = node_status()
+    tip = st.get("slot") if st else None
+    if not isinstance(slot_from, int) or not isinstance(tip, int):
         return "unknown", None
     for _ in range(40):
         code, raw = node_raw("/cryptarchia/blocks_range?slot_from=%d&order=ascending&blocks_limit=%d" % (slot_from, XFER_SCAN_LIMIT),
                              timeout=20)
         if code != 200 or raw is None:
             return "unknown", None
-        count, last = 0, None
+        count = 0
         try:
             for line in raw.decode().splitlines():
                 if not line.strip():
@@ -3414,7 +3418,9 @@ def xfer_find(r):
             return "unknown", None
         seen += count
         if count < XFER_SCAN_LIMIT:
-            return "absent", None
+            # absent only when the chain was read up to the tip seen before the read began (never on an empty or
+            # unreadable answer)
+            return ("absent", None) if seen and isinstance(last, int) and last >= tip else ("unknown", None)
         if last is None or last < slot_from:
             return "unknown", None
         slot_from = last + 1
@@ -3576,9 +3582,9 @@ def transfer(frm, to, amount, kind, entry_fields, bridge_id=None):
             xfer_save()
         xfer_entry_drop(r)                    # nothing was submitted: a fund never submits anything
         return why[0], {"error": why[1]}
-    signed, h, ins, change, fee = got
+    signed, h, ins, change, fee, in_values = got
     with xfer_lock:
-        r.update(state="funded", signed=signed, hash=h, inputs=ins, change=change, fee=fee)
+        r.update(state="funded", signed=signed, hash=h, inputs=ins, change=change, fee=fee, in_values=in_values)
         if not xfer_save():
             r.update(state="ended", result="not sent", signed=None)
             xfer_save()
@@ -3680,7 +3686,7 @@ def xfer_spent_by_us(key):
     """{note id: record} for the notes of `key` that our unsettled or landed transfers spend (not those that ended
     without landing: a note of theirs that leaves went elsewhere, and shows as "changed")."""
     with xfer_lock:
-        recs = [r for r in xfer_records().values() if r["key"] == key and r.get("inputs") and r["state"] != "ended"]
+        recs = [dict(r) for r in xfer_records().values() if r["key"] == key and r.get("inputs") and r["state"] != "ended"]
     return {i: r for r in recs for i in r["inputs"]}
 
 
@@ -3703,13 +3709,15 @@ def send(body):
         return 400, {"error": "The amount must be more than zero."}
     if EMBEDDED and bridge_busy_key(frm):
         return 409, {"error": "This account is moving coins to your name account. Send from it once that is in a block (a minute or so)."}
+    st = node_status()
+    if not st or st.get("state") != "Online":
+        return 409, {"error": "The node is not online yet, so it can't send. Wait until it has finished syncing."}
     bal = balance_of(frm)
     if bal is None:
         return 502, {"error": "The node didn't return a balance for that key."}
     if bal[0] < amount:
         return 400, {"error": "That key holds %d, less than %d." % (bal[0], amount)}
     labels = {k["key"]: k["label"] for k in wallet_keys()}
-    st = node_status() or {}
     entry = {"key": frm, "label": labels.get(frm, ""), "to": to, "amount": str(amount), "fee": None, "hash": None,
              "height": st.get("height")}
     if to in labels:
@@ -3829,18 +3837,34 @@ def history_round():
                 continue
             added = {i: v for i, v in new.items() if i not in old}
             removed = {i: v for i, v in old.items() if i not in new}
-            if not added and not removed:
+            # our own transfers that spent notes of this key since the last look: their notes and the outputs they
+            # pay back to it belong to them (settled by their hash in xfer_round, which runs first). One whose fate
+            # xfer_round doesn't know yet (the chain couldn't be read) waits: this key is looked at again next time.
+            spent = spent_by_us.get(key) or {}
+            done = set(history.setdefault("xfer_done", []))
+            mine = {r["id"]: r for r in spent.values() if r["id"] not in done and any(i not in new for i in r["inputs"])}
+            if any(r["state"] != "landed" for r in mine.values()):
+                continue
+            if not added and not removed and not mine:
                 continue
             changed = True
-            # notes our own transfers spend, and the change they pay back, belong to those transfers: they are
-            # settled by their hash (xfer_round), never by these numbers
-            spent = spent_by_us.get(key) or {}
-            ours = {spent[i]["id"]: spent[i] for i in removed if i in spent}
-            removed = {i: v for i, v in removed.items() if i not in spent}
-            for v in [v for r in ours.values() for v in r.get("change") or []]:
+            back = [v for r in mine.values() for v in r.get("change") or []]     # what they paid back to this key
+            for r in mine.values():
+                for i in r["inputs"]:
+                    v = (r.get("in_values") or {}).get(i)
+                    if i in removed:
+                        removed.pop(i)
+                    elif i not in old and i not in new and isinstance(v, int):
+                        if v in back:            # paid back by one of them, then spent by another, between two looks
+                            back.remove(v)
+                        else:                    # received and spent between two looks: received all the same
+                            history_add("received", key=key, label=label, amount=str(v), note=i, height=height)
+                history["xfer_done"].append(r["id"])
+            for v in back:
                 hit = next((i for i, w in sorted(added.items()) if w == v), None)
                 if hit is not None:
                     added.pop(hit)
+            history["xfer_done"] = history["xfer_done"][-200:]
             dep = next((e for e in history["entries"] if e["kind"] == "sent" and e.get("bridge") == "deposit" and e.get("key") == key
                         and e.get("status") == "pending" and e.get("note") in removed), None)
             if dep:                          # the bridge deposit spent its note: in a block (its note is its identity)
@@ -3889,11 +3913,11 @@ def history_cap_old():
 def history_loop():
     while True:
         try:
-            history_round()
+            xfer_round()                       # transfers first: submitted again, or settled by their hash
         except Exception:
             pass
         try:
-            xfer_round()                       # transfers: submitted again, or settled by their hash
+            history_round()                    # then what came in and went out, with their notes set apart
         except Exception:
             pass
         time.sleep(HISTORY_POLL)

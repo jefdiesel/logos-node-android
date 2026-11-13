@@ -124,6 +124,13 @@ for line in raw.decode().splitlines():
         for t in ev.get("block", ev).get("transactions") or []:
             found = found or (t.get("mantle_tx") or {}).get("hash") == h
 check("the node's own block stream has the hash the app computed", found, raw[:600])
+lines = [json.loads(x) for x in raw.decode().splitlines() if x.strip()]
+print("     one line of the stream (cut):", json.dumps(lines[0])[:400] if lines else "none")
+blocks = [ev.get("block", ev) for ev in lines]
+check("its lines are what the app reads: block.header.slot an integer, transactions[].mantle_tx.hash a string",
+      blocks and all(isinstance((b.get("header") or {}).get("slot"), int) for b in blocks)
+      and all(isinstance((t.get("mantle_tx") or {}).get("hash"), str) for b in blocks for t in b.get("transactions") or []),
+      json.dumps(lines[:1])[:600])
 
 # ---- 3. the same signed transfer again, twice: it lands once ---------------------------------------------------------------
 for _ in range(2):
