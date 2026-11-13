@@ -522,6 +522,18 @@ check("S-9: it reads as unsure, and is kept as unsure", j["error"] == "May have 
 code, d = call("/api/wallet/lns/send", {"to": TO, "amount": "19", "confirm": True}, session=s)
 check("S-9: the same send again is held back for a few minutes", code == 409 and "may have gone out" in d["error"], d)
 check("S-6 (B2): that hold is on disk, so a restart keeps it", json.load(open(server.LNS_SEND_UNSURE_FILE)).get("amount") == "19")
+# N-7: a full disk keeps the hold in memory and says so; a stale .tmp is written 0600 all the same
+real_file = server.LNS_SEND_UNSURE_FILE
+server.LNS_SEND_UNSURE_FILE = os.path.join(data, "no-such-dir", "wallet-lez-unsure.json")   # as a full disk: the write fails
+code, d = call("/api/wallet/lns/send", {"to": TO, "amount": "13", "confirm": True}, session=s)
+j = until("the unsure one finishes", lambda: (lambda j: j if j["state"] != "running" else None)(call("/api/wallet/lns", session=s)[1]["job"]))
+check("N-7: when the hold can't be written, the person is told it lasts until a restart", "storage is full" in j["error"], j["error"])
+code, d = call("/api/wallet/lns/send", {"to": TO, "amount": "13", "confirm": True}, session=s)
+check("N-7: and the hold works from memory", code == 409 and "may have gone out" in d["error"], d)
+server.LNS_SEND_UNSURE_FILE = real_file
+fd = os.open(real_file + ".tmp", os.O_WRONLY | os.O_CREAT, 0o644); os.close(fd); os.chmod(real_file + ".tmp", 0o644)
+server.lns_unsure_save({"to": "x", "amount": "1", "at": time.time()})
+check("N-7: a stale .tmp left at 0644 doesn't make the file 0644", (os.stat(real_file).st_mode & 0o777) == 0o600, oct(os.stat(real_file).st_mode))
 code, d = call("/api/wallet/lns/send", {"to": TO, "amount": "21", "confirm": True}, session=s)
 j = until("the timed-out one finishes", lambda: (lambda j: j if j["state"] != "running" else None)(call("/api/wallet/lns", session=s)[1]["job"]))
 check("S-9: handed to the sequencer but its answer lost (no hash printed): unsure, not 'not sent'", j["error"] == server.LNS_SEND_UNSURE and j.get("unsure") is True, j)

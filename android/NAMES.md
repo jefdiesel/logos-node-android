@@ -186,10 +186,28 @@ Then the page shows one line and **Try again**.
     the first paid send: at most the expected cost plus one failed register transaction;
   - at least a minute between two sends;
   - an unknown nonce or fee means nothing is sent: it waits (counted), then stops.
-  A register run is one commit and up to four reveals, so the per-run count alone doesn't bound it.
+  - a second register run only when the first moved the nonce by at most one (its commit): a run is one
+    commit and up to four reveals, and the brakes are checked before a run, not during it.
+- **Worst case, honestly** (fee ceiling 9; a transaction that fails on chain is billed its whole limit:
+  2,263,500 for a register transaction, 1,093,500 for an entry):
+  - Before 0.9.15 one tap could bill about **15.8M** (7 register transactions: a run of a commit and two
+    failed reveals, then a second run of four failed reveals), against a stated 8.98M.
+  - Now one tap can bill at most **11,317,500** (5 register transactions: one run of a commit and four
+    failed reveals), plus the 1,000,000 deposit if a reveal lands (refunded on release). Any other mix is
+    stopped sooner by the budget or the 6-transaction cap. `tests/lns_flow_test.py` ("worst case") runs it:
+    5 transactions, 11,317,500 at most, then nothing more.
+  - Finish setting up (a name already held) at most **4,374,000** (4 entries, the transaction cap).
+  - Always at most the balance at the tap plus LEZ arriving while it runs. Each Start over is the same again;
+    its button says the most it may cost.
+- **A stop shows what it did**: its transactions in blocks, the most they were billed, and the balance
+  change since the first paid send; then "Start over (up to N LEZ more)".
+- **Stop while a change is being sent** says until when (up to 95 minutes for a register). "Stop now" is
+  offered only while a register waits out the 15 minutes between its steps: its commit is in a block and
+  saved, and nothing is being sent, so the next register resumes it.
 - **Waits** are all counted and spaced out; a `names resolve` (Argon2) runs at most once a minute, and
   after five with no step taken, once every ten minutes. The day's wait for LEZ and the two-day limit
-  count time on the monotonic clock, so setting the clock back can't stretch them.
+  count only the time the app runs the flow, on the monotonic clock, saved every round: setting the clock
+  back can't stretch them, and a clock jumped forward can't end a flow (and cost a new commit).
 - **Try again** after any stop is the person's own tap: it starts every count and limit over.
 - **LEZ Send waits** while getting a name runs: the brakes count the account's transactions.
 - **The job signs after the wallet locks.** The one tap is the consent. While it is between two

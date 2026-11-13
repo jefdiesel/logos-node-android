@@ -205,7 +205,20 @@ for (const z of [1.15, 1.3]) {
   check(`text at ${Math.round(z * 100)}%: token names and networks whole (wrapping, no "…"), balances whole, Activity rows tidy, nothing overflows`, r.length === 0, r);
   if (z === 1.3) await shot("wallet-tokens-large-text");
 }
+// N-8: at 200% a very long balance shrinks, and if it still can't fit it ends in "…" (with the whole amount as its
+// title); it is never a silently shorter number
+await ctl("lez/123456789012345678901");
+await js(`LNS.home(true); true`);
+await waitFor("a very long LEZ balance", `/123,456,789,012,345,678,901/.test(document.querySelector("#tok-lez .tok-amt").textContent)`);
+await js(`document.getElementById("v-open").style.zoom = "2"; fitHero(); true`);
+await sleep(300);
+const big = await js(`(() => { const a = document.querySelector("#tok-lez .tok-amt"); return { fits: a.scrollWidth <= a.clientWidth + 1, ellipsis: getComputedStyle(a).textOverflow === "ellipsis", title: a.title, px: parseFloat(getComputedStyle(a).fontSize) }; })()`);
+check("N-8: at 200% a long balance fits, or shows \"…\" with the whole amount as its title (never cut silently)",
+  big.fits || (big.ellipsis && big.title === "123,456,789,012,345,678,901 LEZ"), big);
 await js(`document.getElementById("v-open").style.zoom = ""; fitHero(); true`);
+await ctl("lez/3500000");
+await js(`LNS.home(true); true`);
+await waitFor("back to a usual balance", `/^3,500,000/.test(document.querySelector("#tok-lez .tok-amt").textContent)`);
 await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
 await click("#tok-lez");
 check("tapping LEZ picks it: its row marked, Logos not", await js(`document.getElementById("tok-lez").getAttribute("aria-checked") === "true" && document.getElementById("tok-logos").getAttribute("aria-checked") === "false"`));

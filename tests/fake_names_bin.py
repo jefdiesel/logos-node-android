@@ -126,6 +126,35 @@ def main():
         if name == "taken":
             fail("taken is already registered\n\nCaused by:\n    held")
         flag = lambda f: os.path.exists(os.path.join(home, "..", f))
+        def saved_commit():
+            rpc("sendTransaction", [{"Public": "commit"}])
+            nj = os.path.join(home, "names.json")
+            try:
+                dflt = json.load(open(nj))
+            except Exception:
+                dflt = {}
+            dflt.setdefault("pending", {})[name] = {"owner": ACCOUNT, "secret": "ab" * 32, "made": int(time.time() * 1000)}
+            json.dump(dflt, open(nj, "w"))
+        if flag("fake-register-commit-only"):     # the commit lands and is saved, then a passing error
+            os.remove(os.path.join(home, "..", "fake-register-commit-only"))
+            saved_commit()
+            fail("error sending request for url (connection refused)")
+        if flag("fake-register-two-reveals"):     # the commit (saved) and two billed reveals, then a passing error
+            saved_commit()
+            for _ in range(2):
+                rpc("sendTransaction", [{"Public": "reveal"}])
+            fail("error sending request for url (connection refused)")
+        if flag("fake-register-wait"):            # the commit (saved), then the 15-minute wait, printed
+            print("step 1 of 2: committing to %s" % name, flush=True)
+            saved_commit()
+            print("applied in block 7", flush=True)
+            print("waiting 900s before revealing (everyone waits the same)", flush=True)
+            time.sleep(60)
+            sys.exit(0)
+        if flag("fake-register-slow-commit"):     # sending the commit (not safe to stop)
+            print("step 1 of 2: committing to %s" % name, flush=True)
+            time.sleep(60)
+            sys.exit(0)
         if flag("fake-register-reveals-fail"):    # a commit (saved) and four reveals, each billed, then a passing error
             rpc("sendTransaction", [{"Public": "commit"}])
             nj = os.path.join(home, "names.json")

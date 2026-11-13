@@ -28,7 +28,9 @@ slot.innerHTML = `
         <button type="button" class="primary" id="b-lns-addlez" style="width:100%" hidden>Add LEZ</button>
         <p class="note" id="lns-keep">Keep the app open.</p>
         <p class="msg bad" id="lns-flow-err" role="alert" hidden></p>
+        <p class="note" id="lns-spent" hidden></p>
         <div class="row" id="lns-flow-acts" hidden><button type="button" id="b-lns-stop">Stop</button><button type="button" class="primary" id="b-lns-retry">Try again</button></div>
+        <button type="button" id="b-lns-stop-now" style="width:100%" hidden>Stop now</button>
       </div>
       <div id="lns-has" hidden>
         <p style="margin:0"><b id="lns-name"></b> is yours.</p>
@@ -152,6 +154,12 @@ function flowDraw(d) {
   $("lns-flow-err").hidden = !failed; $("lns-flow-acts").hidden = false;
   $("b-lns-retry").hidden = !failed;
   if (failed) $("lns-flow-err").textContent = "Stopped: " + f.error;
+  // before starting over: what it really did, and the most a new start may cost
+  const sp = failed && f.spent;
+  $("lns-spent").hidden = !sp;
+  if (sp) $("lns-spent").textContent = (sp.tx == null ? "" : sp.tx + " transaction" + (sp.tx === 1 ? "" : "s") + " in blocks · ")
+    + "billed at most " + LEZ(sp.billed_max) + (sp.balance_change == null ? "" : " · balance " + (sp.balance_change.startsWith("-") ? "−" + fmt(sp.balance_change.slice(1)) : "+" + fmt(sp.balance_change)) + " LEZ") + ".";
+  $("b-lns-retry").textContent = failed && f.next_max ? "Start over (up to " + fmt(up10k(f.next_max)) + " LEZ more)" : "Try again";
   $("lns-keep").hidden = failed || short;
   if (!tick) tick = setInterval(() => { if (lnsLast && !document.hidden) flowDraw(lnsLast); }, 1000);
 }
@@ -237,7 +245,17 @@ $("b-lns-finish").addEventListener("click", () => {
 $("b-lns-finish-x").addEventListener("click", () => { $("lns-finish-ok").hidden = true; lnsLoad(); });
 $("b-lns-finish-go").addEventListener("click", async () => { $("lns-finish-ok").hidden = true; await lnsDo("/api/wallet/lns/get", { name: lnsLast.name, mode: "link" }); });
 $("b-lns-retry").addEventListener("click", () => lnsDo("/api/wallet/lns/get/retry", {}));
-$("b-lns-stop").addEventListener("click", () => lnsDo("/api/wallet/lns/get/stop", {}));
+// Stop: refused while a change is being sent (it says until when); "Stop now" only when stopping is safe
+async function lnsStop(now) {
+  const e = epoch, r = await api("/api/wallet/lns/get/stop", now ? { now: true } : {});
+  if (stale(e)) return;
+  if (r.status === 401) return lockedNow();
+  $("b-lns-stop-now").hidden = !(r.status === 409 && r.data.safe_now);
+  if (!r.ok) { lnsMsg(r.data.error || "It can't be stopped now.", "warn"); return; }
+  lnsMsg(""); await lnsLoad();
+}
+$("b-lns-stop").addEventListener("click", () => lnsStop(false));
+$("b-lns-stop-now").addEventListener("click", () => { $("b-lns-stop-now").hidden = true; lnsStop(true); });
 $("b-lns-putback").addEventListener("click", () => lnsDo("/api/wallet/lns/putback", {}));
 $("b-lns-bk").addEventListener("click", () => openSettings("s-bk", "bk-pw1"));
 $("b-lns-bc").addEventListener("click", () => lnsDo("/api/wallet/lns/text", { entry: "blockchain" }));
@@ -360,6 +378,7 @@ async function home(on) {
   if (lezBal == null) amt.replaceChildren(el("span", { className: "ph", textContent: "—", title: "Not known right now" }));
   else if (balHidden) amt.replaceChildren(el("span", { className: "mask", textContent: MASK }));
   else amt.replaceChildren(fmt(lezBal), el("span", { className: "unit", textContent: "LEZ" }));
+  amt.title = lezBal == null || balHidden ? "" : fmt(lezBal) + " LEZ";     // the whole amount, if the row shows "…"
   fitAmt(amt);
   if (tokSel === "lez") lezShow(wTab);
 }
