@@ -8,7 +8,7 @@
 // Three apps on a fake messaging network: the browser shows alice's; bob and carol write from Node with the
 // page's own chat model. Checks what the screen shows; with SHOTS, saves a PNG of each state.
 import { spawn } from "node:child_process";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { noGreenOrBlue } from "./hue_check.mjs";
 import { join } from "node:path";
@@ -966,6 +966,20 @@ await shot("messages-home");
   failStore = false;
   await waitFor("once the store loads, the chats are back", `document.querySelectorAll("#mg-rows .crow").length >= 3`, 70000);
   await cdp("Fetch.disable");
+  // a store file that can't be read (as after a power cut): it says so, and the last saved copy brings the chats back
+  const good = readFileSync(join(A.data, "wallet-chat.json"), "utf8");
+  check("(each save keeps the copy it replaces)", existsSync(join(A.data, "wallet-chat.json.prev")));
+  writeFileSync(join(A.data, "wallet-chat.json"), "");
+  await load();
+  await waitFor("the page loads", `!document.getElementById("v-open").hidden || !document.getElementById("v-locked").hidden`);
+  if (await js(`!document.getElementById("v-locked").hidden`)) await unlock();
+  await click("#nav-msg");
+  await waitFor("the file can't be read: one plain card, with the last saved copy and Start fresh", `!document.getElementById("mg-store-warn").hidden && document.getElementById("mg-store-why").textContent.includes("can't be read") && !document.getElementById("mg-store-prev").hidden && !document.querySelector("#mg-rows .crow")`, 20000);
+  await shot("chats-file-unreadable");
+  await bigTargets("the saved chats card");
+  await click("#mg-store-prev");
+  await waitFor("Use the last saved copy: the chats are back", `document.querySelectorAll("#mg-rows .crow").length >= 3 && document.getElementById("mg-store-warn").hidden`, 30000);
+  check("(the file is readable again)", readFileSync(join(A.data, "wallet-chat.json"), "utf8").length > 10 && good.length > 10);
 }
 
 // ---- the lock screen inside the Android app, with fingerprint on (a stand-in bridge counts the prompts) ----

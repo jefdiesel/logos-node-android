@@ -3798,7 +3798,10 @@ def messaging_round():
     with msg_lock:
         pending = [i for i in inbox["items"] if i.get("k") not in ("c", "d")]
         pend_n, pend_bytes = len(pending), sum(len(i.get("payload") or "") * 3 // 4 for i in pending)
-        evict = sorted(pending, key=lambda i: (i.get("k") != "r", i["n"]))     # requests first, then unsorted; oldest first
+        # who makes room, oldest first within each: requests the user hasn't opened (and that aren't a proven name),
+        # then unsorted messages, and last the requests the page marked to keep
+        evict = sorted([i for i in pending if not i.get("keep")], key=lambda i: (i.get("k") != "r", i["n"]))
+        evict_kept = sorted([i for i in pending if i.get("keep")], key=lambda i: i["n"])
         for r in records:
             if not isinstance(r, dict):
                 continue
@@ -3823,23 +3826,34 @@ def messaging_round():
                 ids.add("h:" + r["messageHash"].lower())
             if ids & set(inbox["seen"]):
                 continue                                    # delivered before (live and again from history)
-            while evict and (pend_n >= PENDING_MAX or pend_bytes + len(payload) > PENDING_BYTES):
-                old = evict.pop(0)                          # the ring is full: the oldest makes room (PENDING_MAX)
+            while (evict or evict_kept) and (pend_n >= PENDING_MAX or pend_bytes + len(payload) > PENDING_BYTES):
+                old = evict.pop(0) if evict else evict_kept.pop(0)   # the ring is full: see the order above
                 inbox["items"] = [i for i in inbox["items"] if i is not old]
                 pend_n -= 1
                 pend_bytes -= len(old.get("payload") or "") * 3 // 4
-                lost = inbox.setdefault("lost", {"count": 0, "first": None, "last": None})
-                lost["count"] += 1
-                lost["first"] = lost["first"] or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                lost["last"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                 changed = True
+                # counted as lost only when it could have been a message (version byte 1, long enough to hold one):
+                # junk that can't be one isn't counted
+                try:
+                    head = base64.b64decode((old.get("payload") or "")[:4] + "==")[:1]
+                    plausible = head == b"\x01" and len(old.get("payload") or "") * 3 // 4 >= 73
+                except Exception:
+                    plausible = False
+                if not plausible:
+                    continue
+                now_s = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                lost = inbox.setdefault("lost", {"count": 0, "first": None, "last": None})
+                if not lost.get("last") or time.time() - calendar.timegm(time.strptime(lost["last"], "%Y-%m-%dT%H:%M:%SZ")) > 6 * 3600:
+                    lost["first"] = now_s                    # a new burst
+                lost["count"] += 1
+                lost["last"] = now_s
             pend_n += 1
             pend_bytes += len(payload)
             inbox["seen"].extend(sorted(ids))
             inbox["items"].append({"n": inbox["next"], "payload": base64.b64encode(payload).decode(),
                                    "source": r.get("source") if r.get("source") in ("live", "history") else None,
                                    "received": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "read": False})
-            evict.append(inbox["items"][-1])                # newest last: it can make room for later ones too
+            evict.append(inbox["items"][-1])                # newest last (before kept requests): it can make room too
             inbox["next"] += 1
             changed = True
         now = time.time()                               # dropped ones past their grace go even when nothing comes in
@@ -3970,11 +3984,10 @@ def store_load():
     return _json_load(STORE_FILE, lambda d: isinstance(d.get("rev"), int), lambda: {"rev": 0, "blob": None})
 
 
-def store_read():
-    """(ok, store) for the page: no file is an empty store, but a file that is there and can't be read is an
-    error, never "empty" (an empty store would make every contact a stranger to the page)."""
+def _store_file_read(path):
+    """(ok, store) for one store file: no file is an empty store; a file that is there and can't be read is not ok."""
     try:
-        with open(STORE_FILE) as f:
+        with open(path) as f:
             d = json.load(f)
     except FileNotFoundError:
         return True, {"rev": 0, "blob": None}
@@ -3984,6 +3997,57 @@ def store_read():
             and (d.get("blob") is None or isinstance(d.get("blob"), str)):
         return True, d
     return False, None
+
+
+def store_read():
+    """(ok, store) for the page: no file is an empty store, but a file that is there and can't be read is an
+    error, never "empty" (an empty store would make every contact a stranger to the page)."""
+    return _store_file_read(STORE_FILE)
+
+
+def store_prev_ok():
+    """Whether the last good copy (STORE_FILE.prev, kept by store_write) is there and readable."""
+    ok, d = _store_file_read(STORE_FILE + ".prev")
+    return bool(ok and os.path.exists(STORE_FILE + ".prev") and d.get("blob"))
+
+
+def _fsync_write(path, data):
+    """Writes `data` (bytes) to `path` through a temporary file, synced before and after the rename, so a power
+    cut leaves either the old file or the new one, never an empty one."""
+    fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(path + ".tmp", path)
+    try:
+        dfd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    except Exception:
+        pass
+
+
+def store_write(d):
+    """Saves the store; the copy it replaces, if it was readable, is kept as STORE_FILE.prev (the caller holds
+    msg_lock)."""
+    ok, cur = _store_file_read(STORE_FILE)
+    if ok and cur.get("blob") and os.path.exists(STORE_FILE):
+        _fsync_write(STORE_FILE + ".prev", json.dumps(cur).encode())
+    _fsync_write(STORE_FILE, json.dumps(d).encode())
+
+
+def store_aside(why):
+    """Moves the store file (readable or not) aside as STORE_FILE.<why>-<time>, and starts an empty one whose rev
+    no page can hold (the caller holds msg_lock). Returns the new rev."""
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    if os.path.exists(STORE_FILE):
+        os.replace(STORE_FILE, "%s.%s-%s" % (STORE_FILE, why, stamp))
+    rev = int(time.time())
+    _fsync_write(STORE_FILE, json.dumps({"rev": rev, "blob": None}).encode())
+    return rev
 
 
 def messaging_start():
@@ -4100,9 +4164,15 @@ def messaging_post(path, body, req):
         # keep the wallet open). A chat message stays one: nothing here turns a "c" into a request or a drop, so
         # a page that lost track of its contacts can't throw their messages away.
         chat, req, drop = _ints(body.get("chat")), _ints(body.get("request")), _ints(body.get("drop"))
+        unread, keep = _ints(body.get("unread")), _ints(body.get("keep"))
         with msg_lock:
             sorted_, refused = 0, 0
             for i in inbox["items"]:
+                if i["n"] in keep and i.get("k") in ("r", None) and not i.get("keep"):
+                    i["keep"] = True                     # a request the user opened, or a proven name: evicted last
+                    sorted_ += 1
+                if i["n"] in unread and i["n"] in chat and i.get("k") == "d":
+                    i["read"] = False                    # a dropped message that came back counts as new
                 k = "c" if i["n"] in chat else "d" if i["n"] in drop else "r" if i["n"] in req else None
                 if k in ("r", "d") and i.get("k") == "c":
                     refused += 1
@@ -4119,6 +4189,43 @@ def messaging_post(path, body, req):
             if sorted_:
                 inbox_save()
         return 200, {"sorted": sorted_, "refused": refused}
+    if path == "/api/messages/store/fresh":
+        # the user chose to start with empty saved chats: the file this key can't open (or can't be read at all)
+        # is kept aside, never deleted
+        with msg_lock:
+            rev = store_aside("aside")
+        event("saved chats set aside", req)
+        return 200, {"rev": rev}
+    if path == "/api/messages/store/use-prev":
+        # the store file can't be read: put the last good copy back (the bad file is kept aside)
+        with msg_lock:
+            if not store_prev_ok():
+                return 404, {"error": "There is no earlier copy of the saved chats."}
+            ok, prev = _store_file_read(STORE_FILE + ".prev")
+            stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+            if os.path.exists(STORE_FILE):
+                os.replace(STORE_FILE, "%s.unreadable-%s" % (STORE_FILE, stamp))
+            rev = int(time.time())
+            _fsync_write(STORE_FILE, json.dumps({"rev": rev, "blob": prev["blob"]}).encode())
+        event("saved chats put back from the last copy", req)
+        return 200, {"rev": rev}
+    if path == "/api/messages/outbox/cancel":
+        # sends to these recipients' inbox topics that haven't gone out are cancelled (the user blocked them, or a
+        # checked contact's address changed): a later retry or the node coming back must not send them
+        topics = {t for t in (body.get("topics") or []) if isinstance(t, str) and MSG_TOPIC_RE.match(t)}
+        with msg_lock:
+            n = 0
+            for item in outbox["items"]:
+                hit = False
+                for x in item["sends"]:
+                    if x.get("topic") in topics and x["state"] in ("queued", "failed") and x.get("payload"):
+                        x.update(state="cancelled", payload=None, error="cancelled", at=time.time())
+                        n += 1; hit = True
+                if hit:
+                    outbox_touch(item)
+            if n:
+                outbox_save()
+        return 200, {"cancelled": n}
     if path == "/api/messages/store":
         # one encrypted blob (profiles, notes, conversations), replaced as a whole; rev stops two pages
         # overwriting each other's changes
@@ -4128,10 +4235,10 @@ def messaging_post(path, body, req):
         with msg_lock:
             ok, cur = store_read()
             if not ok:                               # don't write over a file that can't be read
-                return 500, {"error": "The saved chats file can't be read.", "unreadable": True}
+                return 500, {"error": "The saved chats file can't be read.", "unreadable": True, "prev": store_prev_ok()}
             if rev != cur["rev"] or isinstance(rev, bool):
                 return 409, {"error": "Changed elsewhere; load it again.", "rev": cur["rev"]}
-            _json_save(STORE_FILE, {"rev": cur["rev"] + 1, "blob": blob})
+            store_write({"rev": cur["rev"] + 1, "blob": blob})
             return 200, {"rev": cur["rev"] + 1}
     if path == "/api/messages/key":
         d = {"secret": str(body.get("secret", "")).lower(), "public": str(body.get("public", "")).lower()}
@@ -4228,8 +4335,9 @@ def messaging_get(path, query):
     num = lambda k: int(q[k][0]) if q.get(k) and re.match(r"^\d{1,12}$", q[k][0]) else 0
     if path == "/api/messages/inbox":
         after = num("after")                       # only what came after this number
+        dropped = q.get("dropped") == ["1"]        # dropped ones only when asked (someone became a contact)
         with msg_lock:
-            return 200, {"items": [dict(i) for i in inbox["items"] if i["n"] > after], "next": inbox["next"],
+            return 200, {"items": [dict(i) for i in inbox["items"] if i["n"] > after and (i.get("k") == "d") == dropped], "next": inbox["next"],
                          "sort_from": inbox.get("sort_from", 1),
                          "unread": [i["n"] for i in inbox["items"] if not i.get("read")]}
     if path == "/api/messages/outbox":
@@ -4242,7 +4350,7 @@ def messaging_get(path, query):
     if path == "/api/messages/store":
         with msg_lock:
             ok, cur = store_read()
-            return (200, cur) if ok else (500, {"error": "The saved chats file can't be read.", "unreadable": True})
+            return (200, cur) if ok else (500, {"error": "The saved chats file can't be read.", "unreadable": True, "prev": store_prev_ok()})
     m = re.match(r"^/api/messages/send/([A-Za-z0-9_.:-]{1,128})$", path)
     if m:
         code, st = waku("GET", "/messaging/v1/events/send/" + m.group(1), timeout=6)
@@ -4358,6 +4466,7 @@ def restore_backup(doc, password, replace_lns=False):
     if reported == current:
         before = (msg_key_load() or {}).get("secret")
         if msg_key and msg_key_restore(msg_key):
+            store_aside_for_new_key(before, msg_key, chat)
             n = chat_restore(chat, before != msg_key["secret"]) if chat and messaging_on() else 0
             return 200, dict(lns_reply, unchanged=True, messaging_key_restored=True, messages_restored=n,
                              message="These are the wallet keys already in use. The messaging key from the backup is back in place."), "same keys, messaging key" + lns_why
@@ -4391,11 +4500,22 @@ def restore_backup(doc, password, replace_lns=False):
     before = (msg_key_load() or {}).get("secret")
     if msg_key and msg_key_restore(msg_key):
         reply["messaging_key_restored"] = True
+        store_aside_for_new_key(before, msg_key, chat)
     if chat and messaging_on():
         reply["messages_restored"] = chat_restore(chat, before != msg_key["secret"])
     if not restarted:
         reply["manual"] = restart_hint()
     return 200, reply, "restored"
+
+
+def store_aside_for_new_key(before, msg_key, chat):
+    """A restore put in another messaging key and brings no saved chats: the ones here can't be opened with the
+    new key, so they are kept aside (STORE_FILE.other-key-<time>) and the page starts with empty ones."""
+    if not messaging_on() or not before or before == msg_key.get("secret") or (isinstance(chat, dict) and chat.get("store")):
+        return
+    with msg_lock:
+        if os.path.exists(STORE_FILE):
+            store_aside("other-key")
 
 
 def chat_backup(history):
@@ -4479,13 +4599,14 @@ def backup_export(password, history=True):
         return 500, {"error": "The node's key file couldn't be read."}, source
     salt, nonce = secrets.token_bytes(16), secrets.token_bytes(12)
     content, version = {"keystore.yaml": text}, BACKUP_VERSION
-    mk = msg_key_load()
+    mk, chats_missing = msg_key_load(), False
     if mk:                                    # the messaging key goes along: version 2
         content["messaging_key"] = {k: mk[k] for k in ("secret", "public", "name", "seed", "version") if mk.get(k)}
         version = 2
         chat = chat_backup(history) if messaging_on() else None
         if chat:                              # an app before 0.9 ignores it and restores the keys
             content["chat"] = chat
+        chats_missing = messaging_on() and os.path.exists(STORE_FILE) and not store_read()[0]   # said, never silently left out
     lw = lns_backup()
     if lw == "busy":                          # the signer may be rewriting the name account's files right now
         return 409, {"error": LNS_BACKUP_BUSY, "lns_busy": True}, source
@@ -4504,7 +4625,8 @@ def backup_export(password, history=True):
         os.replace(BACKUP_STATE_FILE + ".tmp", BACKUP_STATE_FILE)
     except Exception:
         pass
-    return 200, {"lns": ("unconfirmed" if lw.get("unconfirmed") else "included") if lw else None, "backup": {
+    return 200, {"lns": ("unconfirmed" if lw.get("unconfirmed") else "included") if lw else None,
+                 "chats_missing": bool(mk) and chats_missing, "backup": {
         "format": BACKUP_FORMAT, "version": version,
         "created": created,
         "addresses": [{"label": k["label"], "key": k["key"]} for k in wallet_keys()],

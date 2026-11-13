@@ -128,6 +128,12 @@ export function readSafetyScan(text) {
 // nothing older than 30 days. (The counts are the design's; the bytes and the age are this app's choice.)
 export const REQ = { PER_SENDER: 3, SENDERS: 50, BYTES: 1048576, AGE_MS: 30 * 864e5 };
 export const BLOCKED_MAX = 500;
+/** Payloads opened per sync at most (a flood waits for the next syncs instead of stalling one). */
+export const OPEN_BUDGET = 300;
+/** Background reads of names that requests claim: at most this many a day, the first not before a random 1–5 minutes
+ *  after the page starts, then a random 1–5 minutes apart; each name at most once (the answer is kept). */
+export const LAZY = { PER_DAY: 20, FIRST: [60000, 300000], GAP: [60000, 300000], NAMES: 500 };
+const jitter = ([lo, hi]) => lo + Math.floor(Math.random() * (hi - lo));
 const b64 = bytes => { let s = ""; for (let i = 0; i < bytes.length; i += 8192) s += String.fromCharCode(...bytes.subarray(i, i + 8192)); return btoa(s); };
 const unb64 = text => Uint8Array.from(atob(text), c => c.charCodeAt(0));
 export const NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
@@ -219,7 +225,7 @@ export class Chat {
    * sorting it, the chain reads that follow): the server must not count those as the user being active, or a
    * stranger writing every few seconds would keep the wallet from locking. Without them, api / resolve are used.
    */
-  constructor({ me, api, resolve, bgApi = null, bgResolve = null }) {
+  constructor({ me, api, resolve, bgApi = null, bgResolve = null, lazy = null }) {
     this.me = me; this.api = api; this.resolveRaw = resolve; this.bgApi = bgApi || api; this.bgResolve = bgResolve;
     this.key = storeKey(me.secret);
     this.store = this.emptyStore();
@@ -241,11 +247,15 @@ export class Chat {
     this.chatN = new Set();
     this.dropping = new Set();
     this.reqEver = new Set();
-    this.wasDropped = new Set();           // n of messages put back from "dropped" (never start a chat by themselves)
+    this.wasDropped = new Set();
+    this.keptN = new Set();                // n of requests the server keeps longest (keep)
+    this.openedReq = new Set();            // ids of requests the user opened this session
+    this.cancelledFor = new Set();         // checked addresses whose queued sends were cancelled this session           // n of messages put back from "dropped" (never start a chat by themselves)
     // Nothing is sorted, dropped or started from the store until it was loaded and opened in this session:
     // an empty store (it didn't load, or it is from another messaging address) would make every contact a
     // stranger. Until then only what the server already has as chat messages shows.
     this.storeOk = false;
+    this.lazy = Object.assign({}, LAZY, lazy || {});      // tests may shorten the waits
     this.bad = new Set();                  // n of messages that made the code throw: set aside, never shown or sorted
   }
   emptyStore() { return { v: STORE_VERSION, profiles: dict(), convos: dict(), aliases: dict() }; }
@@ -257,7 +267,7 @@ export class Chat {
   // -- store --
   async loadStore() {
     const r = await this.api("/api/messages/store");
-    if (!r.ok) throw Object.assign(new Error("store"), { status: r.status, unreadable: Boolean(r.data && r.data.unreadable) });
+    if (!r.ok) throw Object.assign(new Error("store"), { status: r.status, unreadable: Boolean(r.data && r.data.unreadable), prev: Boolean(r.data && r.data.prev) });
     this.rev = r.data.rev || 0;
     const got = r.data.blob ? decryptBlob(this.key, "store", r.data.blob) : null;
     this.storeUnreadable = Boolean(r.data.blob) && !(got && got.v === STORE_VERSION);
@@ -273,7 +283,9 @@ export class Chat {
    */
   async mutate(fn, bg = false) {
     for (let i = 0; i < 3; i++) {
-      if (bg && !this.storeOk) throw new Error("the saved chats aren't loaded");     // never write a store it didn't open
+      // never write a store this page didn't open (also after a 409 whose re-read doesn't open): the user chooses
+      // "Start fresh" (startFresh) or a restore first
+      if (!this.storeOk) throw Object.assign(new Error("Your saved chats can't be opened on this phone, so nothing can be saved now."), { code: "store" });
       fn(this.store);
       const r = await (bg ? this.bgApi : this.api)("/api/messages/store", { rev: this.rev, blob: encryptBlob(this.key, "store", this.store) });
       if (r.ok) { this.rev = r.data.rev; return true; }
@@ -281,6 +293,15 @@ export class Chat {
       await this.loadStore();
     }
     throw new Error("couldn't save");
+  }
+
+  /** Starts with empty saved chats: the server keeps the ones this key can't open aside (never deletes them). */
+  async startFresh() {
+    const r = await this.api("/api/messages/store/fresh", {});
+    if (!r.ok) throw Object.assign(new Error(r.data.error || "Couldn't start fresh."), { status: r.status });
+    await this.loadStore();
+    if (!this.storeOk) throw new Error("Couldn't start fresh.");
+    await this.sync();
   }
 
   // -- the chain: a name's msg key and card entries (an address has no chain record) --
@@ -324,7 +345,10 @@ export class Chat {
       for (const k of allowed) if (k in fields) p[k] = typeof p[k] === "boolean" ? Boolean(fields[k]) : String(fields[k]).slice(0, k === "note" ? 4000 : 40);
       p.updated = Date.now();
     });
-    if (fields.blocked) await this.markRead(convoIdOf(pid));
+    if (fields.blocked) {
+      await this.markRead(convoIdOf(pid));
+      await this.cancelSendsTo((own(this.store.profiles, pid) || { keys: [] }).keys.map(k => k.key));   // nothing queued goes to them
+    }
   }
   /**
    * Accepts the name's current on-chain key: messages are sent to it from now on. A contact checked for the
@@ -427,6 +451,7 @@ export class Chat {
       this.pinFirst(s, name, c.key);
       if (!own(s.convos, id)) s.convos[id] = { id, kind: "direct", title: name, members: [{ name }], created: Date.now() };
     });
+    try { await this.loadDropped(); } catch (e) {}    // their messages dropped earlier can come back now
     return id;
   }
   /** Starts (or opens) the direct chat with a messaging address that has no name. */
@@ -438,6 +463,7 @@ export class Chat {
       this.pinFirst(s, aid, key);
       if (!own(s.convos, aid)) s.convos[aid] = { id: aid, kind: "direct", title: shortFp(key), members: [{ name: null, key }], created: Date.now() };
     });
+    try { await this.loadDropped(); } catch (e) {}    // their messages dropped earlier can come back now
     return aid;
   }
   peer(convo) { return convo.kind === "direct" ? memberId(convo.members[0]) : null; }
@@ -478,11 +504,14 @@ export class Chat {
     if (!ri.ok) throw Object.assign(new Error("inbox"), { status: ri.status });
     const fresh = [];
     this.sortFrom = Number.isSafeInteger(ri.data.sort_from) ? ri.data.sort_from : Infinity;   // an older server: the old rules
-    for (const item of ri.data.items) {
+    let opened = 0;
+    for (const item of ri.data.items.slice().sort((a, b) => a.n - b.n)) {
+      if (opened++ >= OPEN_BUDGET) break;              // a flood is opened a part at a time, the rest next sync
       this.inAfter = Math.max(this.inAfter, item.n);
       const m = this.openIncoming(item);
       this.inbox.set(item.n, m);
       this.tags.set(item.n, ["c", "r", "d"].includes(item.k) ? item.k : "");
+      if (item.keep) this.keptN.add(item.n);
       if (m) fresh.push(m);
       changed = true;
     }
@@ -537,6 +566,21 @@ export class Chat {
   }
 
   // -- requests --
+  /**
+   * The dropped messages still on the server (the normal inbox read leaves them out), for when someone became a
+   * contact: their messages from the last 7 days can come back (sortIncoming, at most REQ.PER_SENDER each).
+   */
+  async loadDropped() {
+    const r = await this.bgApi("/api/messages/inbox?dropped=1&after=0");
+    if (!r.ok) return false;
+    for (const item of (r.data.items || []).slice(-OPEN_BUDGET)) {
+      if (this.inbox.has(item.n)) continue;
+      const m = this.openIncoming(item);
+      this.inbox.set(item.n, m); this.tags.set(item.n, "d");
+    }
+    await this.sortIncoming();
+    return true;
+  }
   /** Incoming messages shown in chats: opened, and not a request. */
   shown() { return [...this.inbox.values()].filter(m => m && this.chatN.has(m.n)); }
   /** Whether `name` is someone in your chats: a chat with it, or its profile with a pinned address. */
@@ -576,9 +620,10 @@ export class Chat {
   proofOf(m) {
     if (!m.authentic) return { proof: "none", claimed: isAddressId(m.sender) ? null : m.sender };
     if (isAddressId(m.sender)) return { proof: "address" };
-    const c = this.chain.get(m.sender);
-    if (c && c.key === m.senderKey) return { proof: "name", name: m.sender, lookalike: this.lookalike(m.sender) };
-    return { proof: "claim", claimed: m.sender, chainRead: Boolean(c) };
+    const c = this.chain.get(m.sender), was = own((this.store.req || {}).names, m.sender);
+    const key = c ? c.key : was !== undefined ? was : undefined;      // a read this session, or the one kept from before
+    if (key && key === m.senderKey) return { proof: "name", name: m.sender, lookalike: this.lookalike(m.sender) };
+    return { proof: "claim", claimed: m.sender, chainRead: key !== undefined };
   }
   /**
    * The name of someone in your chats that `name` could be mistaken for (another name that reads the same: rn/m,
@@ -610,7 +655,7 @@ export class Chat {
       this.reqs = []; this.held = new Set();
       return false;
     }
-    const keys = this.knownKeys(), drop = new Map(), toChat = [], cands = [], chatN = new Set();
+    const keys = this.knownKeys(), drop = new Map(), toChat = [], cands = [], chatN = new Set(), back = new Map();
     const blocked = this.store.blockedKeys || {}, only = Boolean((this.store.req || {}).onlyKnown), now = Date.now();
     for (const [n, m] of this.inbox) try {                // one message that throws is set aside, the rest go on
       if (this.bad.has(n)) continue;
@@ -620,7 +665,7 @@ export class Chat {
       if (tag === "c") { if (m && !hide) chatN.add(n); continue; }      // a chat message stays one, whatever else changed
       if (tag === "d") {                     // dropped (the server deletes it after a grace period): back only if
         this.dropping.delete(n);
-        if (m && !hide && this.fromContact(m, keys)) { chatN.add(n); toChat.push(n); this.wasDropped.add(n); }   // it is a contact's
+        if (m && !hide && this.fromContact(m, keys)) (back.get(m.senderKey) || back.set(m.senderKey, []).get(m.senderKey)).push(n);   // it is a contact's
         continue;
       }
       if (this.dropping.has(n)) { drop.set(n, null); continue; }      // dropped before: stays dropped (tell the server again)
@@ -629,6 +674,11 @@ export class Chat {
       if (tag === "r") this.reqEver.add(n);
       cands.push(m);
     } catch (e) { this.bad.add(n); }
+    // dropped messages that come back (their sender is a contact now): the newest REQ.PER_SENDER of each, as new
+    const toUnread = [];
+    for (const ns of back.values()) for (const n of ns.sort((a, b) => a - b).slice(-REQ.PER_SENDER)) {
+      chatN.add(n); toChat.push(n); this.wasDropped.add(n); toUnread.push(n);
+    }
     for (const n of this.dropping) if (!this.inbox.has(n)) this.dropping.delete(n);    // gone from the server already
     const groups = new Map();
     for (const m of cands.sort((a, b) => a.n - b.n)) try {
@@ -648,24 +698,24 @@ export class Chat {
         first: g.list[0].n, at: g.list[g.list.length - 1].received, size: g.list.reduce((s, m) => s + (m.size || 0), 0) })];
     } catch (e) { for (const m of g.list) this.bad.add(m.n); return []; } });
     reqs.sort((a, b) => b.rank - a.rank || b.first - a.first);
-    // A message naming a name not read on chain yet is never dropped by the caps: it may be a real LNS name,
-    // which ranks above addresses (lazyCheck reads such names, a few at a time, while the caps are under
-    // pressure). The server's own ring still bounds what all of them can hold.
-    const unread = g => g.authentic && g.proof === "claim" && !g.chainRead;
-    let bytes = 0, counted = 0;
+    // Every request counts against the caps; a claimed name ranks with the addresses until a read on chain proves
+    // it (then above them: lazyCheck, checkRequests).
+    let bytes = 0;
     this.reqs = [];
     for (const g of reqs) {
-      if (unread(g)) { this.reqs.push(g); continue; }
-      if (counted >= REQ.SENDERS || bytes + g.size > REQ.BYTES) { for (const m of g.list) drop.set(m.n, "caps"); continue; }
-      bytes += g.size; counted++; this.reqs.push(g);
+      if (this.reqs.length >= REQ.SENDERS || bytes + g.size > REQ.BYTES) { for (const m of g.list) drop.set(m.n, "caps"); continue; }
+      bytes += g.size; this.reqs.push(g);
     }
-    this.pressure = reqs.length > REQ.SENDERS || reqs.reduce((t, g) => t + g.size, 0) > REQ.BYTES;
+    // near the caps (4 in 5 of them used): names start being read, so a real one is proven before it would be pushed out
+    this.pressure = reqs.length > REQ.SENDERS * 0.8 || reqs.reduce((t, g) => t + g.size, 0) > REQ.BYTES * 0.8;
     this.reqs.sort((a, b) => b.first - a.first);
     this.held = new Set(this.reqs.flatMap(g => g.list.map(m => m.n)));
     for (const n of this.held) this.reqEver.add(n);
     // decided, before anything is sent to the server: only these show in the chats or count as unread
     this.chatN = chatN;
     const toReq = [...this.held].filter(n => this.tags.get(n) !== "r");
+    // requests the server should keep longest when its room fills: a proven name's, and ones the user opened
+    const toKeep = this.reqs.filter(g => g.proof === "name" || this.openedReq.has(g.id)).flatMap(g => g.list.map(m => m.n)).filter(n => !this.keptN.has(n));
     let changed = false;
     if (drop.size) {
       const counts = {};
@@ -688,27 +738,64 @@ export class Chat {
       }
       changed = true;
     }
-    if (toChat.length || toReq.length) {
-      const r = await this.bgApi("/api/messages/inbox/sort", { chat: toChat, request: toReq });
-      if (r.ok) { for (const n of toChat) this.tags.set(n, "c"); for (const n of toReq) { this.tags.set(n, "r"); this.unread.delete(n); } }
+    if (toChat.length || toReq.length || toKeep.length) {
+      const r = await this.bgApi("/api/messages/inbox/sort", { chat: toChat, request: toReq, unread: toUnread, keep: toKeep });
+      if (r.ok) {
+        for (const n of toChat) this.tags.set(n, "c");
+        for (const n of toReq) { this.tags.set(n, "r"); this.unread.delete(n); }
+        for (const n of toUnread) this.unread.add(n);
+        for (const n of toKeep) this.keptN.add(n);
+      }
     }
     return changed;
   }
   /** The requests, newest first: { id, key, authentic, proof, name, claimed, chainRead, list, at, size }. */
   requests() { return this.reqs; }
+  /** The user opened a request: the server keeps it longest when its room fills (after unsorted messages). */
+  async markOpened(id) {
+    const g = this.reqs.find(x => x.id === id);
+    if (!g || this.openedReq.has(id)) return;
+    this.openedReq.add(id);
+    const ns = g.list.map(m => m.n).filter(n => !this.keptN.has(n));
+    if (ns.length && (await this.bgApi("/api/messages/inbox/sort", { keep: ns })).ok) for (const n of ns) this.keptN.add(n);
+  }
   /**
    * While the request caps are under pressure (more senders or bytes than they keep), reads on chain the oldest
    * name a request claims that wasn't read yet, so a real LNS name ranks above addresses before anything is
    * dropped. At most one such read (an Argon2 derivation) every 15 s, in the background; none otherwise.
    */
   async lazyCheck() {
-    if (!this.storeOk || !this.pressure || Date.now() - (this.lastLazy || 0) < 15000) return false;
-    const g = this.reqs.filter(x => x.authentic && x.proof === "claim" && !x.chainRead && Date.now() - (this.failed.get(x.claimed) || 0) >= 30000)
-      .sort((a, b) => a.first - b.first)[0];
+    if (!this.storeOk || !this.pressure) return false;
+    const now = Date.now();
+    if (this.lazyAt === undefined) this.lazyAt = now + jitter(this.lazy.FIRST);   // never right at unlock
+    if (now < this.lazyAt) return false;
+    const today = new Date(now).toISOString().slice(0, 10), q = this.store.req || {};
+    const used = q.lookups && q.lookups.day === today ? q.lookups.n : 0;
+    if (used >= this.lazy.PER_DAY) return false;
+    const g = this.reqs.filter(x => x.authentic && x.proof === "claim" && !x.chainRead).sort((a, b) => a.first - b.first)[0];
     if (!g) return false;
-    this.lastLazy = Date.now();
-    try { await this.lookup(g.claimed, false, true); this.failed.delete(g.claimed); } catch (e) { this.failed.set(g.claimed, Date.now()); return false; }
+    this.lazyAt = now + jitter(this.lazy.GAP);
+    try { await this.mutate(s => { s.req = Object.assign({}, s.req, { lookups: { day: today, n: used + 1 } }); }, true); } catch (e) { return false; }
+    await this.readClaim(g.claimed, true);
     await this.sortIncoming();
+    return true;
+  }
+  /**
+   * Reads a claimed name on chain once and keeps what it gave (its messaging address, or "" for none), so the
+   * same name is never read again for a request. False when the read failed (it may be tried again later).
+   */
+  async readClaim(name, bg) {
+    let c;
+    try { c = await this.lookup(name, false, bg); this.failed.delete(name); } catch (e) { this.failed.set(name, Date.now()); return false; }
+    try {
+      await this.mutate(s => {
+        const q = s.req = Object.assign({}, s.req), names = dict(q.names);
+        delete names[name]; names[name] = c && c.key ? c.key : "";
+        const ks = Object.keys(names);
+        for (const k of ks.slice(0, Math.max(0, ks.length - this.lazy.NAMES))) delete names[k];
+        q.names = names;
+      }, true);
+    } catch (e) {}
     return true;
   }
   /** How many messages "Only people I've written to", Block and the caps deleted unread, by reason. */
@@ -720,7 +807,7 @@ export class Chat {
     for (const name of names) {                // one at a time; stops when Requests is closed (keepGoing)
       if (!keepGoing()) break;
       if (Date.now() - (this.failed.get(name) || 0) < 30000) continue;
-      try { await this.lookup(name, false, true); this.failed.delete(name); any = true; } catch (e) { this.failed.set(name, Date.now()); }
+      if (await this.readClaim(name, true)) any = true;
     }
     if (any) await this.sortIncoming();
     return any;
@@ -750,7 +837,7 @@ export class Chat {
         if (!own(s.convos, cid)) s.convos[cid] = { id: cid, kind: "direct", title: shortFp(g.key), members: [{ name: null, key: g.key }], created: Date.now() };
       });
     } else throw Object.assign(new Error("This one doesn't prove who sent it, so it can't become a chat."), { code: "unproven" });
-    await this.sortIncoming();
+    await this.loadDropped();                 // their messages dropped earlier can come back now
     return this.thread(cid);
   }
   /** Deletes a request's messages from this phone. */
@@ -773,6 +860,7 @@ export class Chat {
       const ks = Object.keys(b);
       if (ks.length > BLOCKED_MAX) for (const k of ks.sort((x, y) => b[x].at - b[y].at).slice(0, ks.length - BLOCKED_MAX)) delete b[k];
     });
+    await this.cancelSendsTo([g.key]);
     await this.sortIncoming();
   }
   /** Everyone blocked: addresses blocked from Requests, and people in your chats blocked on their profile. */
@@ -784,6 +872,7 @@ export class Chat {
   async unblock(entry) {
     if (entry.kind === "profile") return this.setProfile(entry.pid, { blocked: false });
     await this.mutate(s => { s.blockedKeys = dict(s.blockedKeys); delete s.blockedKeys[entry.key]; });
+    await this.loadDropped();
   }
 
   openIncoming(item) {
@@ -884,9 +973,12 @@ export class Chat {
       if (!c.registered) return { code: "unregistered", name, text: name + " isn't a registered name any more." };
       if (!c.key) return { code: "nokey", name, text: name + " has turned off messages." };
       const pinned = this.pinned(name);
-      if (pinned && pinned !== c.key) return this.isChecked(name)
-        ? { code: "changed-checked", name, text: name + "'s messaging address changed since you checked it." }
-        : { code: "changed", name, text: name + "'s messaging address changed." };
+      if (pinned && pinned !== c.key) {
+        if (!this.isChecked(name)) return { code: "changed", name, text: name + "'s messaging address changed." };
+        // checked, and the address changed: what is still queued for the checked address doesn't go either
+        if (!this.cancelledFor.has(pinned)) { this.cancelledFor.add(pinned); try { await this.cancelSendsTo([pinned], bg); } catch (e) {} }
+        return { code: "changed-checked", name, text: name + "'s messaging address changed since you checked it." };
+      }
     }
     return null;
   }
@@ -933,7 +1025,25 @@ export class Chat {
     await this.sync();
     return r.data.n;
   }
-  async retry(n) { const r = await this.api("/api/messages/outbox/retry", { n }); await this.sync(); return r.ok; }
+  /**
+   * Sends a message that wasn't sent again, unless sending to that chat is blocked now (blocked, an address that
+   * changed, checked or not): then nothing goes, and the reason comes back as an error with its code.
+   */
+  async retry(n) {
+    const m = this.outbox.get(n);
+    if (m && m.convo) {
+      const why = await this.sendBlocker(m.convo);
+      if (why && why.code !== "offline") throw Object.assign(new Error(why.text), { code: why.code });
+    }
+    const r = await this.api("/api/messages/outbox/retry", { n }); await this.sync(); return r.ok;
+  }
+  /** Cancels sends to these messaging addresses that haven't gone out yet (queued, or failed and waiting for Retry). */
+  async cancelSendsTo(keys, bg = false) {
+    const topics = [...new Set(keys.filter(k => /^[0-9a-f]{64}$/.test(k || "")))].map(k => inboxTopic(fromHex(k)));
+    if (!topics.length) return 0;
+    const r = await (bg ? this.bgApi : this.api)("/api/messages/outbox/cancel", { topics });
+    return r.ok ? r.data.cancelled : 0;
+  }
 
   async deleteMessage(m) {
     const r = await this.api(m.dir === "in" ? "/api/messages/inbox/delete" : "/api/messages/outbox/delete", { ids: [m.n] });

@@ -60,21 +60,29 @@ or the message comes from a messaging address one of your contacts uses.
   phone isn't lost.
 - Limits, applied each time the page reads the inbox: one request per sender with its first 3 messages; 50
   requests in all (a proven LNS name kept before an address, an address before an unproven message; the
-  oldest go first); 1 MiB of sealed messages in all; nothing older than 30 days. A request that names a name
-  the name service hasn't been asked about yet is never dropped by these limits: while they are full, the app
-  asks about one such name at most every 15 seconds, so a real LNS name isn't pushed out by free addresses.
+  oldest go first); 1 MiB of sealed messages in all; nothing older than 30 days. A request that names a name the
+  name service hasn't been asked about counts like an address until it is: when the requests near the limit,
+  the app asks about the oldest such name in the background, at most 20 a day, never right after you unlock
+  (it waits a random 1 to 5 minutes, then as long again between asks), and never about the same name twice
+  (the answer is kept). A name proven that way is then kept before addresses.
 - What is dropped unread (and never shown): messages over those limits, from a blocked address, from anyone
   new while "Only people I've written to" is on, and payloads that don't open with this phone's key. Dropped
-  messages are hidden at once and deleted 7 days later; within those days one comes back if its sender turns
-  out to be in your chats. The page counts the first four, by number only ("Deleted unread so far: 12");
+  messages are hidden at once and deleted 7 days later; within those days, if you start a chat with the sender
+  (or accept or unblock them), their newest 3 come back, as unread. The page counts the first four, by number only ("Deleted unread so far: 12");
   nothing about who sent them or what they said is kept.
 - A message that has been sorted into a chat stays a chat message: nothing turns it into a request or drops
   it later, and the app refuses to.
 - Nothing is sorted, dropped or started until your saved chats (profiles, contacts) have loaded and opened in
   this session. If they don't load, Messages says so ("Couldn't load your chats. Trying again…") and shows
-  nothing; if the file can't be read at all, it says to restore a backup. It never goes on as if you had no
-  contacts.
-- Otherwise the app looks up a name a request claims only when you open Requests (one at a time, stopping
+  nothing. It never goes on as if you had no contacts.
+- If your saved chats can't be opened with this phone's messaging address (for example after restoring a
+  backup with another address), nothing is saved, not even a chat you start, until you restore the backup that
+  has them or tap **Start fresh** (they are kept aside, never deleted). If the file can't be read at all,
+  Messages offers **Use the last saved copy** (each save keeps the copy it replaces, written so a power cut
+  can't leave it empty) or Start fresh, and a backup made meanwhile says it carries no chats.
+- Blocking someone, or a checked contact's address changing, cancels what is still waiting to be sent to them;
+  Retry refuses while sending to that chat is blocked.
+- Apart from those background asks, the app looks up a name a request claims when you open Requests (one at a time, stopping
   when you leave), so a stranger's message doesn't make the phone ask the name service (or do the work a
   lookup takes) on its own.
 - What the page does on its own (reading and sorting the inbox, the lookups and saves that follow) doesn't
@@ -180,8 +188,10 @@ when you're back. Message details (tap a message) show the state for each recipi
   blocked person's message, from any other until the page has been open once after it came (the page then
   marks requests read, and deletes what it drops).
 - Until then, messages wait sealed and unsorted, in room for 2,000 of them (8 MiB) besides your chats'
-  messages. When that is full, the newest still gets in and the oldest waiting one goes (a request first),
-  and Messages then says how many were lost and when. The app can't fetch a lost one again: the messaging
+  messages. When that is full, the newest still gets in and the oldest waiting one goes: first a request you
+  haven't opened (and that isn't a proven name), then an unsorted message, and last a request you opened or a
+  proven name's. Messages then says "Up to N messages may have been lost…", counting only what could have been
+  a message, once per burst and at most once a day. The app can't fetch a lost one again: the messaging
   node has no way to ask the network's store for it (it only catches up around its own start). What a flood
   can still do while the page is away: the messaging node passes at most 50 messages per 3-second read, so
   about 2 minutes of small junk, or about 30 seconds of the largest size, push out a message that came before
@@ -205,7 +215,7 @@ in `img/messages/`: `locked`, `locked-android`, `home-no-name`, `my-messaging-ad
 `wallet-receive`, `wallet-send`, `settings` (the list of groups), `settings-node`, `settings-messages`,
 `settings-security`, `settings-updates`, `settings-backup`, `settings-restore`, `settings-about`,
 `list-with-requests`, `requests`, `request`, `request-claim`, `blocked`, `safety-code`, `profile-checked`,
-`key-changed-checked`, `safety-code-scanned`, `chats-not-loaded`, and `requests-large-text`, `a-request-large-text`, `blocked-large-text`, `the-safety-code-large-text` (text at 130%),
+`key-changed-checked`, `safety-code-scanned`, `chats-not-loaded`, `chats-file-unreadable`, and `requests-large-text`, `a-request-large-text`, `blocked-large-text`, `the-safety-code-large-text` (text at 130%),
 `settings-android` (Settings > Node with the Android bridge), and `wallet-header-sync` / `wallet-header-ok` (the page's
 status words set by hand, to show the icons; the test has no running node).
 

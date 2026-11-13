@@ -14,7 +14,7 @@
 // 4. Checked contacts: checked only for the address compared; a change of it stops sending until it's compared
 //    again or accepted on purpose.
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -146,7 +146,8 @@ const a = await chatOf(w, A), b = await chatOf(w, B);
 const TOPIC = MC.inboxTopic(A.id.publicKey);
 const inject = async (payload) => w.control("inject/0", { topic: TOPIC, payload: b64(payload) });
 const fromKey = (kp, text, from = null, to = A.id.publicKey) => MC.sealMessage({ to, from: from || "msg-" + hex(kp.publicKey).slice(0, 16), fromSecret: kp.secretKey, text });
-const serverItems = async () => (await A.call("/api/messages/inbox")).d.items;
+// everything on the server: the inbox read, and the dropped messages (left out of it since the second review)
+const serverItems = async () => [...(await A.call("/api/messages/inbox")).d.items, ...(await A.call("/api/messages/inbox?dropped=1")).d.items].sort((x, y) => x.n - y.n);
 const status = async () => (await A.call("/api/messages/status")).d;
 const pyServer = (data, expr) => execFileSync("python3", ["-c", "import sys; sys.path.insert(0, sys.argv[1]); import server; print(" + expr + ")", join(ROOT, "app")],
   { env: { ...process.env, APP_DATA: data, WAKU_API: "http://127.0.0.1:1" } }).toString().trim();
@@ -176,6 +177,8 @@ const bid = await a.acceptRequest(g.id);
 check("accepted: a chat with bob, the 3 messages and the 2 the cap had dropped (still within the grace period), his address pinned, nothing left in Requests",
   bid === "d:bob" && a.messages("d:bob").length === 5 && a.pinned("bob") === hex(B.id.publicKey) && a.requests().length === 0 && a.trust(a.messages("d:bob")[0]) === "ok");
 check("the server keeps all 5 as chat messages now", (await serverItems()).length === 5 && (await serverItems()).every(i => i.k === "c"));
+check("the 2 that came back from dropped count as new (unread); the 3 read in Requests don't", a.unreadTotal() === 2 && (await status()).unread === 2, [a.unreadTotal(), (await status()).unread]);
+await a.markRead("d:bob");
 await b.send("d:alice", "now we're talking");
 await until("the next message from bob goes to the chat, unread", async () => { await a.sync(); return a.messages("d:bob").some(m => m.text === "now we're talking") && a.unreadTotal() === 1; });
 check("and counts on the server", (await status()).unread === 1 && pyServer(A.data, "server.messaging_inbox_count()") === "1");
@@ -448,7 +451,7 @@ check("and with nothing changed, sending to bob works (sealed to his pinned addr
 {
   const P = await app(w, 8146 + PS, w.NODES[3], { MESSAGING_DROP_GRACE_SECONDS: "4" });
   await person(w, P, "pat", "787878");
-  const pt = MC.inboxTopic(P.id.publicKey), items = async () => (await P.call("/api/messages/inbox")).d.items;
+  const pt = MC.inboxTopic(P.id.publicKey), items = async () => [...(await P.call("/api/messages/inbox")).d.items, ...(await P.call("/api/messages/inbox?dropped=1")).d.items];
   const p = await chatOf(w, P);
   await p.startDirect("bob");
   for (let i = 0; i < 6; i++) await w.control("inject/3", { topic: pt, payload: b64(MC.sealMessage({ to: P.id.publicKey, from: "bob", fromSecret: B.id.secretKey, text: "bob " + i })) });
@@ -578,6 +581,7 @@ for (const r of [...a.requests()]) await a.deleteRequest(r.id);
 // a real new LNS name isn't pushed out by 50 free keys, with Requests never opened
 {
   for (const r of [...a.requests()]) await a.deleteRequest(r.id);
+  a.lazy = { ...CORE.LAZY, FIRST: [0, 1], GAP: [0, 1] }; a.lazyAt = undefined;      // here no 1–5 minute waits
   const nora = ID.newIdentity();
   await w.register("nora", { msg: hex(nora.publicKey) });
   await inject(MC.sealMessage({ to: A.id.publicKey, from: "nora", fromSecret: nora.secretKey, text: "hi, it's nora" }));
@@ -587,7 +591,7 @@ for (const r of [...a.requests()]) await a.deleteRequest(r.id);
   await until("the free keys are sorted, and nora's name is read on chain without Requests being opened", async () => {
     await a.sync(); const g = reqOf(hex(nora.publicKey));
     return !(await serverItems()).some(i => !i.k) && g && g.proof === "name" && a.requests().length === 50; }, 40000);
-  check("nora (a proven name) is kept; the oldest free key went", !!reqOf(hex(nora.publicKey)) && !reqOf(hex(many[0].publicKey)) && !!reqOf(hex(many[49].publicKey)));
+  check("nora (read on chain once the requests neared the cap, so a proven name) is kept; the oldest free key went", !!reqOf(hex(nora.publicKey)) && !reqOf(hex(many[0].publicKey)) && !!reqOf(hex(many[49].publicKey)));
   for (const r of [...a.requests()]) await a.deleteRequest(r.id);
 }
 // a backup: a message that was unsorted at backup time comes back unsorted and read, not as an unread chat message
@@ -602,6 +606,133 @@ print(json.dumps([[i.get("k"), i["read"]] for i in server.inbox["items"]]))`, jo
     { env: { ...process.env, APP_DATA: T, WAKU_API: "http://127.0.0.1:1" } }).toString().trim();
   rmSync(T, { recursive: true, force: true });
   check("restored: the unsorted one unsorted and read, the chat message a chat message as it was, an older backup's as a chat message", JSON.stringify(JSON.parse(out)) === JSON.stringify([[null, true], ["c", false], ["c", true]]), out);
+}
+
+// ---- 8. from the second review ----------------------------------------------------------------------------
+{
+  const Q = await app(w, 8147 + PS, w.NODES[4]);
+  await person(w, Q, "quinn", "989898");
+  const qt = MC.inboxTopic(Q.id.publicKey), qitems = async (q = "") => (await Q.call("/api/messages/inbox" + q)).d.items;
+  const qin = p => w.control("inject/4", { topic: qt, payload: b64(p) });
+  const toQ = (kp, text, from = null) => MC.sealMessage({ to: Q.id.publicKey, from: from || "msg-" + hex(kp.publicKey).slice(0, 16), fromSecret: kp.secretKey, text });
+  let calls = [];
+  const counting = name => { calls.push(name); return w.resolve(name); };
+  const mk = (extra = {}) => { const k = { secret: Q.id.secretKey, public: hex(Q.id.publicKey), name: "quinn" }; return new CORE.Chat({ me: k, api: Q.api, resolve: counting, ...extra }); };
+  const q = mk({ lazy: { ...CORE.LAZY, PER_DAY: 3, FIRST: [0, 1], GAP: [0, 1] } });
+  await q.loadStore(); await q.sync();
+  // S1: claimed names count against the caps; reads of them are few a day, never right at unlock, once per name
+  const claimers = Array.from({ length: 60 }, () => MC.newKeyPair());
+  for (let i = 0; i < claimers.length; i++) { await qin(toQ(claimers[i], "hello", "unreg" + i)); if (i % 20 === 19) { await sleep(700); await q.sync(); } }
+  await until("60 strangers claiming 60 unregistered names are sorted", async () => { await q.sync(); return !(await qitems()).some(i => !i.k); }, 20000);
+  for (let i = 0; i < 6; i++) await q.sync();
+  check("claimed names that weren't read count against the caps: 50 requests, 10 dropped", q.requests().length === 50 && q.dropped().caps === 10, [q.requests().length, q.dropped()]);
+  check("names read in the background: at most 3 a day here (20 by default)", calls.length === 3 && new Set(calls).size === 3, calls);
+  await q.checkRequests(100);
+  const asked = calls.length;
+  await q.checkRequests(100);
+  check("opening Requests reads each name once, and never again (the answer is kept)", calls.length === asked && new Set(calls).size === calls.length, [asked, calls.length]);
+  calls = [];
+  const q2 = mk(); await q2.loadStore(); for (let i = 0; i < 3; i++) await q2.sync();
+  check("a fresh page (an unlock) reads no claimed name at once: the first read waits a random 1–5 minutes", calls.length === 0 && q2.lazyAt > Date.now() + 50000, [calls.length, q2.lazyAt - Date.now()]);
+  for (const r of [...q.requests()]) await q.deleteRequest(r.id);
+  // S6: dropped messages aren't in the normal inbox read; a flood is opened 300 at a time
+  check("the inbox read leaves dropped messages out; they come only when asked", !(await qitems()).some(i => i.k === "d") && (await qitems("?dropped=1")).length === 10 && (await qitems("?dropped=1")).every(i => i.k === "d"));
+  const fresh = mk(); await fresh.loadStore();
+  await fresh.sync();
+  check("a page opens at most 300 payloads in one sync", fresh.inbox.size <= CORE.OPEN_BUDGET, fresh.inbox.size);
+  // S8: dropped messages that come back: the newest 3 of the sender, unread
+  await q.setOnlyKnown(true);
+  const X = MC.newKeyPair(), xk = hex(X.publicKey);
+  for (let i = 0; i < 6; i++) await qin(toQ(X, "dropped " + i));
+  await until("6 messages from a stranger, dropped by 'Only people I've written to'", async () => { await q.sync(); return (await qitems("?dropped=1")).length >= 16; });
+  await q.setOnlyKnown(false);
+  const xid = await q.startAddress(xk);
+  const backTexts = q.messages(xid).map(m => m.text);
+  check("starting a chat with them brings back their newest 3, not all 6", JSON.stringify(backTexts) === JSON.stringify(["dropped 3", "dropped 4", "dropped 5"]), backTexts);
+  check("and they count as unread", q.messages(xid).every(m => q.unread.has(m.n)) && q.unreadTotal() >= 3);
+  // S5: a later Block cancels what is queued for them, and Retry respects it
+  await w.control("down/4");
+  await until("quinn's app sees the node off", async () => (await Q.call("/api/messages/status")).d.node.reachable === false, 8000);
+  await q.send(xid, "queued while the node is off");
+  await q.setProfile("k:" + xk, { blocked: true });
+  await w.control("up/4");
+  await sleep(2500); await q.sync();
+  const qm = q.messages(xid).find(m => m.text === "queued while the node is off") || [...q.outbox.values()].find(m => m.text === "queued while the node is off");
+  check("a message queued before the block is cancelled, and doesn't go when the node is back", qm && qm.sends[0].state === "cancelled" && !(await w.ctlGet("posts/4")).some(p => p[1] === MC.inboxTopic(X.publicKey)), qm && qm.sends);
+  err = null; try { await q.retry(qm.n); } catch (e) { err = e; }
+  check("Retry refuses while they are blocked", err && err.code === "blocked");
+  await q.setProfile("k:" + xk, { blocked: false });
+  // ... and when a checked contact's address changes
+  const Y = ID.newIdentity();
+  await w.register("yara", { msg: hex(Y.publicKey) });
+  await q.startDirect("yara"); await q.markChecked("yara", hex(Y.publicKey));
+  await w.control("down/4");
+  await until("node off", async () => (await Q.call("/api/messages/status")).d.node.reachable === false, 8000);
+  await q.send("d:yara", "queued for yara's checked address");
+  await w.register("yara", { msg: hex(ID.newIdentity().publicKey) });
+  await q.lookup("yara", true);
+  check("the change is seen", (await q.sendBlocker("d:yara")).code === "changed-checked");
+  await w.control("up/4"); await sleep(2500); await q.sync();
+  const ym = [...q.outbox.values()].find(m => m.text === "queued for yara's checked address");
+  check("what was queued for the checked address is cancelled once its change is seen", ym.sends[0].state === "cancelled");
+  // S4: a user change whose save gets 409 and whose re-read can't be opened writes nothing
+  const before = (await Q.call("/api/messages/store")).d;
+  const other = CORE.encryptBlob(CORE.storeKey(MC.newKeyPair().secretKey), "store", { v: 1, profiles: {}, convos: {}, aliases: {} });
+  await Q.call("/api/messages/store", { rev: before.rev, blob: other });
+  err = null; try { await q.setProfile("d:yara".slice(2), { muted: true }); } catch (e) { err = e; }
+  const after = (await Q.call("/api/messages/store")).d;
+  check("a save that meets a store it can't open (after a 409) writes nothing and says so", err && err.code === "store" && after.blob === other, err && err.message);
+  // S2: in that state every write waits for the user: Start fresh keeps the old store aside
+  const u = mk(); await u.loadStore();
+  err = null; try { await u.startAddress(hex(MC.newKeyPair().publicKey)); } catch (e) { err = e; }
+  check("a store this key can't open: even the user's own Start chat writes nothing", u.storeUnreadable && err && err.code === "store" && (await Q.call("/api/messages/store")).d.blob === other);
+  await u.startFresh();
+  const aside = readdirSync(Q.data).filter(f => f.startsWith("wallet-chat.json.aside-"));
+  check("Start fresh: an empty store this key opens; the old one kept aside, not deleted", u.storeOk && !u.storeUnreadable && aside.length === 1
+    && JSON.parse(readFileSync(join(Q.data, aside[0]), "utf8")).blob === other);
+  // S3: a store file that can't be read: the last good copy can be put back, and a backup says it has no chats
+  await u.setProfile("k:" + xk, { nickname: "kept in the last copy" });
+  await u.setProfile("k:" + xk, { note: "and this" });
+  check("(each save keeps the copy it replaces)", existsSync(join(Q.data, "wallet-chat.json.prev")));
+  writeFileSync(join(Q.data, "wallet-chat.json"), "");
+  const gbad = await Q.call("/api/messages/store");
+  check("an empty (unreadable) store file: an error that offers the last copy", gbad.code === 500 && gbad.d.unreadable && gbad.d.prev === true);
+  const bk = await Q.call("/api/wallet/backup", { password: "a long backup password", pin: Q.pin });
+  check("a backup made now says it carries no chats", bk.code === 200 && bk.d.chats_missing === true, bk.code);
+  const up = await Q.call("/api/messages/store/use-prev", {});
+  const v = mk(); await v.loadStore();
+  check("Use the last saved copy: the store opens again, with what it held; the bad file kept aside",
+    up.code === 200 && v.storeOk && v.profile("k:" + xk).nickname === "kept in the last copy" && readdirSync(Q.data).some(f => f.startsWith("wallet-chat.json.unreadable-")));
+  Q.proc.kill();
+}
+{
+  // S7 and S9 with a small ring (4): what is counted lost, and who goes first
+  const R = await app(w, 8148 + PS, w.NODES[2], { MESSAGING_PENDING_MAX: "4" });
+  await person(w, R, "rhea", "121234");
+  const rt = MC.inboxTopic(R.id.publicKey), ritems = async () => (await R.call("/api/messages/inbox")).d.items, lost = async () => (await R.call("/api/messages/status")).d.lost.count;
+  const rin = p => w.control("inject/2", { topic: rt, payload: b64(p) });
+  const k = (await R.call("/api/messages/key")).d;
+  const rc = new CORE.Chat({ me: { secret: unhex(k.secret), public: k.public, name: k.name }, api: R.api, resolve: w.resolve });
+  await rc.loadStore(); await rc.sync();
+  const named = ID.newIdentity(); await w.register("ruth", { msg: hex(named.publicKey) });
+  await rin(MC.sealMessage({ to: R.id.publicKey, from: "ruth", fromSecret: named.secretKey, text: "ruth here" }));
+  const opened = MC.newKeyPair(), plain = MC.newKeyPair();
+  await rin(MC.sealMessage({ to: R.id.publicKey, from: "msg-" + hex(opened.publicKey).slice(0, 16), fromSecret: opened.secretKey, text: "opened" }));
+  await rin(MC.sealMessage({ to: R.id.publicKey, from: "msg-" + hex(plain.publicKey).slice(0, 16), fromSecret: plain.secretKey, text: "not opened" }));
+  await until("three requests", async () => { await rc.sync(); return rc.requests().length === 3; });
+  await rc.checkRequests();
+  await rc.markOpened(rc.requests().find(g => g.key === hex(opened.publicKey)).id);
+  await rc.sync();
+  check("ruth (a proven name) and the request the user opened are marked to keep", (await ritems()).filter(i => i.keep).length === 2);
+  const l0 = await lost();
+  for (let i = 0; i < 3; i++) { const j = crypto.getRandomValues(new Uint8Array(80)); j[0] = 9; await rin(j); }   // junk that can't be a message
+  await until("the junk arrives", async () => (await ritems()).some(i => Buffer.from(i.payload, "base64").length === 80));
+  await sleep(800);
+  const left = await ritems();
+  check("the ring made room from the request nobody opened first, then unsorted ones; ruth's and the opened one stay",
+    !left.some(i => i.k === "r" && !i.keep) && left.filter(i => i.keep).length === 2, left.map(i => (i.k || "-") + (i.keep ? "K" : "")));
+  check("junk that can't be a message isn't counted as lost (the request it pushed out is)", (await lost()) - l0 === 1, [(await lost()) - l0]);
+  R.proc.kill();
 }
 
 stopAll();

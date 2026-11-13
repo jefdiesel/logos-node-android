@@ -236,7 +236,12 @@ page.innerHTML = `
     <button type="button" class="req-line" id="mg-req-line" hidden></button>
     <div class="hint-card" id="mg-lost" hidden></div>
     <button type="button" class="notice" id="mg-bk" hidden>Your last backup doesn't include Messages. Make a new one.</button>
-    <p class="msg warn" id="mg-store-warn" hidden style="margin:0 2px 12px">Saved chats from an earlier messaging address can't be opened on this one. Restore the backup that has that address to read them.</p>
+    <section class="card" id="mg-store-warn" hidden>
+      <p class="msg warn" id="mg-store-why" style="margin-top:0"></p>
+      <p class="note">Restore the backup that has them, or start with empty saved chats. The old ones are kept aside, not deleted.</p>
+      <div class="sf-acts"><button type="button" id="mg-store-prev" hidden>Use the last saved copy</button><button type="button" id="mg-store-fresh">Start fresh</button></div>
+      <p class="msg bad" id="mg-store-m" role="alert"></p>
+    </section>
     <div id="mg-rows" class="rows"></div>
   </div>
   <div id="mg-newv" role="dialog" aria-modal="true" aria-labelledby="h-new" hidden>
@@ -428,7 +433,7 @@ window.show = v => {
 const unlocked = () => !$("v-open").hidden && token;
 function locked401(r) { if (r && r.status === 401) { lockedNow(); return true; } return false; }
 
-let loadFails = 0, loadNext = 0, loadBad = false;
+let loadFails = 0, loadNext = 0, loadBad = false, loadPrev = false;
 /** Loads status, the key and the chats; quick when they're loaded already. */
 async function refresh() {
   if (!unlocked()) return render();
@@ -446,7 +451,7 @@ async function refresh() {
     loading = chat.loadStore().then(() => chat.sync()).then(() => { c.ready = true; loadFails = 0; })
       .catch(e => {
         if (e.status === 401) return lockedNow();
-        loadFails++; loadNext = Date.now() + Math.min(60000, 1000 * 2 ** loadFails); loadBad = Boolean(e.unreadable);
+        loadFails++; loadNext = Date.now() + Math.min(60000, 1000 * 2 ** loadFails); loadBad = Boolean(e.unreadable); loadPrev = Boolean(e.prev);
         if (chat === c) { chat = null; me = null; }
       });
   }
@@ -473,7 +478,9 @@ function render() {
   $("mg-home").hidden = !ready || view !== "home";
   if (open && status && status.key && !ready) {
     $("mg-home").hidden = false; $("mg-loading").hidden = false; $("mg-rows").replaceChildren(); $("mg-req-line").hidden = true;
-    $("mg-loading").textContent = loadBad ? "Your saved chats can't be read. Restore a backup to get them back." : loadFails ? "Couldn't load your chats. Trying again…" : "Loading chats…";
+    $("mg-loading").textContent = loadBad ? "" : loadFails ? "Couldn't load your chats. Trying again…" : "Loading chats…";
+    $("mg-loading").hidden = loadBad;
+    renderStoreState();
     return;
   }
   $("mg-loading").hidden = true;
@@ -487,11 +494,12 @@ function render() {
     if (fix) fix.addEventListener("click", openNode);
     nl.replaceChildren(el("span", { textContent: t }), fix);
   }
-  $("mg-store-warn").hidden = !chat.storeUnreadable;
+  renderStoreState();
   // a backup made before Messages was turned on has no messaging address or chats in it
   const bk = status.backup || {};
   $("mg-bk").hidden = !(bk.last && (bk.messaging === false || (bk.messaging == null && bk.key_created && bk.last < bk.key_created)));
   renderBackupCopy();
+  if (chat.storeUnreadable) { $("mg-rows").replaceChildren(); $("mg-hint").hidden = true; $("mg-req-line").hidden = true; $("mg-lost").hidden = true; return; }
   renderHint(); renderReqLine(); renderLost(); if (view === "home") renderList();
   if (mgsHere() && mgsSub === "req") renderReqs(false);
   if (mgsHere() && mgsSub === "blocked") renderBlocked();
@@ -900,9 +908,10 @@ function renderWho() {
   n.who.replaceChildren(convoIcon(c, 40),
     el("span", { className: "t" }, el("b", { textContent: chat.title(c) }), el("small", { className: cls, textContent: sub })));
 }
-const STATES = { queued: "Waiting to send", sending: "Sending", propagated: "Sent", sent: "Sent", failed: "Not sent" };
+const STATES = { queued: "Waiting to send", sending: "Sending", propagated: "Sent", sent: "Sent", failed: "Not sent", cancelled: "Not sent: cancelled" };
 function sendState(m) {
   const s = m.sends.map(x => x.state);
+  if (s.includes("cancelled")) return { text: "Not sent: cancelled", bad: true, cancelled: true };
   if (s.includes("failed")) return { text: "Not sent", bad: true };
   if (s.every(x => x === "sent" || x === "propagated")) return { done: true, label: "Sent", bad: false };
   return { wait: true, label: status && status.node.reachable === false ? "Sends when you're back online" : "Sending", bad: false };
@@ -944,7 +953,16 @@ function renderConvo(toBottom = false) {
       if (st) {
         if (st.bad) meta.append(el("span", { className: "bad", textContent: st.text }));
         else { const ic = svg(st.done ? P.tick : P.clock, 15); ic.setAttribute("role", "img"); ic.setAttribute("aria-label", st.label); ic.title = st.label; meta.append(ic); }
-        if (st.bad && m.sends.some(x => x.state === "failed" && x.resend)) { const r = el("button", { type: "button", textContent: "Retry" }); r.addEventListener("click", async () => { r.disabled = true; await chat.retry(m.n); renderConvo(); }); meta.append(r); }
+        if (st.bad && !st.cancelled && m.sends.some(x => x.state === "failed" && x.resend)) {
+          const r = el("button", { type: "button", textContent: "Retry" });
+          r.addEventListener("click", async () => {
+            r.disabled = true;
+            try { await chat.retry(m.n); } catch (e) { if (e.status === 401) return lockedNow(); if (e.code) checkSend(true); sheetNote("Not sent", e.message || "The message wasn't sent."); }
+            renderConvo();
+          });
+          meta.append(r);
+        }
+        else if (st.cancelled) meta.append(el("span", { textContent: "You blocked them, or their address changed since you checked it." }));
         else if (st.bad) meta.append(el("span", { textContent: "Restored from a backup; it can't be sent again." }));
       }
       kids.push(meta);
@@ -1153,12 +1171,48 @@ function reqWho(g) {
 }
 const reqIcon = (g, size) => g.proof === "name" ? icon(g.name, { key: g.key, size }) : icon("", { key: g.authentic ? g.key : "", size, letters: "?", color: "#6d6960" });
 /** Messages the app couldn't keep (a flood filled the room for unsorted messages while the page was away). */
+/** Shown once for a burst, dismissible, and not raised again sooner than a day after it was last shown. */
+/**
+ * Saved chats this page can't use: a store this messaging address can't open (the page is ready but writes
+ * nothing), or a store file that can't be read at all (the page isn't ready). One plain card: what happened, and
+ * the ways out (the last good copy when there is one, or start fresh with the old one kept aside).
+ */
+function renderStoreState() {
+  const card = $("mg-store-warn"), other = !!(chat && chat.ready && chat.storeUnreadable), bad = !(chat && chat.ready) && loadBad;
+  card.hidden = !other && !bad;
+  $("mg-new").hidden = other || bad;
+  if (card.hidden) return;
+  const why = other ? "Your saved chats can't be opened with this phone's messaging address, so new messages can't be shown or saved."
+    : "Your saved chats file can't be read, so Messages can't show anything.";
+  if ($("mg-store-why").textContent !== why) $("mg-store-why").textContent = why;
+  $("mg-store-prev").hidden = !bad || !loadPrev;
+}
+const storeRetry = () => { loadFails = 0; loadNext = 0; loadBad = false; loadPrev = false; };
+$("mg-store-fresh").addEventListener("click", () => confirmSheet("Start fresh?", "Your saved chats are kept aside, not deleted. Restoring a backup can still bring them back.", "Start fresh", true, async () => {
+  $("mg-store-m").textContent = "";
+  try {
+    if (chat && chat.ready) await chat.startFresh();
+    else { const r = await api("/api/messages/store/fresh", {}); if (locked401(r)) return; if (!r.ok) throw new Error(r.data.error || "Couldn't start fresh."); storeRetry(); }
+  } catch (e) { if (e.status === 401) return lockedNow(); $("mg-store-m").textContent = e.message; }
+  await refresh();
+}));
+$("mg-store-prev").addEventListener("click", async () => {
+  $("mg-store-m").textContent = "";
+  const r = await api("/api/messages/store/use-prev", {});
+  if (locked401(r)) return;
+  if (!r.ok) { $("mg-store-m").textContent = r.data.error || "Couldn't put the last copy back."; return; }
+  storeRetry(); await refresh();
+});
 function renderLost() {
-  const box = $("mg-lost"), lost = status && status.lost, seen = ((chat.store.ui || {}).lostSeen) || 0;
+  const box = $("mg-lost"), lost = status && status.lost, ui = chat.store.ui || {}, seen = ui.lostSeen || 0;
   const n = lost && lost.count > seen ? lost.count - seen : 0;
-  box.hidden = !n || view !== "home";
-  if (box.hidden) { box.replaceChildren(); return; }
-  const text = n + (n === 1 ? " message was" : " messages were") + " lost while too many came in at once" + (lost.last ? " (last " + shortWhen(Date.parse(lost.last)) + ")." : ".");
+  const fresh = box.dataset.text || !ui.lostShownAt || Date.now() - ui.lostShownAt > 864e5;
+  box.hidden = !n || view !== "home" || !fresh || !chat.storeOk;
+  if (box.hidden) { box.replaceChildren(); delete box.dataset.text; return; }
+  const when = lost.first && lost.last && shortWhen(Date.parse(lost.first)) !== shortWhen(Date.parse(lost.last))
+    ? " (" + shortWhen(Date.parse(lost.first)) + " to " + shortWhen(Date.parse(lost.last)) + ")" : lost.last ? " (" + shortWhen(Date.parse(lost.last)) + ")" : "";
+  const text = "Up to " + n + (n === 1 ? " message" : " messages") + " may have been lost while too many came in at once, most likely a stranger's" + when + ".";
+  if (!box.dataset.text) chat.mutate(st => { st.ui = Object.assign({}, st.ui, { lostShownAt: Date.now() }); }, true).catch(() => {});
   if (box.dataset.text === text) return;
   box.dataset.text = text;
   const x = el("button", { type: "button", className: "x", ariaLabel: "Close" }, svg(P.close, 18));
@@ -1210,6 +1264,7 @@ function renderReqs(look) {
 function openRequest(id) {
   const g = chat && chat.requests().find(x => x.id === id);
   if (!g) return;
+  chat.markOpened(id).catch(() => {});
   const back = el("button", { type: "button", className: "back", ariaLabel: "Back", title: "Back" }, svg(P.back));
   back.addEventListener("click", () => popOv());
   const [title, line, warn] = reqWho(g);
@@ -1348,7 +1403,12 @@ window.fetch = (url, opt = {}) => {
   if (String(url) === "/api/wallet/backup" && opt.body && !$("bk-hist").checked) {
     try { opt = { ...opt, body: JSON.stringify({ ...JSON.parse(opt.body), history: false }) }; } catch (e) {}
   }
-  return pageFetch2(url, opt);
+  const p = pageFetch2(url, opt);
+  // a backup made while the saved chats file can't be read carries no chats: say so, never leave them out silently
+  if (String(url) === "/api/wallet/backup" && opt.body) p.then(r => r.clone().json()).then(d => {
+    if (d && d.chats_missing) sheetNote("This backup has no chats", "Your saved chats file can't be read, so this backup holds your wallet and messaging address but no chats.");
+  }).catch(() => {});
+  return p;
 };
 
 // ---- keep it current --------------------------------------------------------------------------------------
