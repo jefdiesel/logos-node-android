@@ -112,6 +112,14 @@ int main(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
     setvbuf(stdout, NULL, _IOLBF, 0);
     if (argc == 3 && strcmp(argv[1], "--check") == 0) return api_start(argv[2], &k_stand_in) == 0 ? 0 : 3;
+    if (argc == 2 && strcmp(argv[1], "--clear-env") == 0) {
+        // prints how many were removed, then the variables left that end like the network options
+        int removed = api_clear_env();
+        printf("removed %d\n", removed);
+        extern char **environ;
+        for (char **e = environ; *e; e++) if (strstr(*e, "_REST") || strstr(*e, "_METRICS") || strstr(*e, "_WEBSOCKET")) printf("left %s\n", *e);
+        return 0;
+    }
     if (argc == 3 && strcmp(argv[1], "--config") == 0) {
         FILE *f = fopen(argv[2], "rb");
         static char cfg[65536];
