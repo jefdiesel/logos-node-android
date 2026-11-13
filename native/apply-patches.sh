@@ -5,12 +5,16 @@
 # (the patch-set id: a digest of PATCHES.txt). The patched node records that id in its replay
 # marker (build env LOGOS_NODE_PATCHES_ID), so different patch sets never share a marker.
 #
+# With --only, applies just the patch files given (e.g. the "api" variant: patch 0002 alone).
+#
 # usage: apply-patches.sh <node source dir> [extra patch file...]
+#        apply-patches.sh <node source dir> --only <patch file...>
 set -euo pipefail
 NODE=$(cd "$1" && pwd); shift
 DIR=$(cd "$(dirname "$0")/patches" && pwd)
 shopt -s nullglob
 PATCHES=("$DIR"/[0-9][0-9][0-9][0-9]-*.patch)
+if [ "${1:-}" = --only ]; then shift; PATCHES=(); fi
 for extra in "$@"; do PATCHES+=("$(cd "$(dirname "$extra")" && pwd)/$(basename "$extra")"); done
 [ ${#PATCHES[@]} -gt 0 ] || { echo "no patches in $DIR"; exit 1; }
 [ ! -e "$NODE/PATCHES.txt" ] || { echo "$NODE already has patches applied"; exit 1; }

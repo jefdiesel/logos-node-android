@@ -9,6 +9,7 @@ source, as a separate artifact, so the two can be compared.
 |---|---|
 | `logos-blockchain-node-android-arm64-<version>` | official source, no patches |
 | `logos-blockchain-node-android-arm64-<version>-patched` | the same source with the patches below; `PATCHES.txt` lists them with their sha256 |
+| `logos-blockchain-node-android-arm64-<version>-api` | the same source with patch 0002 alone (`apply-patches.sh <dir> --only <patch>`), so the API fix can ship without 0001 |
 
 The patched node keeps the upstream version string (`--version` prints the same as unpatched).
 It names its patches and its build id in the log at every start:
@@ -215,3 +216,50 @@ transaction checks and ledger updates) takes 5.7 s, about 0.58 ms per transactio
 The header update without the leader proof takes 0.03 s. Cloning the parent state, recording
 the seen block, the block accounting and the PoW difficulty update are each at most 0.01 s. So
 after this patch, replay time is almost all transaction execution, which a patch must not skip.
+
+## 0002-api-unix-socket
+
+**Why.** On Android every installed app with the `INTERNET` permission can open TCP connections to
+`127.0.0.1`. The node's HTTP API has no authentication, and among its routes are the wallet's:
+`POST /wallet/transactions/transfer-funds`, `/wallet/sign/ed25519`, `/wallet/sign/zk`,
+`/wallet/fund`, `POST /channel/deposit`, the SDP and claim routes. So on a phone any app can make
+the node sign and send with the keys in its keystore; the wallet's PIN guards only the wallet
+server. No configuration closes this: `api.backend.listen_address` is a TCP socket address
+(`nodes/node/binary/src/config/api/serde.rs`) and the backend binds a `TcpListener`
+(`nodes/node/binary/src/api/backend.rs`). See `android/LOCAL-APIS.md` on the `local-apis` branch.
+
+**What it changes.** With the environment variable `LOGOS_API_UNIX_SOCKET=<path>` set for the
+node process, the API listens on a Unix domain socket at that path, **and on no TCP port**. The
+same router, layers (timeouts, body limits, CORS, metrics) and handlers serve it; only the
+listener differs. Before binding, a socket file left at the path by an earlier run is removed;
+any other kind of file there is left alone and the start fails. The socket is made owner-only
+(0600) right after binding. Access is then a file-system question: the app puts the socket in
+its private files directory (0700, its own SELinux category), which no other app can enter.
+Unset or empty: upstream behaviour, nothing changes.
+
+**What is not changed.** Routes, handlers, wallet and signing logic, the config file format,
+the database, consensus, the wire format. `--version` is unchanged.
+
+**Code.** `nodes/node/binary/src/api/unix_socket.rs` (new: reading the variable, binding,
+serving, tests) and a few lines in `backend.rs` (if the variable is set, serve there and return
+before the TCP bind), one `mod` line in `api/mod.rs`. Unix only (`#[cfg(unix)]`). The start
+logs one line with the socket path, the patch name and the patch-set id:
+
+```
+logos-node-android patched node: the HTTP API listens on this Unix socket only, on no TCP port (LOGOS_API_UNIX_SOCKET is set) socket=... patch="0002-api-unix-socket" build=...
+```
+
+**Tests** (run by `patched-crate-tests`): HTTP over the socket answers (200 for a route, 404
+for none), the socket is 0600, a stale socket is replaced, a regular file at the path is not
+removed and the bind fails, and an unset variable means TCP.
+
+**Clients.** Every client of the node API must speak HTTP over the socket instead of TCP: on
+the phone, `server.py`'s `node()` and the app's own Kotlin status calls (NodeService, Battery,
+NodeActivity). Neither is switched yet: the app keeps the unpatched node until this patch has
+had an independent review.
+
+**Trust.** Who can connect is decided by the socket file's directory and mode. Root, and the
+app's own user (anything running as the app, which can read its keys anyway), still can.
+
+**Upstream.** A general form (a `unix:` listen address in the config, or a bearer token) is
+worth proposing upstream; not done yet.

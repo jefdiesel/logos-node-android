@@ -1,6 +1,7 @@
 name: native-build
-# Compiles the official Logos node for Android (arm64) with the NDK, twice: unpatched, and with
-# the patches in native/patches applied. Also runs upstream's tests of the patched crates, and
+# Compiles the official Logos node for Android (arm64) with the NDK, three times: unpatched, with
+# the patches in native/patches applied, and with patch 0002 (API on a Unix socket) alone ("api").
+# Also runs upstream's tests of the patched crates (with the patches' own tests), and
 # builds both variants for Linux arm64 (for replay measurements on a Linux arm64 machine).
 # To build a newer node, change NODE_VERSION below; the circuits tag, rapidsnark and circom
 # versions are read from the node's own sources.
@@ -31,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [upstream, patched]
+        variant: [upstream, patched, api]
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
@@ -43,9 +44,13 @@ jobs:
       - name: Node source
         run: git clone -q --depth 1 --branch "$NODE_VERSION" https://github.com/logos-blockchain/logos-blockchain.git node
       - name: Apply patches (fails if one does not apply cleanly)
-        if: matrix.variant == 'patched'
+        if: matrix.variant != 'upstream'
         run: |
-          native/apply-patches.sh node
+          if [ "${{ matrix.variant }}" = api ]; then
+            native/apply-patches.sh node --only native/patches/0002-api-unix-socket.patch
+          else
+            native/apply-patches.sh node
+          fi
           echo "LOGOS_NODE_PATCHES_ID=$(cat node/PATCHES.id)" >> "$GITHUB_ENV"
           cat node/PATCHES.txt
       - name: Tools and versions
@@ -136,14 +141,14 @@ jobs:
           if [ "${{ matrix.variant }}" = upstream ]; then
             native/check-binary.sh out/logos-blockchain-node upstream
           else
-            native/check-binary.sh out/logos-blockchain-node patched "$LOGOS_NODE_PATCHES_ID"
+            native/check-binary.sh out/logos-blockchain-node "${{ matrix.variant }}" "$LOGOS_NODE_PATCHES_ID"
             { echo "logos-blockchain $NODE_VERSION with these patches (patch set id $LOGOS_NODE_PATCHES_ID):"; cat node/PATCHES.txt; } > out/PATCHES.txt
           fi
           (cd out && sha256sum * > SHA256SUMS)
           cat out/SHA256SUMS; ls -la out
       - uses: actions/upload-artifact@v4
         with:
-          name: logos-blockchain-node-android-arm64-${{ env.NODE_VERSION }}${{ matrix.variant == 'patched' && '-patched' || '' }}
+          name: logos-blockchain-node-android-arm64-${{ env.NODE_VERSION }}${{ matrix.variant != 'upstream' && format('-{0}', matrix.variant) || '' }}
           path: out/
 
   # upstream's own tests of the crates the patches touch, plus the patches' new tests
@@ -182,7 +187,7 @@ jobs:
         if: always()
         run: |
           grep -E "^test result:|^     Running|FAILED|panicked" test.log | tail -80 || true
-          echo "patch tests:"; grep -E "replay|trusted|fast_and_full" test.log || true
+          echo "patch tests:"; grep -E "replay|trusted|fast_and_full|unix_socket" test.log || true
 
   # Linux arm64 builds (glibc), unpatched and patched, from the same runner and toolchain, so the
   # replay can be compared on a Linux arm64 machine against the official release binary too.

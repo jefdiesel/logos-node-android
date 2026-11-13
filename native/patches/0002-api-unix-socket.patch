@@ -1,0 +1,201 @@
+From: logos-node-android
+Subject: [PATCH 0002] The HTTP API on a Unix socket instead of TCP, when asked for
+
+Against logos-blockchain/logos-blockchain tag 0.3.4. Applied with
+`git apply -p1` by native/apply-patches.sh. See native/patches/README.md.
+
+On Android any installed app may connect to 127.0.0.1, so the node API's
+wallet endpoints (transfer-funds, sign, channel deposit) answer every app on
+the phone. With LOGOS_API_UNIX_SOCKET=<path> set for the node process, the
+API listens on that socket file (0600, a stale socket from an earlier run is
+removed, any other file there is left alone and the start fails) and on no
+TCP port. Unset or empty: upstream behaviour. Routes, handlers, wallet logic,
+config format and wire format are unchanged. Independent of patch 0001.
+
+diff --git a/nodes/node/binary/src/api/backend.rs b/nodes/node/binary/src/api/backend.rs
+index daec592..e6581dd 100644
+--- a/nodes/node/binary/src/api/backend.rs
++++ b/nodes/node/binary/src/api/backend.rs
+@@ -258,6 +258,13 @@ where
+             app.merge(pprof_routes)
+         };
+ 
++        // logos-node-android patch 0002-api-unix-socket: with LOGOS_API_UNIX_SOCKET set,
++        // the API listens on that Unix socket and on no TCP port (see api/unix_socket.rs)
++        #[cfg(unix)]
++        if let Some(path) = super::unix_socket::path_from_env() {
++            return super::unix_socket::serve(&path, app).await;
++        }
++
+         let listener = TcpListener::bind(&self.settings.address)
+             .await
+             .map_err(|e| {
+diff --git a/nodes/node/binary/src/api/mod.rs b/nodes/node/binary/src/api/mod.rs
+index 39016a8..f7083e3 100644
+--- a/nodes/node/binary/src/api/mod.rs
++++ b/nodes/node/binary/src/api/mod.rs
+@@ -7,3 +7,5 @@ mod responses;
+ mod routes;
+ pub mod serializers;
+ mod tracing;
++#[cfg(unix)]
++pub mod unix_socket;
+diff --git a/nodes/node/binary/src/api/unix_socket.rs b/nodes/node/binary/src/api/unix_socket.rs
+new file mode 100644
+index 0000000..fef2cbd
+--- /dev/null
++++ b/nodes/node/binary/src/api/unix_socket.rs
+@@ -0,0 +1,153 @@
++//! logos-node-android patch 0002-api-unix-socket: serve the HTTP API on a Unix
++//! domain socket instead of TCP.
++//!
++//! On a phone every installed app may open TCP connections to 127.0.0.1, so an
++//! API on a loopback port is open to all of them, wallet endpoints included.
++//! With `LOGOS_API_UNIX_SOCKET=<path>` set for the node process, the API listens
++//! on a socket file at that path and on no TCP port at all; who may connect is
++//! then decided by the file system (put the path in a directory only the node's
++//! user can enter). Unset or empty: upstream behaviour, TCP on
++//! `api.backend.listen_address`. Routes, handlers and the wire format are
++//! unchanged.
++
++use std::{io, path::Path};
++
++/// The environment variable that turns the Unix socket on.
++pub const ENV: &str = "LOGOS_API_UNIX_SOCKET";
++/// The patch's name, also logged at start so the binary can be checked for it.
++pub const PATCH: &str = "0002-api-unix-socket";
++
++/// The socket path from the environment, if set and not empty.
++#[must_use]
++pub fn path_from_env() -> Option<std::path::PathBuf> {
++    std::env::var_os(ENV)
++        .filter(|v| !v.is_empty())
++        .map(std::path::PathBuf::from)
++}
++
++/// Binds the socket: removes a socket file left by an earlier run (only a
++/// socket, never another kind of file), binds, then makes the file
++/// owner-only (0600).
++pub fn bind(path: &Path) -> io::Result<tokio::net::UnixListener> {
++    use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};
++    match std::fs::symlink_metadata(path) {
++        Ok(meta) if meta.file_type().is_socket() => std::fs::remove_file(path)?,
++        Ok(_) => {
++            return Err(io::Error::new(
++                io::ErrorKind::AlreadyExists,
++                format!("{} exists and is not a socket", path.display()),
++            ));
++        }
++        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
++        Err(e) => return Err(e),
++    }
++    let listener = tokio::net::UnixListener::bind(path).map_err(|e| {
++        io::Error::new(
++            e.kind(),
++            format!("Failed to bind to socket {}: {e}", path.display()),
++        )
++    })?;
++    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
++    ::tracing::info!(
++        socket = %path.display(),
++        patch = PATCH,
++        build = option_env!("LOGOS_NODE_PATCHES_ID").unwrap_or("none"),
++        "logos-node-android patched node: the HTTP API listens on this Unix socket only, on no TCP port (LOGOS_API_UNIX_SOCKET is set)",
++    );
++    Ok(listener)
++}
++
++/// Serves `app` on the socket at `path` until the listener fails.
++pub async fn serve(path: &Path, app: axum::Router) -> io::Result<()> {
++    let listener = bind(path)?;
++    axum::serve(listener, app.into_make_service()).await
++}
++
++#[cfg(test)]
++mod tests {
++    use std::{
++        io::{Read as _, Write as _},
++        os::unix::{fs::PermissionsExt as _, net::UnixStream},
++        path::PathBuf,
++        time::Duration,
++    };
++
++    use axum::{Router, routing::get};
++
++    use super::*;
++
++    /// A plain HTTP/1.1 GET over the socket, from a blocking thread (std only).
++    async fn get_over(path: &Path, uri: &str) -> String {
++        let (path, uri) = (path.to_path_buf(), uri.to_owned());
++        tokio::task::spawn_blocking(move || {
++            let mut s = UnixStream::connect(&path).unwrap();
++            s.write_all(format!("GET {uri} HTTP/1.1\r\nHost: node\r\nConnection: close\r\n\r\n").as_bytes())
++                .unwrap();
++            let mut out = String::new();
++            s.read_to_string(&mut out).unwrap();
++            out
++        })
++        .await
++        .unwrap()
++    }
++
++    async fn wait_for(path: PathBuf) {
++        tokio::task::spawn_blocking(move || {
++            for _ in 0..500 {
++                if UnixStream::connect(&path).is_ok() {
++                    return;
++                }
++                std::thread::sleep(Duration::from_millis(10));
++            }
++            panic!("the socket never answered");
++        })
++        .await
++        .unwrap();
++    }
++
++    #[tokio::test]
++    async fn serves_http_on_the_socket_owner_only_and_replaces_a_stale_one() {
++        let dir = tempfile::tempdir().unwrap();
++        let path = dir.path().join("api.sock");
++        // a socket file left by an earlier run must not stop the start
++        drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
++        assert!(path.exists());
++
++        let app = Router::new().route("/cryptarchia/info", get(|| async { "tip" }));
++        let task = tokio::spawn({
++            let path = path.clone();
++            async move { serve(&path, app).await }
++        });
++        wait_for(path.clone()).await;
++        let reply = get_over(&path, "/cryptarchia/info").await;
++        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
++        assert!(reply.ends_with("tip"), "{reply}");
++        // checked once the server answers, so after bind() has returned
++        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
++        assert_eq!(mode, 0o600, "the socket must be owner-only");
++        assert!(get_over(&path, "/nothing").await.starts_with("HTTP/1.1 404"));
++        task.abort();
++    }
++
++    #[test]
++    fn refuses_to_remove_a_file_that_is_not_a_socket() {
++        let dir = tempfile::tempdir().unwrap();
++        let path = dir.path().join("api.sock");
++        std::fs::write(&path, b"keep me").unwrap();
++        let rt = tokio::runtime::Builder::new_current_thread()
++            .enable_all()
++            .build()
++            .unwrap();
++        let err = rt.block_on(async { bind(&path).map(|_| ()) }).unwrap_err();
++        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
++        assert_eq!(std::fs::read(&path).unwrap(), b"keep me");
++    }
++
++    #[test]
++    fn unset_means_tcp() {
++        // read only: nothing in the test run sets the variable
++        if std::env::var_os(ENV).is_none() {
++            assert!(path_from_env().is_none());
++        }
++    }
++}
