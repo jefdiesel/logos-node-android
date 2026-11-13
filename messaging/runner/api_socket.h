@@ -50,6 +50,11 @@ typedef struct {
 } api_backend_t;
 
 #define API_MAX_RECEIVED 256      // received messages kept between polls (upstream keeps 50)
+// ...and at most this many bytes of them (their JSON records), so one poll's answer always fits what
+// the client reads in one go (server.py reads up to 4 MiB): a client that cut an answer short would
+// lose the whole batch, which this side has already dropped. A message on logos.test is at most
+// 150 KiB (about 200 KB as base64 JSON), so this holds at least 10 of the largest.
+#define API_MAX_RECEIVED_BYTES (2 * 1024 * 1024)
 #define API_MAX_SENDS 256         // request ids with send events kept between polls
 #define API_MAX_TOPICS 64
 #define API_MAX_TOPIC_LEN 256
@@ -65,6 +70,7 @@ static int api_open_connections = 0;
 
 static char *api_received[API_MAX_RECEIVED];
 static int api_received_n = 0;
+static size_t api_received_bytes = 0;    // the records' lengths plus one comma each
 static unsigned long long api_seq = 0;
 
 typedef struct {
@@ -201,13 +207,17 @@ static void api_on_event(const char *name, const char *msg, size_t len) {
             memcpy(rec + hl, p + 1, rest);
             rec[(size_t)hl + rest] = '\0';
             // `{"seq":N,}` if the event was an empty object: not a message, drop it
-            if (rest > 0 && rec[hl] != '}') {
-                if (api_received_n == API_MAX_RECEIVED) {           // full: the oldest goes, as upstream
+            size_t need = (size_t)hl + rest + 1;
+            if (rest > 0 && rec[hl] != '}' && need <= API_MAX_RECEIVED_BYTES) {
+                // full (by count or by bytes): the oldest go, as upstream; the gap shows in `seq`
+                while (api_received_n > 0 && (api_received_n == API_MAX_RECEIVED || api_received_bytes + need > API_MAX_RECEIVED_BYTES)) {
+                    api_received_bytes -= strlen(api_received[0]) + 1;
                     free(api_received[0]);
-                    memmove(api_received, api_received + 1, sizeof(char *) * (API_MAX_RECEIVED - 1));
+                    memmove(api_received, api_received + 1, sizeof(char *) * (size_t)(api_received_n - 1));
                     api_received_n--;
                 }
                 api_received[api_received_n++] = rec;
+                api_received_bytes += need;
             } else {
                 free(rec);
             }
@@ -394,6 +404,7 @@ static void api_handle(int fd, const char *method, const char *path, const char 
         if (!b.oom) {                                                  // evict after poll
             for (int i = 0; i < api_received_n; i++) free(api_received[i]);
             api_received_n = 0;
+            api_received_bytes = 0;
         }
         pthread_mutex_unlock(&api_mu);
         api_reply(fd, b.oom ? 500 : 200, b.oom ? "[]" : b.s);
@@ -508,6 +519,30 @@ static void *api_accept_loop(void *arg) {
             pthread_mutex_unlock(&api_mu);
         }
         pthread_attr_destroy(&at);
+    }
+    return NULL;
+}
+
+// With the api socket, the library's own network APIs must be off: the runner refuses a config that
+// turns any of them on (REST, its admin routes, the metrics server, websockets), whatever wrote it.
+// Returns the first such key, or NULL.
+static const char *api_config_opens(const char *config) {
+    static const char *keys[] = {"rest", "rest-admin", "rest-private", "metrics-server", "websocket-support",
+                                 "websocket-secure-support", NULL};
+    size_t len = strlen(config);
+    const char *end = config + len;
+    for (const char **k = keys; *k; k++) {
+        char pat[64];
+        snprintf(pat, sizeof pat, "\"%s\"", *k);
+        size_t pl = strlen(pat);
+        for (const char *p = config; p + pl <= end; p++) {
+            if (memcmp(p, pat, pl) != 0) continue;
+            const char *q = api_ws(p + pl, end);
+            if (q >= end || *q != ':') continue;
+            q = api_ws(q + 1, end);
+            if ((size_t)(end - q) >= 4 && memcmp(q, "true", 4) == 0) return *k;
+            if (q < end && *q == '"') return *k;          // a string where a boolean belongs: refuse too
+        }
     }
     return NULL;
 }

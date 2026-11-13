@@ -336,6 +336,14 @@ int main(int argc, char **argv) {
 
     char *config = read_file(config_path);
     if (!config) { fprintf(stderr, "cannot read %s: %s\n", config_path, strerror(errno)); return 2; }
+    if (api_socket) {
+        const char *opens = api_config_opens(config);
+        if (opens) {
+            // never printed whole: it can hold the node's private key
+            fprintf(stderr, "with --api-socket the config must keep \"%s\" off\n", opens);
+            return 2;
+        }
+    }
 
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
