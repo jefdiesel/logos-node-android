@@ -1,6 +1,6 @@
 # Logos node on an Android phone
 
-The official [Logos blockchain node](https://github.com/logos-blockchain/logos-blockchain), unmodified, running and fully synced on an Android phone (after starting from a copy of a synced node's database, [see below](#what-works-today)). It comes with a local web app that shows the node's status and is a wallet: unlock with a PIN or your fingerprint (it locks itself again when you stop using it), receive, send to an address or a name, see your history, back up and restore your keys, and update the app itself. You can add it to the home screen.
+The [Logos blockchain node](https://github.com/logos-blockchain/logos-blockchain), unmodified, running and fully synced on an Android phone (after starting from a copy of a synced node's database, [see below](#what-works-today)). It comes with a local web app that shows the node's status and is a wallet: unlock with a PIN or your fingerprint (it locks itself again when you stop using it), receive, send to an address or a name, see your history, back up and restore your keys, and update the app itself. You can add it to the home screen.
 
 Nothing is cross-compiled: what runs on the phone is the unmodified `linux-aarch64` release binary of `logos-blockchain-node` 0.3.4, inside Android's built-in Linux Terminal. A *node* is the program that keeps a copy of the blockchain, checks every new *block* (a batch of transactions) and passes them on to other nodes.
 
@@ -49,7 +49,7 @@ On the test phone (Pixel 8, 8 GB RAM, Android 17, Linux Terminal):
 
 To check your own phone: Settings → System → Developer options → **Linux development environment**. If that switch isn't there, use Termux.
 
-There is no official list. This one is collected from press reports, as of November 2026, and it depends on the phone's chip:
+There is no published list. This one is collected from press reports, as of November 2026, and it depends on the phone's chip:
 
 | Chip | Phones reported working | Notes |
 |---|---|---|
@@ -82,7 +82,7 @@ The Linux Terminal app runs a small Debian Linux system in a virtual machine (VM
 4. When the Terminal app offers to open port **8090** (the web app), allow it. The Terminal app asks about every TCP port from 1024 up that something in the Linux box listens on; the node's own API is on port 880, below that range, so it isn't offered. If it offers any other port, deny it. You can change this later under Terminal → gear → Port control.
 5. Open **`http://localhost:8090`** in the phone's browser. Use `localhost`, not `127.0.0.1`: fingerprint unlock only works on `localhost`.
 
-What `install.sh` does: downloads node 0.3.4 from the official releases, creates fresh keys, writes a testnet config with the node's API on `127.0.0.1:880` (the node gets the permission to use a port below 1024), adds a 2 GB swap file inside the Linux box, downloads the web app from this repository's `release` branch, and installs two services (`logos-node` and `logos-node-app`) so both start whenever the Linux box starts. Mining is off.
+What `install.sh` does: downloads node 0.3.4 from the Logos blockchain node's releases, creates fresh keys, writes a testnet config with the node's API on `127.0.0.1:880` (the node gets the permission to use a port below 1024), adds a 2 GB swap file inside the Linux box, downloads the web app from this repository's `release` branch, and installs two services (`logos-node` and `logos-node-app`) so both start whenever the Linux box starts. Mining is off.
 
 Then the node starts syncing from the first block, which is where the [memory limit](#why-not-sync-from-the-first-block) comes in. The test phone reached the chain tip by [starting from a synced node's database](docs/start-from-a-synced-database.md) instead.
 
@@ -135,7 +135,7 @@ Syncing on one core ran at about 600 to 800 blocks a minute while it lasted. Mor
 
 ## Termux (for phones without the Linux Terminal)
 
-Termux is a terminal app that works on almost any Android phone. It can't run the official node directly, because the node is built for normal Linux, so the script installs a small Ubuntu inside Termux (with `proot-distro`) and runs the node there. No root is needed.
+Termux is a terminal app that works on almost any Android phone. It can't run the Logos blockchain node directly, because the node is built for normal Linux, so the script installs a small Ubuntu inside Termux (with `proot-distro`) and runs the node there. No root is needed.
 
 **This route passes an automated test in the Termux Docker image, but it has never run on a real phone.** If you try it, please open an issue and say how it went. The same [memory limit](#why-not-sync-from-the-first-block) applies, with less room.
 
@@ -179,7 +179,7 @@ The latest `install-test` run on `main`, for app version 0.7.4, passed all five 
 
 ## Native build (experimental)
 
-[`native/README.md`](native/README.md) describes a build of the official node source for Android itself (arm64, with the Android NDK), with no changes to the source. It runs in CI ([`native-build`](.github/workflows/native-build.yml)) and passes. The result exists only as a workflow artifact: it is **not published as a download**.
+[`native/README.md`](native/README.md) describes a build of the Logos blockchain node source for Android itself (arm64, with the Android NDK), with no changes to the source. It runs in CI ([`native-build`](.github/workflows/native-build.yml)) and passes. The result exists only as a workflow artifact: it is **not published as a download**.
 
 Tried once on the test phone, run from the Android shell over adb (not as an installed app): the binary reported its target as `aarch64-linux-android`, connected to 129 peers and synced from block 0 to 1,568 in about two and a half minutes at 211 MB of memory, then was stopped.
 
