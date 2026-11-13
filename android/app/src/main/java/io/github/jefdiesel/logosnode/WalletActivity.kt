@@ -244,7 +244,7 @@ class WalletActivity : Activity() {
         thread(name = "wallet-wait") {
             var shown = false
             val started = System.currentTimeMillis()
-            while (!WalletServer.listening()) {
+            while (!WalletServer.ours()) {             // this process's own server, not just anything on the port
                 val problem = WalletServer.problem
                 if (!shown && (problem != null || System.currentTimeMillis() - started > 20_000)) {
                     shown = true
@@ -355,7 +355,7 @@ class WalletActivity : Activity() {
             val shown = cover.visibility != View.VISIBLE && FingerprintUnlock.isOwnPage(web.url)
             if (shown) {
                 io.execute {
-                    if (!WalletServer.listening()) main.post { reloadSoon("The wallet stopped answering.") }
+                    if (!WalletServer.ours()) main.post { reloadSoon("The wallet stopped answering.") }
                 }
             }
             main.postDelayed(this, 10_000)

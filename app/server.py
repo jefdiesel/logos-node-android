@@ -33,6 +33,10 @@ ORIGINS = {"http://" + h for h in HOSTS}
 # the names forwarder (its own secret path). Unset (Linux, Termux): nothing changes.
 APP_KEY = os.environ.pop("APP_KEY", "")     # taken out, so the child processes this app starts don't inherit it
 APP_KEY_COOKIE = "app_key"
+# Set while this process holds PORT and serves it. The Android app asks for it in-process before it loads the
+# page and hands the WebView the cookie: an answer on the port alone could come from another app that took the
+# port first (android/LOCAL-APIS.md).
+SERVING = threading.Event()
 PIN_FILE = os.path.join(DATA_DIR, "wallet-pin.json")
 PIN_RE = re.compile(r"^\d{6,12}$")
 KEY_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -4876,7 +4880,12 @@ def main():
     if messaging_on():
         messaging_start()
     threading.Thread(target=session_watch, daemon=True).start()
-    http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    SERVING.set()
+    try:
+        httpd.serve_forever()
+    finally:
+        SERVING.clear()
 
 
 if __name__ == "__main__":

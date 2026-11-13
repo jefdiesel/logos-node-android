@@ -100,8 +100,8 @@ object WalletServer {
             }
             // say in the log whether it came up, and if not, why
             val until = System.currentTimeMillis() + 60_000
-            while (!listening() && System.currentTimeMillis() < until) Thread.sleep(250)
-            if (listening()) {
+            while (!ours() && System.currentTimeMillis() < until) Thread.sleep(250)
+            if (ours()) {
                 log(app, "the wallet answers on $URL, ${System.currentTimeMillis() - t0} ms after starting")
             } else {
                 val crash = crashFile(app).takeIf { it.exists() }?.readText()?.trim()?.lines()?.lastOrNull()
@@ -172,6 +172,20 @@ object WalletServer {
         } else {
             "Wallet: not running (it starts when the app's wallet screen opens)"
         }
+    }
+
+    /**
+     * Whether the wallet on [PORT] is this process's own server.py: it says so in-process (logos_embed.serving)
+     * and the port answers. Another app could take the port first and answer on it; the page, the app key
+     * cookie and the native bridge must never go to it (android/LOCAL-APIS.md).
+     */
+    fun ours(): Boolean {
+        val serving = try {
+            com.chaquo.python.Python.getInstance().getModule("logos_embed").callAttr("serving")?.toBoolean() ?: false
+        } catch (_: Exception) {
+            false
+        }
+        return serving && listening()
     }
 
     @Volatile var lastConnectError: String? = null

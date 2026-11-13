@@ -30,6 +30,7 @@ prompt to pages that call `127.0.0.1` was not verified here; this document does 
 | 18180 node API | **Spend the wallet's coins without the PIN**: `POST /wallet/transactions/transfer-funds` (the node signs with its own keystore and submits), `POST /channel/deposit`, `POST /wallet/sign/ed25519` and `/wallet/sign/zk` (a signing service for the node's keys), `/wallet/fund`, the SDP declaration and withdrawal routes, `/leader/claim`, `/pow/claim`, `PUT /pow/mining/*`, `PUT /admin/tracing/filter`. Read balances, notes, the mempool. | **Proven on a real node.** Source at tag 0.3.4: the router (`nodes/node/binary/src/api/routes.rs`, `backend.rs`) has no authentication layer and the handlers take no credential (`handlers.rs`, `post_transactions_transfer_funds`). CI job `wallet-send` now runs `tests/local_api_probe.py` against the real 0.3.4 node: a plain HTTP request with no credential makes a transfer (install-test run 43434916054: the node answered `201` with a transaction hash). |
 | 18180 from a website | Before this change the node answered CORS with `Access-Control-Allow-Origin: *` (with no `cors_origins` configured, `backend.rs` uses `allow_origin(Any)`, and the app configured none), so a page in the phone's browser could send the same JSON POSTs, subject only to the browser's local-network rules. | Source (`backend.rs`, `serve`). With the fix, the probe's preflight from another origin gets `Access-Control-Allow-Origin: http://127.0.0.1:8090` (the configured origin, whatever the request's), which a browser refuses for any other page. |
 | 18645 messaging REST | **Take incoming messages away**: `GET /messaging/v1/events/received` returns the buffered messages *and clears them* ("evict-after-poll", `rest/messaging_api/event_cache.nim` at logos-delivery `57e04dc`), so an app polling it gets the sealed messages and the wallet never sees them. The same for `/messaging/v1/events/send` (send status). Publish on any topic, unsubscribe the wallet's inbox topic (`server.py` subscribes again on its next round), read the subscribed topics. The payloads are sealed by the page, so it reads ciphertext, not chats. | Source (upstream REST handlers and event cache at the pinned commit; `Messaging.kt` writes `"rest": true`, `127.0.0.1:18645`). Not run on a phone. |
+| 18645 from a website | The drain above is a plain GET, which a page can send without CORS (it never sees the answer, but the buffer is cleared all the same), subject to the browser's local-network rules (not verified). | Source; not run. |
 | 18190 wallet server | Before a PIN exists: **set the PIN** and get a session, then do anything a session allows (send, export the messaging key). Any time: guess PINs (5 tries, then 5 minutes), lock the wallet, read `/api/status`, `/api/wallet`, `/cryptarchia/info`, `/network/info`. Not: read the WebView's session token; call `/lez-rpc/` without its secret. | **Reproduced** from a second process on a computer, against `server.py` 0.9.13 in Android mode: `POST /api/wallet/setup` with forged `Host`/`Origin` returned a session; `POST /api/wallet/lock` and `GET /api/status` answered. |
 
 ## The wallet server (18190): closed in this branch
@@ -71,6 +72,17 @@ prompt to pages that call `127.0.0.1` was not verified here; this document does 
 Without `APP_KEY` (Linux, Termux) nothing changes: the browser there can't be handed a cookie by an
 app, so those installs keep the `Host`/`Origin` checks only (see "Linux and Termux" below).
 
+**Another app on the port first.** If another app listens on 18190 before the wallet process starts,
+`server.py` can't bind, but the port still answers. Before this change the WebView would then have
+loaded that app's page, with the native bridge (`window.LogosAndroid`, whose `isOwnPage` checks only
+the address): a PIN-phishing page with the app's own bridge. Now `server.py` sets `SERVING` while it
+holds the port (`main()`), `logos_embed.serving()` reports it in-process, and the app loads the page,
+sets the cookie and keeps the page shown only while `WalletServer.ours()` (its own server serving and
+the port answering). Otherwise the cover stays up and says the wallet didn't start. Left open: if the
+app's own server stopped while the page is shown and another app took the port within the watchdog's
+interval, a few requests (with the cookie) could reach it before the cover comes up; the key is useless
+to it, since the server it guards is gone.
+
 **What it protects against:** every other app on the phone, whatever headers it sends. **What it
 doesn't:** anything running as this app's own user (it can read the keys anyway), root, USB
 debugging on this debug build (`run-as`, WebView remote debugging).
@@ -79,7 +91,8 @@ debugging on this debug build (`run-as`, WebView remote debugging).
 (a public file) and say "this app only answers its own page"; the app logs it.
 
 **Tests:** `tests/app_key_test.py` (every route class with and without the key, wrong keys, forged
-headers, the first PIN, the forwarder, unchanged without `APP_KEY`, the environment), and
+headers, the first PIN, the forwarder, unchanged without `APP_KEY`, the environment, `serving()` with
+its own server and with another program on the port), and
 `tests/app_key_ui.mjs` (headless Chrome: the cookie set the way the WebView gets it, the page's GET
 and POST carry it, its scripts can't read it, without it the page explains). **Not run on a phone**:
 the WebView's `CookieManager` path is the same Chromium cookie store, but was not exercised on a
@@ -127,7 +140,9 @@ listens on that socket (0600; a stale socket is replaced, any other file is left
 TCP port. Unset: upstream behaviour. Routes, handlers, wallet logic and formats are unchanged. It is
 built alone as the `-api` variant (`apply-patches.sh --only`), so it can ship without patch 0001, and
 together with 0001 in `-patched`. Its tests run in `patched-crate-tests`. **The app does not use it
-yet**: a patched node needs an independent review first.
+yet**: a patched node needs an independent review first. **Not verified on a device**: creating and
+connecting to a Unix socket inside the app's files directory under Android's app sandbox and SELinux
+(expected to work, as the app's own user in its own directory, but not tried).
 
 **Switching the app over, after review** (not done):
 
@@ -189,12 +204,14 @@ patch helps Termux only if Termux runs the patched node.
 
 ## What this branch changes, for review
 
-- `app/server.py`: `APP_KEY`/`APP_KEY_COOKIE` (top), `Handler.key_ok`, `Handler.public_file`,
-  `Handler.KEY_REFUSED`, one check at the top of `do_GET` and one in `do_POST` after the forwarder.
-- `LogosApp.kt`: `WalletServer.appKey`, `APP_KEY_COOKIE`, `appKeyCookie()`, `APP_KEY` in the
-  environment given to `server.py`.
-- `WalletActivity.kt`: the cookie set before the page loads (`loadWhenReady`), and sent by
-  `walletSetting()`.
+- `app/server.py`: `APP_KEY`/`APP_KEY_COOKIE`/`SERVING` (top), `Handler.key_ok`, `Handler.public_file`,
+  `Handler.KEY_REFUSED`, one check at the top of `do_GET` and one in `do_POST` after the forwarder,
+  `SERVING` set and cleared around `serve_forever()` in `main()`.
+- `logos_embed.py`: `serving()`.
+- `LogosApp.kt`: `WalletServer.appKey`, `APP_KEY_COOKIE`, `appKeyCookie()`, `ours()`, `APP_KEY` in the
+  environment given to `server.py`, the start-up log waits for `ours()`.
+- `WalletActivity.kt`: the page loads only when `ours()`, with the cookie set first (`loadWhenReady`);
+  the watchdog reloads when not `ours()`; `walletSetting()` sends the cookie.
 - `NodeFiles.kt`: `cors_origins` in the node config.
 - Tests: `tests/app_key_test.py`, `tests/app_key_ui.mjs`, `tests/local_api_probe.py`, wired into
   `install-test.yml`; the `wallet-send` job's node config now carries `cors_origins` in the app's

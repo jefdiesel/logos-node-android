@@ -124,4 +124,35 @@ probe = ("import os, sys; os.environ.update(APP_EMBEDDED='android', APP_KEY=%r, 
 out = subprocess.run([sys.executable, "-c", probe, tempfile.mkdtemp(), APP], capture_output=True, text=True, timeout=60).stdout.split()
 check("server.py takes APP_KEY and removes it from the environment its children inherit", out == ["key", "noenv"], out)
 
+# ---- part 4: the app loads its page only from its own server, never from another app on the port ------------
+EMBED = os.path.join(HERE, "..", "android", "app", "src", "main", "python")
+probe = r"""
+import json, os, socket, sys, tempfile, threading, time, http.server
+sys.path.insert(0, sys.argv[1])
+import logos_embed
+port, squat = int(sys.argv[3]), sys.argv[4] == "squat"
+if squat:   # another app took the port first and answers on it
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200); self.end_headers(); self.wfile.write(b"not the wallet")
+        def log_message(self, *a): pass
+    other = http.server.HTTPServer(("127.0.0.1", port), H)
+    threading.Thread(target=other.serve_forever, daemon=True).start()
+before = logos_embed.serving()
+logos_embed.start(sys.argv[2], json.dumps({"APP_EMBEDDED": "android", "APP_KEY": "k" * 64, "APP_PORT": str(port),
+                  "APP_DATA": tempfile.mkdtemp(), "NODE_API": "http://127.0.0.1:9", "NODE_BIN": "/nonexistent"}))
+for _ in range(100):
+    if logos_embed.serving():
+        break
+    time.sleep(0.1)
+answers = socket.socket(); answers.settimeout(2)
+up = answers.connect_ex(("127.0.0.1", port)) == 0
+print(before, logos_embed.serving(), up)
+"""
+for mode, want in (("own", ["False", "True", "True"]), ("squat", ["False", "False", "True"])):
+    r = subprocess.run([sys.executable, "-B", "-c", probe, EMBED, APP, str(PORT + 1), mode], capture_output=True, text=True, timeout=60)
+    out = r.stdout.split()
+    check("logos_embed.serving() %s (before start, after start, port answers): %s" % (
+        "with its own server" if mode == "own" else "when another app holds the port", " ".join(want)), out == want, (out, r.stderr[-300:]))
+
 print("all checks passed")
