@@ -53,13 +53,18 @@ acao = {k.lower(): v for k, v in h.items()}.get("access-control-allow-origin")
 check("a website's preflight to the node's transfer endpoint gets no Access-Control-Allow-Origin", acao is None, (code, acao))
 
 # 1: the same request from a program, which no browser rule applies to
-code, _, raw = node("POST", "/wallet/transactions/transfer-funds", {
-    "tip": None, "change_public_key": rich["key"], "funding_public_keys": [rich["key"]],
-    "recipient_public_key": to["key"], "amount": amount})
-try:
-    reply = json.loads(raw)
-except Exception:
-    reply = {}
-spent = 200 <= code < 300 and isinstance(reply, dict) and bool(reply.get("hash"))
+# (a few tries: notes of a transfer the earlier steps made may still be pending)
+for _ in range(12):
+    code, _, raw = node("POST", "/wallet/transactions/transfer-funds", {
+        "tip": None, "change_public_key": rich["key"], "funding_public_keys": [rich["key"]],
+        "recipient_public_key": to["key"], "amount": amount})
+    try:
+        reply = json.loads(raw)
+    except Exception:
+        reply = {}
+    spent = 200 <= code < 300 and isinstance(reply, dict) and bool(reply.get("hash"))
+    if spent:
+        break
+    time.sleep(5)
 print("     node answered %d to a transfer with no credential%s" % (code, (", transaction " + reply["hash"]) if spent else ""))
 check("EXPOSURE (expected until the node patch): the node API signs a transfer for any local program, no PIN", spent, (code, raw[:200]))
