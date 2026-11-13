@@ -178,6 +178,35 @@ await js(`closeSettings(); true`);
 await js(`loadAccounts(); true`);
 await waitFor("the LEZ row: initials on the left, its balance", `(() => { const r = document.getElementById("tok-lez"); return r.querySelector("b").textContent === "LEZ" && r.querySelector(".tok-ic").textContent === "LEZ" && /^[0-9,]+LEZ$/.test(r.querySelector(".tok-amt").textContent); })()`);
 await shot("wallet-tokens");
+// larger text, as a phone set to a bigger font size shows it: the Wallet drawn at 115% and 130% (CSS zoom on the
+// Wallet, so its text is that much larger for the same 412 px of screen; the page sets its sizes in px, so a root
+// font-size wouldn't change them). Token rows: the name and network may wrap, nothing is cut with "…", the
+// balance is whole; Activity rows: a kind and an amount each stay on one line; nothing overflows.
+await cdp("Emulation.setDeviceMetricsOverride", { width: 412, height: 900, deviceScaleFactor: 2, mobile: true });
+await click("#tok-logos"); await click("#t-act");
+for (const z of [1.15, 1.3]) {
+  await js(`document.getElementById("v-open").style.zoom = "${z}"; fitHero(); true`);
+  await sleep(300);
+  const r = await js(`(() => {
+    const out = [], card = document.querySelector("section.wallet").getBoundingClientRect();
+    for (const row of document.querySelectorAll("#tokens .tok")) {
+      const amt = row.querySelector(".tok-amt"), t = row.querySelector(".tok-t");
+      for (const e of [row.querySelector("b"), row.querySelector("small")]) if (getComputedStyle(e).textOverflow === "ellipsis" || e.scrollWidth > e.clientWidth + 1) out.push(row.id + " text cut: " + e.textContent);
+      if (amt.textContent && amt.scrollWidth > amt.clientWidth + 1) out.push(row.id + " balance cut: " + amt.textContent);
+      if (amt.getBoundingClientRect().right > card.right + 1) out.push(row.id + " balance outside the card");
+    }
+    for (const h of document.querySelectorAll("#hist .hrow")) for (const e of h.querySelectorAll(".top > span")) {
+      const lh = parseFloat(getComputedStyle(e).lineHeight) || parseFloat(getComputedStyle(e).fontSize) * 1.45;
+      if (e.getBoundingClientRect().height > lh * 1.5 * ${z}) out.push("activity: '" + e.textContent + "' breaks over lines");
+      if (e.getBoundingClientRect().right > card.right + 1) out.push("activity: '" + e.textContent + "' outside the card");
+    }
+    if (document.documentElement.scrollWidth > innerWidth) out.push("sideways scroll");
+    return out; })()`);
+  check(`text at ${Math.round(z * 100)}%: token names and networks whole (wrapping, no "…"), balances whole, Activity rows tidy, nothing overflows`, r.length === 0, r);
+  if (z === 1.3) await shot("wallet-tokens-large-text");
+}
+await js(`document.getElementById("v-open").style.zoom = ""; fitHero(); true`);
+await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
 await click("#tok-lez");
 check("tapping LEZ picks it: its row marked, Logos not", await js(`document.getElementById("tok-lez").getAttribute("aria-checked") === "true" && document.getElementById("tok-logos").getAttribute("aria-checked") === "false"`));
 await waitFor("LEZ Activity: what the app did (faucet, bridge, register, pointed)", `(() => { const t = document.getElementById("lez-act").innerText; return !document.getElementById("lez-act").hidden && /From the faucet/.test(t) && /Bridged from wallet/.test(t) && /Registered slow/.test(t) && /Pointed slow/.test(t); })()`);

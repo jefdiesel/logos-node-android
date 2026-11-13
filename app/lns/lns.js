@@ -354,7 +354,7 @@ async function home(on) {
     document.getElementById("tok-lez").querySelector(".tok-amt").replaceChildren();
     return;
   }
-  walletToken({ id: "lez", name: "LEZ", net: "LEZ testnet · for your LNS name", initials: "LEZ", pick: null,
+  walletToken({ id: "lez", name: "LEZ", net: "LEZ testnet", initials: "LEZ", pick: null,
                 panels: { top: "lez-get", send: "lez-send", recv: "lez-recv", hist: "lez-act" }, onShow: lezShow });
   const amt = document.getElementById("tok-lez").querySelector(".tok-amt");
   if (lezBal == null) amt.replaceChildren(el("span", { className: "ph", textContent: "—", title: "Not known right now" }));
