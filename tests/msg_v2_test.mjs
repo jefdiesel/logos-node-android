@@ -969,8 +969,10 @@ print(sorted(json.load(open(os.path.join(os.path.dirname(server.STORE_FILE), f))
   for (let i = 0; i < 305; i++) { await vin(toV(MC.newKeyPair(), "noise " + i)); if (i % 40 === 39) { await sleep(700); await v2.sync(); } }
   const X5 = MC.newKeyPair();
   for (let i = 0; i < 3; i++) await vin(toV(X5, "x5 " + i));
-  const only0 = v2.dropped().only;
-  await until("all dropped, X5's last", async () => { await v2.sync(); return !(await vitems()).some(i => !i.k) && v2.dropped().only - only0 >= 0 && (await vitems("?dropped=1")).length >= 308; }, 40000);
+  const x5k = hex(X5.publicKey);
+  await until("all dropped, X5's 3 last", async () => { await v2.sync(); return !(await vitems()).some(i => !i.k)
+    && [...v2.inbox.values()].filter(m => m && m.senderKey === x5k && v2.tags.get(m.n) === "d").length === 3; }, 60000);
+  check("(X5's drops sit behind more than 300 others)", (await vitems("?dropped=1")).filter(i => i.n < Math.min(...[...v2.inbox.values()].filter(m => m && m.senderKey === x5k).map(m => m.n))).length > 300);
   await v2.setOnlyKnown(false);
   const v3 = mk(); await v3.loadStore(); await v3.sync();
   const x5id = await v3.startAddress(hex(X5.publicKey));
