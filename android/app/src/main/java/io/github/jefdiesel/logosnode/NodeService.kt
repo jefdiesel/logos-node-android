@@ -713,6 +713,7 @@ class NodeService : Service() {
         )
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_names)                     // the eta mark
+            .setColor(getColor(R.color.icon_orange))                    // its orange, never the system's accent
             .setContentTitle("Names Wallet")
             .setContentText(text)
             .setOngoing(true)

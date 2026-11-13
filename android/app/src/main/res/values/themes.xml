@@ -5,5 +5,8 @@
     <style name="Theme.Logos.Wallet" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar">
         <item name="android:windowBackground">@color/icon_cream</item>
         <item name="android:colorBackground">@color/icon_cream</item>
+        <!-- the page's text handles, cursor and edge glow in the app's orange, not the system's green or blue -->
+        <item name="android:colorAccent">@color/icon_orange</item>
+        <item name="android:colorControlActivated">@color/icon_orange</item>
     </style>
 </resources>

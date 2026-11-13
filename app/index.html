@@ -16,19 +16,20 @@
 <style>
 :root{
   --bg:#f4f2ec;--card:#fffefb;--ink:#1b1a17;--dim:#6d6960;--line:#d6d1c4;--field:#f7f5ef;--field-line:#8a8476;
-  --accent:#f0794a;--accent-ink:#1b1a17;--accent-text:#a8470c;--ok:#1d7448;--warn:#9a5b00;--bad:#b3261e;
+  --accent:#f0794a;--accent-ink:#1b1a17;--accent-text:#a8470c;--ok:#1b1a17;--warn:#7f5d0c;--bad:#a8322a;
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 }
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
   --bg:#11110f;--card:#201f1b;--ink:#edeae2;--dim:#a29d91;--line:#3a3832;--field:#161613;--field-line:#7d786e;
-  --accent:#f0794a;--accent-ink:#1b1a17;--accent-text:#f0794a;--ok:#62d19b;--warn:#e6ad55;--bad:#ff8a80;
+  --accent:#f0794a;--accent-ink:#1b1a17;--accent-text:#f0794a;--ok:#edeae2;--warn:#d9b45f;--bad:#e8806f;
 }}
 :root[data-theme=dark]{
   --bg:#11110f;--card:#201f1b;--ink:#edeae2;--dim:#a29d91;--line:#3a3832;--field:#161613;--field-line:#7d786e;
-  --accent:#f0794a;--accent-ink:#1b1a17;--accent-text:#f0794a;--ok:#62d19b;--warn:#e6ad55;--bad:#ff8a80;
+  --accent:#f0794a;--accent-ink:#1b1a17;--accent-text:#f0794a;--ok:#edeae2;--warn:#d9b45f;--bad:#e8806f;
   color-scheme:dark;
 }
 :root[data-theme=light]{color-scheme:light}
+html{accent-color:var(--accent);-webkit-tap-highlight-color:transparent}::selection{background:rgba(240,121,74,.35)}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%}
 main{max-width:520px;margin:0 auto;padding:20px 16px 48px}
@@ -94,7 +95,7 @@ h3{font-size:15px;font-weight:650;margin:16px 0 6px}
 #page-settings section{scroll-margin-top:72px}
 #page-settings h2.vh + div > h3:first-child{margin-top:0}
 .pill{font-size:13px;font-weight:600;padding:4px 10px;border-radius:999px;border:1px solid var(--line);white-space:nowrap}
-.pill.ok{color:var(--ok)}.pill.warn{color:var(--warn)}
+.pill.ok{color:var(--ok);font-weight:600}.pill.warn{color:var(--warn)}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 16px;margin-bottom:14px}
 .big{font-size:42px;font-weight:650;line-height:1.05;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
 .sub{color:var(--dim);font-size:14px;margin-top:4px}
@@ -126,7 +127,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .acct .addr{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:6px}
 .acct code,.hash{font-family:var(--mono);font-size:13px;color:var(--dim);overflow-wrap:anywhere}
 .note{font-size:14px;color:var(--dim);margin:10px 0 0}
-.msg{font-size:14px;margin:12px 0 0;min-height:1px}.msg.bad{color:var(--bad)}.msg.ok{color:var(--ok)}.msg.warn{color:var(--warn)}
+.msg{font-size:14px;margin:12px 0 0;min-height:1px}.msg.bad{color:var(--bad)}.msg.ok{color:var(--ok)}p.msg.ok::before,div.msg.ok>p:first-child::before{content:"\2713\00a0";font-weight:700}.msg.warn{color:var(--warn)}
 dl{margin:0}dl div{display:flex;justify-content:space-between;gap:14px;padding:9px 0;border-top:1px solid var(--line)}dl div:first-child{border-top:0}
 dt{color:var(--dim);font-size:14px;flex:none}dd{margin:0;text-align:right;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
 details{margin-top:8px;border-top:1px solid var(--line);padding-top:10px}summary{cursor:pointer;color:var(--dim);font-size:14px;padding:12px 0}
@@ -134,7 +135,7 @@ hr{border:0;border-top:1px solid var(--line);margin:18px 0 6px}
 .hrow{padding:10px 0;border-top:1px solid var(--line)}.hrow:first-child{border-top:0}
 /* a row's kind and amount each stay whole; with large text the amount moves under the kind instead of breaking */
 .hrow .top{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:2px 10px}.hrow .kind{font-weight:600;white-space:nowrap}
-.hrow .amt{font-weight:600;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;margin-left:auto}.hrow .amt.in{color:var(--ok)}
+.hrow .amt{font-weight:600;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;margin-left:auto}.hrow .amt.in{color:var(--ink);font-weight:700}
 .hrow .sub{font-size:13px;color:var(--dim);margin-top:3px;display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px}
 .hrow .sub button{min-height:44px;padding:2px 12px;font-size:13px;font-weight:550}
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}.cols h3{font-size:13px;color:var(--dim);margin:0 0 6px;font-weight:600}
@@ -368,7 +369,7 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
       <h2 id="h-s-upd">Updates</h2>
       <p style="margin:0">Installed version: <b id="s-version">-</b></p>
       <div id="upd" hidden>
-        <p class="msg ok" style="margin-top:12px" id="upd-text"></p>
+        <p class="msg" style="margin-top:12px" id="upd-text"></p>
         <div id="upd-go">
           <button type="button" class="primary" id="b-upd-fp" hidden>Update, confirm with fingerprint</button>
           <label for="upd-pin" id="l-upd-pin">Your PIN</label>

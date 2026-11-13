@@ -1,10 +1,10 @@
 {
  "files": {
-  "index.html": "6bf809e6b61f3b5a43a51c39c86e9d59eb44745be641d1411d06cf2104445206",
+  "index.html": "9072fe0eda9d094f1f765d53e10c1f6351af6d47c25f8f6c157caad716db0e6f",
   "lns/lns.js": "bb985e63021032cc68080acec69cd8667fc68f55b7cfdb53a12d78aafa4013fb",
   "messages/VENDORED.txt": "6fbf95fc9f8f846e65996ac4c9e2179002b631af229d8c222ab19a4a756d98e0",
   "messages/chat-core.js": "3ebe9fb5e6d1ff1267917f9ce822c010607df5e4682c390657aaab77a9def21c",
-  "messages/icon.js": "98fb6697a01f5861e71e18c20cbe40a0cecff78fd205197edc40440db837b697",
+  "messages/icon.js": "22fcd81680dffc58b3a3c21346c2498cc6864679fe6c40af31457320a6c13592",
   "messages/identity.js": "0a4943568abb6aae7a11b3555d02c4adfa1b9204322a09019afaf6541bf25445",
   "messages/messages.js": "26dd4f8e0d40b1fe78d301cfacacd2d919f264519b85e31d26c9da9d45909d0f",
   "messages/msg-crypto.js": "cd3e81b81c503bfbdb04104c86067f0d7121dbec4758a824b0b57f6dd90a83b5",

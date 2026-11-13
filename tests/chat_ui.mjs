@@ -10,6 +10,7 @@
 import { spawn } from "node:child_process";
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { noGreenOrBlue } from "./hue_check.mjs";
 import { join } from "node:path";
 import { inflateSync } from "node:zlib";
 import { createRequire } from "node:module";
@@ -107,10 +108,11 @@ const stWait = (name, want) => waitFor(name, `(${JSON.stringify(want)} === "clos
   : !document.getElementById("page-settings").hidden && (${JSON.stringify(want)} === "home" ? !document.getElementById("s-home").hidden : !document.getElementById("st-" + ${JSON.stringify(want)}).hidden && document.getElementById("s-home").hidden))`);
 let shotN = 0;
 async function shot(name) {
-  if (!SHOTS) return;
   for (const scheme of ["light", "dark"]) {
     await cdp("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: scheme }] });
     await sleep(150);
+    await noGreenOrBlue(js, check, `${name} (${scheme})`);
+    if (!SHOTS) continue;
     const r = await cdp("Page.captureScreenshot", { format: "png" });
     writeFileSync(join(SHOTS, `${String(++shotN).padStart(2, "0")}-${name}-${scheme}.png`), Buffer.from(r.result.data, "base64"));
   }
