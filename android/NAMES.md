@@ -39,14 +39,19 @@ These are 1.5 times the cycles measured on the testnet, rounded up: about 165,00
 limit times the next block's base fee ceiling, about 8 or 9 a unit: about 2.25M for register and
 1.1M for an entry, plus the bytes. A failed call is billed its whole limit.
 
-**What it costs on the testnet:**
+**What it costs on the testnet** (checked against the first registration from a phone, `pixel8`,
+2026-11-12: the account went from 5,000,000 to 2,492,488):
 - Registering a name holds a deposit of 1,000,000 for as long as the name is kept. Releasing the
   name refunds it.
-- Each transaction pays gas: roughly 0.2–1.5M at today's base fee.
-- The account must therefore hold about 5,000,000 LEZ testnet tokens to register, and about
-  2,000,000 to set entries.
-- These are LEZ tokens, not the Logos Blockchain coins in the app's wallet. The account is funded by
-  a LEZ transfer from another LEZ account.
+- **A fee is the gas the transaction uses, times the base fee, plus its bytes.** The limit only
+  decides what must be held while it runs. `pixel8`'s commit cost about 189,000 (23,214 gas × 8,
+  plus its bytes) and its reveal 1,320,000 (165,000 gas × 8). Billed at the 250,000 limit, the reveal
+  would have cost 2,000,000. So the limit doesn't make step 2 cost more than it must; the registry's
+  reveal is simply that much work. A set-text costs about 530,000 (about 65,590 gas × 8).
+- To start, the account must hold the commit's fee, then, at the reveal, the deposit plus the reveal's
+  reserve (250,000 × the ceiling): about 3,490,000 today. A set-text then needs 120,000 × the ceiling
+  held while it runs.
+- These are LEZ tokens, not the Logos Blockchain coins in the app's wallet. See Getting LEZ.
 
 **The binary.** 17.5 MB stripped (names-build run 43304519020, sha256 `235d091e…9cd8`), with no
 system dependency beyond libc, libm and libdl; CI checks this. The APK carries it as
@@ -138,20 +143,18 @@ that reason as it comes.
 - **How much:** the faucet's source and its last record (2026-10-27) say **2,000,000 per account
   per day**. The live endpoint answers only POST, so the amount can't be read in advance; the app
   shows the `amount` the reply gives.
-- **That is less than one registration.** Registering takes the deposit (1,000,000) and, while each
-  of its two transactions runs, a fee reserve of 250,000 gas at the next block's ceiling (9 a unit
-  today, about 2.25M). So the faucet alone takes about three days to fund a name at today's fees.
-  The bridge has no such limit.
+- **That is less than one registration.** Starting one needs about 3,490,000 held (see What it
+  costs). So the faucet alone takes two days to fund a name at today's fees. The bridge has no such
+  limit.
 
 ### What the page shows
 
-Under the name account's balance: what registering a name costs and how much is missing ("You need
-N more"), worked out from the registry's own deposits (`names settings`, read once an hour) and the
-sequencer's fee state (`getFeeState`), with the formula `names` itself checks before sending:
-deposit + 250,000 × the exec fee ceiling + the transaction's bytes × the storage fee ceiling, for the
-reveal, plus the same reserve for the commit. Register stays disabled with that reason until the
-balance covers it. When the balance or the fees can't be read, it says so and leaves Register to
-the signer's own check.
+One line of what a name costs ("Costs 1,000,000 LEZ deposit + about 1,520,000 LEZ fees."): the
+registry's own deposit (`names settings`, read in the background once an hour, in a throwaway
+folder) and the fees the two transactions should take at today's base fee (`getFeeState`). When the
+account holds less than it needs to start, one line says how much more, and Register waits. When
+the balance or the fees can't be read, it says nothing of the sort and leaves Register to the
+signer's own check.
 
 ## Why private names don't work on the phone
 
@@ -261,16 +264,27 @@ pay the phone through the `blockchain` entry.
 
 Settings has a **Your name** group, right after Messages, shown only inside the Android app when the
 signer is bundled and the wallet is unlocked. It is its own file, `app/lns/lns.js`, which fills one
-placeholder (`#lns-slot`); the group is one line in `ST_GROUPS` in `index.html`. The server adds its `<script>` tag to the page, and serves it, only in
-that case. It shows:
-- the name account and its balance
-- the LNS name, written bare (`android`)
-- buttons to register a name, link one already held, point it at this wallet, and point it at the
-  messaging address
-- what is happening now, and the last result
-- "Make a new backup now", with a button, whenever the last backup doesn't hold the account as it is
-- that the key is kept on the phone unencrypted, like the wallet's own keys, and that there is no
-  recovery phrase
+placeholder (`#lns-slot`); the group is one line in `ST_GROUPS` in `index.html`. The server adds its
+`<script>` tag to the page, and serves it, only in that case. In short lines, it shows:
+- the LNS name, written bare (`android`), what a name costs, and how much LEZ is missing
+- register a name, or link one already held
+- each entry as the name service has it: one already pointing here shows as done and isn't offered;
+  the server refuses a set-text whose value the name service already has ("Already points here."),
+  before anything is sent
+- a short stepper while a change runs, then the result
+- "Back up now" whenever the last backup doesn't hold the account as it is
+- behind one "Details" fold: the key is kept on the phone unencrypted, like the wallet's own keys;
+  there is no recovery phrase; a backup made after the account exists is the only way back
+
+**The Wallet** lists tokens: Logos (the app's own wallet) and LEZ (the name account), or a quiet
+"Add LEZ" row before there is one. The tabs under the list (Send, Receive, Activity) act on the token
+picked. LEZ's Receive is the account (`Public/<id>`) with its QR and Copy, its Activity what this app
+did with it, and its Send a plain transfer (`names wallet auth-transfer send`) through the same job
+runner, after a review, judged by the balance, and never below what an unfinished registration needs.
+
+**Messages > Name** follows the name the phone holds: "pixel8 · messages come to this phone" when the
+name service says so, else one button that runs the same point-at-messages job as Your name. A name
+held elsewhere keeps the manual way, folded.
 
 Every action needs an unlocked wallet, with the same checks as Send.
 
@@ -287,7 +301,13 @@ the signer exists (`NAMES_BIN`).
 | `POST /api/wallet/lns/register` `{name}` | register a name to the account; runs in the background |
 | `POST /api/wallet/lns/name` `{name}` | link a name the account already holds (after a transfer) |
 | `POST /api/wallet/restore` `{…, replace_name_account}` | the existing restore; `replace_name_account: true` lets a backup's different name account replace this phone's. The reply has `lns` (`added`, `same`, `kept`, `replaced`, `busy` or `unchecked`) and `lns_message` |
-| `POST /api/wallet/lns/text` `{entry}` | set `blockchain` to this wallet's Main address or `msg` to this phone's messaging address |
+| `POST /api/wallet/lns/text` `{entry}` | set `blockchain` to this wallet's Main address or `msg` to this phone's messaging address; 409 "Already points here." when the name service has it |
+| `GET /api/wallet/lns/balance` | the account and its LEZ balance only (the Wallet's LEZ row) |
+| `POST /api/wallet/lns/faucet` | ask the project's faucet to pay the account; its own reason when it refuses |
+| `POST /api/wallet/lns/bridge` `{from, amount, confirm}` | without `confirm`: the plan (from, to, amount, fee caps); with it: start the bridge |
+| `POST /api/wallet/lns/bridge/cancel` | stop a bridge that hasn't deposited yet |
+| `POST /api/wallet/lns/send` `{to, amount, confirm}` | LEZ Send: the plan, or the transfer through the job runner |
+| `POST /api/wallet/lns/putback` | put the saved copy back when the live wallet file is missing or unreadable |
 | `POST /lez-rpc/<secret>` | the forwarder for `names` only (see HTTPS); not for the page |
 
 One job runs at a time, because the chain takes one transaction per signing account per block.
@@ -300,6 +320,11 @@ One job runs at a time, because the chain takes one transaction per signing acco
 - The 20-minute registration surviving the app going to the background. If the wallet process
   stops, starting the registration again resumes the saved commitment, for 24 hours.
 - Restoring a backup that carries the name account onto another phone.
+- The bridge from the phone: the split (a transfer to the same key) and `/channel/deposit` over HTTP
+  have run only against stand-ins here; the deposit operation itself is proven from desktop.
+- LEZ Send from the phone: the output lines it is read by are LEZ 0.3.1's own; not run on a phone.
+- Arrival of a bridge is "the balance rose by the amount" (faucet grants counted out): a LEZ payment
+  from elsewhere of at least that amount, while one waits, reads the same.
 - Android's own device-to-device transfer: the app sets `allowBackup="false"`, which on some phones
   doesn't stop a phone-to-phone move from copying the app's files, keys included. That was already
   so for the node's and the messaging keys.

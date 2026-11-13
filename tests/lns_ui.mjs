@@ -136,6 +136,7 @@ await waitFor("and now it asks for a backup again", `!document.getElementById("l
 await waitFor("the name shows bare", `document.getElementById("lns-name").innerText === "slow"`);
 await click("#b-lns-bc");
 await waitFor("pointing it at this wallet: Done.", `document.getElementById("m-lns").innerText === "Done."`, 20000);
+await waitFor("then it shows as done, from the name service, and isn't offered again", `document.getElementById("b-lns-bc").textContent === "Points at this wallet ✓" && document.getElementById("b-lns-bc").disabled`, 20000);
 check("Point it at my messages waits for messages", await js(`document.getElementById("b-lns-msg").disabled`));
 await click("#b-lns-bk");
 await waitFor("Back up now opens Back up", `!document.getElementById("s-bk").hidden && document.activeElement && document.activeElement.id === "bk-pw1"`);

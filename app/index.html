@@ -396,6 +396,7 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
         </form>
         <div id="bk-done" class="msg ok" role="status" hidden>
           <p style="margin:0">Saved <b id="bk-name"></b> to Downloads.</p>
+          <p style="margin:6px 0 0" id="bk-lns" hidden>The name account is in it, but couldn't be checked. Back up again later.</p>
           <ul class="note" style="padding-left:20px">
             <li>Move it somewhere safe off this phone.</li>
             <li id="bk-who">Anyone with the file and its password controls this wallet.</li>
@@ -1291,7 +1292,8 @@ $("b-rs").addEventListener("click", async () => {
     m.className = "msg warn"; m.textContent = msg; $("rs-lns-row").hidden = false; $("rs-lns").checked = false;
     loadAccounts(); return;
   }
-  resetRestore(); m.className = r.data.lns === "busy" || r.data.lns === "unchecked" ? "msg warn" : "msg ok"; m.textContent = msg;
+  resetRestore(); m.className = r.data.lns === "failed" ? "msg bad" : r.data.lns === "busy" || r.data.lns === "unchecked" ? "msg warn" : "msg ok"; m.textContent = msg;
+  if (window.LNS) window.LNS.refresh();        // the account Your name shows follows what the restore did
   loadAccounts(); loadHistory(); if (window.LNS) window.LNS.refresh();
 });
 // Show/Hide for backup passwords; while the password is shown, typing it twice isn't needed
@@ -1323,6 +1325,7 @@ $("f-bk").addEventListener("submit", async e => {
   const a = document.createElement("a"); a.href = url; a.download = name; document.body.append(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 30000);
   resetBackup(); $("bk-name").textContent = name; $("bk-done").hidden = false; loadAccounts();
+  $("bk-lns").hidden = r.data.lns !== "unconfirmed";       // the name account went along, but the signer couldn't check it
   if (window.LNS) window.LNS.refresh();
 });
 

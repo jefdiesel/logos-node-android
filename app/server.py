@@ -8,7 +8,7 @@ Python standard library only. Wallet calls need a PIN that is set on first use.
 import base64, calendar, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.9.9"
+APP_VERSION = "0.9.10"
 # APP_EMBEDDED=android: this app runs inside the Android app (embedded Python, page in a WebView).
 # Then it never updates or restarts itself (the Android app brings new versions), and fingerprint
 # unlock goes through the phone's own fingerprint check instead of a passkey. Unset: nothing changes.
@@ -381,7 +381,10 @@ def lns_state():
     r = d.get("restoring")                    # a restore that set the state but may not have swapped the files
     if isinstance(r, dict) and (r.get("account") is None or lns_account_ok(r.get("account"))) \
             and (r.get("name") in (None, "") or lns_name_ok(r.get("name"))):
-        out["restoring"] = {"account": r.get("account"), "name": r.get("name") or ""}
+        out["restoring"] = {"account": r.get("account"), "name": r.get("name") or "",
+                            "names": r.get("names") if isinstance(r.get("names"), str) and HEX64_RE.fullmatch(r.get("names")) else None}
+    if isinstance(d.get("names_pending"), str) and HEX64_RE.fullmatch(d["names_pending"]):
+        out["names_pending"] = d["names_pending"]   # a restore's names.json that a stop kept from its place
     return out
 
 
@@ -392,14 +395,50 @@ def lns_state_save(**changes):
         d.pop("restoring", None)
     if not d.get("reg_pending"):
         d.pop("reg_pending", None)
+    if not d.get("names_pending"):
+        d.pop("names_pending", None)
     fd = os.open(LNS_STATE_FILE + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         json.dump(d, f)
+        f.flush()
+        os.fsync(f.fileno())                  # a power cut must not lose which account is the phone's
     os.replace(LNS_STATE_FILE + ".tmp", LNS_STATE_FILE)
 
 
 def lns_storage():
     return os.path.join(LNS_HOME, "storage.json")
+
+
+def lns_putback():
+    """Puts the saved copy (storage.json.prev) back when the live wallet file is missing or unreadable: only a
+    copy the signer reads, and of the state's account when the state names one. The unreadable file stays beside."""
+    if not lns_change.acquire(blocking=False):
+        return 409, {"error": LNS_BUSY}
+    try:
+        with lns_lock:
+            if lns_job["state"] == "running":
+                return 409, {"error": LNS_BUSY}
+        if not lns_saved_copy():
+            return 409, {"error": "There is no saved copy to put back."}
+        p = lns_storage()
+        with open(p + ".prev", "rb") as f:
+            copy = f.read()
+        found = lns_accounts_of(copy)
+        if found is None:
+            return 502, {"error": "The saved copy couldn't be checked right now. Nothing was changed. Try again."}
+        st = lns_state()
+        if st["account"] and st["account"] not in found:
+            return 409, {"error": "The saved copy is of another account, so it wasn't used."}
+        account = lns_main_of(found, st["account"])
+        if not account:
+            return 409, {"error": "The saved copy holds no account."}
+        lns_keep_aside(p, "%s-%s" % (time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()), secrets.token_hex(3)))
+        lns_write(p, copy)
+        lns_state_save(account=account)
+        event("lns wallet file put back from its saved copy", account=account)
+        return 200, {"account": account}
+    finally:
+        lns_change.release()
 
 
 def lns_lockdown():
@@ -445,16 +484,29 @@ lns_notes = []                                # what the page should be told onc
 
 
 def lns_accounts_of(data):
-    """The public accounts the signer finds in the wallet file `data` (bytes), read in a temporary folder."""
-    tmp = tempfile.mkdtemp(prefix=".lns-check-", dir=DATA_DIR)
+    """The public accounts the signer finds in the wallet file `data` (bytes), read in a temporary folder, as
+    lns_accounts_in (None when it couldn't say)."""
+    tmp = None
     try:
+        tmp = tempfile.mkdtemp(prefix=".lns-check-", dir=DATA_DIR)
         os.chmod(tmp, 0o700)
         lns_write(os.path.join(tmp, "storage.json"), data)
         return lns_accounts_in(tmp)
     except Exception:
-        return []
+        return None
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+def lns_saved_copy():
+    """Whether the key survives only in the saved copy: storage.json missing or unreadable, its .prev a JSON object.
+    Then nothing may overwrite or set aside the copy until it is put back (lns_putback)."""
+    p = lns_storage()
+    return not lns_json_file_ok(p) and lns_json_file_ok(p + ".prev")
+
+
+LNS_SAVED_COPY = "The name account's key is in a saved copy on this phone. Put back the saved copy first."
 
 
 def lns_repair():
@@ -464,6 +516,10 @@ def lns_repair():
     anything it did put back, is told to the page once. Returns the files that were put back."""
     fixed = []
     acct = lns_state()["account"]
+    cfg = os.path.join(LNS_HOME, "wallet_config.json")
+    if os.path.exists(cfg) and not lns_json_file_ok(cfg):
+        os.remove(cfg)                        # holds no key; a torn one fails every command, `names` writes it anew
+        event("lns wallet config was torn and is written anew")
     for f in LNS_FILES:
         p = os.path.join(LNS_HOME, f)
         if not os.path.exists(p) or lns_json_file_ok(p):
@@ -474,8 +530,14 @@ def lns_repair():
             continue
         if f == "storage.json":
             with open(prev, "rb") as src:
-                found = lns_accounts_of(src.read()) if lns_available() else []
-            if not acct or acct not in found:
+                found = lns_accounts_of(src.read()) if lns_available() else None
+            if found is None:
+                lns_notes.append("The name account's file can't be read, and its saved copy couldn't be checked "
+                                 "right now. Nothing was changed. Try again in a minute.")
+                continue
+            if not acct and found:            # the state was lost too: the copy names the account
+                lns_state_save(account=lns_main_of(found, None))
+            elif acct not in found:
                 lns_notes.append("The name account's file can't be read, and the copy on this phone is of another "
                                  "account, so it wasn't used. Restore a backup of this account.")
                 continue
@@ -496,14 +558,22 @@ def lns_reconcile():
     if not r or not lns_available():
         return
     found = lns_accounts_in(LNS_HOME) if os.path.isfile(lns_storage()) else []
+    if found is None:
+        return                                    # the signer can't say now: nothing is changed on a guess
     if st["account"] in found:
-        lns_state_save(restoring=None)            # the files were swapped: done
-    elif r["account"] in found:
+        names = os.path.join(LNS_HOME, "names.json")
+        here_names = hashlib.sha256(open(names, "rb").read()).hexdigest() if os.path.isfile(names) else None
+        if r.get("names") and here_names != r["names"]:
+            # stopped between the two swaps: the backup's names.json (a registration in progress) isn't in place;
+            # a restore of the same backup puts it there (lns_restore, "same")
+            lns_state_save(restoring=None, names_pending=r["names"])
+            lns_notes.append("A restore was stopped part way. Restore the same backup again to finish it.")
+        else:
+            lns_state_save(restoring=None)        # the files were swapped: done
+    elif r["account"] and r["account"] in found:
         lns_state_save(account=r["account"], name=r["name"], restoring=None)    # they weren't: back as it was
         lns_notes.append("A restore of the name account was stopped before it finished; nothing about the account changed.")
     else:
-        if r["account"] is None:                  # there was none before, and the new one isn't in place
-            lns_state_save(account=None, name="", restoring=None)
         lns_notes.append("A restore of the name account was stopped before it finished. Restore the backup again.")
     event("lns restore reconciled", account_in_file="yes" if found else "no")
 
@@ -513,6 +583,13 @@ def lns_sweep():
     for d in os.listdir(DATA_DIR):
         if d.startswith(".lns-check-") and os.path.isdir(os.path.join(DATA_DIR, d)):
             shutil.rmtree(os.path.join(DATA_DIR, d), ignore_errors=True)
+    if os.path.isdir(LNS_HOME):               # half-written files a stop left (each write is to <file>.tmp, then renamed)
+        for f in os.listdir(LNS_HOME):
+            if f.endswith(".tmp"):
+                try:
+                    os.remove(os.path.join(LNS_HOME, f))
+                except OSError:
+                    pass
 
 
 def lns_env(home=None):
@@ -524,14 +601,34 @@ def lns_env(home=None):
             "LOGOS_NAMES_PROGRAM": NAMES_PROGRAM, "NO_COLOR": "1", "RUST_BACKTRACE": "0"}
 
 
+LNS_LIST_LINE_RE = re.compile(r"^\s*(/[0-9/]*)\s+Public/([1-9A-HJ-NP-Za-km-z]{32,44})\b", re.M)
+
+
 def lns_accounts_in(home):
-    """The public accounts `names wallet account list` finds in the wallet at `home` (the wallet exists, so
-    this makes no new one and prints no recovery phrase). It also writes the default config if there is none."""
-    r = subprocess.run([NAMES_BIN, "wallet", "account", "list"], env=lns_env(home), cwd=home, capture_output=True,
-                       timeout=120, stdin=subprocess.DEVNULL, umask=0o077)
+    """The public accounts `names wallet account list` finds in the wallet at `home`, the one this app makes
+    (`account new public`: chain index /0) first, then the others in the order listed; None when the signer
+    couldn't say (it failed or took too long), which is never taken for "no account" or "another account".
+    The wallet exists, so this makes no new one and prints no recovery phrase. It also writes the default
+    config if there is none."""
+    try:
+        r = subprocess.run([NAMES_BIN, "wallet", "account", "list"], env=lns_env(home), cwd=home, capture_output=True,
+                           timeout=120, stdin=subprocess.DEVNULL, umask=0o077)
+    except Exception:
+        return None
     if r.returncode != 0:
-        return []
-    return LNS_ACCOUNT_LINE_RE.findall(r.stdout.decode("utf-8", "replace"))
+        return None
+    out = r.stdout.decode("utf-8", "replace")
+    pairs = LNS_LIST_LINE_RE.findall(out)
+    if not pairs:
+        return LNS_ACCOUNT_LINE_RE.findall(out)
+    return [a for i, a in pairs if i == "/0"] + [a for i, a in pairs if i != "/0"]
+
+
+def lns_main_of(found, st_account):
+    """Which listed account is the phone's: the state's when it is listed, else the /0 one (listed first)."""
+    if not found:
+        return None
+    return st_account if st_account in found else found[0]
 
 
 def lns_set_gas(limit):
@@ -584,10 +681,14 @@ def lns_make_account():
             return 409, {"error": "This phone already has a name account.", "account": st["account"]}
         lns_lockdown()
         lns_repair()
+        if lns_saved_copy():                      # a new wallet would leave the key only in a copy the next job overwrites
+            return 409, {"error": LNS_SAVED_COPY, "saved_copy": True}
         try:
             if os.path.isfile(lns_storage()):     # a wallet without a recorded account: read it, make nothing
                 found = lns_accounts_in(LNS_HOME)
-                account = found[0] if found else None
+                if found is None:
+                    return 502, {"error": "Couldn't read this phone's name account right now. Try again."}
+                account = lns_main_of(found, st["account"])
             else:
                 r = subprocess.run([NAMES_BIN, "wallet", "account", "new", "public"], env=lns_env(), cwd=LNS_HOME,
                                    capture_output=True, timeout=120, stdin=subprocess.DEVNULL, umask=0o077)
@@ -629,7 +730,10 @@ def lns_view():
     main = next((k["key"] for k in wallet_keys() if k["label"] == "Main"), None)
     notes = list(lns_notes)
     del lns_notes[:len(notes)]
-    if st["account"] and not os.path.isfile(lns_storage()):
+    saved = lns_saved_copy()
+    if saved:
+        notes.append("The name account's file can't be read, but a saved copy is on this phone. Put it back first.")
+    elif st["account"] and not os.path.isfile(lns_storage()):
         notes.append("The name account's file is missing from this phone. Restore a backup that has it.")
     return {"account": st["account"], "balance": lns_balance(st["account"]) if st["account"] else None,
             "name": st["name"], "job": job, "last_backup": last_backup(), "notes": notes,
@@ -637,8 +741,19 @@ def lns_view():
             "backup_needed": bool(st["account"]) and lns_fingerprint() != lns_backed_up(),
             "values": {"blockchain": main, "msg": mk["public"] if mk else None},
             "cost": lns_cost() if st["account"] else None, "bridge": bridge_view(),
-            "faucet": {k: lns_faucet_last[k] for k in ("at", "amount") if k in lns_faucet_last} or None, "activity": list(reversed(lez_act_load()))[:50],
+            "faucet": {k: lns_faucet_last[k] for k in ("at", "amount") if k in lns_faucet_last} or None, "saved_copy": saved,
+            # each entry as the name service has it: "here" (points at this wallet / this phone), "other", "none";
+            # None while not known. The page offers only what isn't true yet.
+            "entries": lns_entries_state(st["name"], main, mk["public"] if mk else None) if st["name"] else None, "activity": list(reversed(lez_act_load()))[:50],
             "reg_pending": st.get("reg_pending", "")}
+
+
+def lns_entries_state(name, main, msg):
+    texts = lns_entries(name)
+    if texts is None:                         # never read yet: None; read and failed: "unknown" (offered, checked when sent)
+        return {"blockchain": "unknown", "msg": "unknown"} if name in lns_entries_cache else None
+    state = lambda v, want: "none" if not v else "here" if want and v == want else "other"
+    return {"blockchain": state(texts.get("blockchain"), main), "msg": state(texts.get("msg"), msg)}
 
 
 def lns_watch(kind, proc, deadline, on_success):
@@ -700,6 +815,8 @@ def lns_watch(kind, proc, deadline, on_success):
         name, act = lns_job["name"], lns_job.get("act")
     if act:
         lez_act_set(act, state="done" if ok else "failed", error=error)
+    if kind == "text" and name:
+        lns_entries_cache.pop(name, None)     # read again: the page shows what the name service has now
     event("lns %s %s" % (kind, "done" if ok else "failed"), lns_name=name)
 
 
@@ -715,8 +832,12 @@ def lns_start(kind, build):
                 return 409, {"error": LNS_BUSY}
         lns_repair()
         st = lns_state()
+        if lns_saved_copy():
+            return 409, {"error": LNS_SAVED_COPY, "saved_copy": True}
         if not os.path.isfile(lns_storage()) or not st["account"]:
             return 409, {"error": "Make the name account first."}
+        if not lns_json_file_ok(lns_storage()):
+            return 409, {"error": "The name account's file can't be read, so nothing was started."}
         code, built = build(st)
         if code != 200:
             return code, built
@@ -799,6 +920,9 @@ def lns_text(body):
             value = mk["public"]
         if not HEX64_RE.fullmatch(value):
             return 500, {"error": "That address isn't in the expected form."}
+        texts = lns_entries_read(name)        # what the name service has now: an entry already set isn't sent again
+        if texts is not None and texts.get(entry) == value:
+            return 409, {"error": "Already points here.", "already": True}
         return 200, (["set-text", name, entry, value], name, entry, lambda: None)
     return lns_start("text", build)
 
@@ -986,6 +1110,47 @@ def lns_settings_read():
         lns_cost_cache["settings_at"] = time.time() - 3600 + 30
 
 
+lns_entries_cache = {}                       # name -> (time read, its texts or None)
+LNS_ENTRIES_FRESH = 60
+
+
+def lns_entries_read(name):
+    """The name's entries as the name service has them ({key: value}), read with `names resolve` in a throwaway
+    wallet folder (it reads the chain only); None when it couldn't be read."""
+    tmp = None
+    try:
+        tmp = tempfile.mkdtemp(prefix=".lns-check-", dir=DATA_DIR)
+        os.chmod(tmp, 0o700)
+        r = subprocess.run([NAMES_BIN, "resolve", name], env=lns_env(tmp), cwd=tmp, capture_output=True, timeout=180,
+                           stdin=subprocess.DEVNULL, umask=0o077)
+        out = r.stdout.decode("utf-8", "replace")
+        d = json.loads(out[out.index("{"):out.rindex("}") + 1]) if r.returncode == 0 and "{" in out else None
+        texts = d.get("texts") if isinstance(d, dict) else None
+        texts = {k: v for k, v in texts.items() if isinstance(k, str) and isinstance(v, str)} if isinstance(texts, dict) else None
+    except Exception:
+        texts = None
+    finally:
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
+    lns_entries_cache[name] = (time.time(), texts)
+    return texts
+
+
+def lns_entries(name):
+    """What lns_entries_read last found for `name`, read again in the background when older than a minute."""
+    at, texts = lns_entries_cache.get(name, (0, None))
+    if time.time() - at > LNS_ENTRIES_FRESH and not lns_entries_cache.get(("reading", name)):
+        lns_entries_cache[("reading", name)] = True
+
+        def read():
+            try:
+                lns_entries_read(name)
+            finally:
+                lns_entries_cache.pop(("reading", name), None)
+        threading.Thread(target=read, daemon=True).start()
+    return texts
+
+
 def lns_cost():
     """What registering a name costs and what the name account must hold to start it.
     - `fees`: what the two transactions should cost: the gas each uses (LNS_REG_GAS, measured) at today's base fee,
@@ -1137,7 +1302,7 @@ def bridge_check(frm, amount):
         return 409, {"error": "Your node doesn't know the name service's deposit channel yet: it may still be syncing. Nothing was sent."}
     try:
         with open(lns_storage(), "rb") as f:
-            held = lns_accounts_of(f.read())
+            held = lns_accounts_of(f.read()) or []
     except Exception:
         held = []
     if st["account"] not in held:
@@ -1241,9 +1406,9 @@ def lns_send(body):
         after = lns_balance(st["account"])
         if after is not None and before - int(after) >= amount:
             return True, ""
-        if ok:
+        if ok and after is not None:
             return False, "included in a block, but the amount didn't leave the name account"
-        return False, LNS_SEND_UNSURE
+        return False, LNS_SEND_UNSURE             # the balance couldn't be read, or `names` didn't see it land
 
     def build(st2):
         if st2["account"] != st["account"]:
@@ -1502,10 +1667,21 @@ def lns_backup():
                 names = f.read().decode("utf-8")
         st = lns_state()
         found = lns_accounts_in(LNS_HOME) if lns_available() else [st["account"]]
-        account = st["account"] if st["account"] in found else (found[0] if found else None)
+        unconfirmed = False
+        if found is None or lns_main_of(found, st["account"]) is None:
+            # the signer couldn't list it: the files still go along, under the state's account, marked as such
+            # (a backup never leaves out a name account the phone has)
+            account, unconfirmed = st["account"], True
+        else:
+            account = lns_main_of(found, st["account"])
         lw = {"storage": storage, "names": names, "account": account,
               "name": st["name"] if account == st["account"] else ""}
-        return lw if lns_backup_valid(lw) else None     # never a part that restore would refuse
+        if unconfirmed:
+            lw["unconfirmed"] = True
+        if not lns_backup_valid(lw):
+            return None                           # never a part that restore would refuse
+        lw["fingerprint"] = lns_fingerprint()     # what this backup holds, taken with the lock held
+        return lw
     except Exception:
         return None
     finally:
@@ -1559,19 +1735,37 @@ def lns_restore(lw, replace=False):
             return "unchecked", "The name account in this backup couldn't be checked here, so it wasn't restored."
         lns_lockdown()
         lns_repair()
+        if lns_saved_copy():                  # the key is only in the copy: nothing may replace or set it aside
+            return "unchecked", LNS_SAVED_COPY
         new = lw["storage"].encode("utf-8")
         path = lns_storage()
         here_st = lns_state()
         here = None
         if os.path.isfile(path):
             found_here = lns_accounts_in(LNS_HOME)
-            here = here_st["account"] if here_st["account"] in found_here else (found_here[0] if found_here else "")
+            here = lns_main_of(found_here, here_st["account"])
+            if here is None:                  # the signer couldn't read this phone's own file: never "different"
+                return "unchecked", "Couldn't read this phone's name account right now. Nothing was changed. Try again."
         # the signer itself must find the backup's account in the backup's wallet file, before anything changes
-        if lw["account"] not in lns_accounts_of(new):
+        in_backup = lns_accounts_of(new)
+        if in_backup is None:
+            return "unchecked", "The backup's name account couldn't be checked right now. Nothing was changed. Try again."
+        if lw["account"] not in in_backup:
             return "unchecked", "The name account written on this backup isn't in its wallet file, so it wasn't restored."
+        names_path = os.path.join(LNS_HOME, "names.json")
+        incoming_names = (lw["names"] if lw.get("names") is not None else "{}").encode("utf-8")
         if here == lw["account"]:
+            changes = {"restoring": None}         # a marker left by a stop is settled by this
             if here_st["account"] != here:        # the state had lost it: put it back, nothing else
-                lns_state_save(account=here)
+                changes["account"] = here
+            if not here_st["name"] and lw.get("name"):
+                changes["name"] = lw["name"]
+            if here_st.get("names_pending") == hashlib.sha256(incoming_names).hexdigest():
+                # a restore of this backup was stopped between its two swaps: its names.json goes in place now
+                lns_keep_aside(names_path, "%s-%s" % (time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()), secrets.token_hex(3)))
+                lns_write(names_path, incoming_names)
+                changes["names_pending"] = ""
+            lns_state_save(**changes)
             return "same", ("The backup holds this phone's own name account (%s). This phone's copy was kept: it is the "
                             "same account, and this phone's copy is the newer one." % lw["account"])
         if here is not None and not replace:
@@ -1579,14 +1773,17 @@ def lns_restore(lw, replace=False):
                             "this phone was kept, and nothing about it changed. To use the backup's instead, restore again "
                             "and tick \"Replace this phone's name account\"." % (lw["account"], here or "an account this app can't read"))
         stamp = "%s-%s" % (time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()), secrets.token_hex(3))
-        names_path = os.path.join(LNS_HOME, "names.json")
-        # the state first, with a marker: a stop before the files are swapped is undone at the next start
-        lns_state_save(account=lw["account"], name=lw.get("name") or "",
-                       restoring={"account": here_st["account"], "name": here_st["name"]})
+        # the state first, with a marker that names what was really in the file (`here`, as the signer read it):
+        # a stop before the files are swapped is undone at the next start, and one between the two swaps is told
+        lns_state_save(account=lw["account"], name=lw.get("name") or "", names_pending="",
+                       restoring={"account": here, "name": here_st["name"] if here == here_st["account"] else "",
+                                  "names": hashlib.sha256(incoming_names).hexdigest()})
         lns_keep_aside(path, stamp)
         lns_keep_aside(names_path, stamp)             # what was here stays beside it, names.json too
+        for f in LNS_FILES:                           # and its saved copies: kept, not overwritten below
+            lns_keep_aside(os.path.join(LNS_HOME, f + ".prev"), stamp)
         lns_write(path, new)
-        lns_write(names_path, (lw["names"] if lw.get("names") is not None else "{}").encode("utf-8"))
+        lns_write(names_path, incoming_names)
         for f in LNS_FILES:                           # snapshots of the other account are no use now
             lns_write(os.path.join(LNS_HOME, f + ".prev"), open(os.path.join(LNS_HOME, f), "rb").read())
         lns_state_save(restoring=None)
@@ -3297,6 +3494,7 @@ def backup_export(password, history=True):
     lw = lns_backup()
     if lw == "busy":                          # the signer may be rewriting the name account's files right now
         return 409, {"error": LNS_BACKUP_BUSY, "lns_busy": True}, source
+    fingerprint = lw.pop("fingerprint", None) if isinstance(lw, dict) else None
     if lw:                                    # the phone's LNS name account (Android app): its wallet file goes along
         content["lns_wallet"] = lw
     sealed = aead_encrypt(backup_key(password, salt), nonce, json.dumps(content).encode(), BACKUP_AADS[version])
@@ -3306,11 +3504,12 @@ def backup_export(password, history=True):
         fd = os.open(BACKUP_STATE_FILE + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
             json.dump({"last": created, "messaging": bool(mk),                # whether it holds the messaging key
-                       "lns": lns_fingerprint() if lw else None}, f)         # and which state of the name account
+                       # and which state of the name account (not one the signer couldn't confirm: asked again)
+                       "lns": fingerprint if lw and not lw.get("unconfirmed") else None}, f)
         os.replace(BACKUP_STATE_FILE + ".tmp", BACKUP_STATE_FILE)
     except Exception:
         pass
-    return 200, {"backup": {
+    return 200, {"lns": ("unconfirmed" if lw.get("unconfirmed") else "included") if lw else None, "backup": {
         "format": BACKUP_FORMAT, "version": version,
         "created": created,
         "addresses": [{"label": k["label"], "key": k["key"]} for k in wallet_keys()],
@@ -3582,9 +3781,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "/api/messages/outbox", "/api/messages/outbox/retry", "/api/messages/outbox/delete",
                     "/api/messages/store", "/api/wallet/lns/account", "/api/wallet/lns/register",
                     "/api/wallet/lns/name", "/api/wallet/lns/text", "/api/wallet/lns/faucet",
-                    "/api/wallet/lns/bridge", "/api/wallet/lns/bridge/cancel", "/api/wallet/lns/send"}
+                    "/api/wallet/lns/bridge", "/api/wallet/lns/bridge/cancel", "/api/wallet/lns/send",
+                    "/api/wallet/lns/putback"}
     LNS_ROUTES = ("/api/wallet/lns/account", "/api/wallet/lns/register", "/api/wallet/lns/name", "/api/wallet/lns/text",
-                  "/api/wallet/lns/faucet", "/api/wallet/lns/bridge", "/api/wallet/lns/bridge/cancel", "/api/wallet/lns/send")
+                  "/api/wallet/lns/faucet", "/api/wallet/lns/bridge", "/api/wallet/lns/bridge/cancel", "/api/wallet/lns/send",
+                  "/api/wallet/lns/putback")
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
@@ -3935,6 +4136,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 code, obj = lns_send(body)
                 if code == 200 and body.get("confirm") is True:
                     event("lns send started", self, amount=obj["plan"]["amount"], to=obj["plan"]["to"])
+            elif path == "/api/wallet/lns/putback":
+                code, obj = lns_putback()
             elif path == "/api/wallet/lns/bridge/cancel":
                 code, obj = lns_bridge_cancel()
                 if code == 200:

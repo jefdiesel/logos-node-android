@@ -151,11 +151,6 @@ async function lnsLoad() {
     $("b-lns-bc").disabled = !d.values.blockchain; $("b-lns-msg").disabled = !d.values.msg;
     $("b-lns-msg").title = d.values.msg ? "" : "Turn on messages first";
     costDraw(); bridgeDraw();
-    // the same state Messages > Name shows: pointed here or not, as the name service says
-    if (d.name && d.values.msg && window.msgPointsHere) window.msgPointsHere(d.name).then(here => {
-      if (here === true && !(lnsLast.job && lnsLast.job.state === "running")) { $("b-lns-msg").disabled = true; $("b-lns-msg").textContent = "Messages come to this phone"; }
-      else $("b-lns-msg").textContent = "Point it at my messages";
-    });
   }
   // not while a change runs: the signer may be rewriting the files a backup would read
   $("lns-bk").hidden = !(has && d.backup_needed && !(d.job && d.job.state === "running"));
@@ -164,15 +159,25 @@ async function lnsLoad() {
   const j = d.job || {}, running = j.state === "running";
   for (const id of RUN_IDS) if (running) $(id).disabled = true;
   if (!running) { lnsInput(); $("b-lns-acct").disabled = false; if (has) { $("b-lns-bc").disabled = !d.values.blockchain; $("b-lns-msg").disabled = !d.values.msg; } }
+  entriesDraw(d, running);
   stepDraw();
   if (running) { lnsMsg(""); if (!tick) tick = setInterval(stepDraw, 1000); }
   else if (j.state === "done") lnsMsg(j.kind === "register" ? j.name + " is yours." : j.kind === "send" ? "Sent " + LEZ(j.amount) + "." : "Done.", "ok");
   else if (j.state === "failed") lnsMsg("Didn't work: " + j.error, "bad");
   if (typeof stRows === "function") stRows();      // Settings' list: the Your name row and its line
   clearTimeout(lnsTimer);
-  const costLater = has && !d.name && !(d.cost && d.cost.need);       // the cost is read in the background: ask again
+  const costLater = (has && !d.name && !(d.cost && d.cost.need)) || (d.name && !d.entries);   // read in the background: ask again
   const wait = running || costLater || (d.bridge && ["splitting", "ready", "depositing", "sent", "landed"].includes(d.bridge.state));
   if (wait && (!$("page-settings").hidden || tokSel === "lez")) lnsTimer = setTimeout(() => { lnsLoad(); if (tokSel === "lez") lezActDraw(); }, 5000);
+}
+// each entry as the name service has it: what is already true is shown as done, never offered again
+const ENTRY = { blockchain: ["b-lns-bc", "Point it at this wallet", "Points at this wallet ✓"], msg: ["b-lns-msg", "Point it at my messages", "Messages come to this phone ✓"] };
+function entriesDraw(d, running) {
+  for (const [k, [id, offer, done]] of Object.entries(ENTRY)) {
+    const st = d.entries && d.entries[k], b = $(id);
+    b.textContent = st === "here" ? done : st == null && d.name ? offer + " (checking…)" : offer;
+    if (st === "here" || (st == null && d.name)) b.disabled = true;     // done, or not known yet
+  }
 }
 const lnsName = () => $("lns-in").value.trim().toLowerCase();
 const nameOk = n => /^(?!-)[a-z0-9-]{1,32}(?<!-)$/.test(n);

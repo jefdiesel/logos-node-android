@@ -34,6 +34,24 @@ def rpc(method, params):
         return json.loads(r.read())["result"]
 
 
+CHAIN = os.path.join(home, "..", "fake-chain.json")     # what the name service holds: {name: {key: value}}
+
+
+def chain():
+    try:
+        return json.load(open(CHAIN))
+    except Exception:
+        return {}
+
+
+def chain_set(name, key=None, value=None):
+    c = chain()
+    c.setdefault(name, {})
+    if key:
+        c[name][key] = value
+    json.dump(c, open(CHAIN, "w"))
+
+
 def fail(msg):
     print("Error: " + msg, file=sys.stderr)
     sys.exit(1)
@@ -55,10 +73,19 @@ def main():
         sys.exit(0)
     if args[:3] == ["wallet", "account", "list"]:
         record()
+        if os.path.exists(os.path.join(home, "..", "fake-signer-down")):     # the test makes the signer fail
+            fail("the signer is down")
+        try:
+            json.load(open(config))               # as the real one: a torn config fails every command
+        except Exception:
+            fail("failed to parse wallet_config.json")
         try:                                  # the public accounts in this wallet file, as the real one lists them
-            accounts = list(json.load(open(storage)).get("public") or {})
+            w = json.load(open(storage))
+            accounts = list(w.get("public") or {})
         except Exception:
             fail("the wallet file doesn't read")
+        if w.get("root"):                     # a wallet's root account, listed by id order (here: first)
+            print("/ Public/%s" % w["root"])
         for i, a in enumerate(accounts):
             print("/%d Public/%s" % (i, a))
         sys.exit(0)
@@ -68,6 +95,13 @@ def main():
             fail("failed to read the settings")
         print(json.dumps({"admin": ACCOUNT, "mode": "deposit", "deposits": {"normal": "1000000", "three_characters": "3000000"},
                           "treasury": ACCOUNT, "prices": {"30d": "0", "1y": "0", "5y": "0"}}, indent=2))
+        sys.exit(0)
+    if args[:1] == ["resolve"] and len(args) == 2:   # read-only: the name's record as the name service has it
+        record()
+        c = chain()
+        if args[1] not in c:
+            fail("%s is not registered" % args[1])
+        print(json.dumps({"name": args[1], "held_by": None, "texts": c[args[1]], "page": None}, indent=2))
         sys.exit(0)
     if not os.path.exists(storage):
         fail("there is no wallet")       # the real one would make a new wallet and print its phrase here
@@ -107,6 +141,7 @@ def main():
         print("submitted %s" % (rpc("sendTransaction", [{"Public": "reveal"}])))
         print("applied in block 9")
         print("%s is registered" % name)
+        chain_set(name)
         sys.exit(0)
     if args[:3] == ["wallet", "auth-transfer", "send"]:      # a plain public transfer, as LEZ's own wallet prints it
         record()
@@ -130,6 +165,7 @@ def main():
             fail("this wallet does not hold nothold")
         print("submitted %s" % (rpc("sendTransaction", [{"Public": "set-text"}])))
         print("applied in block 11")
+        chain_set(args[1], args[2], args[3])
         sys.exit(0)
     fail("unknown command %s" % args)
 

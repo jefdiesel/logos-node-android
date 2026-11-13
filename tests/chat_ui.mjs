@@ -866,7 +866,7 @@ await openOwn("zed, pointed now");
 await waitFor("now: zed · messages come to this phone", `document.getElementById("mg-own-m").textContent === "zed · messages come to this phone"`, 20000);
 await until("and messages go out under zed", async () => (await E.call("/api/messages/key")).d.name === "zed", 10000);
 await js(`closeSettings(); true`); await js(`openSettings("s-lns"); true`);
-await waitFor("Your name shows the same state on its button", `document.getElementById("b-lns-msg").textContent === "Messages come to this phone" && document.getElementById("b-lns-msg").disabled`, 15000);
+await waitFor("Your name shows the same state on its button", `document.getElementById("b-lns-msg").textContent === "Messages come to this phone ✓" && document.getElementById("b-lns-msg").disabled`, 15000);
 await js(`closeSettings(); true`); await click("#nav-msg");
 await waitFor("back on Messages with erin's chats", `[...document.querySelectorAll("#mg-rows .crow")].some(r => r.innerText.includes("bob"))`, 15000);
 await js(`[...document.querySelectorAll("#mg-rows .crow")].find(r => r.innerText.includes("bob")).click(); true`);

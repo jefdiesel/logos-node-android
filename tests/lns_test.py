@@ -85,8 +85,9 @@ for _ in range(50):                          # the node's keys, read once at sta
 
 
 def calls():
+    """The signer's runs that change something (its read-only `resolve` and `settings`, run in the background, left out)."""
     try:
-        return [json.loads(l) for l in open(calls_file)]
+        return [c for c in (json.loads(l) for l in open(calls_file)) if c["args"][:1] not in (["resolve"], ["settings"])]
     except FileNotFoundError:
         return []
 
@@ -312,8 +313,19 @@ check("restored files are 0600 in a 0700 folder", mode(server.LNS_HOME) == 0o700
 check("the restored wallet has no config yet (a backup doesn't carry it)", not os.path.exists(os.path.join(server.LNS_HOME, "wallet_config.json")))
 call("/api/wallet/lns/text", {"entry": "blockchain"}, session=s)
 d = wait_job(s)
+last_set = [c for c in calls() if c["args"][:1] == ["set-text"]][-1]
 check("an entry can be set right after a restore onto a clean phone", d["job"]["state"] == "done"
-      and calls()[-1]["args"] == ["set-text", "android", "blockchain", MAIN] and calls()[-1]["gas"] == 120000, (d["job"], calls()[-1]))
+      and last_set["args"] == ["set-text", "android", "blockchain", MAIN] and last_set["gas"] == 120000, (d["job"], last_set))
+n_set = len([c for c in calls() if c["args"][:1] == ["set-text"]])
+code, d = call("/api/wallet/lns/text", {"entry": "blockchain"}, session=s)
+check("an entry the name service already has is refused before anything is sent", code == 409 and d.get("already") is True
+      and d["error"] == "Already points here." and len([c for c in calls() if c["args"][:1] == ["set-text"]]) == n_set, d)
+for _ in range(100):
+    e = call("/api/wallet/lns", session=s)[1].get("entries")
+    if e and e["blockchain"] == "here":
+        break
+    time.sleep(0.1)
+check("and the page is told it points here (msg not set: none)", e == {"blockchain": "here", "msg": "none"}, e)
 code, d = call("/api/wallet/restore", {"backup": doc, "password": PASSWORD, "pin": PIN}, session=s)
 check("restoring the same name account again: same", code == 200 and d.get("lns") == "same" and d.get("lns_restored") is False, d)
 OTHER = "7Np41oeYWUBWLBaPF1zUkyBz9d7jEyhEtqGePQSRUmTy"
@@ -479,7 +491,12 @@ with open(storage_p + ".prev", "w") as f:
 os.remove(storage_p)
 check("a missing wallet file is not filled in from a copy", server.lns_repair() == [] and not os.path.exists(storage_p))
 d = call("/api/wallet/lns", session=s)[1]
-check("and the page is told it is missing", any("missing" in n for n in d.get("notes", [])), d.get("notes"))
+check("and the page is told a saved copy is there to put back", any("saved copy" in n for n in d.get("notes", [])) and d["saved_copy"] is True, d.get("notes"))
+os.remove(storage_p + ".prev")
+d = call("/api/wallet/lns", session=s)[1]
+check("with no copy either, it is told it is missing", any("missing" in n for n in d.get("notes", [])), d.get("notes"))
+with open(storage_p, "w") as f:
+    f.write(other_wallet)
 
 # 5. replacing with a backup that has no names.json moves the one here aside too
 set_other(names='{"pending": {"carol": {"owner": "x"}}}')
@@ -490,6 +507,136 @@ check("replaced", code == 200 and d.get("lns") == "replaced", d)
 check("the other account's names.json is kept aside, and the live one is empty", read(names_p) == "{}"
       and any("carol" in read(os.path.join(server.LNS_HOME, f)) for f in aside), aside)
 check("the snapshots are of the new account now", FAKE.ACCOUNT in read(storage_p + ".prev"))
+
+# ---- third review ---------------------------------------------------------------------------------------------------
+down = os.path.join(data, "fake-signer-down")
+cfg_p = os.path.join(server.LNS_HOME, "wallet_config.json")
+
+
+def prevs_aside():
+    return [f for f in os.listdir(server.LNS_HOME) if ".prev.replaced-" in f]
+
+
+# 1. the key only in the saved copy: nothing overwrites or sets it aside; it can be put back
+set_other()
+with open(storage_p + ".prev", "w") as f:
+    f.write(other_wallet)
+os.remove(storage_p)
+before_aside = prevs_aside()
+for flag in (False, True):
+    code, d = call("/api/wallet/restore", {"backup": doc, "password": PASSWORD, "pin": PIN, "replace_name_account": flag}, session=s)
+    check("R3-1: a restore while the key is only in the saved copy changes nothing, and says to put it back (replace %s)" % flag,
+          code == 200 and d.get("lns") == "unchecked" and "saved copy" in d.get("lns_message", "")
+          and read(storage_p + ".prev") == other_wallet and not os.path.exists(storage_p) and prevs_aside() == before_aside, d)
+os.remove(server.LNS_STATE_FILE)
+code, d = call("/api/wallet/lns/account", {}, session=s)
+check("R3-1: Make a name account refuses too (no new wallet over the copy)", code == 409 and d.get("saved_copy") is True
+      and not os.path.exists(storage_p), (code, d))
+check("R3-1: a change refuses too", server.lns_start("text", lambda st: (200, (["set-text"], "x", "", lambda: None)))[0] in (409,))
+code, d = call("/api/wallet/lns/putback", {}, session=s)
+check("R3-1: Put back the saved copy: the copy is the live file again, the account named", code == 200 and d["account"] == OTHER
+      and read(storage_p) == other_wallet and server.lns_state()["account"] == OTHER, (code, d))
+with open(storage_p, "w") as f:
+    f.write("{trunc")
+os.remove(server.LNS_STATE_FILE)
+check("R3-1: a broken file with the state lost is put back from a copy the signer reads", server.lns_repair() == ["storage.json"]
+      and read(storage_p) == other_wallet and server.lns_state()["account"] == OTHER)
+with open(storage_p, "w") as f:
+    f.write("{trunc")
+open(down, "w").close()
+check("R3-1: when the signer can't check the copy, nothing is put back and the note doesn't say 'another account'",
+      server.lns_repair() == [] and read(storage_p) == "{trunc"
+      and any("couldn't be checked" in n for n in call("/api/wallet/lns", session=s)[1]["notes"]))
+os.remove(down)
+with open(storage_p, "w") as f:
+    f.write(other_wallet)
+
+# 2. a backup when the signer fails still carries the name account, marked; a torn config is written anew
+set_other()
+open(down, "w").close()
+code, d = call("/api/wallet/backup", {"password": PASSWORD, "pin": PIN}, session=s)
+inner = json.loads(server.aead_decrypt(server.backup_key(PASSWORD, base64.b64decode(d["backup"]["kdf"]["salt"])),
+                                       base64.b64decode(d["backup"]["cipher"]["nonce"]), base64.b64decode(d["backup"]["ciphertext"]),
+                                       server.BACKUP_AADS[d["backup"]["version"]]))
+check("R3-2: with the signer failing, the backup still holds the name account, under the state's account, marked unconfirmed",
+      code == 200 and d.get("lns") == "unconfirmed" and inner["lns_wallet"]["account"] == OTHER and inner["lns_wallet"].get("unconfirmed") is True
+      and inner["lns_wallet"]["storage"] == other_wallet, d.get("lns"))
+check("R3-2: and a backup is still asked for", call("/api/wallet/lns", session=s)[1]["backup_needed"] is True)
+os.remove(down)
+with open(cfg_p, "w") as f:
+    f.write('{"gas_limit": 12')
+check("R3-2: a torn wallet config fails the signer's listing", server.lns_accounts_in(server.LNS_HOME) is None)
+server.lns_repair()
+check("R3-2: repair writes it anew (it holds no key), and the listing works again", server.lns_accounts_in(server.LNS_HOME) == [OTHER])
+code, d = call("/api/wallet/backup", {"password": PASSWORD, "pin": PIN}, session=s)
+check("R3-2: and the backup is confirmed again", code == 200 and d.get("lns") == "included", d.get("lns"))
+
+# 3. the signer failing on the phone's own file is never "a different account", and never offers Replace
+open(down, "w").close()
+for flag in (False, True):
+    code, d = call("/api/wallet/restore", {"backup": doc, "password": PASSWORD, "pin": PIN, "replace_name_account": flag}, session=s)
+    check("R3-3: signer failing: 'couldn't read this phone's name account', nothing changed (replace %s)" % flag,
+          code == 200 and d.get("lns") == "unchecked" and "Couldn't read this phone's name account" in d.get("lns_message", "")
+          and read(storage_p) == other_wallet and server.lns_state()["account"] == OTHER, d)
+
+# 4. reconcile changes nothing on a failing signer; the marker names what was in the file
+server.lns_state_save(account=FAKE.ACCOUNT, name="x", restoring={"account": None, "name": ""})
+server.lns_reconcile()
+st = server.lns_state()
+check("R3-4: with the signer failing, reconcile changes nothing (the state isn't wiped)", st["account"] == FAKE.ACCOUNT and "restoring" in st, st)
+os.remove(down)
+server.lns_reconcile()
+check("R3-4: with it working, the state names the account in the file, and nothing is wiped",
+      server.lns_state()["account"] == FAKE.ACCOUNT or server.lns_state()["account"] == OTHER)
+set_other()
+server.lns_state_save(account=FAKE.ACCOUNT, name="")          # the state wrong: the file holds OTHER
+server.lns_write = failing_write
+code, d = call("/api/wallet/restore", {"backup": doc, "password": PASSWORD, "pin": PIN, "replace_name_account": True}, session=s)
+server.lns_write = real_write
+check("R3-4: the marker named the account really in the file, so a failed replace ends naming it",
+      d.get("lns") in ("failed", "same") and server.lns_state()["account"] in (OTHER, FAKE.ACCOUNT) and "restoring" not in server.lns_state(), (d, server.lns_state()))
+
+# 5. a stop between the two swaps: told, and the same backup finishes it
+set_other(names='{"pending": {"carol": {}}}')
+doc_dave = sealed_with(dict(lw0, names='{"pending": {"dave": {"owner": "y"}}}'))
+
+
+def failing_names(path, data):
+    if path == names_p:
+        raise OSError("no space left")
+    return real_write(path, data)
+
+
+server.lns_write = failing_names
+code, d = call("/api/wallet/restore", {"backup": doc_dave, "password": PASSWORD, "pin": PIN, "replace_name_account": True}, session=s)
+server.lns_write = real_write
+st = server.lns_state()
+check("R3-5: stopped between the swaps: the account is the backup's, its names.json is marked as still to come",
+      d.get("lns") == "failed" and st["account"] == FAKE.ACCOUNT and st.get("names_pending") and "dave" not in read(names_p), (d, st))
+code, d = call("/api/wallet/restore", {"backup": doc_dave, "password": PASSWORD, "pin": PIN}, session=s)
+check("R3-5: restoring the same backup again puts its names.json in place", d.get("lns") == "same" and "dave" in read(names_p)
+      and "names_pending" not in server.lns_state(), d)
+
+# 6. the account this app made (/0) is picked, not the first listed
+with open(storage_p, "w") as f:
+    json.dump({"seed": "f" * 128, "root": OTHER, "public": {FAKE.ACCOUNT: "0" * 64}}, f)
+for p_ in os.listdir(server.LNS_HOME):
+    if p_.endswith(".prev"):
+        os.remove(os.path.join(server.LNS_HOME, p_))
+os.remove(server.LNS_STATE_FILE)
+code, d = call("/api/wallet/lns/account", {}, session=s)
+check("R3-6: with the state lost, the /0 account is taken, not the root one listed first", code == 200 and d["account"] == FAKE.ACCOUNT, d)
+
+# 7. small ones
+with open(storage_p, "w") as f:
+    f.write("{trunc")
+check("R3-7: no change starts on an unreadable wallet file", server.lns_start("text", lambda st: (200, (["set-text"], "x", "", lambda: None)))[0] == 409)
+with open(storage_p, "w") as f:
+    json.dump({"seed": "f" * 128, "public": {FAKE.ACCOUNT: "0" * 64}}, f)
+open(os.path.join(server.LNS_HOME, "storage.json.tmp"), "w").close()
+server.lns_sweep()
+check("R3-7: half-written .tmp files are removed at start", not os.path.exists(os.path.join(server.LNS_HOME, "storage.json.tmp")))
+server.lns_state_save(account=FAKE.ACCOUNT, name="android", restoring=None)
 
 # 8. register and set-text read the state inside the lock
 seen_locked, real_state = [], server.lns_state
