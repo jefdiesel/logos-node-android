@@ -11,8 +11,8 @@ with no PIN, no session and no credential of any kind, as any other app on a pho
      (native/patches on branch node-patches-api); until the app runs a node with it, this check is EXPECTED to
      pass, and it is here so that the day it stops passing is noticed.
   2. A web page in a browser can't make the same call: with cors_origins set (as the Android app writes it
-     since 0.5.15, and install.sh's --http-cors-origin), the preflight from another origin gets no
-     Access-Control-Allow-Origin, so the browser never sends the POST.
+     since 0.5.15, and install.sh's --http-cors-origin), the preflight from another origin is answered with
+     the wallet page's origin, not "*" or its own, so the browser never sends the POST.
 """
 import json, os, sys, time, urllib.error, urllib.request
 
@@ -50,7 +50,11 @@ amount = 77
 code, h, _ = node("OPTIONS", "/wallet/transactions/transfer-funds", headers={
     "Origin": "https://evil.example", "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "content-type"})
 acao = {k.lower(): v for k, v in h.items()}.get("access-control-allow-origin")
-check("a website's preflight to the node's transfer endpoint gets no Access-Control-Allow-Origin", acao is None, (code, acao))
+# with one origin configured, the node names that origin whatever the request's (tower-http's exact origin):
+# the browser lets a page through only if the header is "*" or the page's own origin
+print("     a website's preflight gets Access-Control-Allow-Origin: %s" % (acao or "none"))
+check("a website's preflight to the node's transfer endpoint is not allowed (no '*', not its origin)",
+      acao not in ("*", "https://evil.example"), (code, acao))
 
 # 1: the same request from a program, which no browser rule applies to
 # (a few tries: notes of a transfer the earlier steps made may still be pending)
