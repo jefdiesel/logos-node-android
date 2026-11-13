@@ -103,7 +103,7 @@ ones out before a poll (as upstream's own 50-message cache can); they are counte
 - **Environment:** the library also reads every option it isn't given on the command line from the
   environment (`<PROGRAM>_<OPTION>`, e.g. `LIBWAKURUNNER_REST_ADMIN`). With `--api-socket` the runner
   removes every environment variable ending in `_REST`, `_REST_ADMIN`, `_METRICS_SERVER`,
-  `_WEBSOCKET_SUPPORT` or `_WEBSOCKET_SECURE_SUPPORT` (any case, any prefix) before it creates the
+  `_WEBSOCKET_SUPPORT` or `_WEBSOCKET_SECURE_SUPPORT` (any case, any prefix or none, any length) before it creates the
   node. The library has no other source for these options on this path (no TOML config file is read).
 - **Limits:** headers up to 16 KB, bodies up to 1 MB, 16 connections at once, 15 s to send or
   receive, one request per connection (`Connection: close`).

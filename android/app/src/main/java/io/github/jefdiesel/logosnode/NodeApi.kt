@@ -45,7 +45,8 @@ object NodeApi {
     /**
      * GET over TCP, for builds whose node is on TCP (not the "api" variant). Whoever listens on the port answers,
      * so the whole answer, status line and headers included, is read with a size cap ([MAX_BYTES]) and one overall
-     * deadline (twice [timeoutMs]), over a plain socket: no redirect is followed. Never used in socket mode.
+     * deadline (twice [timeoutMs], connecting included: each read may wait only for the time left), over a plain
+     * socket: no redirect is followed. Never used in socket mode.
      */
     internal fun getTcp(path: String, timeoutMs: Int, port: Int = NodeFiles.API_PORT): Pair<Int, String>? = try {
         val deadline = System.nanoTime() + 2L * timeoutMs * 1_000_000L
@@ -53,7 +54,7 @@ object NodeApi {
             s.connect(InetSocketAddress("127.0.0.1", port), minOf(timeoutMs, 3000))
             s.soTimeout = timeoutMs
             s.getOutputStream().apply { write(request(path)); flush() }
-            parse(readAll(s.getInputStream(), deadline))
+            parse(readAll(s.getInputStream(), deadline) { leftMs -> s.soTimeout = leftMs })
         }
     } catch (_: Exception) {
         null
@@ -105,6 +106,24 @@ object NodeApi {
         return guard.observe(tcp, tcp && socketAccepts(), counting)
     }
 
+    /**
+     * Whether the TCP guard may count strikes yet (review E1, F2): once the node printed "Running chain" in this run
+     * (its services, the API with them, have started), or once [limitMs] have passed since the start without it.
+     * Times come from a monotonic clock (SystemClock.elapsedRealtime in the app), so setting the clock changes nothing.
+     */
+    class ServicesStart(private val limitMs: Long) {
+        @Volatile private var seen = false
+        @Volatile private var startedAt = 0L
+
+        /** A new node process started at [nowMs]. */
+        fun reset(nowMs: Long) { seen = false; startedAt = nowMs }
+
+        /** One line of the node's output. */
+        fun line(line: String) { if (!seen && line.contains("Running chain ")) seen = true }
+
+        fun counting(nowMs: Long): Boolean = seen || nowMs - startedAt >= limitMs
+    }
+
     class TcpGuard {
         enum class Verdict { FINE, STRANGER_IGNORED, WAITING, SUSPECT, STOP }
 
@@ -134,11 +153,19 @@ object NodeApi {
         return "GET $path HTTP/1.1\r\nHost: localhost\r\nAccept: application/json\r\nConnection: close\r\n\r\n".toByteArray()
     }
 
-    /** Reads to the end, at most [MAX_BYTES], and (with [deadline], System.nanoTime) no later than that. */
-    internal fun readAll(input: java.io.InputStream, deadline: Long = Long.MAX_VALUE): ByteArray {
+    /**
+     * Reads to the end, at most [MAX_BYTES], and (with [deadline], System.nanoTime) no later than that. With [waitAtMost],
+     * each read may wait only for the time left before the deadline (a socket's soTimeout), so the deadline is total.
+     */
+    internal fun readAll(input: java.io.InputStream, deadline: Long = Long.MAX_VALUE, waitAtMost: ((Int) -> Unit)? = null): ByteArray {
         val out = ByteArrayOutputStream()
         val buf = ByteArray(16 * 1024)
         while (true) {
+            if (waitAtMost != null) {
+                val leftMs = (deadline - System.nanoTime()) / 1_000_000L
+                if (leftMs <= 0) throw IllegalStateException("answer too slow")
+                waitAtMost(minOf(leftMs, Int.MAX_VALUE.toLong()).toInt())
+            }
             val n = input.read(buf)
             if (n < 0) break
             out.write(buf, 0, n)

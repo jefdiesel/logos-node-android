@@ -125,10 +125,13 @@ try:
 
     # ---- review E4: environment variables are a second source of options; the runner removes those ----------------
     env = dict(os.environ, LIBWAKURUNNER_METRICS_SERVER="true", LIBWAKURUNNER_REST_ADMIN="1", WAKU_RUNNER_REST="true",
-               libwakurunner_websocket_support="true", X_WEBSOCKET_SECURE_SUPPORT="yes", KEEP_ME_RESTFUL="1", REST="x")
+               libwakurunner_websocket_support="true", X_WEBSOCKET_SECURE_SUPPORT="yes", KEEP_ME_RESTFUL="1", REST="x",
+               # review F3: a name that is exactly the suffix (no prefix: the library's prefix is empty when it can't
+               # name its program), and a very long one
+               _REST="1", _METRICS_SERVER="1", **{"A" * 300 + "_REST": "1"})
     r = subprocess.run([exe, "--clear-env"], capture_output=True, text=True, timeout=10, env=env)
-    check("the five network options are removed from the environment, whatever the prefix or case",
-          "removed 5" in r.stdout and not any(k in r.stdout for k in ("METRICS_SERVER", "REST_ADMIN", "WAKU_RUNNER_REST=", "websocket_support", "SECURE_SUPPORT")), r.stdout)
+    check("the network options are removed from the environment, whatever the prefix, case or length",
+          "removed 8" in r.stdout and not any(k in r.stdout for k in ("METRICS_SERVER", "REST_ADMIN", "WAKU_RUNNER_REST=", "websocket_support", "SECURE_SUPPORT", "left _REST=", "AAAA")), r.stdout)
     check("and nothing else (KEEP_ME_RESTFUL stays)", "left KEEP_ME_RESTFUL=1" in r.stdout, r.stdout)
 
     p = subprocess.Popen([exe, sock], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)

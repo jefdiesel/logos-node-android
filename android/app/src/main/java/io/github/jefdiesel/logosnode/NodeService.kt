@@ -923,7 +923,7 @@ class NodeService : Service() {
                     }
                     .start().also { process = it }
             }
-            servicesStarted = false
+            servicesStart.reset(android.os.SystemClock.elapsedRealtime())
             if (NodeApi.onSocket) watchTcp(p)
             runningProfile = startingProfile
             lastRunProfile = startingProfile
@@ -933,7 +933,7 @@ class NodeService : Service() {
             setStatus(if (startingProfile == NodeProfile.LIGHT) "node running (light)" else "node running")
             try {
                 p.inputStream.bufferedReader().forEachLine { line ->
-                    if (!servicesStarted && line.contains("Running chain ")) servicesStarted = true
+                    servicesStart.line(line)
                     nodeLines.incrementAndGet(); nodeBytes.addAndGet(line.length + 1L)
                     log.node(line)
                     ReplayInfo.fromLine(line, System.currentTimeMillis() - started)?.let { note ->
@@ -962,13 +962,12 @@ class NodeService : Service() {
      */
     private fun watchTcp(p: Process) = thread(name = "node-tcp-guard", isDaemon = true) {
         val guard = NodeApi.TcpGuard()
-        val started = System.currentTimeMillis()
         var noted = false
         try {
             Thread.sleep(10_000)
             while (p.isAlive && !stopRequested) {
                 // strikes count only once the node has started its services (review E1)
-                val counting = servicesStarted || System.currentTimeMillis() - started > SERVICES_START_LIMIT_MS
+                val counting = servicesStart.counting(android.os.SystemClock.elapsedRealtime())
                 when (val verdict = NodeApi.guardRound(guard, counting, { NodeApi.socketAccepts(files) })) {
                     NodeApi.TcpGuard.Verdict.STOP -> { blockApi("while it ran"); return@thread }
                     NodeApi.TcpGuard.Verdict.STRANGER_IGNORED -> if (!noted) {
@@ -984,8 +983,8 @@ class NodeService : Service() {
         }
     }
 
-    /** The node printed "Running chain" (its services have started, its API with them) in this run. */
-    @Volatile private var servicesStarted = false
+    /** Whether the node printed "Running chain" (its services, its API with them, have started) in this run. */
+    private val servicesStart = NodeApi.ServicesStart(SERVICES_START_LIMIT_MS)
 
     /** Something accepts on 127.0.0.1:18180 and the node's socket doesn't: stop the node, say so in one line, don't restart it. */
     private fun blockApi(moment: String) {
