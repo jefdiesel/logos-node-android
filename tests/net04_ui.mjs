@@ -164,6 +164,13 @@ await cdp("Page.navigate", { url: BASE + "/" });
 await waitFor("after a reload: unlocked", `!document.getElementById("v-open").hidden && !!document.getElementById("nw-03")`);
 check("after a reload: LEZ 0.3 again", (await js(`document.getElementById("nw-03").getAttribute("aria-checked")`)) === "true" && (await shown("#tokens")) && !(await shown("#net04")));
 
+// ---- a read still on its way when the page locks renders nothing behind the lock ----
+const late = await js(`(async () => { const p = api("/api/wallet/accounts"), q = loadAccounts(); lockedNow(); const r = await p; await q;
+  await new Promise(ok => setTimeout(ok, 300));
+  return { status: r.status, ok: r.ok, accts: document.querySelectorAll(".acct").length, total: document.getElementById("bal-total").textContent,
+    locked: !document.getElementById("v-locked").hidden }; })()`);
+check("a read answered after a lock is dropped: nothing rendered behind the lock", late.locked && !late.ok && late.status === 0 && late.accts === 0 && !/[0-9]/.test(late.total), late);
+
 check("no page errors", errors.length === 0, errors);
 stop();
 console.log("all checks passed");
