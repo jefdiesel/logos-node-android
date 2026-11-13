@@ -81,7 +81,20 @@ try:
     live.close()                                   # now a dead socket file is left behind
     check("(a dead socket file is left)", os.path.exists(sock))
 
-    p = subprocess.Popen([exe, sock], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    # ---- the runner refuses a config that turns the library's network APIs on (review S4) ----------------------
+    cfg = os.path.join(tmp, "config.json")
+    base = {"mode": "Core", "preset": "logos.test", "rest": False, "nodekey": "ab" * 32}
+    for name, conf, want in (("REST off", base, 0), ("no REST key at all", {k: v for k, v in base.items() if k != "rest"}, 0),
+                             ("REST on", dict(base, rest=True), 4), ("rest-admin on", dict(base, **{"rest-admin": True}), 4),
+                             ("metrics server on", dict(base, **{"metrics-server": True}), 4),
+                             ("websockets on", dict(base, **{"websocket-support": True}), 4),
+                             ("REST as a string", dict(base, rest="true"), 4), ("rest-port alone (REST still off)", dict(base, **{"rest-port": 18645}), 0)):
+        with open(cfg, "w") as f:
+            json.dump(conf, f, indent=1)
+        r = subprocess.run([exe, "--config", cfg], capture_output=True, text=True, timeout=10)
+        check("config with %s: %s" % (name, "taken" if want == 0 else "refused"), r.returncode == want and ("ab" * 32) not in r.stdout + r.stderr, (r.returncode, r.stdout))
+
+    p = subprocess.Popen([exe, sock], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         check("a dead socket is replaced and the harness serves", p.stdout.readline().strip() == "ready")
         check("the socket is owner-only (0600)", stat.S_IMODE(os.lstat(sock).st_mode) == 0o600, oct(os.lstat(sock).st_mode))
@@ -135,6 +148,22 @@ try:
         big.close()
         check("a body over 1 MB is refused before it is read", answer.startswith(b"HTTP/1.1 413 "), answer[:40])
         check("still serving", call(sock, "GET", "/health")[0] == 200)
+
+        # ---- the received buffer is bounded in bytes, below what the client reads in one go ------------------
+        # (review S3: 25 messages of 200 KB, more than server.py's 4 MiB read, used to be evicted and then lost)
+        def big(count, size):
+            p.stdin.write("big %d %d %s\n" % (count, size, topic)); p.stdin.flush()
+            return p.stdout.readline().strip()
+        check("(the harness takes a flood)", big(25, 200000) == "injected 25")
+        code, recs = call(sock, "GET", "/messaging/v1/events/received")
+        total = sum(len(json.dumps(r_, separators=(",", ":"))) + 1 for r_ in recs) if isinstance(recs, list) else -1
+        seqs = [r_["seq"] for r_ in recs] if isinstance(recs, list) else []
+        check("after 25 x 200 KB, one poll gets a list of at most 2 MiB", code == 200 and isinstance(recs, list) and 0 < total <= 2 * 1024 * 1024, (code, total))
+        check("the newest ones, in order, the oldest dropped (a gap in seq)", seqs == list(range(seqs[0], seqs[0] + len(seqs))) and seqs[-1] - seqs[0] + 1 == len(seqs) and len(seqs) < 25 and seqs[-1] == 4 + 25, seqs)
+        check("and the next poll is empty", call(sock, "GET", "/messaging/v1/events/received") == (200, []))
+        check("(a flood of small ones)", big(300, 100) == "injected 300")
+        code, recs = call(sock, "GET", "/messaging/v1/events/received")
+        check("the count bound still holds: 256", code == 200 and len(recs) == 256 and recs[-1]["seq"] == 4 + 25 + 300, len(recs) if isinstance(recs, list) else recs)
     finally:
         p.kill(); p.wait(timeout=10)
 finally:

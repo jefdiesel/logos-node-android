@@ -9,7 +9,10 @@
 // as received (a node that is subscribed to its own topic); a send to a topic containing "fail" is
 // reported as an error instead, with a message that needs escaping. connection status: "Connected".
 // A line "inject <topic> <base64 payload>" on stdin delivers that message as received (another
-// sender), for the app's own tests.
+// sender), for the app's own tests; "big <count> <payload bytes> <topic>" delivers that many messages
+// with payloads of that size (base64 "A"s) and then prints "injected <count>".
+//
+//   api_socket_harness --config <config.json>   exit 0 if the runner would take the config, 4 if not
 #include "api_socket.h"
 
 #include <signal.h>
@@ -77,6 +80,21 @@ static void *stdin_loop(void *arg) {
     char line[8192], topic[300], payload[7000];
     static int n = 100000;
     while (fgets(line, sizeof line, stdin)) {
+        int count = 0, size = 0;
+        if (sscanf(line, "big %d %d %299s", &count, &size, topic) == 3 && count > 0 && size > 0 && size < 4000000) {
+            size_t cap = (size_t)size + 512;
+            char *big = malloc(cap);
+            for (int i = 0; big && i < count; i++) {
+                n++;
+                int h = snprintf(big, cap, "{\"eventType\":\"message_received\",\"messageHash\":\"0x%064d\",\"message\":{\"payload\":\"", n);
+                memset(big + h, 'A', (size_t)size);
+                snprintf(big + h + size, cap - (size_t)h - (size_t)size, "\",\"contentTopic\":\"%s\"},\"source\":\"live\"}", topic);
+                emit("onMessageReceived", big);
+            }
+            free(big);
+            printf("injected %d\n", count);
+            continue;
+        }
         if (sscanf(line, "inject %299s %6999s", topic, payload) != 2) continue;
         char ev[8192];
         n++;
@@ -94,6 +112,16 @@ int main(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
     setvbuf(stdout, NULL, _IOLBF, 0);
     if (argc == 3 && strcmp(argv[1], "--check") == 0) return api_start(argv[2], &k_stand_in) == 0 ? 0 : 3;
+    if (argc == 3 && strcmp(argv[1], "--config") == 0) {
+        FILE *f = fopen(argv[2], "rb");
+        static char cfg[65536];
+        size_t r = f ? fread(cfg, 1, sizeof cfg - 1, f) : 0;
+        if (f) fclose(f);
+        cfg[r] = '\0';
+        const char *opens = api_config_opens(cfg);
+        if (opens) { printf("refused %s\n", opens); return 4; }
+        return 0;
+    }
     if (argc != 2) { fprintf(stderr, "usage: %s [--check] <socket path>\n", argv[0]); return 2; }
     if (api_start(argv[1], &k_stand_in) != 0) return 3;
     printf("ready\n");
