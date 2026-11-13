@@ -23,7 +23,8 @@ const OWN = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";        // the stand-
 const KEY = "a1".repeat(32);                                         // the wallet's account (tests/lns_ui_app.py)
 const TO = "cd".repeat(32), AMOUNT = "4321";                         // what is typed into Send
 // none of this may be anywhere in a locked page
-const SECRETS = [KEY, KEY.slice(0, 10), TO, TO.slice(0, 10), "30,400,000", "30,000,000", "400,000", "4,321", AMOUNT, OWN, OWN.slice(0, 6)];
+const SECRETS = [KEY, KEY.slice(0, 10), TO, TO.slice(0, 10), "30,400,000", "30400000", "30,000,000", "400,000", "4,321", AMOUNT, OWN, OWN.slice(0, 6),
+  "23,786,858", "23786858", "wETH: 0.1", "Wrapped Sepolia", "Received 4,321"];
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
 const procs = [];
 let prof = "";
@@ -70,11 +71,13 @@ const val = (sel, v) => js(`(() => { const i = document.querySelector(${JSON.str
 // the whole page as text: every element (hidden ones too) with every attribute, without the scripts' source, and
 // every field's value
 const SCAN = `(() => { const c = document.documentElement.cloneNode(true); c.querySelectorAll("script, style").forEach(x => x.remove());
-  return c.outerHTML + "\\n" + [...document.querySelectorAll("input, textarea, select")].map(i => i.value).join("\\n"); })()`;
+  const store = s => { const o = {}; try { for (let i = 0; i < s.length; i++) o[s.key(i)] = s.getItem(s.key(i)); } catch (e) {} return JSON.stringify(o); };
+  return c.outerHTML + "\\n" + [...document.querySelectorAll("input, textarea, select")].map(i => i.value).join("\\n")
+    + "\\n" + store(sessionStorage) + "\\n" + store(localStorage) + "\\n" + JSON.stringify(history.state); })()`;
 async function nothingLeft(where) {
   const page = await js(SCAN);
   const found = SECRETS.filter(s => page.includes(s));
-  check(`${where}: nothing of the open wallet anywhere in the page, hidden nodes, attributes, titles and fields included`, found.length === 0, found);
+  check(`${where}: nothing of the open wallet anywhere in the page (hidden nodes, attributes, titles, fields), its storage or its history state`, found.length === 0, found);
 }
 const lockScreen = (why) => waitFor(why, `!document.getElementById("v-locked").hidden && !document.getElementById("lock").hidden && !document.documentElement.classList.contains("relock") && document.getElementById("v-open").hidden`);
 async function unlockByPin(why) {
@@ -116,7 +119,7 @@ check("nothing was sent: no send went out after the lock", !since(mark).some(r =
 async function fillUp() {                                        // amounts, addresses and typed text on the page
   await js(`walletPick("logos", "recv"); true`);
   await waitFor("Receive shows the account", `document.getElementById("accts").textContent.includes(${JSON.stringify(KEY.slice(0, 10))}) || document.getElementById("accts").innerHTML.includes(${JSON.stringify(KEY)})`, 15000);
-  await val("#to", TO); await val("#amount", AMOUNT);
+  await val("#to", TO); await val("#amount", AMOUNT); await val("#n4-watch", OWN);   // (typed, not sent)
   await js(`document.getElementById("pop-h").textContent = "Received 4,321 Logos"; true`);   // as a Received pop-up leaves it
 }
 const PATHS = [
@@ -131,10 +134,15 @@ const PATHS = [
 for (const [how, lock] of PATHS) {
   await fillUp();
   mark = reqs.length;
+  // first with the reload held back: the page that is locking is already empty, before it goes
+  await js(`relockPage = () => { window.__relock = 1; }; true`);
   await lock();
+  await waitFor(`(${how}: the lock has run)`, `window.__relock === 1 && locking`);
+  await nothingLeft(`${how}, before the reload`);
+  await js(`location.reload(); true`);
   await lockScreen(`locked by ${how}`);
   await nothingLeft(`after ${how}`);
-  check(`(${how}: through the one lock, a reload)`, since(mark).includes("GET /"), since(mark));
+  check(`(${how}: the page loaded again)`, since(mark).includes("GET /"), since(mark));
   await unlockByPin(`unlocked after ${how}`);
 }
 

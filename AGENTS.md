@@ -11,7 +11,7 @@ phone. Unofficial community work, testnet only.
   talks to the node and the messaging node, and keeps the wallet's and the chats' files. `messages/` is the
   Messages screen (`messages.js`) and its model (`chat-core.js`); `msg-crypto.js` and the `noble-*` folders
   are vendored (see `app/messages/VENDORED.txt`). `lns/` is "Your name" (Android only). `lez04.py` (with its
-  settings in `lez04.json`) and `net04/net04.js` are the Wallet's LEZ 0.4 view (Android only): read-only
+  settings in `lez04.json`) and `net04/net04.js` are the Wallet's LEZ 0.4 view (Android only; chosen in Settings > Network): read-only
   balances on the bridge test network, read by the server from an outside endpoint, never on the money path;
   `<data>/wallet-net04-config.json` overrides `lez04.json` (for example `rpc_url`, or `config_account`, which
   is otherwise derived from `bridge_program`). `release.json` lists every file and its sha256: the in-app

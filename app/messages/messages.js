@@ -207,7 +207,9 @@ navWallet.addEventListener("click", () => setTab("wallet"));
 // and bgApi for the tests
 window.MSG = { tab: () => tab, setTab, bgApi };
 navMsg.addEventListener("click", () => setTab("msg"));
-setTab("wallet");
+// this module runs once the page has loaded, which can be after Settings was opened: then it stays open
+if ($("page-settings").hidden) setTab("wallet");
+else { tab = "wallet"; navWallet.setAttribute("aria-current", "page"); nav.hidden = true; document.body.classList.remove("has-nav"); }
 // Settings is its own view; going back returns to the screen it came from
 const pageOpenSettings = window.openSettings, pageCloseSettings = window.closeSettings;
 window.openSettings = (...a) => {

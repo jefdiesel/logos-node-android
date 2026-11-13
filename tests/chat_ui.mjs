@@ -221,8 +221,8 @@ await pressKey("Backspace");
 check("and Backspace takes it out again", await js(`document.querySelectorAll("#pin-dots span").length === 0 && document.getElementById("pin-count").textContent === "No digits entered"`));
 await unlock();
 check("the bar shows Wallet and Messages", (await text("#nav")).includes("Wallet") && (await text("#nav")).includes("Messages"));
-// the wallet home: the header is the λ, Wallet, the node's icon and the gear; then the balance, Send and Receive
-check("no 'Logos node / running on this device' anywhere", !/running on this device/.test(await js(`document.body.innerText`)) && (await text("#hdr")).trim() === "Wallet");
+// the wallet home: the header is Names Wallet (no mark), the node's icon and the gear; then the balance, Send and Receive
+check("no 'Logos node / running on this device' anywhere; the header says Names Wallet", !/running on this device/.test(await js(`document.body.innerText`)) && (await text("#hdr")).trim() === "Names Wallet");
 await waitFor("the node is catching up: the syncing icon, and one line on why Send waits", `document.getElementById("node-ic").dataset.kind === "sync" && document.getElementById("m-sync").textContent.includes("Sending opens")`, 15000);
 check("no node card on the wallet home", await js(`!document.getElementById("page-main").contains(document.getElementById("height"))`));
 await shot("wallet-home-starting");
@@ -407,8 +407,8 @@ check("Messages has its own top: no node header, no status pill", await js(`docu
 check("no name linked yet: no name card on Messages home", !(await text("#mg-home")).includes("People reach you"));
 
 // ---- Settings: a home list of groups in a fixed order, each opening its own page; Back goes up one level ----
-const GROUPS = [["msg", "Messages"], ["name", "Your name"], ["node", "Node"], ["sec", "Security"], ["upd", "Updates"], ["bk", "Backup & restore"], ["look", "Appearance"], ["about", "About"]];
-const ANDROID_ONLY = new Set(["name"]);        // only inside the Android app with the LNS signer (checked with erin's app below)
+const GROUPS = [["msg", "Messages"], ["name", "Your name"], ["node", "Node"], ["net", "Network"], ["sec", "Security"], ["upd", "Updates"], ["bk", "Backup & restore"], ["look", "Appearance"], ["about", "About"]];
+const ANDROID_ONLY = new Set(["name", "net"]); // only inside the Android app (Your name with the LNS signer; checked with erin's app below)
 const LINUX_GROUPS = GROUPS.filter(g => !ANDROID_ONLY.has(g[0]));
 // Everything Settings had in 0.9.7, by id, and the group page it now lives on. `show`: on screen whenever that page is
 // (the rest come and go with the state: fingerprint on or off, an update available, a file picked...).

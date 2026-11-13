@@ -425,6 +425,16 @@ def trickle_status(c):        # the status line, a byte every half second
         pass
 
 
+def cut_body(c):              # the headers at once, 11 bytes of a 400-byte body, then a byte every 0.3 s
+    try:
+        c.recv(65536)
+        c.send(b"HTTP/1.1 200 OK\r\nContent-Length: 400\r\n\r\n" + b'{"result":1')
+        for _ in range(60):
+            c.send(b"1"); time.sleep(0.3)
+    except Exception:
+        pass
+
+
 def silent(c):                # never answers
     try:
         c.recv(65536); time.sleep(30)
@@ -435,7 +445,8 @@ def silent(c):                # never answers
 slow = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Trickle)
 threading.Thread(target=slow.serve_forever, daemon=True).start()
 for what, port in (("a body trickling in", slow.server_address[1]), ("a status line trickling in", raw_server(trickle_status).getsockname()[1]),
-                   ("no answer at all", raw_server(silent).getsockname()[1])):
+                   ("no answer at all", raw_server(silent).getsockname()[1]),
+                   ("a body cut off by the limit (never a short 200)", raw_server(cut_body).getsockname()[1])):
     t0, err = time.monotonic(), None
     try:
         server.fetch_outside("http://127.0.0.1:%d/" % port, {"x": 1}, cap=1 << 20, timeout=8, total=2)

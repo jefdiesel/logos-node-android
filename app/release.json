@@ -1,6 +1,6 @@
 {
  "files": {
-  "index.html": "93373cd04d5ba94b1fe64133a0d7de83fd0c5060982085cba6f3cb587a42f4bb",
+  "index.html": "9468ef5da995945519748cf85faeed6e96a1fb67063454fe8a601ac7db818368",
   "lez04.json": "16fcdad838d7a90725a2937fd37a31479184b5b59c3806e927e93cd1f5fe259c",
   "lez04.py": "7fe6cf900750e1413ab4650dd6cbac3cde58d20e82ccf0af8bc2d64cfd666e62",
   "lns/lns.js": "7f5d5c19763c0a7dcf946f1073501c0f623c0da1b6bbb88af056b8f2e716cb90",
@@ -8,7 +8,7 @@
   "messages/chat-core.js": "b0c42d5a21d1f3a07812cc97204cab28319bf24660e9c058abf2a17e3673e62e",
   "messages/icon.js": "22fcd81680dffc58b3a3c21346c2498cc6864679fe6c40af31457320a6c13592",
   "messages/identity.js": "0a4943568abb6aae7a11b3555d02c4adfa1b9204322a09019afaf6541bf25445",
-  "messages/messages.js": "dbeba6073875b3546303ecc0cd532c52b5c40037761ce5f47e4bc350924c0305",
+  "messages/messages.js": "42671a555b54b00e78cdb3ff2ef603ce8d64ed7ff17fc75068080a409f06f0be",
   "messages/msg-crypto.js": "cd3e81b81c503bfbdb04104c86067f0d7121dbec4758a824b0b57f6dd90a83b5",
   "messages/noble-ciphers/LICENSE": "f36671a5487c9c5050efacb58011c37c24c55a889803cb036cf9d9a6347c1e2d",
   "messages/noble-ciphers/_arx.js": "ead142ba410404c0698bb80e0d6f77780799bb77a9e3b098cf0f9fca1c486e37",
@@ -33,7 +33,7 @@
   "names/noble-hashes/argon2.js": "f39753324bdf2f484150731d24b1d71236f26bf10bedd594f7d190fcdfdefdc9",
   "names/noble-hashes/blake2.js": "03f00237bcc0b4d822a80f7c0ac22e42632c48e246c3b6da584e6452186e32f0",
   "names/noble-hashes/utils.js": "037ad49adb78168b6b699598fd33f85f7877456b1d28b4d032e2a1a16807947c",
-  "net04/net04.js": "ff64f6557f65f18bfd71535ba69140167bf5f860a845e046626a19822460b3a3",
+  "net04/net04.js": "4daad5908f39de7ad7faea744f27184422aea89bbc34190eb2eeccfd1c531119",
   "noble-curves/LICENSE": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec",
   "noble-curves/abstract/curve.js": "dbaeee3b41ff47efb76b78e14170fe4dda7c7ecdc387c402f16c5118e0bac356",
   "noble-curves/abstract/edwards.js": "f24a9c221a549a8fff259eb8f245ab0dc17679b13c532c3970d91acc4df9fffd",
@@ -47,7 +47,7 @@
   "noble-curves/utils.js": "ba29ee6d5c0129f0913e0cb11e1c84d09b7e1dd73c55e158cd49b5987bb62a65",
   "qr/VENDORED.txt": "1d4fc608d725afe81619262b9fb4323fe2d77318579396d9429f3a6f04b873ad",
   "qr/qrcode.js": "ea91d7118a5395289170da848b7c6758b996163bfbccf312591ab65a4911b7c0",
-  "server.py": "9767e98519b17b8c3816566277d062c6a2f4616121e16a52a3723d56d6081c70"
+  "server.py": "65f66b88523e853862a1e5551d534eb884adfbbfda9f7aee7a2d6134f60e2e98"
  },
- "version": "0.9.24"
+ "version": "0.9.25"
 }

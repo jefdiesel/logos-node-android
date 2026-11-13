@@ -79,7 +79,20 @@ const rows = () => js(`[...document.querySelectorAll("#tokens .tok")].map(b => b
 await waitFor("the token list: Logos, and a quiet Add LEZ row (no name account yet)", `JSON.stringify([...document.querySelectorAll("#tokens .tok")].map(b => b.querySelector("b").textContent)) === '["Logos","Add LEZ"]'`);
 // the Names Wallet mark (the Inter Bold eta) stands for the app; the lambda only for the Logos coin
 const ETA = "M9.291 8.259V16.607";
-check("the mark: the eta beside Wallet (filled, in the text's colour)", await js(`(() => { const p = document.querySelector("#hdr .brand svg path"); return !!p && p.getAttribute("d").startsWith(${JSON.stringify(ETA)}) && p.getAttribute("fill") === "currentColor"; })()`));
+check("the header: the title Names Wallet, no mark beside it", await js(`document.querySelector("#hdr h1").textContent === "Names Wallet" && !document.querySelector("#hdr .brand svg, #hdr .mark-eta, #hdr .lam")`));
+check("the eta stays on the bottom bar's Wallet tab (when Messages is there) and the lock screen", await js(`(() => { const n = document.getElementById("nav-wallet"); return !n || !!(n.querySelector("svg path") || {}).getAttribute; })()`));
+// the header on one line at the narrowest phone width (320 px), with large text (130%), beside its two icons
+await cdp("Emulation.setDeviceMetricsOverride", { width: 320, height: 700, deviceScaleFactor: 2, mobile: true });
+for (const z of ["1", "1.3"]) {
+  await js(`document.getElementById("hdr").style.zoom = "${z}"; true`);
+  await sleep(200);
+  const h = await js(`(() => { const t = document.querySelector("#hdr h1"), r = t.getBoundingClientRect(), lh = parseFloat(getComputedStyle(t).lineHeight) || parseFloat(getComputedStyle(t).fontSize) * 1.3;
+    const ic = [...document.querySelectorAll("#hdr .hdr button")].filter(b => b.offsetParent).map(b => b.getBoundingClientRect());
+    return { right: Math.round(r.right), left: ic.map(b => Math.round(b.left)), px: getComputedStyle(t).fontSize, oneLine: r.height <= lh * 1.6 * ${z}, clear: ic.every(b => b.left >= r.right - 1), icons: ic.every(b => b.height >= 44 * ${z} - 1 && b.width >= 44 * ${z} - 1), inside: ic.every(b => b.right <= innerWidth + 1), noScroll: document.documentElement.scrollWidth <= innerWidth }; })()`);
+  check(`the header at 320 px and ${Math.round(z * 100)}% text: Names Wallet on one line, clear of its two 44 px icons, nothing off the screen`, h.oneLine && h.clear && h.icons && h.inside && h.noScroll, h);
+}
+await js(`document.getElementById("hdr").style.zoom = ""; true`);
+await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
 check("the lock screen's mark: the eta on its orange tile, no disc", await js(`(() => { const m = document.querySelector("#lock .lock-mark"); return m.querySelector("rect").getAttribute("fill") === "#e8662f" && m.querySelector("path").getAttribute("fill") === "#fff" && getComputedStyle(m).borderRadius === "0px"; })()`));
 check("the favicon and the home-screen icons are the mark's", await js(`document.querySelector("link[rel=icon]").getAttribute("href") === "/names-192.png"`)
   && (await (await fetch(BASE + "/manifest.webmanifest")).json()).icons.every(i => /^\/names-/.test(i.src))
@@ -188,6 +201,16 @@ await js(`closeSettings(); true`);
 await js(`loadAccounts(); true`);
 await waitFor("the LEZ row: initials on the left, its balance", `(() => { const r = document.getElementById("tok-lez"); return r.querySelector("b").textContent === "LEZ" && r.querySelector(".tok-ic").textContent === "LEZ" && /^[0-9,]+LEZ$/.test(r.querySelector(".tok-amt").textContent); })()`);
 await shot("wallet-tokens");
+// the words of the text in `sel` that are drawn over two lines (a break inside a word); ids, addresses and code may
+const MIDWORD = (sel) => `(() => { const out = [], root = document.querySelector(${JSON.stringify(sel)});
+  const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let n = w.nextNode(); n; n = w.nextNode()) {
+    const p = n.parentElement; if (!p || !p.offsetParent || p.closest(".hash, .recv-addr, code, script, style, svg")) continue;
+    const re = /\\S+/g; let m;
+    while ((m = re.exec(n.data))) { const r = document.createRange(); r.setStart(n, m.index); r.setEnd(n, m.index + m[0].length);
+      const tops = new Set([...r.getClientRects()].filter(x => x.width > 0).map(x => Math.round(x.top))); if (tops.size > 1) out.push(m[0]); }
+  }
+  return out; })()`;
 // larger text, as a phone set to a bigger font size shows it: the Wallet drawn at 115% and 130% (CSS zoom on the
 // Wallet, so its text is that much larger for the same 412 px of screen; the page sets its sizes in px, so a root
 // font-size wouldn't change them). Token rows: the name and network may wrap, nothing is cut with "…", the
@@ -213,6 +236,13 @@ for (const z of [1.15, 1.3]) {
     if (document.documentElement.scrollWidth > innerWidth) out.push("sideways scroll");
     return out; })()`);
   check(`text at ${Math.round(z * 100)}%: token names and networks whole (wrapping, no "…"), balances whole, Activity rows tidy, nothing overflows`, r.length === 0, r);
+  for (const wpx of [412, 320]) {
+    await cdp("Emulation.setDeviceMetricsOverride", { width: wpx, height: 900, deviceScaleFactor: 2, mobile: true });
+    await sleep(250);
+    const broken = await js(MIDWORD("#v-open"));
+    check(`text at ${Math.round(z * 100)}%, ${wpx} px: no word broken in the middle anywhere in the Wallet (only ids and addresses may break)`, broken.length === 0, broken);
+  }
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 412, height: 900, deviceScaleFactor: 2, mobile: true });
   if (z === 1.3) await shot("wallet-tokens-large-text");
 }
 // N-8: at 200% a very long balance shrinks, and if it still can't fit it ends in "…" (with the whole amount as its
