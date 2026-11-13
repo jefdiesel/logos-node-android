@@ -3561,7 +3561,7 @@ def set_waku_api(url):
 MSG_KEY_FILE = os.path.join(DATA_DIR, "wallet-msgkey.json")
 INBOX_FILE = os.path.join(DATA_DIR, "wallet-inbox.json")
 INBOX_MAX, SEEN_MAX, PAYLOAD_MAX = 2000, 8000, 16384    # messages kept, hashes remembered, bytes per message
-# Requests (0.9.14): this code can't open a message, so it can't tell who sent it. The page sorts each incoming
+# Requests (0.9.22): this code can't open a message, so it can't tell who sent it. The page sorts each incoming
 # message once it has opened it ("k": "c" a chat, "r" a request, "d" dropped, POST /api/messages/inbox/sort).
 # Until then a message is unsorted. Unsorted and request messages together are a ring of PENDING_MAX messages /
 # PENDING_BYTES bytes: a new arrival always gets in, and the oldest request, then the oldest unsorted message,
@@ -3708,18 +3708,76 @@ def inbox_topic(public_hex):
     return "/names/1/msg-%s/proto" % hashlib.sha256(bytes.fromhex(public_hex)).hexdigest()[:16]
 
 
-def inbox_load():
-    d = None
+# The inbox and the outbox hold all of the chats' history: they are written synced (a power cut leaves the old
+# file or the new one, never an empty one), the file a write replaces is kept as <file>.prev, and a file that
+# can't be read is never written over: it is kept aside as <file>.unreadable-<time>-<random>, the .prev copy is
+# used when it is readable, and numbering then goes on above anything the page may still know (no number is
+# used twice).
+_durable_good = {}                    # path -> True once this process read or wrote it whole
+
+
+def _durable_save(path, d):
+    data = json.dumps(d).encode()
+    fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    if _durable_good.get(path) and os.path.exists(path):
+        os.replace(path, path + ".prev")             # the copy this write replaces
+    os.replace(path + ".tmp", path)
     try:
-        with open(INBOX_FILE) as f:
-            d = json.load(f)
-        if not (isinstance(d, dict) and isinstance(d.get("items"), list) and isinstance(d.get("seen"), list)):
-            d = None
+        dfd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
     except Exception:
-        d = None
+        pass
+    _durable_good[path] = True
+
+
+def _durable_load(path, check):
+    """(data or None, how): "ok", "missing", "prev" (the file couldn't be read; the .prev copy is used) or "lost"
+    (neither could be read). A file that can't be read is kept aside, never written over."""
+    def read(p):
+        try:
+            with open(p) as f:
+                d = json.load(f)
+            return d if check(d) else None
+        except Exception:
+            return None
+    if not os.path.exists(path):
+        d = read(path + ".prev")
+        if d is not None:                              # a cut between keeping .prev and putting the new file in place
+            _durable_good[path] = True
+            return d, "ok"
+        return None, "missing"
+    d = read(path)
+    if d is not None:
+        _durable_good[path] = True
+        return d, "ok"
+    aside = "%s.unreadable-%s-%s" % (path, time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()), secrets.token_hex(4))
+    try:
+        os.replace(path, aside)
+    except Exception:
+        pass
+    d = read(path + ".prev")
+    if d is not None:
+        _durable_good[path] = True
+        return d, "prev"
+    return None, "lost"
+
+
+def inbox_load():
+    d, how = _durable_load(INBOX_FILE, lambda d: isinstance(d, dict) and isinstance(d.get("items"), list) and isinstance(d.get("seen"), list))
+    if how in ("prev", "lost"):                         # numbers go on above anything used before
+        d = d or {"version": 1, "items": [], "seen": [], "next": 1}
+        d["next"] = max(int(d.get("next") or 1), int(time.time()))
+        event("messages inbox file couldn't be read: " + ("the last copy is used" if how == "prev" else "kept aside, starting empty"))
     d = d or {"version": 1, "items": [], "seen": [], "next": 1}
     if not isinstance(d.get("sort_from"), int) or isinstance(d.get("sort_from"), bool):
-        # the first start of 0.9.14 or later: what is here already came before Requests, and stays a chat
+        # the first start of 0.9.22 or later: what is here already came before Requests, and stays a chat
         d["sort_from"] = d.get("next", 1) if isinstance(d.get("next"), int) else 1
         for i in d["items"]:
             if isinstance(i, dict):
@@ -3751,10 +3809,7 @@ def inbox_save():
     if drop:
         inbox["items"] = [i for i in inbox["items"] if id(i) not in drop]
     inbox["seen"] = inbox["seen"][-SEEN_MAX:]
-    fd = os.open(INBOX_FILE + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(inbox, f)
-    os.replace(INBOX_FILE + ".tmp", INBOX_FILE)
+    _durable_save(INBOX_FILE, inbox)
 
 
 def messaging_inbox_count():
@@ -3956,8 +4011,12 @@ def _json_save(path, d):
 
 
 def outbox_load():
-    return _json_load(OUTBOX_FILE, lambda d: isinstance(d.get("items"), list) and isinstance(d.get("next"), int),
-                      lambda: {"version": 1, "items": [], "next": 1, "rev": 0})
+    d, how = _durable_load(OUTBOX_FILE, lambda d: isinstance(d, dict) and isinstance(d.get("items"), list) and isinstance(d.get("next"), int))
+    d = d or {"version": 1, "items": [], "next": 1, "rev": 0}
+    if how in ("prev", "lost"):                         # numbers go on above anything used before
+        d["next"] = max(int(d.get("next") or 1), int(time.time()))
+        d["rev"] = max(int(d.get("rev") or 0), int(time.time()))
+    return d
 
 
 outbox = {"version": 1, "items": [], "next": 1, "rev": 0}
@@ -3969,7 +4028,7 @@ if _waku["feature"]:
 def outbox_save():
     """Writes the outbox; the caller holds msg_lock."""
     outbox["items"] = outbox["items"][-OUTBOX_MAX:]
-    _json_save(OUTBOX_FILE, outbox)
+    _durable_save(OUTBOX_FILE, outbox)
 
 
 def outbox_touch(item):
@@ -4115,13 +4174,21 @@ def store_write(d):
     _fsync_write(STORE_FILE, json.dumps(d).encode())
 
 
+def _aside_name(why):
+    """A name for a file kept aside that no earlier one has: STORE_FILE.<why>-<time>-<random>."""
+    while True:
+        name = "%s.%s-%s-%s" % (STORE_FILE, why, time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()), secrets.token_hex(4))
+        if not os.path.exists(name):
+            return name
+
+
 def store_aside(why):
-    """Moves the store file (readable or not) aside as STORE_FILE.<why>-<time>, and starts an empty one whose rev
-    no page can hold (the caller holds msg_lock). Returns the new rev."""
-    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    """Moves the store file (readable or not) aside under a name of its own (never over another file kept aside),
+    and starts an empty one (the caller holds msg_lock). Returns the new rev."""
     if os.path.exists(STORE_FILE):
-        os.replace(STORE_FILE, "%s.%s-%s" % (STORE_FILE, why, stamp))
-    rev = int(time.time())
+        os.link(STORE_FILE, _aside_name(why))           # fails rather than replace an existing file
+        os.unlink(STORE_FILE)
+    rev = int(time.time() * 1000)
     _fsync_write(STORE_FILE, json.dumps({"rev": rev, "blob": None}).encode())
     return rev
 
@@ -4267,21 +4334,28 @@ def messaging_post(path, body, req):
         return 200, {"sorted": sorted_, "refused": refused}
     if path == "/api/messages/store/fresh":
         # the user chose to start with empty saved chats: the file this key can't open (or can't be read at all)
-        # is kept aside, never deleted
+        # is kept aside, never deleted. Only for the store the page saw (its rev), or a file that can't be read:
+        # a second tap, another tab, or a page that hasn't seen the store can't set aside one that just started.
+        seen = body.get("rev")
         with msg_lock:
+            ok, cur = store_read()
+            if ok and (isinstance(seen, bool) or seen != cur["rev"]):
+                return 409, {"error": "The saved chats changed meanwhile. Look again.", "rev": cur["rev"]}
             rev = store_aside("aside")
         event("saved chats set aside", req)
         return 200, {"rev": rev}
     if path == "/api/messages/store/use-prev":
         # the store file can't be read: put the last good copy back (the bad file is kept aside)
         with msg_lock:
+            if store_read()[0]:                      # only in place of a file that can't be read
+                return 409, {"error": "The saved chats can be read; nothing to put back."}
             if not store_prev_ok():
                 return 404, {"error": "There is no earlier copy of the saved chats."}
             ok, prev = _store_file_read(STORE_FILE + ".prev")
-            stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
             if os.path.exists(STORE_FILE):
-                os.replace(STORE_FILE, "%s.unreadable-%s" % (STORE_FILE, stamp))
-            rev = int(time.time())
+                os.link(STORE_FILE, _aside_name("unreadable"))
+                os.unlink(STORE_FILE)
+            rev = int(time.time() * 1000)
             _fsync_write(STORE_FILE, json.dumps({"rev": rev, "blob": prev["blob"]}).encode())
         event("saved chats put back from the last copy", req)
         return 200, {"rev": rev}
@@ -4412,8 +4486,10 @@ def messaging_get(path, query):
     if path == "/api/messages/inbox":
         after = num("after")                       # only what came after this number
         dropped = q.get("dropped") == ["1"]        # dropped ones only when asked (someone became a contact)
+        limit = num("limit")                       # at most this many, oldest first (0: all)
         with msg_lock:
-            return 200, {"items": [dict(i) for i in inbox["items"] if i["n"] > after and (i.get("k") == "d") == dropped], "next": inbox["next"],
+            got = sorted((i for i in inbox["items"] if i["n"] > after and (i.get("k") == "d") == dropped), key=lambda i: i["n"])
+            return 200, {"items": [dict(i) for i in (got[:limit] if limit else got)], "next": inbox["next"],
                          "sort_from": inbox.get("sort_from", 1),
                          "unread": [i["n"] for i in inbox["items"] if not i.get("read")]}
     if path == "/api/messages/outbox":
@@ -4629,7 +4705,7 @@ def chat_restore(chat, replace_store):
         for r in chat.get("inbox") or []:
             if isinstance(r, dict) and _b64_ok(r.get("payload"), PAYLOAD_MAX) and r["payload"] not in have:
                 have.add(r["payload"])
-                # a chat message comes back as one (backups from before 0.9.14 have no sort: all were chats then);
+                # a chat message comes back as one (backups from before 0.9.22 have no sort: all were chats then);
                 # one that was unsorted at backup time comes back unsorted, for the page to sort
                 is_chat = r.get("k", "c") == "c"
                 item = {"n": inbox["next"], "payload": r["payload"], "source": "backup",

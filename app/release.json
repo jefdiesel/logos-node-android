@@ -3,10 +3,10 @@
   "index.html": "2c39564795340b4ac353010b1599efd2f6277f766946b361e9c3e0231f11771e",
   "lns/lns.js": "57a6cd5e3234965ccfc0f780b06ef9c6ab67f47b6079b88f75bbb1dcd62f3975",
   "messages/VENDORED.txt": "6fbf95fc9f8f846e65996ac4c9e2179002b631af229d8c222ab19a4a756d98e0",
-  "messages/chat-core.js": "a76a1c87de8c455b67d3cfc89304dc60fb52753529cf98645075f6b3db6dc34a",
+  "messages/chat-core.js": "d7c43d3f44ad909a2a1be65fe33bed2696ee4eb604a3a7676c96029d80827d53",
   "messages/icon.js": "22fcd81680dffc58b3a3c21346c2498cc6864679fe6c40af31457320a6c13592",
   "messages/identity.js": "0a4943568abb6aae7a11b3555d02c4adfa1b9204322a09019afaf6541bf25445",
-  "messages/messages.js": "478aa4ac4775ef12ce882398dab84fb267acb08c693bd91b66924489fdcf975d",
+  "messages/messages.js": "efc73ea6e191582a88cd6711dd3b59d249228cebd862d67ab3ccef43c0522763",
   "messages/msg-crypto.js": "cd3e81b81c503bfbdb04104c86067f0d7121dbec4758a824b0b57f6dd90a83b5",
   "messages/noble-ciphers/LICENSE": "f36671a5487c9c5050efacb58011c37c24c55a889803cb036cf9d9a6347c1e2d",
   "messages/noble-ciphers/_arx.js": "ead142ba410404c0698bb80e0d6f77780799bb77a9e3b098cf0f9fca1c486e37",
@@ -44,7 +44,7 @@
   "noble-curves/utils.js": "ba29ee6d5c0129f0913e0cb11e1c84d09b7e1dd73c55e158cd49b5987bb62a65",
   "qr/VENDORED.txt": "1d4fc608d725afe81619262b9fb4323fe2d77318579396d9429f3a6f04b873ad",
   "qr/qrcode.js": "ea91d7118a5395289170da848b7c6758b996163bfbccf312591ab65a4911b7c0",
-  "server.py": "7b93531c00c8e43aae0bdad22e6a1988045c0fd4eeffe5d19c6d80faab0dc142"
+  "server.py": "acb0839f755a0c1f45d223220123a9c6edcad641e7cb94fbce784489400842bc"
  },
  "version": "0.9.22"
 }

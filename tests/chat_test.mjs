@@ -88,7 +88,7 @@ const id = await a.startDirect("bob");
 check("a chat with bob: direct, one member, bob's key pinned", id === "d:bob" && a.convo(id).kind === "direct" && a.convo(id).members.length === 1 && a.pinned("bob") === hex(B.id.publicKey));
 await a.send(id, "hi bob");
 await until("alice's message gets to stored", async () => { await a.sync(); const m = a.messages(id)[0]; return m && m.sends[0].state === "sent"; }, 10000);
-// (0.9.14) bob never wrote to alice: her first message is a request on bob's phone until he accepts it
+// (0.9.22) bob never wrote to alice: her first message is a request on bob's phone until he accepts it
 await until("bob's app gets it, as a request from alice (no chat yet)", async () => { await b.sync(); return b.requests().length === 1 && !b.convo("d:alice") && b.conversations().length === 0; });
 const count = (data) => execFileSync("python3", ["-c", "import sys; sys.path.insert(0, sys.argv[1]); import server; print(server.messaging_inbox_count())", join(ROOT, "app")],
   { env: { ...process.env, APP_DATA: data, WAKU_API: "http://127.0.0.1:1" } }).toString().trim();
@@ -177,7 +177,7 @@ const stranger = MC.newKeyPair();
 const forged = MC.sealMessage({ to: A.id.publicKey, from: "carol", fromSecret: stranger.secretKey, text: "it's carol, honest" });
 await w.control("inject/0", { topic: MC.inboxTopic(A.id.publicKey), payload: b64(forged) });
 const xid = "x:" + hex(stranger.publicKey);
-// (0.9.14) alice never wrote to it: a request, shown as a claim, never as carol
+// (0.9.22) alice never wrote to it: a request, shown as a claim, never as carol
 const sreq = () => a.requests().find(g => g.key === hex(stranger.publicKey));
 await until("a message claiming to be carol", async () => { await a.sync(); return !!sreq(); });
 check("is unverified, and nothing is pinned from it", a.trust(sreq().list[0]) === "unverified" && a.pinned("carol") === null);
@@ -207,7 +207,7 @@ check("no name: messages go out as from the address", f.fromName() === "msg-" + 
 await f.startDirect("alice");
 await f.send("d:alice", "hello from someone with no name");
 const fid = "k:" + hex(F.id.publicKey);
-// (0.9.14) a first message from an address alice never wrote to: a request, which she accepts
+// (0.9.22) a first message from an address alice never wrote to: a request, which she accepts
 const freq = () => a.requests().find(g => g.key === hex(F.id.publicKey));
 await until("alice gets it, as a request from the address", async () => { await a.sync(); return !!freq(); });
 check("Requests shows it as an address with no name, proven", freq().proof === "address" && freq().authentic);
@@ -255,7 +255,7 @@ let mergeErr = null; try { await a.mergeAddress(hex(MC.newKeyPair().publicKey), 
 check("an address that isn't the name's can't be merged into it", mergeErr !== null);
 
 // ---- the name service is out when a new person writes: no lasting "Not verified" ----
-// (0.9.14: the first message is a request; Requests says it isn't checked yet, then shows the name)
+// (0.9.22: the first message is a request; Requests says it isn't checked yet, then shows the name)
 {
   const real = a.resolveRaw;
   a.resolveRaw = async () => { throw new Error("name service unreachable"); };

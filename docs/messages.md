@@ -34,7 +34,7 @@ app and its page are exactly as before.
 
 ## Requests
 
-From 0.9.14, a message from someone who isn't in your chats is a request. "In your chats" means: you have a
+From 0.9.22, a message from someone who isn't in your chats is a request. "In your chats" means: you have a
 chat with them (you started it, or accepted them), or their profile is still kept after you deleted the chat,
 or the message comes from a messaging address one of your contacts uses.
 
@@ -59,16 +59,18 @@ or the message comes from a messaging address one of your contacts uses.
   names someone in your chats while the name service can't be reached waits in Requests, so a contact's new
   phone isn't lost.
 - Limits, applied each time the page reads the inbox: one request per sender with its first 3 messages; 50
-  requests in all (a proven LNS name kept before an address, an address before an unproven message; the
-  oldest go first); 1 MiB of sealed messages in all; nothing older than 30 days. A request that names a name the
-  name service hasn't been asked about counts like an address until it is: when the requests near the limit,
-  the app asks about the oldest such name in the background, at most 20 a day, never right after you unlock
-  (it waits a random 1 to 5 minutes, then as long again between asks), and never about the same name twice
-  (the answer is kept). A name proven that way is then kept before addresses.
+  requests in all (a request you opened kept first, then a proven LNS name, then an address, then an unproven
+  message; within each, the oldest go first); 1 MiB of sealed messages in all; nothing older than 30 days.
+- A request that names a name the name service hasn't been asked about counts like an address, except that the
+  oldest 10 such requests are never dropped by the limits before their name has been asked about once. The app
+  asks in the background only while the requests near the limit: at most 20 a day, the first a random 1 to 5
+  minutes after it first sees them near the limit, then each a fresh random 1 to 5 minutes after the one
+  before. An answer counts for a day; after that, or when you open a request whose name the name service gave
+  another address for, the name is asked about again. A name proven that way is kept before addresses.
 - What is dropped unread (and never shown): messages over those limits, from a blocked address, from anyone
   new while "Only people I've written to" is on, and payloads that don't open with this phone's key. Dropped
-  messages are hidden at once and deleted 7 days later; within those days, if you start a chat with the sender
-  (or accept or unblock them), their newest 3 come back, as unread. The page counts the first four, by number only ("Deleted unread so far: 12");
+  messages are hidden at once and deleted 7 days later; within those days, the first time you start a chat with
+  the sender (or accept or unblock them), their newest 3 come back, as unread; the rest stay dropped. The page counts the first four, by number only ("Deleted unread so far: 12");
   nothing about who sent them or what they said is kept.
 - A message that has been sorted into a chat stays a chat message: nothing turns it into a request or drops
   it later, and the app refuses to.
@@ -80,14 +82,18 @@ or the message comes from a messaging address one of your contacts uses.
   has them or tap **Start fresh** (they are kept aside, never deleted). If the file can't be read at all,
   Messages offers **Use the last saved copy** (each save keeps the copy it replaces, written so a power cut
   can't leave it empty) or Start fresh, and a backup made meanwhile says it carries no chats.
-- Blocking someone, or a checked contact's address changing, cancels what is still waiting to be sent to them;
-  Retry refuses while sending to that chat is blocked.
+- Blocking someone cancels what is still waiting to be sent to them. While something waits for a checked
+  contact, the app reads their name on chain in the background (at most every 15 seconds) and cancels it if their
+  address changed, whether or not their chat is open. Retry refuses while sending to that chat is blocked.
+- The inbox and outbox files (all the chats' history) are written the same way as the saved chats: synced, with
+  the copy each write replaces kept. A file that can't be read is kept aside, never written over, and the last
+  copy is used.
 - Apart from those background asks, the app looks up a name a request claims when you open Requests (one at a time, stopping
   when you leave), so a stranger's message doesn't make the phone ask the name service (or do the work a
   lookup takes) on its own.
 - What the page does on its own (reading and sorting the inbox, the lookups and saves that follow) doesn't
   count as you using the app, so messages arriving can't keep the wallet from locking.
-- Messages that arrived before 0.9.14 keep the earlier rule: they started a chat.
+- Messages that arrived before 0.9.22 keep the earlier rule: they started a chat.
 
 ## QR codes
 
@@ -111,7 +117,7 @@ or the message comes from a messaging address one of your contacts uses.
   changed" and sends nothing to the new address until you accept it. Messages from the earlier address stay
   marked as such.
 - Unless you compare codes, the first address is whatever the name service gave, and the app trusts it.
-- **Safety code** (from 0.9.14; in the profile's Details): 60 digits in 12 groups of 5, made from your
+- **Safety code** (from 0.9.22; in the profile's Details): 60 digits in 12 groups of 5, made from your
   messaging address and theirs. Both phones show the same code. Compare it with them (in person, or over a
   channel you trust) and tap **The codes match**; inside the Android app, **Scan their code** reads the QR
   code their phone shows under **Show my code**. Only a match marks the contact "Checked in person", shown in
@@ -137,7 +143,7 @@ or the message comes from a messaging address one of your contacts uses.
 
 ## Message sizes
 
-From 0.9.14 every message is padded before it is sealed, so the network sees one of four sizes, not the
+From 0.9.22 every message is padded before it is sealed, so the network sees one of four sizes, not the
 length of what you wrote: the sealed text (the JSON inside the encryption) is exactly 512, 2,048, 8,192 or
 15,872 bytes, which is 585, 2,121, 8,265 or 15,945 bytes on the wire. A short message goes from about 475 to
 585 bytes. The padding is a field `"p"` of spaces next to the format's own fields; readers of the version 1

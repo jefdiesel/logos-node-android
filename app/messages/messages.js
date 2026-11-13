@@ -440,6 +440,7 @@ async function refresh() {
   const r = await api("/api/messages/status");
   if (locked401(r) || !r.ok) return render();
   status = r.data;
+  if (chat && chat.stale) { chat = null; me = null; }   // its saved chats were changed elsewhere: build it again
   // the chats load once per unlock; when that fails, nothing is shown or sorted, and it is tried again later
   // (2 s, 4 s, ... up to a minute): never "ready" on an empty store, which would make every contact a stranger
   if (status.key && (!me || me.public !== status.key) && Date.now() >= loadNext) {
@@ -1192,7 +1193,7 @@ $("mg-store-fresh").addEventListener("click", () => confirmSheet("Start fresh?",
   $("mg-store-m").textContent = "";
   try {
     if (chat && chat.ready) await chat.startFresh();
-    else { const r = await api("/api/messages/store/fresh", {}); if (locked401(r)) return; if (!r.ok) throw new Error(r.data.error || "Couldn't start fresh."); storeRetry(); }
+    else { const r = await api("/api/messages/store/fresh", { rev: null }); if (locked401(r)) return; if (!r.ok) throw new Error(r.data.error || "Couldn't start fresh."); storeRetry(); }
   } catch (e) { if (e.status === 401) return lockedNow(); $("mg-store-m").textContent = e.message; }
   await refresh();
 }));
@@ -1265,6 +1266,8 @@ function openRequest(id) {
   const g = chat && chat.requests().find(x => x.id === id);
   if (!g) return;
   chat.markOpened(id).catch(() => {});
+  // a claimed name the chain gave another address for: read it again now (it may be theirs since)
+  if (g.proof === "claim" && g.chainRead) chat.recheck(id).then(changedIt => { if (changedIt) { popOv(); renderReqs(false); } }).catch(() => {});
   const back = el("button", { type: "button", className: "back", ariaLabel: "Back", title: "Back" }, svg(P.back));
   back.addEventListener("click", () => popOv());
   const [title, line, warn] = reqWho(g);
