@@ -142,7 +142,9 @@
     if (net === "04") {
       if (was !== "04") {
         load(true);
-        setTimeout(() => load(true), 3000);   // the first look starts a read in the background; its answer comes a moment later
+        // the first look starts a read in the background; its answer comes a moment later: read it then, if the
+        // Wallet or Settings > Network is still on screen (not after moving on to Messages or another page)
+        setTimeout(() => { if (onScreen() || (!$("page-settings").hidden && sec.offsetParent !== null)) load(true); }, 3000);
       }
       timer = setInterval(tick, 30000);
     } else { $("n4-watched").replaceChildren(); $("n4-watch-m").textContent = ""; }

@@ -259,6 +259,27 @@ await js(`document.getElementById("v-open").style.zoom = ""; fitHero(); true`);
 await ctl("lez/3500000");
 await js(`LNS.home(true); true`);
 await waitFor("back to a usual balance", `/^3,500,000/.test(document.querySelector("#tok-lez .tok-amt").textContent)`);
+
+// every review screen with a 26-digit amount, at 320 px with 130% text and at 390 px with 200%: the amount stays inside
+// its card, every digit shows (it wraps, it isn't cut), and the page never scrolls sideways. Each review is shown as
+// it is when filled (its own hidden form aside), with the amount written into its row.
+const BIG = "12,345,678,901,234,567,890,123,456";      // 26 digits
+for (const [w, z] of [[320, 1.3], [390, 2]]) {
+  await cdp("Emulation.setDeviceMetricsOverride", { width: w, height: 900, deviceScaleFactor: 2, mobile: true });
+  for (const [rv, dd, unit] of [["v-review", "r-amount", "Logos"], ["lez-rv", "lez-rv-amt", "LEZ"], ["lns-brr", "lns-brr-amt", "Logos"]]) {
+    const r = await js(`(() => {
+      const box = document.getElementById(${JSON.stringify(rv)}), d = document.getElementById(${JSON.stringify(dd)});
+      const undo = []; for (let e = box; e && e !== document.body; e = e.parentElement) if (e.hidden) { e.hidden = false; undo.push(e); }
+      const was = d.textContent; d.textContent = ${JSON.stringify(BIG)} + " " + ${JSON.stringify(unit)};
+      document.querySelector("main").style.zoom = "${z}";
+      const card = (d.closest(".card") || d.closest("section") || document.body).getBoundingClientRect(), dr = d.getBoundingClientRect();
+      const out = { inside: dr.right <= card.right + 1 && dr.left >= card.left - 1, whole: d.scrollWidth <= d.clientWidth + 1 && getComputedStyle(d).textOverflow !== "ellipsis",
+        noScroll: document.documentElement.scrollWidth <= innerWidth, lines: Math.round(dr.height) };
+      document.querySelector("main").style.zoom = ""; d.textContent = was; for (const e of undo) e.hidden = true;
+      return out; })()`);
+    check(`${w} px, ${Math.round(z * 100)}% text: a 26-digit amount on ${rv} stays inside its card, every digit shown, no sideways scroll`, r.inside && r.whole && r.noScroll, r);
+  }
+}
 await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
 await click("#tok-lez");
 check("tapping LEZ picks it: its row marked, Logos not", await js(`document.getElementById("tok-lez").getAttribute("aria-checked") === "true" && document.getElementById("tok-logos").getAttribute("aria-checked") === "false"`));

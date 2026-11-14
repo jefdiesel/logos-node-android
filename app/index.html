@@ -133,7 +133,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .fpline span{display:flex;align-items:center;gap:8px}.fpline button{min-height:44px;padding:4px 12px;font-size:14px;font-weight:550;color:var(--ink)}
 .acct{padding:14px 0;border-top:1px solid var(--line)}.acct:first-child{border-top:0;padding-top:0}
 .acct .top{display:flex;justify-content:space-between;align-items:baseline;gap:4px 10px;flex-wrap:wrap}
-.acct .name{font-weight:600}.acct .bal{font-size:20px;overflow-wrap:break-word;font-weight:650;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.acct .name{font-weight:600}.acct .bal{min-width:0;max-width:100%;font-size:20px;overflow-wrap:break-word;font-weight:650;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
 .acct .bal .unit{font-size:14px;font-weight:500;color:var(--dim);letter-spacing:0;margin-left:5px}
 .acct .bal .ph{font-size:20px}
 .acct .addr{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:6px}
@@ -141,6 +141,7 @@ dd.hash,.acct code,.hash{font-family:var(--mono);font-size:13px;color:var(--dim)
 .note{font-size:14px;color:var(--dim);margin:10px 0 0}
 .msg{font-size:14px;margin:12px 0 0;min-height:1px}.msg.bad{color:var(--bad)}.msg.ok{color:var(--ok)}p.msg.ok:not(:empty)::before,div.msg.ok>p:first-child:not(:empty)::before{content:"\2713\00a0";font-weight:700}.msg.warn{color:var(--warn)}
 dl{margin:0}dl div{display:flex;justify-content:space-between;gap:14px;padding:9px 0;border-top:1px solid var(--line)}dl div:first-child{border-top:0}
+dl div>dd{min-width:0}   /* a long amount wraps inside the row (it breaks only where no space fits) instead of running off the card */
 dt{color:var(--dim);font-size:14px;flex:none}dd{margin:0;text-align:right;overflow-wrap:break-word;font-variant-numeric:tabular-nums}
 details{margin-top:8px;border-top:1px solid var(--line);padding-top:10px}summary{cursor:pointer;color:var(--dim);font-size:14px;padding:12px 0}
 hr{border:0;border-top:1px solid var(--line);margin:18px 0 6px}
@@ -720,8 +721,7 @@ function lockedNow(manual = false) {
   try { sessionStorage.setItem("lock-why", manual || manualLock ? "manual" : "auto"); sessionStorage.setItem("lock-where", JSON.stringify(where)); } catch (e) {}
   document.documentElement.classList.add("relock");
   clearInterval(txTimer);
-  wipePage();
-  relockPage();
+  try { wipePage(); } finally { relockPage(); }      // the reload comes whatever the wipe does
 }
 // Before the reload: every field emptied (so no browser form restore can bring one back), every text and every
 // attribute but the few that hold the page's structure taken out, and every drawing (a QR code) gone. The elements

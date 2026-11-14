@@ -1,6 +1,6 @@
 {
  "files": {
-  "index.html": "4caf5d1b0eff15c7cfd63c7505552a91953561737c848db587efb90279b529e8",
+  "index.html": "e845f53d3a77eb3acae55d57bb6b8f85f86cf0320871bc977c44cf3bd3857637",
   "lez04.json": "16fcdad838d7a90725a2937fd37a31479184b5b59c3806e927e93cd1f5fe259c",
   "lez04.py": "7fe6cf900750e1413ab4650dd6cbac3cde58d20e82ccf0af8bc2d64cfd666e62",
   "lns/lns.js": "7f5d5c19763c0a7dcf946f1073501c0f623c0da1b6bbb88af056b8f2e716cb90",
@@ -33,7 +33,7 @@
   "names/noble-hashes/argon2.js": "f39753324bdf2f484150731d24b1d71236f26bf10bedd594f7d190fcdfdefdc9",
   "names/noble-hashes/blake2.js": "03f00237bcc0b4d822a80f7c0ac22e42632c48e246c3b6da584e6452186e32f0",
   "names/noble-hashes/utils.js": "037ad49adb78168b6b699598fd33f85f7877456b1d28b4d032e2a1a16807947c",
-  "net04/net04.js": "4daad5908f39de7ad7faea744f27184422aea89bbc34190eb2eeccfd1c531119",
+  "net04/net04.js": "f17a34bedd6389c16247eb2dcfc00a7e99d3ff1ac224543354031804aa9b1df1",
   "noble-curves/LICENSE": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec",
   "noble-curves/abstract/curve.js": "dbaeee3b41ff47efb76b78e14170fe4dda7c7ecdc387c402f16c5118e0bac356",
   "noble-curves/abstract/edwards.js": "f24a9c221a549a8fff259eb8f245ab0dc17679b13c532c3970d91acc4df9fffd",
