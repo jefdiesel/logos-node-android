@@ -4,6 +4,9 @@ Chats between LNS names, end to end encrypted, through a Logos Messaging node on
 exist only where such a node can run (inside the Android app, or with `WAKU_API` set). Without one, the
 app and its page are exactly as before.
 
+Network: the phone's messaging node is on **logos.test** (cluster 2), and every `/names/1/…` inbox topic is on
+shard 7 (see `messaging/README.md`). The Names web app is on logos.dev (cluster 3), a different network.
+
 ## Using it
 
 - **Messages** in the bar at the bottom of the page. It locks with the wallet: the same PIN or fingerprint
