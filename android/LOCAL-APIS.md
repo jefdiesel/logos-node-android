@@ -421,38 +421,50 @@ What the app does (`app/server.py`, "transfers from the wallet"; review SEND-HOL
    can't be saved, it isn't submitted.
 3. Submits it, and submits **the same saved transfer** again after 1, 2, 4, 8 and 16 minutes while it isn't seen in a
    block, until 30 minutes have passed (fewer broadcasts of the same transaction). It never funds a new one.
-4. Reads the chain (`xfer_scan`) when one of its notes leaves the balance, while it is seen in a block, and every 5
-   minutes once it is past 30 minutes: from the slot it was funded at to the tip, every block linking to the one
-   before, up to the tip read before the scan began (the node answers 400 past the tip, so it stops there). An
-   incomplete read decides nothing. From that read only:
-   - its hash in a block above the LIB: "in a block, confirming" (the Sent screen: "In a block, confirming"); a fork
-     that takes the block away puts it back to waiting (and its hold, if under 30 minutes, again);
-   - its hash in a block at or below the LIB: **LANDED**, "in block", final ("Confirmed");
-   - one of its notes spent by another transaction in a block at or below the LIB: **DEAD**, "not in a block", final
-     ("Not in a block: nothing was sent" appears only then).
+4. Reads the chain (`xfer_scan`) when one of its notes leaves the balance or it is seen in a block (at most once a
+   minute), and every 5 minutes once it is past 30 minutes: from its checkpoint (the last block at or below the LIB
+   read with nothing of it at or before it; review SEND-HOLD-2B M1), else from the slot it was funded at, towards the
+   tip, 40 pages of 500 blocks per look at most; every block linking to the one before, starting from the checkpoint.
+   A long stretch (the phone off for weeks) is read on over the next looks. From those reads only:
+   - its hash in a block at or below the LIB: **LANDED**, "in block", final ("Confirmed"), even before the read reaches
+     the tip;
+   - one of its notes spent by another transaction at or below the LIB: **DEAD**, "not in a block", final ("Not in a
+     block: nothing was sent" appears only then); also when it was funded from the change of another of ours that is
+     DEAD (its notes never come to exist; M3);
+   - on a read that reaches the tip: its hash above the LIB is "in a block, confirming"; no longer there, "waiting for a
+     block" again (and its hold, if under 30 minutes).
    Nothing else ends a transfer: not time, not its notes leaving the balance, not a start-up, not an unreadable chain.
 5. One transfer at a time per account: while one is waiting (not seen in a block) and younger than 30 minutes, sends
-   and bridges from that account are refused, with no text asking to send again.
-6. At 30 minutes a waiting transfer reads "can't tell yet" and stops holding the account, but it stays live, however
-   old, until LANDED or DEAD: a new transfer from that account goes to the network only if it spends a note the old
-   one spends (then at most one of the two can land). If the old one's notes are gone from the balance, the app reads
-   the chain first: in a block, the new one is refused and Activity says it is in a block; otherwise refused. The
-   bridge's deposit of an exact note obeys the same rule.
+   and bridges from that account are refused, with no text asking to send again. Resubmits: after 1, 2, 4, 8 and 16
+   minutes, then hourly for as long as it lives, so one that left every pool can still land.
+6. Past 30 minutes a waiting transfer reads "can't tell yet" and stops holding the account, but it stays live, however
+   old, until LANDED or DEAD. A new transfer from that account is then **made** to conflict with it (review
+   SEND-HOLD-2B M2): the app gives `/wallet/fund` one of that transfer's notes still in the balance as an input of the
+   new one (`tx_builder.ledger_inputs` with `pending_transfer.inputs`; proven on the real node in CI: any op_id, a note
+   that isn't the largest, and a note the node keeps apart for an unsubmitted fund), with more of the account's notes
+   to cover the amount and a fee margin. At most one of the two can land; the reply says so. For a transfer whose notes
+   are gone because it was funded from the change of another of ours that a fork took away, a note of that one is used
+   (M3). One whose notes a later transfer of ours spends needs nothing more. If its notes are gone with nothing of ours
+   behind them, the chain is read first: in a block, the new one is refused once and Activity shows it; otherwise
+   refused until the chain settles it. The bridge's deposit of an exact note obeys the same rule.
 7. History: a transfer not final yet is shown as if it hadn't happened (the notes it spends stay, the notes it pays
    back to the account aren't shown), so a fork adds or takes away no row; once final, its notes and what it pays back
    are its own entry. Notes paid back are told apart by value (note ids come from a hash the app doesn't compute), so
    of two notes of equal value the wrong one may be named; the amounts are right.
-8. A bridge deposit (`/channel/deposit`, unchanged) is settled by its note; any "sent" entry no record settles reads
-   "can't tell" after 40 minutes. Stopping a bridge during its split leaves the split to its own record (DELTA6 S2).
+8. A bridge deposit (`/channel/deposit`) is settled by the same rules (S3): "in a block, confirming" when its note
+   leaves the balance, "in block" once the chain shows the deposit's hash (or, with no hash, its note spent and the
+   name account credited) at or below the LIB, "not in a block" only when its note went to another transaction, final;
+   an overdue deposit reads "can't tell yet". Stopping a bridge during its split leaves the split to its own record.
 
 The file of records, `DATA_DIR/wallet-transfers.json` (owner-only, fsync'd):
 - can't be opened right now (an error other than "not there"): nothing is sent until it can, and nothing is written;
 - doesn't read: it is set aside as `wallet-transfers.json.bad-<time>`, never overwritten. Records that still have
-  their key, notes and signed transfer are kept (live, past 30 minutes). Each account whose records are lost gets a
-  "lost" record holding the notes the account had when it is first read: until every one of them is spent in a block
-  at or below the LIB, a new transfer from that account goes only if it spends all of them that are still unspent (a
-  transfer of nearly the whole account, which conflicts with whatever was lost). That is the way out, through the
-  chain, not a timer.
+  their key, notes and signed transfer are kept (live, past 30 minutes). The transfers Activity knows by hash come
+  back as live records too (each Activity entry keeps its transfer's hash, notes, change, fee and funding slot), so a
+  lost transfer that already landed is recognised and shown in a block (SEND-HOLD-2B M4). Each account concerned also
+  gets a "lost" record holding the notes the account had when first read: until every one of them is spent in a block
+  at or below the LIB, every new transfer from that account is given all of them that are still unspent as inputs (it
+  conflicts with whatever was lost, so at most one can land). That is the way out, through the chain, not a timer.
 
 Time (only wording and the hold): the boot clock within the same boot (kernel boot id; where it can't be read, a boot
 clock not behind the record), else the wall clock (DELTA6 S1).
@@ -466,6 +478,9 @@ realistic fees):
 - fixed cases: DELTA6 P1, P1b, P2-P6, P8; SEND-HOLD-2 M1 (with P-B, P-B2), M2 (P-A, P-A2), M3 (P-C), S1 (P-D), S2
   (P-E), P-F; a crash at every step; an outside spend; an unreadable or empty chain answer; an unopenable and an
   unreadable records file; a record of a newer version;
+- fixed cases for SEND-HOLD-2B: Q1a and Q1b (closed for many reads of the chain), Q2 (a larger note arrives), Q7 (a
+  payment funded from the change of a transfer a fork drops for good), Q4 (the lost transfer had landed), a transfer
+  that left every pool offered again hourly;
 - 2,000 seeded random runs: sends, payments made again by a user who acts only on what Activity shows (never on the
   chain), bridges with splits (some stopped during the split), forks, crashes, restarts, reboots, clock steps, incoming
   payments and outside spends; after every step, for every record whatever made it:
@@ -476,9 +491,12 @@ realistic fees):
   - I5: "not in a block" (entry or tx status) only when a note of it is spent by another transaction in a final
     block; nothing submitted ever "not sent";
   - every received amount is one someone paid; a "changed" row only for a spend from elsewhere (or a fork that took
-    one out).
-- Each was checked to fail with the code broken the matching way: "not in a block" after 10 hours (M1), an old
-  transfer whose notes are gone not counting (M2), "not in a block" at depth 0 (M3), "in block" at depth 0 (S1).
+    one out);
+  - I6 (no dead end): at the end of every run, with the faults cleared and the chain settled, every account with coins
+    can pay.
+- Each was checked to fail with the code broken the matching way: "not in a block" after 10 hours, an old transfer
+  whose notes are gone not counting, "not in a block" or "in block" at depth 0; and for SEND-HOLD-2B: one page per read
+  with no checkpoint, no forced input, no dead child, no rebuild from Activity, no hourly resubmit.
 
 Not covered: a wall clock set back across a reboot (the records of the boot before then age by the wall clock, so the
 hold lasts longer). A transfer seen in a block (confirming) no longer holds its account; if a fork takes it out, a

@@ -143,7 +143,7 @@ def final(n=None):
     """Blocks until everything in a block is at or below the last irreversible block, with the app looking."""
     for _ in range(n if n is not None else chain.k + 1):
         chain.block()
-        looks()
+        advance(server.XFER_RESCAN_FAST + 1)  # (a transfer seen in a block is read again at most once a minute)
 
 
 def rec(h):
@@ -394,7 +394,7 @@ for name, how in (("M1", "plain"), ("P-B: the chain unreadable from the landing 
     looks()
     check("  after a look: never 'not in a block'", entry(h)["status"] != "not in a block", entry(h))
     chain.fail["raw"] = []
-    looks()
+    advance(server.XFER_RESCAN_FAST + 1)
     check("  the chain read: in a block", entry(h)["status"] == "in block", entry(h))
 
 # SEND-HOLD-2 M2 (P-A): past the cap, it lands; before the next look the user pays again
@@ -427,6 +427,7 @@ check("P-C: in a block on fork A: confirming", entry(h)["status"] == "confirming
 chain.reorg(1)
 chain.pool = []                               # fork B doesn't have it yet (the node puts it back later)
 chain.block()
+advance(server.XFER_RESCAN_FAST + 1, loop=False)
 looks()
 check("  on fork B, without it: never 'not in a block', back to pending", entry(h)["status"] == "pending", entry(h))
 check("  and the account is held again (the hold's 30 minutes)", server.xfer_spend_check(A) is not None)
@@ -462,23 +463,28 @@ with open(server.XFER_FILE, "w") as f:
 restart()
 aside = [f for f in os.listdir(TMP) if f.startswith("wallet-transfers.json.bad")]
 check("P-E: an unreadable file is set aside, not overwritten", aside and open(os.path.join(TMP, aside[0])).read() == "{not json", aside)
+check("  the lost transfer comes back from Activity (its hash, notes, slot), live", rec(h) and rec(h).get("rebuilt") and rec(h)["state"] == "submitted",
+      rec(h))
 advance(CAP + 60)
 chain.credit(A, 900000)
+lost = [r for r in server.xfers.values() if r["state"] == "lost"]
 code, d = send(A, CAROL, 100000)
-check("  31 minutes later a transfer that doesn't spend all the account's notes is refused, nothing sent",
-      code == 409 and posts(list(chain.funded)[-1]) == 0, (code, d))
-check("  the text says how it ends", "all" in d["error"].lower(), d)
-total = sum(v for i, (k, v) in chain.notes.items() if k == A)
-for _ in range(12):                           # (the node lets go of the notes its last fund kept apart)
-    chain.block()
-total = sum(v for i, (k, v) in chain.notes.items() if k == A)
+ins = set(chain.funded[d["hash"]]["inputs"]) if code == 200 else set()
+n0 = set(lost[0]["inputs"] or []) & set(chain.notes) if lost else set()
+check("  31 minutes later a transfer from the account goes: it spends every note the lost record holds, and one of the "
+      "rebuilt transfer's", code == 200 and n0 and n0 <= ins and ins & set(rec(h)["inputs"]), (code, d, n0, ins))
+check("  and says it replaces an earlier one", "replaces" in d, d)
 chain.fail.clear()
-code, d = send(A, CAROL, total - 2000)
-check("  a transfer of (nearly) everything spends every note: it goes", code == 200, d)
 final()
-check("  once it is final the account is free", server.xfer_spend_check(A) is None and send(A, CAROL, 100)[0] in (200, 400, 409) and
-      not server.xfer_unknown(A), server.xfer_spend_check(A))
-check("  and the lost transfer can't land any more", not chain.may_land(h) and h not in chain.landed or h in chain.landed)
+check("  final: exactly one of the lost transfer and the new one in block, the other 'not in a block', as the chain "
+      "paid; the lost record released",
+      sorted((entry(h)["status"], entry(d["hash"])["status"])) == ["in block", "not in a block"]
+      and (h in chain.landed) == (entry(h)["status"] == "in block"),
+      (entry(h)["status"], entry(d["hash"])["status"], lost))
+code, d2 = send(A, CAROL, 100)
+check("  the account sends (with the lost record's last notes in it)", code == 200, d2)
+final()
+check("  once that is final, the lost record is released", not server.xfer_unknown(A), [r for r in server.xfers.values() if r["state"] == "lost"])
 world()
 os.makedirs(server.XFER_FILE)                 # can't be opened as a file (an open error, not bad contents)
 restart()
@@ -526,6 +532,108 @@ check("  it lands: in a block by its hash; the account free", split[0]["status"]
 check("  the note it set aside is not shown as received, nothing 'changed'",
       not [e for e in server.history["entries"] if e["kind"] in ("received", "changed")], server.history["entries"][-3:])
 
+# SEND-HOLD-2B M1 (Q1b, Q1a): the app closed for longer than one read of the chain (pages of 5 blocks here)
+server.XFER_SCAN_LIMIT, server.XFER_SCAN_PAGES = 5, 2
+world()
+h = send(A, BOB, 100000)[1]["hash"]
+chain.block()                                 # it lands; the app closes before its next look
+for _ in range(60):                           # 60 blocks: six times what one read covers
+    chain.block()
+advance(8 * 86400, loop=False)
+restart()
+for _ in range(8):
+    advance(server.XFER_RESCAN_FAST + 1)
+check("Q1b: closed for a week, many reads' worth of blocks: read on from the last checkpoint, in block", entry(h)["status"] == "in block", entry(h))
+check("  and the account sends", send(A, CAROL, 1000)[0] == 200)
+world(a=(300000,))
+chain.fail["/mempool/add/tx"] = ["unreached"] * 10 ** 6
+h = send(A, BOB, 100000)[1]["hash"]
+advance(CAP + 60)
+for _ in range(60):
+    chain.block()
+chain.fail["/mempool/add/tx"] = []
+code, d = send(A, CAROL, 1000)
+check("Q1a: stuck past many reads: a send goes, spending its note", code == 200 and set(chain.funded[d["hash"]]["inputs"]) & set(chain.funded[h]["inputs"]), d)
+final()
+for _ in range(6):
+    advance(server.XFER_RESCAN + 1)
+check("  once that is final, the stuck one reads 'not in a block' and the account is free", entry(h)["status"] == "not in a block"
+      and send(A, CAROL, 1000)[0] == 200, entry(h))
+server.XFER_SCAN_LIMIT, server.XFER_SCAN_PAGES = 500, 40
+
+# SEND-HOLD-2B M2 (Q2): a transfer that never lands, then a larger payment comes in
+world(a=(300000,))
+chain.fail["/mempool/add/tx"] = ["unreached"] * 10 ** 6
+h = send(A, BOB, 100000)[1]["hash"]
+advance(CAP + 60)
+chain.credit(A, 2000000)
+chain.fail["/mempool/add/tx"] = []
+code, d = send(A, CAROL, 1000)
+check("Q2: past the cap, with a larger note in: a 1,000 send goes, made to spend the stuck one's note (the node would "
+      "have taken the larger note)", code == 200 and set(chain.funded[d["hash"]]["inputs"]) & set(chain.funded[h]["inputs"]), d)
+check("  and it says it replaces the earlier one", "replaces" in d, d)
+final()
+for _ in range(6):
+    advance(server.XFER_RESCAN + 1)
+check("  final: the new one in block, the stuck one 'not in a block'", entry(d["hash"])["status"] == "in block"
+      and entry(h)["status"] == "not in a block", (entry(d["hash"]), entry(h)))
+
+# past the cap, a waiting transfer that left every pool is offered again (hourly), so it can still land
+world()
+h = send(A, BOB, 100000)[1]["hash"]
+advance(CAP + 60)
+chain.pool = []                               # gone from every pool, nothing landed
+advance(server.XFER_RESUBMIT_SLOW + 60)
+final()
+check("a waiting transfer that left every pool is offered again after the cap (hourly) and lands", entry(h)["status"] == "in block", entry(h))
+
+# SEND-HOLD-2B M3 (Q7): a payment funded from a confirming transfer's change; a fork drops that transfer for good
+world(a=(600000,))
+chain.fail["/mempool/add/tx"] = ["lost"] + ["unreached"] * 10 ** 6
+r1 = send(A, BOB, 100000)[1]["hash"]
+advance(CAP + 60)
+chain.block()                                 # R1 lands (it was in the pool)
+advance(server.XFER_RESCAN_FAST + 1)
+chain.fail["/mempool/add/tx"] = []
+code, d = send(A, CAROL, 50000)
+r2 = d.get("hash")
+check("Q7: R1 confirming; R2 funded from its change", entry(r1)["status"] == "confirming" and code == 200
+      and rec(r2)["deps"] == [rec(r1)["id"]], (entry(r1), d, rec(r2) and rec(r2).get("deps")))
+chain.reorg(2)
+chain.pool = []                               # R1 and R2 in no pool any more
+chain.block()
+advance(server.XFER_RESCAN_FAST + 1)
+check("  a fork drops R1 for good: R2 back to waiting, its 30 minutes hold the account", send(A, DAVE, 1000)[0] == 409)
+real_add = chain.answer
+chain.fail["/mempool/add/tx"] = ["unreached"] * 10 ** 6   # R1 and R2 never reach a pool again
+advance(CAP + 60)
+chain.fail["/mempool/add/tx"] = []
+code, d3 = send(A, DAVE, 1000)
+check("  past it, a send goes, made to spend R1's note (R2's own note never exists)", code == 200
+      and set(chain.funded[d3["hash"]]["inputs"]) & set(chain.funded[r1]["inputs"]), d3)
+final()
+for _ in range(6):
+    advance(server.XFER_RESCAN + 1)
+check("  final: the new one in block; R1 'not in a block', and R2 (funded from its change) 'not in a block' too",
+      entry(d3["hash"])["status"] == "in block" and entry(r1)["status"] == "not in a block" and entry(r2)["status"] == "not in a block",
+      (entry(d3["hash"])["status"], entry(r1)["status"], entry(r2)["status"]))
+check("  and the account sends", send(A, BOB, 1000)[0] == 200)
+
+# SEND-HOLD-2B M4 (Q4): the lost transfer had landed before the damaged file was read
+world(a=(600000,))
+h = send(A, BOB, 300000)[1]["hash"]
+chain.block()                                 # it lands; the app closes before its next look
+with open(server.XFER_FILE, "w") as f:
+    f.write("{not json")
+advance(3600, loop=False)
+restart()
+chain.credit(A, 100000)
+advance(45 * 60)
+check("Q4: after a damaged records file, the landed transfer comes back from Activity: in a block, not 'can't tell'",
+      entry(h)["status"] in ("confirming", "in block"), entry(h))
+final()
+check("  final: in block (so nothing invites paying Bob again)", entry(h)["status"] == "in block", entry(h))
+
 # no text asks to send again while a transfer is unsettled
 texts = [server.xfer_why(server.xfer_new(A, BOB, 1, "send"))]
 check("the texts while a transfer is unsettled don't ask to send again", not any(w in t.lower() for t in texts for w in ("again", "retry", "resend")), texts)
@@ -533,7 +641,7 @@ check("the texts while a transfer is unsettled don't ask to send again", not any
 # ---- part 3: random runs ------------------------------------------------------------------------------------------------
 RUNS = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.environ.get("XFER_RUNS", "2000"))
 QUIET[0] = True
-bad = {k: 0 for k in ("I1", "I1-paid-twice", "I2", "I3", "I4", "I5", "own-output-received", "changed-without-cause", "text")}
+bad = {k: 0 for k in ("I1", "I1-paid-twice", "I2", "I3", "I4", "I5", "I6", "own-output-received", "changed-without-cause", "text")}
 first_bad = {}
 stats = {"bridges": 0, "sends": 0, "landed": 0, "unknown": 0, "refused": 0, "crashes": 0, "reboots": 0, "retries": 0, "reorgs": 0}
 server.lez_act_add = lambda *a, **k: None
@@ -629,6 +737,30 @@ def run(seed):
             stats["crashes"] += 1
             restart()
         invariants(seed, step, born, payments)
+    # I6: no dead end. Faults cleared, the chain read and settled: every account with coins can pay
+    chain.fail.clear()
+    chain.crash.clear()
+    for _ in range(max(chain.k, chain.lapse) + 2):   # (and the node lets go of notes its funds kept apart)
+        chain.block()
+        advance(server.XFER_RESCAN + 1)
+    for key in (A, B):
+        bal = sum(v for i, (k, v) in chain.notes.items() if k == key)
+        if bal < 20000:
+            continue
+        b = server.bridge_load()
+        if b and b["state"] in server.BRIDGE_ACTIVE:
+            server.lns_bridge_cancel()
+        for _ in range(4):                    # within a bounded number of steps: blocks, looks, the 30-minute hold
+            code, d = send(key, DAVE, 1000)
+            if code == 200:
+                break
+            advance(CAP + 60)
+            for _ in range(chain.k + 2):
+                chain.block()
+                advance(server.XFER_RESCAN + 1)
+        if code != 200:
+            bad["I6"] += 1
+            first_bad.setdefault("I6", (seed, key[:2], code, d))
     chain.answer = real_answer
     server.xfer_conflict = real_conflict
     stats["landed"] += sum(1 for p in payments for h in p["tries"] if h in chain.landed)

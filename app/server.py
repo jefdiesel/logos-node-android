@@ -1688,7 +1688,7 @@ def bridge_deposit(b):
         # in the history now, with the intent: a deposit that lands before the node answers is still this one
         history_record_send({"key": b["from"], "label": b["label"], "to": b["to"], "to_label": "your name account",
                              "amount": b["amount"], "fee": None, "hash": None, "status": "pending", "bridge": "deposit",
-                             "bridge_id": b["id"], "note": b["note"]})
+                             "bridge_id": b["id"], "note": b["note"], "slot_from": (node_status() or {}).get("slot")})
         f = lns_faucet_last
         if f.get("at", 0) > time.time() - 600 and not (lez_now is not None and f.get("before") is not None
                                                         and int(lez_now) >= int(f["before"]) + as_int(f.get("amount"))):
@@ -1783,11 +1783,11 @@ def bridge_round():
             elif b.get("unsure") and now - b["sent_at"] > BRIDGE_GIVE_UP:
                 # the node never answered: it may have taken the deposit. Watched on, never called "nothing bridged"
                 b.update(state="overdue", error="The node didn't confirm the deposit. Its note is still in your wallet; it may still land.")
-                bridge_history_settle(b, "deposit", "not in a block")
+                bridge_history_settle(b, "deposit", SEND_UNKNOWN)
             elif b["state"] == "sent" and now - b["sent_at"] > BRIDGE_GIVE_UP:
                 # taken by the node but not in a block: the key is free again, and the note is still watched
                 b.update(state="overdue", error="The deposit isn't in a block after 30 minutes. Its note is still in your wallet; it may still go through if the network takes it later.")
-                bridge_history_settle(b, "deposit", "not in a block")
+                bridge_history_settle(b, "deposit", SEND_UNKNOWN)
             bridge_save(b)
     if b["state"] in ("sent", "landed"):
         bal = lns_balance(b["to"])
@@ -1813,7 +1813,7 @@ def bridge_fee_of(b, step):
     """The fee of the bridge's `step` ("split" or "deposit"), once the history has it in a block."""
     with hist_lock:
         e = next((e for e in history["entries"] if e.get("bridge_id") == b["id"] and e.get("bridge") == step), None)
-    return e.get("fee") if e and e.get("status") == "in block" else None
+    return e.get("fee") if e and e.get("status") in ("in block", "confirming") else None
 
 
 def bridge_history_settle(b, step, status="in block"):
@@ -1850,7 +1850,7 @@ def bridge_loop():
             with bridge_lock:
                 b = bridge_load()
             if b and b["state"] in ("landed", "arrived") and time.time() - b.get("landed_at", 0) > 60:
-                bridge_history_settle(b, "deposit")   # the history couldn't match it in a minute: in a block, fee unknown
+                bridge_history_settle(b, "deposit", "confirming")   # its note is spent: in a block, final at the LIB
             for key, step in (("fee", "deposit"), ("split_fee", "split")):
                 if b and b["state"] in ("ready", "sent", "landed", "arrived") and b.get(key) is None and (step == "split" or b["state"] != "ready"):
                     fee = bridge_fee_of(b, step)
@@ -3238,6 +3238,7 @@ XFER_FILE = os.path.join(DATA_DIR, "wallet-transfers.json")
 XFER_CAP = float(os.environ.get("XFER_CAP_SECONDS", "1800"))
 XFER_RESUBMIT = float(os.environ.get("XFER_RESUBMIT_SECONDS", "60"))   # then doubled each time, within XFER_CAP
 XFER_RESCAN = 300                           # a transfer past its cap, or a lost record, is looked up this often
+XFER_RESCAN_FAST = 60                       # one whose notes are gone, or seen in a block, at most this often
 XFER_MAX_FEE = 100000                       # the most a transfer's fee may be (the node checks it: max_tx_fee)
 XFER_KEEP = 7 * 24 * 3600                   # settled records are kept this long (for tx_status and the history)
 XFER_SCAN_LIMIT = 500                       # blocks per read of the chain when looking for a hash
@@ -3490,12 +3491,41 @@ def xfer_records():
         event("transfers: the file of transfers doesn't read; set aside, its accounts held until the chain settles them",
               file=aside)
         keys = [k["key"] for k in wallet_keys()] if all_lost else sorted(lost_keys)
+        rebuilt = xfer_rebuild(keys)
         for k in keys:
             r = xfer_lost_record(k, "the record of transfers didn't read")
+            starts = [x["slot_from"] for x in rebuilt if x["key"] == k and isinstance(x.get("slot_from"), int)]
+            if starts:
+                r["slot_from"] = min(starts)  # read from the oldest transfer Activity knows, not from the first look
             xfers[r["id"]] = r
     xfer_loaded[0] = True
     xfer_save()
     return xfers
+
+
+def xfer_rebuild(keys):
+    """After a records file that didn't read: the transfers Activity knows by hash (it keeps each one's hash, notes,
+    change, fee and the slot it was funded at) come back as live records, past their cap, without their signed
+    transfer: the chain settles them as any other (a lost transfer that already landed is recognised, review
+    SEND-HOLD-2B M4), and new transfers conflict with them as with any other. Call with xfer_lock held."""
+    out = []
+    with hist_lock:
+        entries = [dict(e) for e in history["entries"] if e.get("kind") == "sent" and e.get("key") in keys]
+    for e in entries:
+        if e.get("xfer") in xfers or not HEX64_RE.fullmatch(str(e.get("hash") or "")) or not isinstance(e.get("inputs"), list) \
+                or not e["inputs"] or e.get("status") in ("in block", "not in a block"):
+            continue
+        r = xfer_new(e["key"], str(e.get("to", "")), as_int(e.get("amount")) if e.get("bridge") != "split"
+                     else as_int(e.get("bridge_amount")), "split" if e.get("bridge") == "split" else "send",
+                     e.get("bridge_id"), state="submitted")
+        r.update(id=e.get("xfer") or r["id"], entry=e["id"], capped=True, hash=e["hash"], inputs=list(e["inputs"]),
+                 change=list(e.get("change") or []), fee=as_int(e.get("fee")), in_values=dict(e.get("in_values") or {}),
+                 slot_from=e.get("slot_from") if isinstance(e.get("slot_from"), int) else None, submits=1, rebuilt=True)
+        if r["slot_from"] is None:
+            continue
+        xfers[r["id"]] = r
+        out.append(r)
+    return out
 
 
 def xfer_status(r):
@@ -3517,6 +3547,10 @@ def xfer_sync_entry(r):
         for e in history["entries"]:
             if e.get("id") == r["entry"] and e.get("kind") == "sent":
                 st = xfer_status(r)
+                if r.get("hash") and not e.get("inputs"):
+                    e.update(inputs=list(r["inputs"]), slot_from=r.get("slot_from"), change=list(r.get("change") or []),
+                             in_values=dict(r.get("in_values") or {}), fee=str(r["fee"]) if r.get("fee") is not None else None)
+                    history_save()
                 if e.get("status") != st or (r.get("hash") and e.get("hash") != r["hash"]):
                     e.update(status=st, hash=r.get("hash"))
                     e.pop("sending", None)
@@ -3535,23 +3569,35 @@ def xfer_entry_drop(r):
         history_save()
 
 
-def xfer_scan(r):
-    """Reads the chain from the slot the record was funded at up to the tip: {"complete", "ours": (slot, final) or
-    None, "others": {note: final}} for the record's notes spent by other transactions. Blocks must link (each one's
-    parent is the one before), and the read must reach the tip seen before it began; "final" is at or below the
-    node's last irreversible block. An incomplete read decides nothing."""
-    out = {"complete": False, "ours": None, "others": {}}
-    slot_from, mine = r.get("slot_from"), set(r.get("inputs") or [])
+XFER_SCAN_PAGES = 40                        # pages per read; a longer stretch is read on over the next looks
+
+
+def xfer_scan(r, pages=None):
+    """Reads the chain for the record from where the last read left it settled (its checkpoint: the last block at or
+    below the node's last irreversible block, LIB, with nothing of the record at or before it), else from the slot it
+    was funded at, towards the tip, at most `pages` pages per call. Returns {"complete": reached the tip seen before
+    the read began, "ours": (slot, final) or None, "others": {note: (slot, final)} for its notes spent by other
+    transactions, "ckpt": the new checkpoint or None}. Blocks must link (each one's parent is the one before,
+    starting from the checkpoint); "final" is at or below the LIB. Final evidence counts even when the read stops short
+    of the tip; anything else decides only on a complete read."""
+    out = {"complete": False, "ours": None, "others": {}, "ckpt": None}
+    ck = r.get("ckpt") if isinstance(r.get("ckpt"), dict) else None
+    slot_from = ck["slot"] + 1 if ck else r.get("slot_from")
+    mine = set(r.get("inputs") or [])
     st = node_status()
     tip = st.get("slot") if st else None
-    if not isinstance(slot_from, int) or not isinstance(tip, int) or slot_from > tip:
+    if not isinstance(slot_from, int) or not isinstance(tip, int):
         return out
-    prev, last, lib, ours, others = None, None, None, None, {}
-    for _ in range(40):
+    if slot_from > tip:
+        if ck:
+            out["complete"] = True            # nothing above the checkpoint yet
+        return out
+    prev, last, ours, others, ckpt, hit = (ck["id"] if ck else None), None, None, {}, None, False
+    for _ in range(pages or XFER_SCAN_PAGES):
         code, raw = node_raw("/cryptarchia/blocks_range?slot_from=%d&order=ascending&blocks_limit=%d" % (slot_from, XFER_SCAN_LIMIT),
                              timeout=20)
         if code != 200 or raw is None:
-            return out
+            break
         count = 0
         try:
             for line in raw.decode().splitlines():
@@ -3560,60 +3606,63 @@ def xfer_scan(r):
                 ev = json.loads(line)
                 blk = ev.get("block", ev)
                 hdr = blk.get("header") or {}
-                bid, parent, slot = hdr.get("id"), hdr.get("parent_block"), hdr.get("slot")
-                if not isinstance(slot, int) or not isinstance(bid, str) or (prev is not None and parent != prev):
-                    return out                # a fork moved the chain while it was read, or a block that doesn't read
-                if not isinstance(ev.get("lib_slot"), int):
-                    return out
-                prev, last, lib = bid, slot, ev["lib_slot"]
+                bid, parent, slot, lib = hdr.get("id"), hdr.get("parent_block"), hdr.get("slot"), ev.get("lib_slot")
+                if not isinstance(slot, int) or not isinstance(bid, str) or not isinstance(lib, int) or \
+                        (prev is not None and parent != prev):
+                    raise ValueError("a fork moved the chain while it was read, or a block that doesn't read")
+                prev, last = bid, slot
                 count += 1
                 for t in blk.get("transactions") or []:
                     mt = t.get("mantle_tx") or {}
                     h = str(mt.get("hash") or "").lower()
-                    if h == r.get("hash"):
-                        ours = slot
+                    if h and h == r.get("hash"):
+                        ours, hit = (slot, slot <= lib), True
                         continue
                     for op in mt.get("ops") or []:
                         ins = (op.get("payload") or {}).get("inputs") if isinstance(op, dict) else None
                         for i in ins if isinstance(ins, list) else []:
-                            if str(i).lower() in mine:
-                                others[str(i).lower()] = min(others.get(str(i).lower(), slot), slot)
+                            i = str(i).lower()
+                            if i in mine and i not in others:
+                                others[i], hit = (slot, slot <= lib), True
+                if slot <= lib and not hit:
+                    ckpt = {"slot": slot, "id": bid}
         except Exception:
-            return out
-        if count == 0 or last is None:
-            return out
+            break
+        if count == 0:
+            break
         if last >= tip:
+            out["complete"] = True
             break
         if count < XFER_SCAN_LIMIT:
-            return out                        # the chain ended short of the tip seen before: it moved meanwhile
+            break                             # the chain ended short of the tip seen before: it moved meanwhile
         slot_from = last + 1
-    else:
-        return out
-    out.update(complete=True, ours=(ours, ours <= lib) if ours is not None else None,
-               others={i: s <= lib for i, s in others.items()})
+    out.update(ours=ours, others=others, ckpt=ckpt)
     return out
 
 
 def xfer_settle(r, scan):
-    """Applies a complete scan to a live record (call with xfer_lock held). Returns what changed, or None."""
-    if not scan["complete"] or r["state"] not in LIVE:
+    """Applies a read of the chain to a live record (call with xfer_lock held). Final evidence decides at once; being
+    seen in a block, or no longer, only on a complete read. Returns what changed, or None."""
+    if r["state"] not in LIVE:
         return None
+    if scan.get("ckpt"):
+        r["ckpt"] = scan["ckpt"]
     if r["state"] == "lost":
-        if r["inputs"] is not None and r["inputs"] and all(scan["others"].get(i) for i in r["inputs"]):
+        done = r.setdefault("spent_final", [])
+        for i, (slot, final) in scan["others"].items():
+            if final and i not in done:
+                done.append(i)
+        if r["inputs"] and all(i in done for i in r["inputs"]):
             r.update(state="ended", result="lost record released: every note it held is spent in a final block")
             return "released"
         return None
     was = (r["state"], r.get("seen"))
-    if scan["ours"]:
-        slot, final = scan["ours"]
-        if final:
-            r.update(state="landed", seen=None, landed={"slot": slot, "at": time.time()})
-        else:
-            r["seen"] = {"slot": slot}
-    else:
-        r["seen"] = None
-        if any(scan["others"].values()):
-            r.update(state="dead", result="a note it spends went to another transaction, final")
+    if scan["ours"] and scan["ours"][1]:
+        r.update(state="landed", seen=None, landed={"slot": scan["ours"][0], "at": time.time()})
+    elif not scan["ours"] and any(f for _, f in scan["others"].values()):
+        r.update(state="dead", seen=None, result="a note it spends went to another transaction, final")
+    elif scan["complete"]:
+        r["seen"] = {"slot": scan["ours"][0]} if scan["ours"] else None
     if (r["state"], r.get("seen")) != was:
         xfer_sync_entry(r)
         return r["state"] if r["state"] in FINAL else ("seen" if r.get("seen") else "orphaned")
@@ -3658,40 +3707,101 @@ def xfer_spend_check(key):
 
 XFER_UNREADABLE = ("This app can't open its record of transfers right now, so it sends nothing until it can. "
                    "Nothing was sent.")
-XFER_LOST_WAIT = ("This app's record of earlier transfers from this account didn't read. Until the chain shows them "
-                  "settled, it only sends from this account a transfer that uses all of its coins, and it can't read "
-                  "the account's coins right now. Nothing was sent.")
+XFER_LOST_WAIT = ("This app's record of earlier transfers from this account didn't read, and it can't read the "
+                  "account's coins right now, so it doesn't send from it yet. Nothing was sent.")
+
+
+def xfer_live(key):
+    """The key's records that may still land (not seen in a block: one seen in a block is known to the user) and its
+    lost records. xfer_lock held."""
+    return [r for r in xfer_records().values() if r["key"] == key and r["state"] in LIVE and not r.get("seen")]
+
+
+def xfer_covered(r, recs):
+    """Whether a later transfer of ours spends one of `r`'s notes: then the two can't both land, and a new transfer only
+    has to conflict with that one (or nothing, if that one is in a block)."""
+    return any(x is not r and x["key"] == r["key"] and x["state"] in LIVE + ("landed",) and x.get("inputs")
+               and set(x["inputs"]) & set(r["inputs"] or []) and x["t0"].get("at", 0) >= r["t0"].get("at", 0)
+               for x in recs.values())
+
+
+def xfer_targets(key, notes):
+    """The notes a new transfer from `key` must spend so that it can't land beside any transfer of the key that may
+    still land (review SEND-HOLD-2B M2, M3): for each such transfer, one of its notes still in the balance; for one
+    whose notes are gone (funded from the change of another of ours that a fork took away), a note of the transfer
+    it depends on; for a lost record, every note it holds that is still unspent. Returns (notes, None) or (None, why)
+    when no note can be found (the chain must be read first)."""
+    with xfer_lock:
+        live = xfer_live(key)
+        recs = dict(xfer_records())
+    need = []
+    for r in live:
+        if r["state"] == "lost":
+            if r["inputs"] is None:
+                return None, XFER_LOST_WAIT
+            need += [i for i in r["inputs"] if i in notes]
+            continue
+        seen, todo, found = set(), [r], None
+        while todo and not found:
+            x = todo.pop(0)
+            if x["id"] in seen:
+                continue
+            seen.add(x["id"])
+            avail = sorted((i for i in x["inputs"] if i in notes), key=lambda i: -notes[i])
+            if avail:
+                found = avail[0]
+                break
+            if x["state"] in LIVE and not x.get("seen"):
+                todo += [recs[d] for d in x.get("deps") or [] if d in recs and recs[d]["state"] in LIVE + ("landed",)]
+        if found:
+            need.append(found)
+            continue
+        if xfer_covered(r, recs):
+            continue                          # a later one of ours spends its notes: that one carries the rule
+        # its notes are gone and nothing of ours it depends on holds one: it may have landed a moment ago
+        scan = xfer_scan(r)
+        with xfer_lock:
+            xfer_settle(r, scan)
+            xfer_save()
+        if r["state"] == "dead":
+            continue
+        if r["state"] == "landed" or r.get("seen"):
+            return None, ("The earlier transfer from this account (%s to %s) is in a block: see Activity. Nothing was "
+                          "sent." % (fmt_int(r["amount"]), short_key(r["to"])))
+        return None, ("An earlier transfer from this account (%s to %s) isn't settled, and the coins it uses aren't in "
+                      "the account now, so a new one can't be made to replace it yet. Nothing was sent. The app keeps "
+                      "reading the chain; Activity shows when it is settled." % (fmt_int(r["amount"]), short_key(r["to"])))
+    return sorted(set(need)), None
 
 
 def xfer_conflict(key, inputs, notes):
-    """None if a new spend of `inputs` from `key` can't land beside an older transfer that may still land, else why.
-    Every live record of the key past its hold counts, whatever the balance shows: the new one must spend a note it
-    spends (a lost record: every note it holds that is still unspent). One whose notes are gone is looked up first."""
+    """None if a funded transfer spending `inputs` can't land beside any transfer of `key` that may still land (it
+    spends a note of each, or of the one each depends on; all of a lost record's unspent notes), else why. The guard
+    after funding: by construction (xfer_targets) it holds."""
     with xfer_lock:
-        live = [r for r in xfer_records().values() if r["key"] == key and r["state"] in LIVE]
+        live = xfer_live(key)
+        recs = dict(xfer_records())
+    ins = set(inputs)
     for r in live:
+        if r["state"] != "lost" and not ins & set(r["inputs"]) and xfer_covered(r, recs):
+            continue
         if r["state"] == "lost":
-            need = set(r["inputs"] or []) & set(notes)
-            if r["inputs"] is None or not need <= set(inputs):
-                return ("This app's record of earlier transfers from this account didn't read, so one of them may still "
-                        "land. Until the chain shows them settled, it only sends from this account a transfer that uses "
-                        "all of its coins (that one can't land beside a lost one). This one would use only some. Nothing "
-                        "was sent.")
+            if r["inputs"] is None or not (set(r["inputs"]) & set(notes)) <= ins:
+                return XFER_LOST_WAIT if r["inputs"] is None else ("The node funded the transfer from other coins than "
+                                                                      "the ones it was given. Nothing was sent.")
             continue
-        if r.get("seen") or set(inputs) & set(r["inputs"]):
-            continue
-        if any(i not in notes for i in r["inputs"]):
-            scan = xfer_scan(r)               # its notes are gone: it may have landed a moment ago
-            with xfer_lock:
-                what = xfer_settle(r, scan)
-            if r["state"] == "dead":
+        chain_, todo = set(), [r]
+        while todo:
+            x = todo.pop(0)
+            if x["id"] in chain_:
                 continue
-            if r["state"] == "landed" or r.get("seen"):
-                return ("The earlier transfer from this account (%s to %s) is in a block: see Activity. Nothing was "
-                        "sent." % (fmt_int(r["amount"]), short_key(r["to"])))
-        return ("An earlier transfer from this account (%s to %s) isn't settled yet and could still land, and this one "
-                "would use other coins, so both could go through. Nothing was sent. This account can make transfers "
-                "once the chain shows the earlier one settled (Activity)." % (fmt_int(r["amount"]), short_key(r["to"])))
+            chain_.add(x["id"])
+            if ins & set(x["inputs"]):
+                break
+            todo += [recs[d] for d in x.get("deps") or [] if d in recs]
+        else:
+            return ("The node funded the transfer from other coins than the ones it was given, so it could land beside "
+                    "an earlier one. Nothing was sent.")
     return None
 
 
@@ -3704,6 +3814,30 @@ def xfer_submit(r):
                      last_answer=("%d %s" % (code, reply if isinstance(reply, str) else json.dumps(reply)))[:200])
             xfer_save()
     return code, reply
+
+
+XFER_FEE_MARGIN = 20000                     # with forced inputs, at least this much beyond the amount is given (fees
+                                            # seen: 834 to about 3,000), so the node adds none of its own
+
+
+def xfer_builder(frm, to, amount, targets, notes):
+    """The fund request's transfer. With notes to force (xfer_targets), they go in as the builder's inputs, with more
+    of the account's notes, largest first, until the amount and a fee margin are covered: the node takes inputs given
+    in the request as they are (CI: tests/xfer_real.py, a forced input, any op_id, also one the node keeps apart) and
+    adds none of its own when they cover it (one it added could repeat a given one: such a transfer is refused)."""
+    out = {"value": amount, "pk": to}
+    if not targets:
+        return {"mantle_tx": {"ops": []}, "ledger_inputs": [], "pending_transfer": {"inputs": [], "outputs": [out]},
+                "channel_multi_sig_proofs": {}}
+    ins = list(targets)
+    for i, v in sorted(notes.items(), key=lambda kv: -kv[1]):
+        if sum(notes[x] for x in ins) >= amount + XFER_FEE_MARGIN:
+            break
+        if i not in ins:
+            ins.append(i)
+    return {"mantle_tx": {"ops": []},
+            "ledger_inputs": [{"op_id": [0] * 32, "output_index": 0, "note": {"value": notes[i], "pk": frm}} for i in ins],
+            "pending_transfer": {"inputs": ins, "outputs": [out]}, "channel_multi_sig_proofs": {}}
 
 
 def transfer(frm, to, amount, kind, entry_fields, bridge_id=None):
@@ -3726,11 +3860,19 @@ def transfer(frm, to, amount, kind, entry_fields, bridge_id=None):
             return 409, {"error": xfer_why(held), "held": True}
         for x in xfers.values():               # a lost record learns the notes it holds the first time they can be read
             if x["key"] == frm and x["state"] == "lost" and x["inputs"] is None:
-                x.update(inputs=sorted(notes), slot_from=st["slot"])
+                x.update(inputs=sorted(notes), slot_from=min([st["slot"]] + [v for v in [x.get("slot_from")] if isinstance(v, int)]))
+                xfer_save()
+    targets, why = xfer_targets(frm, notes)   # notes it must spend so it can't land beside a transfer that may
+    if why:
+        return 409, {"error": why}
+    with xfer_lock:
+        held = xfer_hold(frm)
+        if held:
+            return 409, {"error": xfer_why(held), "held": True}
         if kind == "send" and EMBEDDED and bridge_busy_key(frm):
             return 409, {"error": "This account is moving coins to your name account. Send from it once that is in a block (a minute or so)."}
         r = xfer_new(frm, to, amount, kind, bridge_id)
-        r["slot_from"] = st["slot"]
+        r.update(slot_from=st["slot"], notes_before=sorted(notes), forced=list(targets))
         xfer_loaded_now[r["id"]] = True
         xfers[r["id"]] = r
         if not xfer_save():
@@ -3744,9 +3886,7 @@ def transfer(frm, to, amount, kind, entry_fields, bridge_id=None):
         r["entry"] = e["id"]
         xfer_save()
     code, reply = node("/wallet/fund", {
-        "tip": None, "tx_builder": {"mantle_tx": {"ops": []}, "ledger_inputs": [],
-                                    "pending_transfer": {"inputs": [], "outputs": [{"value": amount, "pk": to}]},
-                                    "channel_multi_sig_proofs": {}},
+        "tip": None, "tx_builder": xfer_builder(frm, to, amount, targets, notes),
         "change_public_key": frm, "funding_public_keys": [frm], "max_tx_fee": XFER_MAX_FEE, "priority_fee_percent": 0},
         timeout=60)
     got = xfer_checked(reply, frm, to, amount, notes) if code == 200 and isinstance(reply, dict) else None
@@ -3774,7 +3914,11 @@ def transfer(frm, to, amount, kind, entry_fields, bridge_id=None):
         return why[0], {"error": why[1]}
     signed, h, ins, change, fee, in_values = got
     with xfer_lock:
-        r.update(state="funded", signed=signed, hash=h, inputs=ins, change=change, fee=fee, in_values=in_values)
+        # the transfers of ours whose change it spends: if one of them can never land, neither can this one (M3)
+        deps = sorted({p["id"] for i in ins for p in xfers.values() if p is not r and p["key"] == frm and p["state"] in
+                       ("funded", "submitted") and p.get("notes_before") is not None and i not in p["notes_before"]
+                       and in_values.get(i) in (p.get("change") or [])})
+        r.update(state="funded", signed=signed, hash=h, inputs=ins, change=change, fee=fee, in_values=in_values, deps=deps)
         saved = xfer_save()
         if not saved:
             r.update(state="ended", result="not sent", signed=None)
@@ -3791,6 +3935,9 @@ def transfer(frm, to, amount, kind, entry_fields, bridge_id=None):
     with lock:
         sent[h] = {"from": frm, "to": to, "amount": amount, "at": time.time(), "xfer": r["id"]}
     out = {"hash": h, "fee": str(fee)}
+    if targets:
+        out["replaces"] = ("It uses coins of an earlier transfer from this account that isn't settled, so at most one of "
+                           "the two goes through: if this one does, the earlier one doesn't (Activity shows which).")
     if not (200 <= code < 300):
         out["note"] = ("The node didn't confirm it took the transfer. The app offers it again, the same transfer, until "
                        "it is in a block (for up to %d minutes)." % round(XFER_CAP / 60))
@@ -3821,14 +3968,19 @@ def xfer_round_caps():
             xfer_entry_drop(r)
 
 
+XFER_RESUBMIT_SLOW = float(os.environ.get("XFER_RESUBMIT_SLOW_SECONDS", "3600"))
+
+
 def xfer_due(r):
-    """Whether the record's saved transfer is due to be submitted (again): within its cap, waiting, after 1, 2, 4...
-    minutes; right away after a crash between saving and submitting."""
-    if r["capped"] or r.get("seen") or r["state"] not in ("funded", "submitted"):
+    """Whether the record's saved transfer is due to be submitted (again), while it is waiting (not seen in a block):
+    after 1, 2, 4, 8, 16 minutes, then once an hour for as long as it lives (so it can still land, or another transfer
+    settles it, rather than leaving every pool unnoticed); right away after a crash between saving and submitting."""
+    if r.get("seen") or r["state"] not in ("funded", "submitted") or not r.get("signed"):
         return False
     if r["state"] == "funded":
         return True
-    return xfer_age(r["last_submit"] or r["t0"]) >= XFER_RESUBMIT * 2 ** max(0, r.get("submits", 1) - 1)
+    wait = XFER_RESUBMIT_SLOW if r["capped"] else XFER_RESUBMIT * 2 ** max(0, r.get("submits", 1) - 1)
+    return xfer_age(r["last_submit"] or r["t0"]) >= min(wait, XFER_RESUBMIT_SLOW)
 
 
 def xfer_round():
@@ -3848,16 +4000,26 @@ def xfer_round():
             st = node_status()
             if st and isinstance(st.get("slot"), int):
                 with xfer_lock:
-                    r.update(inputs=sorted(have), slot_from=st["slot"])
+                    r.update(inputs=sorted(have), slot_from=min([st["slot"]] + [v for v in [r.get("slot_from")] if isinstance(v, int)]))
                     xfer_save()
         gone = have is not None and any(i not in have for i in r.get("inputs") or [])
-        due_scan = r.get("seen") or gone or ((r["capped"] or r["state"] == "lost") and r.get("inputs")
-                                             and xfer_age(r.get("last_scan") or r["t0"]) >= XFER_RESCAN)
+        since = xfer_age(r["last_scan"]) if r.get("last_scan") else None
+        due_scan = r.get("inputs") and (since is None and (gone or r.get("seen"))
+                                        or (gone or r.get("seen")) and since >= XFER_RESCAN_FAST
+                                        or (r["capped"] or r["state"] == "lost") and (since is None or since >= XFER_RESCAN))
         if due_scan:
             scan = xfer_scan(r)
             with xfer_lock:
                 r["last_scan"] = xfer_stamp()
                 what = xfer_settle(r, scan)
+                if not what and r["state"] in ("funded", "submitted") and not r.get("seen") and scan["complete"] \
+                        and have is not None and not scan["ours"] and not scan["others"] \
+                        and any(i not in have for i in r["inputs"]) \
+                        and any(xfers.get(d, {}).get("state") == "dead" for d in r.get("deps") or []):
+                    # funded from the change of one of ours that can never land: its notes never come to exist
+                    r.update(state="dead", result="the transfer whose change it spends can never land")
+                    xfer_sync_entry(r)
+                    what = "dead"
                 xfer_save()
             if what in ("dead",) and r.get("kind") == "split":
                 bridge_xfer_settled(r)
@@ -4048,7 +4210,7 @@ def history_round():
                         and e.get("status") == "pending" and e.get("note") in removed), None)
             if dep:                          # the bridge deposit spent its note: in a block (its note is its identity)
                 fee = sum(removed.values()) - sum(added.values()) - int(dep["amount"])
-                dep.update(status="in block", fee=str(fee) if 0 <= fee <= BRIDGE_MAX_FEE else None, landed_height=height,
+                dep.update(status="confirming", fee=str(fee) if 0 <= fee <= BRIDGE_MAX_FEE else None, landed_height=height,
                            landed=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
                 if 0 <= fee <= BRIDGE_MAX_FEE:
                     removed, added = {}, {}
@@ -4063,6 +4225,43 @@ def history_round():
                     history_add("received", key=key, label=label, amount=str(v), note=i, height=height)
             history["snapshot"][key] = new
         if changed:
+            history_save()
+
+
+DEPOSIT_RESCAN = float(os.environ.get("DEPOSIT_RESCAN_SECONDS", "120"))
+
+
+def deposit_round():
+    """Bridge deposits follow the same rule as transfers: "in block" only once the chain shows the deposit (by its
+    hash, or, with no hash, its note spent and the name account credited) at or below the LIB; "not in a block" only
+    when its note went to another transaction, final. Read every 2 minutes at most, from a checkpoint."""
+    with hist_lock:
+        deps = [dict(e) for e in history["entries"] if e.get("kind") == "sent" and e.get("bridge") == "deposit"
+                and e.get("status") in ("confirming", SEND_UNKNOWN, "pending") and e.get("note")
+                and isinstance(e.get("slot_from"), int) and time.time() - e.get("scanned_at", 0) >= DEPOSIT_RESCAN]
+    if not deps:
+        return
+    with bridge_lock:
+        b = bridge_load() or {}
+    for e in deps:
+        sc = xfer_scan({"inputs": [e["note"]], "slot_from": e["slot_from"], "hash": e.get("hash"), "ckpt": e.get("ckpt")})
+        new = None
+        spent = sc["others"].get(e["note"])
+        if sc["ours"] and sc["ours"][1]:
+            new = "in block"
+        elif spent and spent[1]:
+            if e.get("hash"):
+                new = "not in a block"        # its note went to a transaction other than the deposit: final
+            elif b.get("id") == e.get("bridge_id") and b.get("state") == "arrived":
+                new = "in block"              # no hash: its note spent, final, and the name account credited
+        with hist_lock:
+            for x in history["entries"]:
+                if x.get("id") == e["id"] and x.get("kind") == "sent":
+                    x["scanned_at"] = time.time()
+                    if sc.get("ckpt"):
+                        x["ckpt"] = sc["ckpt"]
+                    if new:
+                        x["status"] = new
             history_save()
 
 
@@ -4097,6 +4296,10 @@ def history_loop():
             pass
         try:
             history_round()                    # then what came in and went out, with their notes set apart
+        except Exception:
+            pass
+        try:
+            deposit_round()                    # bridge deposits: final only at the LIB, as transfers
         except Exception:
             pass
         time.sleep(HISTORY_POLL)

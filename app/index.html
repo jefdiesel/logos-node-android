@@ -1417,7 +1417,7 @@ $("b-go").addEventListener("click", async () => {
     return void (m.textContent = r.data.error);
   }
   if (!r.ok) return void (m.textContent = r.data.error || "The transfer failed.");
-  const hash = r.data.hash; $("s-hash").textContent = hash; $("s-state").textContent = "Confirming…"; $("s-fee").textContent = "-";
+  const hash = r.data.hash; $("s-hash").textContent = hash; $("s-state").textContent = "Waiting for a block"; $("s-fee").textContent = "-";
   $("s-note").textContent = r.data.note || ""; $("s-note").hidden = !r.data.note;
   $("v-review").hidden = true; $("v-sent").hidden = false; $("to").value = ""; $("amount").value = "";
   clearInterval(txTimer);
@@ -1427,6 +1427,7 @@ $("b-go").addEventListener("click", async () => {
     else if (s.ok && s.data.state === "in_block") { $("s-state").textContent = "In a block, confirming"; $("s-fee").textContent = amt(s.data.fee); $("s-note").hidden = true; }
     else if (s.ok && s.data.state === "not_in_block") { clearInterval(txTimer); $("s-state").textContent = "Not in a block: nothing was sent"; loadAccounts(); loadHistory(); }
     else if (s.ok && s.data.state === "unknown") { $("s-state").textContent = "Can't tell yet (see Activity)"; }
+    else if (s.ok && s.data.state === "waiting") { $("s-state").textContent = "Waiting for a block"; }   // also after a fork took its block away
   }, 5000);
 });
 $("b-again").addEventListener("click", () => { resetSend(); loadAccounts(); loadHistory(); });
@@ -1444,7 +1445,7 @@ const span = (t, cls) => Object.assign(document.createElement("span"), { textCon
 // in a block but not final yet (a fork could still take it away), not in a block only when a note it spends went
 // to another transaction, final; "can't tell yet" when it has waited 30 minutes and the chain hasn't settled it
 function sentState(e) {
-  return e.status === "pending" ? "Confirming…" : e.status === "in block" ? (e.fee != null ? "fee " + amtH(e.fee) : "in a block")
+  return e.status === "pending" ? "waiting for a block" : e.status === "in block" ? (e.fee != null ? "fee " + amtH(e.fee) : "in a block")
     : e.status === "confirming" ? "in a block, confirming" : e.status === "unknown" ? "can't tell yet" : "not in a block";
 }
 function histRow(e) {

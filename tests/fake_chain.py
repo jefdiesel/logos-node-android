@@ -62,6 +62,7 @@ class Chain:
         self.serial = 0
         self.online = True
         self.outside_spends = 0
+        self.forced_funds = 0
         self.outside_spent = set()            # notes others spent (a fork may give them back)
         self.credits = []                    # (key, value) of every payment to the wallet, and again when a fork
                                              # took it out and gives it back, or gives back a note spent elsewhere
@@ -137,7 +138,8 @@ class Chain:
             if not take_all and self.rng.random() < 0.3:
                 keep.append((h, tx, at))
                 continue
-            if all(i in self.notes and i not in spent for i in tx["inputs"]) and h not in self.landed:
+            if len(set(tx["inputs"])) == len(tx["inputs"]) and all(i in self.notes and i not in spent for i in tx["inputs"]) \
+                    and h not in self.landed:
                 spent.update(tx["inputs"])
                 txs.append((h, tx))
             elif not all(i in self.notes for i in tx["inputs"]) or h in self.landed:
@@ -224,23 +226,33 @@ class Chain:
         return 404, {"code": 404}
 
     def fund(self, body):
+        """As the node: inputs given in the request are taken as they are (their values as given; the node doesn't
+        look them up, and with an op_id it can't match, it doesn't know them for its own: it may add one again); then
+        the largest notes it doesn't keep apart, until the amount and the fee are covered."""
         key = body["funding_public_keys"][0]
-        out = body["tx_builder"]["pending_transfer"]["outputs"]
+        tb = body["tx_builder"]
+        out = tb["pending_transfer"]["outputs"]
         amount = sum(int(o["value"]) for o in out)
-        free = sorted(((v, i) for i, (k, v) in self.notes.items() if k == key and i not in self.reserved), reverse=True)
-        picked, total = [], 0
-        for v, i in free:
-            picked.append(i)
-            total += v
-            fee = 866 + 120 * len(picked) + self.rng.randrange(0, 600)
-            if total >= amount + fee:
-                break
-        else:
-            return 500, {"code": 500, "message": "Wallet does not have enough funds, available=%d" % sum(v for v, _ in free)}
+        given = list(tb["pending_transfer"].get("inputs") or [])
+        picked, total = list(given), sum(int(u["note"]["value"]) for u in tb.get("ledger_inputs") or [])
+        fee = 866 + 120 * len(picked) + self.rng.randrange(0, 600)
+        mine = []
+        if total < amount + fee:
+            free = sorted(((v, i) for i, (k, v) in self.notes.items() if k == key and i not in self.reserved), reverse=True)
+            for v, i in free:
+                picked.append(i)
+                mine.append(i)
+                total += v
+                fee = 866 + 120 * len(picked) + self.rng.randrange(0, 600)
+                if total >= amount + fee:
+                    break
+            else:
+                return 500, {"code": 500, "message": "Wallet does not have enough funds, available=%d" % sum(v for v, _ in free)}
+        self.forced_funds += 1 if given else 0
         change = total - amount - fee
         outputs = [dict(o) for o in out] + ([{"value": change, "pk": body["change_public_key"]}] if change > 0 else [])
         tx = {"ops": [{"opcode": 0, "payload": {"inputs": picked, "outputs": outputs}}]}
-        for i in picked:
+        for i in mine:                       # only the ones it picked itself (given ones it doesn't know by their id)
             self.reserved[i] = len(self.blocks)
         h = tx_hash(tx)
         self.funded[h] = {"inputs": picked, "outputs": outputs}
@@ -277,11 +289,19 @@ class Chain:
                 return all(i in self.notes for i in tx["inputs"])
         return False
 
-    def dead(self, h):
-        """Whether `h` can never land: one of its notes is spent by another transaction in a final block."""
+    def dead(self, h, _seen=None):
+        """Whether `h` can never land: one of its notes is spent by another transaction in a final block, or is an
+        output of a transfer that can never land (so it never comes to exist)."""
         tx = self.funded.get(h)
         if not tx or h in self.landed:
             return False
+        seen = _seen or set()
+        if h in seen:
+            return False
+        seen.add(h)
         i = self.lib_index()
         spent = {n for b in self.blocks[:i + 1] for x, t in b["txs"] if x != h for n in t["inputs"]} if i >= 0 else set()
-        return bool(set(tx["inputs"]) & spent)
+        if set(tx["inputs"]) & spent:
+            return True
+        made_by = {nid(x, n): x for x, t in self.funded.items() for n in range(len(t["outputs"]))}
+        return any(i in made_by and self.dead(made_by[i], seen) for i in tx["inputs"])

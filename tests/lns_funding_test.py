@@ -35,6 +35,7 @@ class Node:
     deposit_mode = "ok"           # ok | refuse | hang
     funded = {}                   # hash -> (key, inputs, outputs): transfers /wallet/fund built (none submitted)
     blocks = []                   # [{"slot", "txs": [hash]}]
+    tx_inputs = {}                # hash -> the notes it spends
     slot = 900
     channel_known = True
     lock = threading.Lock()
@@ -45,6 +46,7 @@ def node_include():
     with Node.lock:
         Node.slot += 1
         Node.blocks.append({"slot": Node.slot, "txs": [b.get("hash") for k, b, i, o in Node.pending if b.get("hash")]})
+        Node.tx_inputs.update({b["hash"]: list(i) for k, b, i, o in Node.pending if b.get("hash")})
         for kind, body, inputs, outputs in Node.pending:
             key = body.get("change_public_key")
             for i in inputs:
@@ -83,7 +85,8 @@ class NodeH(http.server.BaseHTTPRequestHandler):
         if self.path.startswith("/cryptarchia/blocks_range"):
             lo = int(self.path.split("slot_from=")[1].split("&")[0])
             lines = "".join(json.dumps({"block": {"header": {"slot": b["slot"], "id": "%064x" % (n + 1), "parent_block": "%064x" % n}, "transactions": [
-                {"mantle_tx": {"hash": h, "ops": []}, "ops_proofs": []} for h in b["txs"]]}, "lib_slot": Node.blocks[-1]["slot"]}) + "\n" for n, b in enumerate(Node.blocks) if b["slot"] >= lo)
+                {"mantle_tx": {"hash": h, "ops": [{"opcode": 0, "payload": {"inputs": Node.tx_inputs.get(h, []), "outputs": []}}]},
+                 "ops_proofs": []} for h in b["txs"]]}, "lib_slot": Node.blocks[-1]["slot"]}) + "\n" for n, b in enumerate(Node.blocks) if b["slot"] >= lo)
             raw = lines.encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/x-ndjson")
@@ -153,7 +156,7 @@ class NodeH(http.server.BaseHTTPRequestHandler):
                 if any(i not in Node.notes[key] for i in dep):
                     return self.out(500, "note not found")
                 fee_in, change = spend(key, 0, 2054, exclude=dep)
-                Node.pending.append(("deposit", body, dep + fee_in, [(key, change)] if change else []))
+                Node.pending.append(("deposit", dict(body, hash="22" * 32), dep + fee_in, [(key, change)] if change else []))
                 return self.out(200, {"hash": "22" * 32})
         return self.out(404, {"code": 404})
 
@@ -247,7 +250,7 @@ os.environ.update(APP_EMBEDDED="android", APP_PORT="8097", APP_DATA=data, NODE_B
                   NODE_CFG=os.path.join(nodecfg, "user_config.yaml"), UPDATE_URL="", NODE_RESTART_CMD="",
                   NODE_API="http://127.0.0.1:%d" % node_srv.server_address[1], NAMES_BIN=os.path.join(bins, "libnames.so"),
                   NAMES_RPC_URL=seq_url, LNS_FAUCET_URL=seq_url + "faucet", BRIDGE_POLL="0.2", BRIDGE_GIVE_UP="3", BRIDGE_SLOW="0", BRIDGE_SPLIT_WAIT="2",
-                  HISTORY_POLL="1")
+                  HISTORY_POLL="1", DEPOSIT_RESCAN_SECONDS="1")
 sys.path.insert(0, os.path.join(HERE, "..", "app"))
 import server  # noqa: E402
 

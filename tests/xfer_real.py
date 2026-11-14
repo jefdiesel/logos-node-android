@@ -291,10 +291,12 @@ big = max(notes.items(), key=lambda kv: kv[1]) if notes else None
 g = fund(k, to["key"], 1000, tries=30)          # the node keeps the largest note apart for this unsubmitted one
 held = g["funded_tx"]["ops"][0]["payload"]["inputs"] if g else []
 print("     unsubmitted fund kept apart:", held, "largest:", big)
-code, f = forced(k, to["key"], 2000, big[0], big[1], op_id=[0] * 32, tries=1) if big else (0, None)
+vals = balance(k).get("notes") or {}
+kept = next((i for i in held if i in vals), None)   # the note the node now keeps apart for that unsubmitted fund
+code, f = forced(k, to["key"], 2000, kept, vals[kept], op_id=[0] * 32, tries=1) if kept else (0, None)
 print("     forced input the node keeps apart:", code, json.dumps(f)[:400])
 fins = f["funded_tx"]["ops"][0]["payload"]["inputs"] if code == 200 else []
-check("a forced input the node keeps apart for an unsubmitted fund: funded all the same", fins == [big[0]] if big else False, (code, f))
+check("a forced input the node keeps apart for an unsubmitted fund: funded all the same", kept and fins == [kept], (code, f, held))
 if code == 200:
     node("POST", "/mempool/add/tx", {"mantle_tx": f["funded_tx"], "ops_proofs": [f["transfer_proof"]]})
     check("  and it lands", node_hash_of(fins) == server.xfer_hash(f["funded_tx"]))
