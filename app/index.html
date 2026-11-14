@@ -1525,10 +1525,6 @@ $("b-go").addEventListener("click", async () => {
   b.textContent = "Sending…";
   const r = await api("/api/wallet/send", pending); b.disabled = false; b.textContent = "Send now";
   if (r.status === 401) return lockedNow();
-  if (!r.ok && r.data.unsure) {        // no answer: it may have gone through, so no second click on the same review
-    b.disabled = true; loadAccounts(); loadHistory();
-    return void (m.textContent = r.data.error);
-  }
   if (!r.ok) return void (m.textContent = r.data.error || "The transfer failed.");
   const hash = r.data.hash; $("s-hash").textContent = hash; $("s-state").textContent = "Waiting for a block"; $("s-fee").textContent = "-";
   $("v-review").hidden = true; $("v-sent").hidden = false; $("to").value = ""; $("amount").value = "";

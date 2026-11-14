@@ -8,9 +8,12 @@ Against tests/fake_chain.py (the node's wallet, pool and chain as the real node 
 Part 1: the encoder against the node's own vectors and a hash the real node gave. Part 2: fixed cases: a send and
 its hold; a lost answer; a crash at each step (the identical transfer resubmitted lands once); a depth-1 fork (back to
 waiting, then it lands); the same fund twice (one transfer); the "not found in a block" exit; a bridge waiting behind
-the hold, then going on by itself; a records file that doesn't read. Part 3: random runs with forks up to 2 blocks,
-checking after every step that (a) no payment lands twice, (b) nothing reads "confirmed" unless 2 blocks deep, (c)
-nothing reads "not in a block" or "nothing was sent", (d) every hold ends within the depth plus the exit time.
+the hold, then going on by itself; a records file that doesn't read; the phone's node kept from the network past the
+exit time (never "not found" against an old tip); a "not found" one that lands after all; a bridge whose split was
+cut short, made by an older version, or funded as a transfer already held. Part 3: random runs with forks up to 2
+blocks and the node now and then kept from the network, checking after every step that (a) no payment lands twice,
+(b) nothing reads "confirmed" unless 2 blocks deep, (c) nothing reads "not in a block" or "nothing was sent", (d)
+every hold ends within the depth plus the exit time (counted while the node sees the network).
 """
 import json, os, random, shutil, sys, tempfile, time as _time, types
 
@@ -79,6 +82,7 @@ def world(seed=0, a=(600000, 400000, 250000), b=(300000,)):
 
 
 def restart():
+    server.bridge_split_busy.clear()
     server.xfers.clear()
     server.xfer_loaded[0] = False
     server.xfer_loaded_now.clear()
@@ -244,6 +248,98 @@ check("a records file that doesn't read: set aside, never overwritten", aside an
 check("  Activity shows one plain warning", "check with the recipient" in server.history_page(None, 10).get("warning", ""))
 check("  and the wallet carries on", send(A, BOB, 1000)[0] == 200)
 
+# the phone's node kept from the network overnight: it says "Online" at its old tip; the transfer lands meanwhile
+world()
+h = send(A, BOB, 100000)[1]["hash"]
+chain.freeze()
+blocks(D + 3)                                  # it lands on the network; the phone's node doesn't see those blocks
+advance(server.XFER_GIVE_UP + 3600)
+check("the node kept from the network past the exit time (Online, old tip): still waiting, never 'not found'",
+      h in chain.landed and entry(h)["status"] == "pending" and rec(h)["state"] == "submitted", (entry(h), rec(h)["state"]))
+code, d = send(A, BOB, 100000)
+check("  the same payment again is refused meanwhile: nothing is paid twice", code == 409 and len(chain.funded) == 1, (code, d))
+chain.thaw()
+advance(server.XFER_RESCAN + 1)
+check("  the node catches up: confirmed", entry(h)["status"] == "in block", entry(h))
+
+# a "not found" one that lands after all (another node had it): read again hourly, it turns confirmed
+world()
+chain.fail["/mempool/add/tx"] = ["unreached"] * 10 ** 6
+h = send(A, BOB, 100000)[1]["hash"]
+for _ in range(3):
+    chain.block()
+advance(server.XFER_GIVE_UP + server.XFER_RESUBMIT_FOR)
+check("never reaching a pool, the node caught up: 'not found in a block'", entry(h)["status"] == "not found", entry(h))
+chain.pool.append((h, chain.funded[h], chain.now))
+blocks(D + 1)
+advance(server.XFER_RECHECK + 60)
+check("  it lands after all: read again within the hour, confirmed", entry(h)["status"] == "in block"
+      and server.tx_status(h)[1]["confirmed"], entry(h))
+advance(server.XFER_KEEP + 3600)
+send(A, CAROL, 1000)                            # (the file is pruned whenever it is written)
+check("  records that are over are dropped after %d days" % (server.XFER_KEEP // 86400), rec(h) is None
+      and not [r for r in server.xfers.values() if r["state"] == "ended"])
+
+
+def bridge_start():
+    try:
+        return server.lns_bridge({"from": A, "amount": "150000", "confirm": True})
+    except fake_chain.Crash:
+        return "crash", None
+
+
+for when in ("before", "after"):
+    world()
+    server.bridge_check = lambda frm, amount: (None, dict(plan, notes_before=sorted(server.notes_of(A))))
+    chain.crash["/wallet/fund"] = [when]
+    check("the app stops %s the node funds a bridge's split" % when, bridge_start()[0] == "crash")
+    restart()
+    server.bridge_round()
+    b = server.bridge_load()
+    check("  after the restart the bridge ends plainly (nothing set aside), never stuck", b["state"] == "failed"
+          and b["error"] == server.BRIDGE_SPLIT_GONE, b)
+    check("  and the account sends again", send(A, BOB, 1000)[0] == 200)
+
+world()
+with server.bridge_lock:                         # a bridge mid-split left by the previous version (no transfer record)
+    server.bridge_save({"id": "1", "state": "splitting", "from": A, "label": "Main", "to": "acct", "amount": "150000",
+                        "channel": "cc" * 32, "note": None, "split": True, "notes_before": [], "created": clock.wall,
+                        "fee": None, "split_fee": None, "error": "", "wait": "", "lez": {}})
+server.bridge_round()
+check("a bridge mid-split from the previous version: ends plainly, the account free", server.bridge_load()["state"] == "failed"
+      and send(A, BOB, 1000)[0] == 200, server.bridge_load())
+
+world()
+server.bridge_check = lambda frm, amount: (None, dict(plan, notes_before=sorted(server.notes_of(A))))
+chain.fail["/mempool/add/tx"] = ["unreached"] * 10 ** 6
+bridge_start()
+first = server.bridge_load()["split_hash"]
+for _ in range(12):
+    chain.block()
+advance(server.XFER_GIVE_UP + server.XFER_RESUBMIT_FOR)
+server.bridge_round()
+check("a split never found in a block: the bridge ends", server.bridge_load()["state"] == "failed", server.bridge_load())
+chain.fail["/mempool/add/tx"] = []
+code, d = bridge_start()
+check("  a new bridge of the same amount: the node funds the same split again, taken up again", code == 200
+      and server.bridge_load()["split_hash"] == first and rec(first)["state"] == "submitted", (code, d, server.bridge_load()))
+blocks(D + 1)
+server.bridge_round()
+blocks(1)
+server.bridge_round()
+check("  the bridge follows that split and goes on once it is confirmed", server.bridge_load()["state"] in ("ready", "depositing", "sent")
+      or server.bridge_load().get("error") != server.BRIDGE_SPLIT_GONE and server.bridge_load()["state"] != "splitting", server.bridge_load())
+
+world()
+server.bridge_check = lambda frm, amount: (None, dict(plan, notes_before=sorted(server.notes_of(A))))
+chain.fail["/mempool/add/tx"] = ["unreached"] * 10 ** 6
+send(A, BOB, 100000)
+bridge_start()
+advance(server.BRIDGE_READY_MAX + 60)
+server.bridge_round()
+check("a bridge queued longer than %d minutes doesn't start by itself: stopped, to be confirmed again"
+      % (server.BRIDGE_READY_MAX // 60), server.bridge_load()["state"] == "cancelled", server.bridge_load())
+
 # ---- part 3: random runs, forks up to 2 blocks --------------------------------------------------------------------------
 RUNS = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.environ.get("XFER_RUNS", "300"))
 QUIET[0] = True
@@ -256,7 +352,7 @@ def run(seed):
     rnd = random.Random(seed)
     world(seed=seed, a=tuple(rnd.choice((120000, 300000, 800000)) for _ in range(rnd.randint(1, 4))),
           b=tuple(rnd.choice((60000, 400000)) for _ in range(rnd.randint(1, 2))))
-    born, born_blocks, deep_since, last_in, gone = {}, {}, {}, {}, set()
+    born, born_blocks, deep_since, last_in, gone, thawed = {}, {}, {}, {}, set(), [0.0]
     for step in range(rnd.randint(40, 80)):
         x = rnd.random()
         try:
@@ -284,6 +380,12 @@ def run(seed):
                 chain.crash[rnd.choice(("/wallet/fund", "/mempool/add/tx"))] = [rnd.choice(("before", "after"))]
             elif x < 0.9:
                 chain.fail["/mempool/add/tx"] = [rnd.choice(("lost", "unreached", "500"))] * rnd.choice((1, 3, 200))
+            elif x < 0.93:                       # the phone's node loses the network, or gets it back
+                if chain.view is None:
+                    chain.freeze()
+                else:
+                    chain.thaw()
+                    thawed[0] = chain.now
             else:
                 chain.fail.clear()
         except fake_chain.Crash:
@@ -304,13 +406,15 @@ def run(seed):
             # (d) a hold ends once its hash is D deep (within two reads of the chain), or by the exit time when it
             # isn't in the chain (the time counts while the chain goes on)
             if r["state"] in server.WAITING and h:
-                idx = next((i for i, bl in enumerate(chain.blocks) for x2, _ in bl["txs"] if x2 == h), None)
+                seen = chain.seen_blocks()       # what the phone's node can tell it
+                idx = next((i for i, bl in enumerate(seen) for x2, _ in bl["txs"] if x2 == h), None)
                 if idx is not None:
                     last_in[r["id"]] = chain.now
-                deep = idx is not None and len(chain.blocks) - 1 - idx >= D
+                deep = idx is not None and len(seen) - 1 - idx >= D
                 since = deep_since.setdefault(r["id"], chain.now) if deep else deep_since.pop(r["id"], None)
-                if (deep and chain.now - since > 2 * server.XFER_RESCAN + 30) or (idx is None and len(chain.blocks) > born_blocks[r["id"]]
-                        and chain.now - max(born[r["id"]][0], last_in.get(r["id"], 0)) > server.XFER_RESUBMIT_FOR + server.XFER_GIVE_UP + 3600):
+                if (deep and chain.now - since > 2 * server.XFER_RESCAN + 30) or (idx is None and chain.view is None
+                        and len(chain.blocks) > born_blocks[r["id"]] and chain.now - max(born[r["id"]][0], last_in.get(r["id"], 0), thawed[0])
+                        > server.XFER_RESUBMIT_FOR + server.XFER_GIVE_UP + 3600):
                     bad["held-too-long"] += 1
                     first.setdefault("held-too-long", (seed, step, r["state"], r.get("seen")))
         for e in server.history["entries"]:

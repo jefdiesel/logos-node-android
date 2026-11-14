@@ -15,6 +15,9 @@ CI probes (android/LOCAL-APIS.md, "Transfers") and what its source says.
   - /cryptarchia/blocks_range is one JSON object per line, ascending from slot_from (400 above the tip), at most
     blocks_limit, with header id, parent_block and slot, the transactions' hashes and ops, and lib_slot.
   - Fees are fixed and realistic: 1,000 plus 200 per input (so the same notes give the same transfer).
+  - The phone's node can be kept from the network: freeze() holds its view (info, blocks_range) at the blocks it has
+    while the network goes on; it still says "Online" (as a node just restarted does), and /time/info's current slot
+    runs on with the time since. thaw() gives it the network's chain again.
 Faults: `fail[path]` is a list of what the next calls to that path do: "lost" (the node does it, the answer is lost:
 status 0), "unreached" (nothing done, status 0), "500", "408". `crash[path]` raises Crash before ("before") or after
 ("after") the node acts, to stand for the app dying there.
@@ -69,6 +72,7 @@ class Chain:
         self.world_reorged = 0               # others' transactions a fork took out (they don't come back)
         self.lib = -1                        # index of the last irreversible block: it never moves back
         self.max_fork, self.high = None, 0   # a bound on how deep forks go (None: up to the LIB)
+        self.view, self.frozen_at = None, None   # blocks the phone's node sees while frozen (None: all of them)
         self.notes = {}
         self._replay()
 
@@ -106,6 +110,15 @@ class Chain:
         self.blocks.append({"id": nid("block", self.serial, self.slot), "parent": parent, "slot": self.slot, "txs": txs})
         self.lib = max(self.lib, len(self.blocks) - 1 - self.k)
         self._replay()
+
+    def freeze(self):
+        self.view, self.frozen_at = len(self.blocks), self.now
+
+    def thaw(self):
+        self.view, self.frozen_at = None, None
+
+    def seen_blocks(self):
+        return self.blocks if self.view is None else self.blocks[:min(self.view, len(self.blocks))]
 
     # ---- the world --------------------------------------------------------------------------------------------
     def credit(self, key, value):
@@ -208,9 +221,15 @@ class Chain:
 
     def answer(self, path, body):
         if path == "/cryptarchia/info":
-            tip = self.blocks[-1]["slot"] if self.blocks else 0
-            return 200, {"cryptarchia_info": {"height": len(self.blocks), "slot": tip,
+            bs = self.seen_blocks()
+            tip = bs[-1]["slot"] if bs else 0
+            return 200, {"cryptarchia_info": {"height": len(bs), "slot": tip, "lib_slot": min(self.lib_slot(), tip),
                                               "state": "Online" if self.online else "Bootstrapping"}}
+        if path == "/time/info":
+            bs = self.seen_blocks()
+            tip = bs[-1]["slot"] if bs else 0
+            return 200, {"current_slot": tip + (int(self.now - self.frozen_at) if self.view is not None else 0),
+                         "slot_duration_ms": 1000}
         if path == "/network/info":
             return 200, {"connected_peers": ["p"]}
         if path.startswith("/wallet/") and path.endswith("/balance"):
@@ -270,15 +289,16 @@ class Chain:
             return 404, None
         q = dict(x.split("=") for x in path.split("?", 1)[1].split("&"))
         lo, limit = int(q.get("slot_from", 0)), int(q.get("blocks_limit", 100))
-        tip = self.blocks[-1]["slot"] if self.blocks else 0
+        seen = self.seen_blocks()
+        tip = seen[-1]["slot"] if seen else 0
         if lo > tip:
             return 400, b'{"code":400,"message":"SlotFromAboveSlotTo"}'
-        bs = [b for b in self.blocks if b["slot"] >= lo][:limit]
-        lib = self.lib_slot()
+        bs = [b for b in seen if b["slot"] >= lo][:limit]
+        lib = min(self.lib_slot(), tip)
         lines = [json.dumps({"block": {"header": {"id": b["id"], "parent_block": b["parent"], "slot": b["slot"]},
                                        "transactions": [{"mantle_tx": {"hash": h, "ops": [{"opcode": 0, "payload": tx}]}, "ops_proofs": []}
                                                         for h, tx in b["txs"]]},
-                             "tip": self.blocks[-1]["id"], "tip_slot": tip, "lib": "00" * 32, "lib_slot": lib}) for b in bs]
+                             "tip": seen[-1]["id"], "tip_slot": tip, "lib": "00" * 32, "lib_slot": lib}) for b in bs]
         return 200, ("\n".join(lines) + ("\n" if lines else "")).encode()
 
     # ---- what really happened -----------------------------------------------------------------------------------

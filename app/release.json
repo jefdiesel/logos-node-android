@@ -1,6 +1,6 @@
 {
  "files": {
-  "index.html": "22dd752b237ff61ecfd0855e0756b30dbf9e272ba7e63e6daf455ecc01797d2e",
+  "index.html": "ce31ffe9ddcee6a4dc7dfceeec5b5db932ecb6ffae2bb77e753d91e1d144dde8",
   "lez04.json": "16fcdad838d7a90725a2937fd37a31479184b5b59c3806e927e93cd1f5fe259c",
   "lez04.py": "7fe6cf900750e1413ab4650dd6cbac3cde58d20e82ccf0af8bc2d64cfd666e62",
   "lns/lns.js": "93686db76760e8b8530153efdaa87a0a427d2643674b25c09937b2320a3942f7",
@@ -47,7 +47,7 @@
   "noble-curves/utils.js": "ba29ee6d5c0129f0913e0cb11e1c84d09b7e1dd73c55e158cd49b5987bb62a65",
   "qr/VENDORED.txt": "1d4fc608d725afe81619262b9fb4323fe2d77318579396d9429f3a6f04b873ad",
   "qr/qrcode.js": "ea91d7118a5395289170da848b7c6758b996163bfbccf312591ab65a4911b7c0",
-  "server.py": "271d4c9ff8dd0e1b401218903c4b694fdc643f48b14b3d037af9b3d5d86ef74b"
+  "server.py": "68d8f0a856ed31b58e3ab7337c56460694187c61fd342ee5f18646f40edce031"
  },
- "version": "0.9.27"
+ "version": "0.9.28"
 }

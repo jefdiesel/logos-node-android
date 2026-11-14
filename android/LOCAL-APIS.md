@@ -388,25 +388,40 @@ A transfer from a wallet key (a send, or setting an amount aside for a bridge) i
 `POST /wallet/fund` builds, funds and signs it and submits nothing; the app checks it is the transfer asked for,
 computes its hash (blake2b of `MANTLE_TXHASH_V1` and the ops' encoding, checked against the node's vectors and its own
 hashes in CI) and saves the whole signed transfer, fsync'd, before `POST /mempool/add/tx` submits it. The node's answer
-to that proves nothing (200 with an empty body), so every retry submits the same saved transfer (after 1, 2, 4, 8 and
-16 minutes); if a fund ever gives a hash the app already holds, it is that transfer again, not a second one.
+to that proves nothing (200 with an empty body), so every retry submits the same saved transfer (after 1, 2, 4 and 8
+minutes: five submits in its first 30 minutes); if a fund ever gives a hash the app already holds (with its signed
+transfer), it is that transfer again, not a second one.
 
 One unsettled transfer per account: until its hash is in a block with 2 blocks on top, no other send or bridge split
 from that account starts (a bridge waits and then goes on by itself; its deposit waits for the split to be
 confirmed). The page shows "in a block" at first sight, "confirmed" at 2 deep ("final" once at the node's last
-irreversible block); a block that disappears before that puts it back to "waiting for a block". The one exit for a
-transfer that never lands: the chain read from where it was funded has no such hash, and 9.5 hours have passed since
-its last submit or last sighting in a block (the node keeps a transaction in its pool 9 hours, `pool.rs:35`; a fork
-puts it back with a new 9 hours): then it reads "not found in a block after N hours" and the account is free.
+irreversible block, from the block's slot and the node's `lib_slot`); a block that disappears before that puts it back
+to "waiting for a block". The one exit for a transfer that never lands: 9.5 hours have passed since its last submit or
+last sighting in a block (the node keeps a transaction in its pool 9 hours, `pool.rs:35`; a fork puts it back with a
+new 9 hours), the node is online and caught up (its latest block recent against `/time/info`, as the sync screen
+reads it), and a read of the chain begun then, from where it was funded, has no such hash: then it reads "not found in
+a block after N hours" and the account is free. A phone kept from the network (asleep, no signal, the node just
+restarted at an old tip) never takes the exit. A "not found" transfer is read again hourly for 3 days, and turns
+"confirmed" if it shows up 2 deep after all. A bridge whose split is missing (the app stopped while the node funded it,
+or an older version made it), ended or not found ends plainly ("didn't go through, so nothing was bridged") and frees
+the account; a bridge waiting behind an earlier transfer for more than 10 minutes is stopped, to be confirmed again.
+Records that are over are dropped after 7 days.
 
 The depth, 2: the M2 node's chain over 14 days (36,246 blocks, 33 s per block) shows forks of depth 1 only, in 18% of
 blocks (`~/logos/android-node/fork-depth.py`; uncle headers only ever name the first block of a fork, so this is the
 evidence that is there, not a proof).
 
 Known limits:
-- A fork deeper than 2 blocks can take a "confirmed" transfer away; the account may then already be sending again.
+- A fork deeper than 2 blocks can take a "confirmed" transfer away; the account may then already be sending again. A
+  waiting transfer whose read checkpoint such a fork replaced reads the chain again from where it was funded.
 - A records file that doesn't read is set aside; the transfers it held aren't followed any more, and Activity says so.
 - Two devices with the same keys don't know each other's waiting transfers.
-- A transfer someone else rebroadcasts after the 9.5 hours could still land after "not found in a block".
+- A transfer someone else rebroadcasts after the 9.5 hours could still land after "not found in a block" (the hourly
+  re-read then shows it confirmed, but a second payment made meanwhile has gone too).
+- Left as they are (review of 8604652): a queued bridge of an exact note keeps the plan made before the earlier send
+  settled, so that send may spend the note and the bridge then fails ("no longer in the wallet"); a send of the
+  previous version that lands after the update shows as "can't tell" plus a "changed" row; a send made with 0 peers
+  is taken by the node's own pool and may hold the account until the exit; the bridge deposit (not a transfer
+  record) frees the account at first sight, not at 2 deep.
 - Tests: `tests/xfer_test.py` (fixed cases and seeded runs with forks up to 2 against `tests/fake_chain.py`) and
   `tests/xfer_real.py` (CI node-socket: a crash between fund and submit, the same transfer submitted again, lands once).
