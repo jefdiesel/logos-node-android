@@ -398,8 +398,10 @@ confirmed). The page shows "in a block" at first sight, "confirmed" at 2 deep ("
 irreversible block, from the block's slot and the node's `lib_slot`); a block that disappears before that puts it back
 to "waiting for a block". The one exit for a transfer that never lands: 9.5 hours have passed since its last submit or
 last sighting in a block (the node keeps a transaction in its pool 9 hours, `pool.rs:35`; a fork puts it back with a
-new 9 hours), the node is online and caught up (its latest block recent against `/time/info`, as the sync screen
-reads it), and a read of the chain begun then, from where it was funded, has no such hash: then it reads "not found in
+new 9 hours), the node is online and caught up (the tip a read goes to is at most 10 minutes old by the phone's
+clock, from `/time/info`'s `genesis_time_unix_ms` and `slot_duration_ms`; not its `current_slot`, a tick count of a
+timer started with the node, `services/time/src/backends/common.rs`, which may not count the time the phone slept),
+and that read, from where it was funded, has no such hash: then it reads "not found in
 a block after N hours" and the account is free. A phone kept from the network (asleep, no signal, the node just
 restarted at an old tip) never takes the exit. A "not found" transfer is read again hourly for 3 days, and turns
 "confirmed" if it shows up 2 deep after all. A bridge whose split is missing (the app stopped while the node funded it,

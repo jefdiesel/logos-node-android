@@ -70,6 +70,7 @@ def world(seed=0, a=(600000, 400000, 250000), b=(300000,)):
     clock.wall, clock.mono, clock.boot = 1_800_000_000.0, 5000.0, "boot-1"
     chain = fake_chain.Chain([A, B], seed=seed, k=6)
     chain.max_fork = D                       # the model: forks no deeper than D
+    chain.wall = lambda: clock.wall
     for v in a:
         chain.credit(A, v)
     for v in b:
@@ -162,6 +163,26 @@ check("  %d blocks on top: confirmed, with the fee it paid" % D, entry(h)["statu
       and server.tx_status(h)[1]["confirmed"], entry(h))
 check("  the account sends again", send(A, CAROL, 50)[0] == 200)
 check("  no 'changed' or 'received' row for its own notes", not [e for e in server.history["entries"] if e["kind"] in ("changed", "received")])
+check("  not final before its block is at the node's last irreversible block", not entry(h)["final"])
+blocks(chain.k + 1)
+check("  final once it is (its block's slot against the node's lib_slot)", entry(h)["final"] is True, entry(h))
+
+world()
+real_save, fails = server.xfer_save, [0]
+def save_once_failing():
+    if server.xfers and any(r["state"] == "funded" for r in server.xfers.values()) and not fails[0]:
+        fails[0] = 1
+        return False
+    return real_save()
+server.xfer_save = save_once_failing
+code, d = send(A, BOB, 100000)
+server.xfer_save = real_save
+check("the funded transfer can't be saved: not sent, said so, no entry", code == 503 and "Nothing was sent" in d["error"]
+      and not [e for e in server.history["entries"] if e["kind"] == "sent"] and posts(list(chain.funded)[0]) == 0, (code, d))
+chain.restart_node()                              # the node's keeping-apart of those notes has lapsed
+code, d = send(A, BOB, 100000)
+check("  the same payment again funds the identical transfer: a new record, submitted, never 'again' without one",
+      code == 200 and not d.get("again") and posts(d["hash"]) == 1 and rec(d["hash"]).get("signed"), (code, d))
 
 world()
 chain.fail["/mempool/add/tx"] = ["lost", "unreached"]
@@ -275,6 +296,9 @@ blocks(D + 1)
 advance(server.XFER_RECHECK + 60)
 check("  it lands after all: read again within the hour, confirmed", entry(h)["status"] == "in block"
       and server.tx_status(h)[1]["confirmed"], entry(h))
+check("  Activity: that one row, no 'changed' or 'received' row beside it",
+      [e["kind"] for e in server.history["entries"] if e["kind"] != "tracking started"] == ["sent"],
+      [(e["kind"], e.get("status"), e.get("amount")) for e in server.history["entries"]])
 advance(server.XFER_KEEP + 3600)
 send(A, CAROL, 1000)                            # (the file is pruned whenever it is written)
 check("  records that are over are dropped after %d days" % (server.XFER_KEEP // 86400), rec(h) is None

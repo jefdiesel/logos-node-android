@@ -3313,8 +3313,8 @@ def accounts():
 #     it back to "waiting". D comes from the forks seen on the testnet (forks deeper than D are a known limit).
 #   - The one exit for a transfer that never lands: XFER_GIVE_UP has passed since its last submit or sighting (the
 #     node's pool keeps a transaction 9 hours: services/tx-service/src/backend/pool.rs:35), the node is online and
-#     caught up (its latest block is recent: sync_status), and a read of the chain begun then, from where it was funded
-#     to the tip, doesn't have its hash. Then it reads "not found in a block" and frees its account; never "nothing was
+#     caught up (the tip a read goes to is at most XFER_TIP_LAG old by the phone's clock), and that read, from where it
+#     was funded, doesn't have its hash. Then it reads "not found in a block" and frees its account; never "nothing was
 #     sent". It is read again hourly for XFER_RECHECK_FOR: if it shows up D deep after all, it reads confirmed.
 #   - A records file that can't be read is set aside (never overwritten); Activity shows one plain warning for a while
 #     (the transfers it held are not followed any more) and the wallet carries on.
@@ -3325,6 +3325,7 @@ XFER_RESUBMIT_FOR = 1800                    # resubmits only in its first 30 min
 XFER_POOL_LIFE = 9 * 3600                   # the node's DEFAULT_TX_TTL
 XFER_GIVE_UP = float(os.environ.get("XFER_GIVE_UP_SECONDS", str(XFER_POOL_LIFE + 1800)))
 XFER_RESCAN = float(os.environ.get("XFER_RESCAN_SECONDS", "60"))   # the chain is read for a transfer at most this often
+XFER_TIP_LAG = 600                          # the exit only on a read to a tip at most this old (blocks: ~30-60 s apart)
 XFER_MAX_FEE = 100000                       # the most a transfer's fee may be (the node checks it: max_tx_fee)
 XFER_RECHECK = float(os.environ.get("XFER_RECHECK_SECONDS", "3600"))   # a "not found" one is read again this often...
 XFER_RECHECK_FOR = 3 * 24 * 3600            # ...for this long
@@ -3616,13 +3617,21 @@ def xfer_may_exit(r):
 
 
 def xfer_node_current(st):
-    """Whether the node is online and caught up: its latest block no older than the node's own lag threshold allows
-    (sync_status, against /time/info). A node just restarted, or kept from the network (no signal, asleep), reports
-    Online at an old tip: it isn't."""
-    if not st or st.get("state") != "Online":
+    """Whether the node is online and its tip `st["slot"]` (the one a read goes to) is at most XFER_TIP_LAG old by
+    this phone's clock. A node just restarted, or kept from the network (no signal, asleep), reports Online at an old
+    tip. The slot is worked out from /time/info's genesis time and the clock: the node's own current_slot counts
+    ticks of a timer started at the node's start (services/time/src/backends/common.rs), which may not count the
+    time the phone slept. XFER_TIP_LAG stays well under XFER_GIVE_UP - XFER_POOL_LIFE, so a read that passes reaches
+    past the time the transfer could still be in a pool."""
+    if not st or st.get("state") != "Online" or not isinstance(st.get("slot"), int):
         return False
-    s = sync_status(st)
-    return bool(s and s.get("stage") == "uptodate")
+    code, t = node("/time/info", timeout=5)
+    try:
+        slot_ms = float(t["slot_duration_ms"])
+        now_slot = max(int(t["current_slot"]), int((time.time() * 1000 - float(t["genesis_time_unix_ms"])) / slot_ms))
+    except Exception:
+        return False
+    return code == 200 and slot_ms > 0 and (now_slot - st["slot"]) * slot_ms / 1000 <= XFER_TIP_LAG
 
 
 def xfer_scan(r):
@@ -3904,10 +3913,12 @@ def xfer_round():
 
 
 def xfer_spent_by_us(key):
-    """Copies of `key`'s transfers that may land or have (for the history: their notes are theirs)."""
+    """Copies of `key`'s transfers that may land or have (for the history: their notes are theirs), "not found" ones
+    still read again among them (one that lands after all is then its own entry, not a "changed" row)."""
     with xfer_lock:
         return [dict(r) for r in xfer_records().values() if r["key"] == key and r.get("inputs")
-                and r["state"] in ("funded", "submitted", "settled")]
+                and (r["state"] in ("funded", "submitted", "settled") or r["state"] == "notfound"
+                     and xfer_age(r.get("notfound_at") or r["t0"]) < XFER_RECHECK_FOR)]
 
 
 def tx_status(h):

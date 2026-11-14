@@ -16,8 +16,10 @@ CI probes (android/LOCAL-APIS.md, "Transfers") and what its source says.
     blocks_limit, with header id, parent_block and slot, the transactions' hashes and ops, and lib_slot.
   - Fees are fixed and realistic: 1,000 plus 200 per input (so the same notes give the same transfer).
   - The phone's node can be kept from the network: freeze() holds its view (info, blocks_range) at the blocks it has
-    while the network goes on; it still says "Online" (as a node just restarted does), and /time/info's current slot
-    runs on with the time since. thaw() gives it the network's chain again.
+    while the network goes on; it still says "Online" (as a node just restarted does). /time/info's current_slot is
+    the node's own tick count, which stands still while frozen (a sleeping phone's timer); its genesis time and the
+    wall clock (`wall`, a callable) put the real slot at the tip plus the time since. thaw() gives it the network's
+    chain again.
 Faults: `fail[path]` is a list of what the next calls to that path do: "lost" (the node does it, the answer is lost:
 status 0), "unreached" (nothing done, status 0), "500", "408". `crash[path]` raises Crash before ("before") or after
 ("after") the node acts, to stand for the app dying there.
@@ -73,6 +75,7 @@ class Chain:
         self.lib = -1                        # index of the last irreversible block: it never moves back
         self.max_fork, self.high = None, 0   # a bound on how deep forks go (None: up to the LIB)
         self.view, self.frozen_at = None, None   # blocks the phone's node sees while frozen (None: all of them)
+        self.wall = lambda: 0.0
         self.notes = {}
         self._replay()
 
@@ -228,8 +231,9 @@ class Chain:
         if path == "/time/info":
             bs = self.seen_blocks()
             tip = bs[-1]["slot"] if bs else 0
-            return 200, {"current_slot": tip + (int(self.now - self.frozen_at) if self.view is not None else 0),
-                         "slot_duration_ms": 1000}
+            behind = int(self.now - self.frozen_at) if self.view is not None else 0
+            return 200, {"current_slot": tip, "slot_duration_ms": 1000,
+                         "genesis_time_unix_ms": int((self.wall() - tip - behind) * 1000)}
         if path == "/network/info":
             return 200, {"connected_peers": ["p"]}
         if path.startswith("/wallet/") and path.endswith("/balance"):
