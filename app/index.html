@@ -154,7 +154,7 @@ hr{border:0;border-top:1px solid var(--line);margin:18px 0 6px}
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}.cols h3{font-size:13px;color:var(--dim);margin:0 0 6px;font-weight:600}
 .cols div p{margin:0 0 6px;font-size:13px;overflow-wrap:break-word}.cols .same{color:var(--dim)}.cols .diff{color:var(--warn);font-weight:600}
 .banner{border-color:var(--accent)}
-.hdr{display:flex;align-items:center;gap:10px}
+.hdr{display:flex;align-items:center;gap:2px;margin-right:-6px}
 .gear{min-height:44px;width:44px;padding:0;display:inline-flex;align-items:center;justify-content:center;color:var(--ink);border:0}
 button.notice{display:block;width:100%;text-align:left;margin-top:12px;min-height:44px;padding:8px 12px;font-size:14px;font-weight:500;color:var(--warn);border-color:var(--warn)}
 button.notice::after{content:" \203A";font-weight:700}
@@ -199,6 +199,7 @@ html.relock body{visibility:hidden}
     <div class="hdr">
       <span id="pill" hidden>connecting</span>
       <button type="button" id="node-ic" class="st-ic sync" aria-label="Node: connecting. Show details" title="Node: connecting"></button>
+      <button type="button" id="b-lock-now" class="gear" aria-label="Lock now" title="Lock now" hidden><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10.5" width="14" height="9.5" rx="2.2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></g></svg></button>
       <button type="button" id="b-gear" class="gear" aria-label="Settings" title="Settings"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false"><path fill="currentColor" d="M19.4 13a7.5 7.5 0 0 0 0-2l2-1.6a.5.5 0 0 0 .1-.6l-1.9-3.3a.5.5 0 0 0-.6-.2l-2.4 1a7.3 7.3 0 0 0-1.7-1l-.4-2.6a.5.5 0 0 0-.5-.4h-3.8a.5.5 0 0 0-.5.4l-.4 2.6a7.3 7.3 0 0 0-1.7 1l-2.4-1a.5.5 0 0 0-.6.2L2.5 8.8a.5.5 0 0 0 .1.6l2 1.6a7.5 7.5 0 0 0 0 2l-2 1.6a.5.5 0 0 0-.1.6l1.9 3.3c.1.2.4.3.6.2l2.4-1c.5.4 1.1.7 1.7 1l.4 2.6c0 .2.3.4.5.4h3.8c.2 0 .5-.2.5-.4l.4-2.6c.6-.3 1.2-.6 1.7-1l2.4 1c.2.1.5 0 .6-.2l1.9-3.3a.5.5 0 0 0-.1-.6zM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"/></svg></button>
     </div>
   </header>
@@ -622,6 +623,7 @@ function openPanel(which) { walletPick("logos", which || "hist"); }
 function show(view) {
   const wasLocked = !$("lock").hidden;
   for (const v of ["v-loading", "v-setup", "v-locked", "v-open"]) $(v).hidden = v !== view;
+  $("b-lock-now").hidden = view !== "v-open";
   $("lock").hidden = view !== "v-locked"; document.body.classList.toggle("is-locked", view === "v-locked");
   if (view !== "v-open") {   // nothing about amounts stays on a locked page
     afterUnlock = true; popItems = []; $("pop").hidden = true;
@@ -1114,13 +1116,15 @@ function fitAmt(e) {       // a token's amount stays on one line: the font gets 
 }
 function fitHero() { for (const e of document.querySelectorAll(".tok-amt")) fitAmt(e); }
 // the header's title stays on one line beside its icons: on a narrow screen or with large text it gets smaller
-function fitTitle() {
-  const h = document.querySelector("#hdr h1"), box = h && h.parentElement;
+// (it is seen before anything else, so it may go down to 11 px at 320 px with large text; it is never cut)
+function fitTitleOf(h) {             // (also Messages' own title, beside its icons)
+  const box = h && h.parentElement;
   if (!h || h.offsetParent === null) return;
   h.style.fontSize = "";
   let px = parseFloat(getComputedStyle(h).fontSize);
-  while (h.scrollWidth > box.clientWidth && px > 13) { px -= 0.5; h.style.fontSize = px + "px"; }
+  while (h.scrollWidth > box.clientWidth && px > 11) { px -= 0.5; h.style.fontSize = px + "px"; }
 }
+const fitTitle = () => fitTitleOf(document.querySelector("#hdr h1"));
 if (window.ResizeObserver) new ResizeObserver(fitTitle).observe($("hdr")); else addEventListener("resize", fitTitle);
 fitTitle();
 // again when the amount changes, and when the card's width changes or it shows (another tab, Settings)
@@ -1379,7 +1383,10 @@ $("b-fp-set").addEventListener("click", fpOn);
 $("b-fp-off").addEventListener("click", () => fpAskOff(true));
 $("b-fp-no").addEventListener("click", () => fpAskOff(false));
 $("b-fp-yes").addEventListener("click", fpOff);
-$("b-lock").addEventListener("click", async () => { manualLock = true; await api("/api/wallet/lock", {}); lockedNow(true); });
+// Lock now: Settings > Security, the header's padlock and Messages' (the server locks first, then the page's one lock)
+async function lockNowTap() { manualLock = true; await api("/api/wallet/lock", {}); lockedNow(true); }
+$("b-lock").addEventListener("click", lockNowTap);
+$("b-lock-now").addEventListener("click", lockNowTap);
 
 // ---- backup: the server encrypts the node's key file; this page only ever sees the encrypted file ----
 // ---- restore: the server decrypts the file and has the node check it before replacing the keys ----

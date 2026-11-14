@@ -8,7 +8,7 @@ Python standard library only. Wallet calls need a PIN that is set on first use.
 import base64, calendar, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.9.25"
+APP_VERSION = "0.9.27"
 # APP_EMBEDDED=android: this app runs inside the Android app (embedded Python, page in a WebView).
 # Then it never updates or restarts itself (the Android app brings new versions), and fingerprint
 # unlock goes through the phone's own fingerprint check instead of a passkey. Unset: nothing changes.
@@ -50,7 +50,7 @@ MAX_FAILS = 5           # wrong PINs before a pause
 FAIL_PAUSE = 300        # seconds
 
 lock = threading.Lock()
-session = {"token": None, "active": 0.0, "hidden_since": None}
+session = {"token": None, "active": 0.0, "hidden_since": None, "hidden_by": None}
 fails = {"count": 0, "until": 0.0}
 sent = {}               # tx hash -> what we sent, to report when it lands
 keys_cache = {"keys": [], "at": 0.0}
@@ -3162,8 +3162,12 @@ def settings_save():
 
 def session_new():
     with lock:
-        session.update(token=secrets.token_hex(32), active=time.time(), hidden_since=None)
-        return session["token"]
+        replaced = session["token"] is not None
+        session.update(token=secrets.token_hex(32), active=time.time(), hidden_since=None, hidden_by=None)
+        token = session["token"]
+    if replaced:                          # every end of a session is in the log, this one too
+        event("wallet locked", reason="a new unlock replaced the open session")
+    return token
 
 
 def session_expire():
@@ -3174,7 +3178,7 @@ def session_expire():
         if not session["token"]:
             return
         if session["hidden_since"] is not None and now - session["hidden_since"] > LEAVE_GRACE:
-            reason = "left the page"
+            reason = "left the app" if session.get("hidden_by") == "app" else "left the page"
         elif now - session["active"] > wallet_settings["autolock_minutes"] * MINUTE:
             reason = "idle"
         if reason:
@@ -3196,7 +3200,7 @@ def session_touch(visible=False):
     with lock:
         session["active"] = time.time()
         if visible:
-            session["hidden_since"] = None
+            session["hidden_since"], session["hidden_by"] = None, None
 
 
 def session_watch():
@@ -3573,6 +3577,26 @@ def restart_hint():
         return "The keys are in place. Restart the node from the app's Node screen."
     return ("The keys are in place. Restart the node to use them: in Termux, press Ctrl-C where the node runs, "
             "then start it again with ~/logos-node. In the Linux Terminal app: sudo systemctl restart logos-node.")
+
+
+def native_visibility(state):
+    """Inside the Android app: the app itself says the wallet's screen went away ("hidden": onStop, Home, the screen
+    off) or came back ("visible": onStart), so leaving counts even when the page's own report is lost (a hidden
+    WebView may not send it). An absence longer than LEAVE_GRACE locks first; "visible" only ends the absence (it
+    doesn't count as use). There is no HTTP route to this: only code in the app's own process calls it. Returns True
+    if a session was open."""
+    if not EMBEDDED or state not in ("hidden", "visible"):
+        return False
+    session_expire()
+    with lock:
+        if not session["token"]:
+            return False
+        if state == "hidden":
+            if session["hidden_since"] is None:
+                session["hidden_since"], session["hidden_by"] = time.time(), "app"
+        else:
+            session["hidden_since"], session["hidden_by"] = None, None
+    return True
 
 
 def native_unlock():
@@ -5599,7 +5623,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if body.get("state") == "hidden":
                 with lock:
                     if session["hidden_since"] is None:
-                        session["hidden_since"] = time.time()
+                        session["hidden_since"], session["hidden_by"] = time.time(), "page"
             elif body.get("state") == "visible":
                 session_touch(visible=True)
             else:
@@ -5757,6 +5781,9 @@ def main():
     in a thread, so it can also call native_unlock() in the same process."""
     if EMBEDDED:
         event("app start", port=PORT, version=APP_VERSION, embedded="android")
+    if pin_is_set():
+        event("wallet locked", reason="the app started (every start begins locked)")
+    if EMBEDDED:
         try:
             lns_sweep()                       # check folders a stopped restore left
             if os.path.isdir(LNS_HOME):

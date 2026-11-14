@@ -80,7 +80,11 @@ await waitFor("the token list: Logos, and a quiet Add LEZ row (no name account y
 // the Names Wallet mark (the Inter Bold eta) stands for the app; the lambda only for the Logos coin
 const ETA = "M9.291 8.259V16.607";
 check("the header: the title Names Wallet, no mark beside it", await js(`document.querySelector("#hdr h1").textContent === "Names Wallet" && !document.querySelector("#hdr .brand svg, #hdr .mark-eta, #hdr .lam")`));
-check("the eta stays on the bottom bar's Wallet tab (when Messages is there) and the lock screen", await js(`(() => { const n = document.getElementById("nav-wallet"); return !n || !!(n.querySelector("svg path") || {}).getAttribute; })()`));
+check("the bottom bar's Wallet tab: a line-style wallet like the Messages tab's bubble (same size and stroke), no eta", await js(`(() => {
+  const w = document.querySelector("#nav-wallet svg"), m = document.querySelector("#nav-msg svg"); if (!w || !m) return false;
+  const sw = e => (e.querySelector("[stroke-width]") || {}).getAttribute ? e.querySelector("[stroke-width]").getAttribute("stroke-width") : null;
+  return w.getAttribute("width") === m.getAttribute("width") && sw(w) === sw(m) && sw(w) === "1.9" && !w.innerHTML.includes(${JSON.stringify(ETA)}) && !w.querySelector("[fill=currentColor]"); })()`));
+check("a padlock beside the gear: Lock now, 44 px", await js(`(() => { const b = document.getElementById("b-lock-now"), r = b.getBoundingClientRect(); return !b.hidden && b.getAttribute("aria-label") === "Lock now" && r.width >= 44 && r.height >= 44 && b.nextElementSibling === document.getElementById("b-gear"); })()`));
 // the header on one line at the narrowest phone width (320 px), with large text (130%), beside its two icons
 await cdp("Emulation.setDeviceMetricsOverride", { width: 320, height: 700, deviceScaleFactor: 2, mobile: true });
 for (const z of ["1", "1.3"]) {
@@ -89,9 +93,10 @@ for (const z of ["1", "1.3"]) {
   const h = await js(`(() => { const t = document.querySelector("#hdr h1"), r = t.getBoundingClientRect(), lh = parseFloat(getComputedStyle(t).lineHeight) || parseFloat(getComputedStyle(t).fontSize) * 1.3;
     const ic = [...document.querySelectorAll("#hdr .hdr button")].filter(b => b.offsetParent).map(b => b.getBoundingClientRect());
     return { right: Math.round(r.right), left: ic.map(b => Math.round(b.left)), px: getComputedStyle(t).fontSize, oneLine: r.height <= lh * 1.6 * ${z}, clear: ic.every(b => b.left >= r.right - 1), icons: ic.every(b => b.height >= 44 * ${z} - 1 && b.width >= 44 * ${z} - 1), inside: ic.every(b => b.right <= innerWidth + 1), noScroll: document.documentElement.scrollWidth <= innerWidth }; })()`);
-  check(`the header at 320 px and ${Math.round(z * 100)}% text: Names Wallet on one line, clear of its two 44 px icons, nothing off the screen`, h.oneLine && h.clear && h.icons && h.inside && h.noScroll, h);
+  check(`the header at 320 px and ${Math.round(z * 100)}% text: Names Wallet on one line, clear of its three 44 px icons (node, lock, gear), nothing off the screen`, h.oneLine && h.clear && h.icons && h.inside && h.noScroll && h.left.length === 3, h);
 }
 await js(`document.getElementById("hdr").style.zoom = ""; true`);
+
 await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
 check("the lock screen's mark: the eta on its orange tile, no disc", await js(`(() => { const m = document.querySelector("#lock .lock-mark"); return m.querySelector("rect").getAttribute("fill") === "#e8662f" && m.querySelector("path").getAttribute("fill") === "#fff" && getComputedStyle(m).borderRadius === "0px"; })()`));
 check("the favicon and the home-screen icons are the mark's", await js(`document.querySelector("link[rel=icon]").getAttribute("href") === "/names-192.png"`)

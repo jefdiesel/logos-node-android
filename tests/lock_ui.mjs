@@ -124,6 +124,8 @@ async function fillUp() {                                        // amounts, add
 }
 const PATHS = [
   ["the Lock button", async () => { await js(`document.getElementById("b-lock").click(); true`); }],
+  ["the header's padlock", async () => { await js(`document.getElementById("b-lock-now").click(); true`); }],
+  ["Messages' padlock", async () => { await js(`window.MSG.setTab("msg"); document.getElementById("mg-lock").click(); true`); }],
   ["the visibility report's 401", async () => { await serverLock(); await js(`document.dispatchEvent(new Event("visibilitychange")); true`); }],
   ["a POST's 401 (the activity report)", async () => { await serverLock(); await js(`lastActivity = 0; dispatchEvent(new Event("pointerdown")); true`); }],
   ["the poll's 401 with LEZ 0.4 showing", async () => {
@@ -143,6 +145,8 @@ for (const [how, lock] of PATHS) {
   await lockScreen(`locked by ${how}`);
   await nothingLeft(`after ${how}`);
   check(`(${how}: the page loaded again)`, since(mark).includes("GET /"), since(mark));
+  if (/padlock|Lock button/.test(how)) check(`(${how}: through the server's lock route, as Settings > Security's Lock now)`, since(mark).includes("POST /api/wallet/lock"), since(mark));
+  check(`(${how}: the header's padlock isn't there while locked)`, await js(`document.getElementById("b-lock-now").hidden`));
   await unlockByPin(`unlocked after ${how}`);
 }
 

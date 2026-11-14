@@ -145,6 +145,25 @@ check("the event log says why", 'fingerprint unlock turned off reason="fingerpri
 check("a second reset changes nothing", server.native_fingerprint_reset() is False)
 code, d = call("/api/wallet/native-fingerprint", {"on": True, "pin": PIN}, session=W.unlock(PIN))
 check("the PIN turns it on again", code == 200 and server.native_unlock() is not None, (code, d))
+# the app's own report of leaving (onStop: Home, the screen off) and coming back (onStart): leaving counts even
+# when the page's report is lost, and the grace is counted from the app's report
+server.LEAVE_GRACE = 1.0
+s = W.unlock(PIN)
+check("native_visibility('hidden') with an open wallet: the absence starts, counted as the app's",
+      server.native_visibility("hidden") is True and server.session["hidden_by"] == "app")
+check("back within the grace: still open", server.native_visibility("visible") is True and call("/api/wallet", session=s)[1].get("unlocked") is True)
+server.native_visibility("hidden")
+time.sleep(1.4)
+check("away longer than the grace, with no word from the page: locked", call("/api/wallet", session=s)[1].get("unlocked") is False)
+check("coming back after that doesn't open it again", server.native_visibility("visible") is False and call("/api/wallet", session=s)[1].get("unlocked") is False)
+check("native_visibility takes only hidden or visible", server.native_visibility("gone") is False)
+s = W.unlock(PIN)
+s = W.unlock(PIN)
+server.LEAVE_GRACE = 60.0
+with open(os.path.join(data, "wallet-events.log")) as f:
+    log = f.read()
+check("each lock is logged with its reason: leaving the app, and a new unlock replacing the open session",
+      'wallet locked reason="left the app"' in log and 'wallet locked reason="a new unlock replaced the open session"' in log)
 server.EMBEDDED = False                     # outside the Android app the function does nothing
 check("outside embedded mode native_fingerprint_reset() is a no-op returning False", server.native_fingerprint_reset() is False)
 check("and leaves the setting as it was", server.wallet_settings.get("native_fingerprint") is True)

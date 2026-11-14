@@ -75,6 +75,14 @@ def serving():
     return flag.is_set() if flag is not None else True
 
 
+def native_visibility(state):
+    """server.native_visibility(): the app says the wallet's screen went away ("hidden", onStop) or came back
+    ("visible", onStart), so leaving locks even if the page's own report is lost. False with older web apps."""
+    if _server is None or not hasattr(_server, "native_visibility"):
+        return False
+    return bool(_server.native_visibility(str(state)))
+
+
 def native_unlock():
     """server.native_unlock(): a session token after the phone's fingerprint check, or None."""
     return _server.native_unlock() if _server is not None else None

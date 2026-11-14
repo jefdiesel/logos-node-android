@@ -599,6 +599,19 @@ for (const [id, label] of [["sec", "Security"], ["msg", "Messages"]]) {
 }
 await click("#nav-msg");
 await waitFor("Messages home", `!document.getElementById("mg-home").hidden`);
+// Messages' own top: its title on one line beside New chat, Lock now and Settings, at 320 px with 130% text
+await cdp("Emulation.setDeviceMetricsOverride", { width: 320, height: 700, deviceScaleFactor: 2, mobile: true });
+for (const z of ["1", "1.3"]) {
+  await js(`document.querySelector(".mtop").style.zoom = "${z}"; true`);
+  await sleep(250);
+  const m = await js(`(() => { const t = document.getElementById("h-chats"), r = t.getBoundingClientRect(), lh = parseFloat(getComputedStyle(t).fontSize) * 1.3;
+    const ic = [...document.querySelectorAll(".mtop .acts button")].filter(b => b.offsetParent).map(b => b.getBoundingClientRect());
+    return { n: ic.length, oneLine: r.height <= lh * 1.6 * ${z}, clear: ic.every(b => b.left >= r.right - 1), icons: ic.every(b => b.height >= 44 * ${z} - 1 && b.width >= 44 * ${z} - 1), inside: ic.every(b => b.right <= innerWidth + 1), noScroll: document.documentElement.scrollWidth <= innerWidth,
+      lock: document.getElementById("mg-lock").getAttribute("aria-label") }; })()`);
+  check(`Messages' top at 320 px and ${Math.round(z * 100)}% text: its title on one line, clear of its three 44 px icons (one is Lock now)`, m.n === 3 && m.oneLine && m.clear && m.icons && m.inside && m.noScroll && m.lock === "Lock now", m);
+}
+await js(`document.querySelector(".mtop").style.zoom = ""; true`);
+await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
 
 // ---- new chat: not registered, no msg entry, found ----
 await w.register("dave", { display: "Dave" });

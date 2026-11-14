@@ -98,6 +98,27 @@ class WalletActivity : Activity() {
         answer(if (grantResults.isEmpty()) null else grantResults[0] == PackageManager.PERMISSION_GRANTED)
     }
 
+    /** Leaving the wallet's screen, told to the server by the app itself (see LeaveReport): off the main thread. */
+    private val leave = LeaveReport { state ->
+        io.execute {
+            try {
+                com.chaquo.python.Python.getInstance().getModule("logos_embed").callAttr("native_visibility", state)
+            } catch (e: Exception) {
+                Log.w(TAG, "native_visibility($state) failed: ${e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        leave.started()
+    }
+
+    override fun onStop() {
+        leave.stopped()       // before the WebView's timers stop: the server counts the minute from here
+        super.onStop()
+    }
+
     private fun python(function: String): String? = try {
         com.chaquo.python.Python.getInstance().getModule("logos_embed").callAttr(function)?.toString()
     } catch (e: Exception) {

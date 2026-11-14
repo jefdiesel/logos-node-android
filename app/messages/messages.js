@@ -20,7 +20,8 @@ const P = {      // icon paths (constants)
   back: '<path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>',
   send: '<path d="M5 12h12M12 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>',
   chat: '<path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.2 3.2c-.5.4-1.3 0-1.3-.6V17.0A2.5 2.5 0 0 1 4 14.5z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/>',
-  eta: '<path d="M9.291 8.259V16.607H5.42V2.18H9.071L9.123 5.161Q9.729 3.652 10.839 2.825Q11.948 2 13.613 2Q15.859 2 17.22 3.445Q18.58 4.891 18.58 7.432V22H14.697V8.103Q14.697 6.761 14.007 6Q13.316 5.239 12.091 5.239Q10.852 5.239 10.071 6.032Q9.291 6.825 9.291 8.259Z" fill="currentColor"/>',   // the Names Wallet mark (Inter Bold eta)
+  // the Wallet tab: a wallet in the same line style as the chat bubble
+  wallet: '<g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h11A2.5 2.5 0 0 1 20 7.5v9a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 16.5z"/><path d="M20 10h-3.5a2 2 0 0 0 0 4H20"/></g>',
   plus: '<path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>',
   mute: '<path d="M6 9h3l4-4v14l-4-4H6zM16.5 9.5l4 4M20.5 9.5l-4 4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>',
   lock: '<rect x="5" y="10.5" width="14" height="9.5" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5" fill="none" stroke="currentColor" stroke-width="1.9"/>',
@@ -149,8 +150,9 @@ body.kb #nav{display:none}body.kb.has-nav main{padding-bottom:24px}
 .sheet .quote{margin:10px 0 4px;padding:10px 12px;border-left:3px solid var(--line);color:var(--dim);font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:7.5em;overflow:hidden}
 .sheet dl div{padding:8px 0}.sheet .row button{min-height:44px}
 .mtop{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:4px 2px 16px;min-height:44px}
-.mtop h1{font-size:24px;margin:0;letter-spacing:-.02em}
-.mtop .acts{display:flex;gap:8px;align-items:center}
+.mtop>div:first-child{flex:1 1 auto;min-width:0;overflow:hidden}
+.mtop h1{font-size:24px;margin:0;letter-spacing:-.02em;white-space:nowrap}
+.mtop .acts{display:flex;gap:2px;align-items:center;flex:none;margin-right:-6px}
 .mtop .ic-b{width:44px;min-height:44px;padding:0;display:inline-flex;align-items:center;justify-content:center;border:0}
 .mtop .mnode{margin:2px 0 0;font-size:13px;color:var(--dim)}
 .rows{margin:0 -16px;padding:0 16px}
@@ -185,7 +187,7 @@ document.addEventListener("focusout", () => setTimeout(kbSync, 0));
 
 // ---- the bar: Wallet / Messages ----------------------------------------------------------------------
 const badge = el("span", { className: "badge", hidden: true });
-const navWallet = el("button", { type: "button", id: "nav-wallet" }, svg(P.eta), "Wallet");
+const navWallet = el("button", { type: "button", id: "nav-wallet" }, svg(P.wallet), "Wallet");
 const navMsg = el("button", { type: "button", id: "nav-msg" }, svg(P.chat), "Messages", badge);
 const nav = el("nav", { id: "nav", ariaLabel: "Screens" }, el("div", { className: "in" }, navWallet, navMsg));
 document.body.append(nav); document.body.classList.add("has-nav");
@@ -238,7 +240,7 @@ page.innerHTML = `
     <p class="msg bad" id="mg-on-m" role="alert"></p>
   </section>
   <div id="mg-home" hidden>
-    <div class="mtop"><div><h1 id="h-chats">Messages</h1><div class="mnode" id="mg-node" role="status" hidden></div></div><div class="acts"><button type="button" class="ic-b" id="mg-new" aria-label="New chat" title="New chat"></button><button type="button" class="ic-b" id="mg-me" aria-label="Settings" title="Settings"></button></div></div>
+    <div class="mtop"><div><h1 id="h-chats">Messages</h1><div class="mnode" id="mg-node" role="status" hidden></div></div><div class="acts"><button type="button" class="ic-b" id="mg-new" aria-label="New chat" title="New chat"></button><button type="button" class="ic-b" id="mg-lock" aria-label="Lock now" title="Lock now"></button><button type="button" class="ic-b" id="mg-me" aria-label="Settings" title="Settings"></button></div></div>
     <p class="note" id="mg-loading" hidden>Loading chats…</p>
     <div class="hint-card" id="mg-hint" hidden></div>
     <button type="button" class="req-line" id="mg-req-line" hidden></button>
@@ -406,6 +408,9 @@ window.msgSettingsState = () => {
 for (const b of page.querySelectorAll(".mg-home")) { b.append(svg(P.back)); b.addEventListener("click", () => popOv()); }
 $("mg-new").append(svg(P.plus, 24));
 $("mg-me").append(svg(P.gear, 22));
+$("mg-lock").append(svg(P.lock, 22));
+$("mg-lock").addEventListener("click", () => lockNowTap());
+{ const fit = () => fitTitleOf($("h-chats")); if (window.ResizeObserver) new ResizeObserver(fit).observe($("h-chats").parentElement.parentElement); }
 // room for "New group" next to New chat once groups exist; nothing is shown for it until then
 
 let chat = null, me = null, status = null, view = "home", loading = null;
