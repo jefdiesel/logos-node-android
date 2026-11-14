@@ -191,7 +191,7 @@ async function unlock() {
   await waitFor("the lock screen shows", `!document.getElementById("v-locked").hidden`);
   if (await js(`document.getElementById("lk-pad").hidden`)) await click("#b-enter-pin");
   await enterPin(A.pin, "unlocking");
-  await waitFor("the wallet opens", `!document.getElementById("v-open").hidden`);
+  await waitFor("the wallet opens", `!document.getElementById("v-open").hidden && !!window.MSG`);   // (and Messages has loaded)
   A.session = await js("token");          // one session at a time: share the page's
 }
 
@@ -583,7 +583,7 @@ for (const [id, label] of [["sec", "Security"], ["msg", "Messages"]]) {
   await click(`#go-${id}`); await stWait(label, id);
   if (id === "msg") { await click("#mgs-go-name"); await mgsWait("Messages > Name", "name"); }
   await js(`lockedNow(); true`);
-  await waitFor("locked (the page loaded again, into the lock screen)", `!document.getElementById("lock").hidden && !document.documentElement.classList.contains("relock")`);
+  await waitFor("locked (the page loaded again, into the lock screen)", `!document.getElementById("lock").hidden && !document.documentElement.classList.contains("relock") && !!window.MSG`);
   check(`locked on Settings > ${label}: nothing of it shows`, !/Auto-lock|alice|Your messaging address/.test(await js(`document.body.innerText`)));
   check(`locked: the Settings rows keep no name, not even hidden`, !/alice/.test(await js(`document.getElementById("s-groups").textContent + [...document.querySelectorAll("#s-groups [aria-label]")].map(e => e.getAttribute("aria-label")).join()`)));
   check(`locked: Settings > Messages keeps none of it, not even hidden (no name, no messaging address)`, await js(`(() => { const m = document.getElementById("s-msg"), t = m.textContent + [...m.querySelectorAll("[aria-label]")].map(e => e.getAttribute("aria-label")).join() + [...m.querySelectorAll("input")].map(i => i.value).join();
@@ -862,7 +862,7 @@ await click("#mgs-go-blocked"); await mgsWait("Blocked", "blocked");
 await click("#b-settings-back"); await mgsWait("Back", "list");
 await click("#mgs-go-req"); await mgsWait("Requests", "req");
 await js(`lockedNow(); true`);
-await waitFor("locked", `!document.getElementById("lock").hidden`);
+await waitFor("locked", `!document.getElementById("lock").hidden && !document.documentElement.classList.contains("relock") && !!window.MSG`);
 check("locked: no overlay, no request, no safety code, no blocked entry kept in the page, not even hidden", await js(`(() => {
   const t = document.body.textContent + [...document.querySelectorAll("[aria-label]")].map(e => e.getAttribute("aria-label")).join(" ");
   return !document.querySelector(".ov, .sheet") && !/carol|dave|workshop|Checked in person|Said it was|message request/.test(t) && !t.includes(${JSON.stringify(bobCode.slice(0, 15))}); })()`));
@@ -1105,7 +1105,7 @@ await waitFor("back on Messages with erin's chats", `[...document.querySelectorA
 await js(`[...document.querySelectorAll("#mg-rows .crow")].find(r => r.innerText.includes("bob")).click(); true`);
 await waitFor("the chat is open", `!!document.querySelector(".ov .cmp")`);
 await E.call("/api/wallet/lock", {});               // the server's auto-lock; the open chat's next request meets it (a 401)
-await waitFor("auto-locked: the lock screen, through the page's one lock (a reload)", `!document.getElementById("lock").hidden && !document.documentElement.classList.contains("relock") && document.getElementById("v-open").hidden`, 20000);
+await waitFor("auto-locked: the lock screen, through the page's one lock (a reload)", `!document.getElementById("lock").hidden && !document.documentElement.classList.contains("relock") && !!window.MSG && document.getElementById("v-open").hidden`, 20000);
 await sleep(400);
 check("after an auto-lock the fingerprint check comes up by itself", await js(`window.__fp`) === 3);
 // the whole page: every element (hidden ones too), every attribute and title, every field's value; not the scripts' source
@@ -1120,7 +1120,7 @@ await enterPin(E.pin, "unlocking after an auto-lock");
 await waitFor("after unlocking: back on Messages, at its list (a chat isn't kept open across a lock)", `!document.getElementById("page-msg").hidden && !document.querySelector(".ov") && [...document.querySelectorAll("#mg-rows .crow")].some(r => r.innerText.includes("bob"))`, 15000);
 await click("#nav-wallet");
 await js(`document.getElementById("b-lock").click(); true`);
-await waitFor("locked by hand", `!document.getElementById("lock").hidden`);
+await waitFor("locked by hand", `!document.getElementById("lock").hidden && !document.documentElement.classList.contains("relock") && !!window.MSG`);
 await sleep(600);
 check("after the user's own Lock, no prompt by itself", await js(`window.__fp`) === 4);
 check("both options are there", await js(`!document.getElementById("b-fp").hidden && !document.getElementById("b-enter-pin").hidden`));
