@@ -378,6 +378,35 @@ After 0.5.20 (branch `sockets-e`, versions unchanged; review of 503b141, E1 to E
   one deadline over a plain socket. Test: `theTcpPathGivesUpOnDrippingHeaders`.
 - E5: a transfer the node gave no answer about (status 0: a timeout or an answer cut short) says it may have been
   sent; the next send from that account is refused until its balance moves or three minutes pass; the page doesn't
-  re-enable Send on that review. Test: `tests/send_unsure_test.py`.
+  re-enable Send on that review. (Replaced on branch `send-core`: see "Transfers" below.)
 - `tests/node_socket_test.py` now counts connections to the old TCP port (with `NODE_TCP_GUARD` set as 0.5.17-0.5.19
   set it): zero; it fails on the 0.5.17 server.py.
+
+## Transfers (branch `send-core`)
+
+A transfer from a wallet key (a send, or setting an amount aside for a bridge) is made in the node's two steps:
+`POST /wallet/fund` builds, funds and signs it and submits nothing; the app checks it is the transfer asked for,
+computes its hash (blake2b of `MANTLE_TXHASH_V1` and the ops' encoding, checked against the node's vectors and its own
+hashes in CI) and saves the whole signed transfer, fsync'd, before `POST /mempool/add/tx` submits it. The node's answer
+to that proves nothing (200 with an empty body), so every retry submits the same saved transfer (after 1, 2, 4, 8 and
+16 minutes); if a fund ever gives a hash the app already holds, it is that transfer again, not a second one.
+
+One unsettled transfer per account: until its hash is in a block with 2 blocks on top, no other send or bridge split
+from that account starts (a bridge waits and then goes on by itself; its deposit waits for the split to be
+confirmed). The page shows "in a block" at first sight, "confirmed" at 2 deep ("final" once at the node's last
+irreversible block); a block that disappears before that puts it back to "waiting for a block". The one exit for a
+transfer that never lands: the chain read from where it was funded has no such hash, and 9.5 hours have passed since
+its last submit or last sighting in a block (the node keeps a transaction in its pool 9 hours, `pool.rs:35`; a fork
+puts it back with a new 9 hours): then it reads "not found in a block after N hours" and the account is free.
+
+The depth, 2: the M2 node's chain over 14 days (36,246 blocks, 33 s per block) shows forks of depth 1 only, in 18% of
+blocks (`~/logos/android-node/fork-depth.py`; uncle headers only ever name the first block of a fork, so this is the
+evidence that is there, not a proof).
+
+Known limits:
+- A fork deeper than 2 blocks can take a "confirmed" transfer away; the account may then already be sending again.
+- A records file that doesn't read is set aside; the transfers it held aren't followed any more, and Activity says so.
+- Two devices with the same keys don't know each other's waiting transfers.
+- A transfer someone else rebroadcasts after the 9.5 hours could still land after "not found in a block".
+- Tests: `tests/xfer_test.py` (fixed cases and seeded runs with forks up to 2 against `tests/fake_chain.py`) and
+  `tests/xfer_real.py` (CI node-socket: a crash between fund and submit, the same transfer submitted again, lands once).

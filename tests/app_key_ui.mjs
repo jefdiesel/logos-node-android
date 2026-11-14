@@ -34,12 +34,14 @@ const env = { ...process.env, APP_EMBEDDED: "android", APP_KEY: KEY, APP_PORT: S
 const app = spawn("python3", [join(here, "..", "app", "server.py")], { stdio: "ignore", env });
 procs.push(app);
 let up = false;
-for (let i = 0; i < 100 && !up; i++) { up = await fetch(BASE + "/").then((r) => r.ok, () => false); if (!up) await sleep(100); }
+// every answer is read to its end: one left unread trips Node's HTTP client when the socket ends (undici's
+// assert(!this.paused), seen twice in CI)
+for (let i = 0; i < 100 && !up; i++) { up = await fetch(BASE + "/").then(async (r) => { await r.arrayBuffer().catch(() => null); return r.ok; }, () => false); if (!up) await sleep(100); }
 check("the app starts", up);
 
 const cport = 9353 + Number(process.env.PORT_SHIFT || 0), prof = mkdtempSync(join(tmpdir(), "chrome-")); dirs.push(prof);
 // never drive a browser this test didn't start: a DevTools port that already answers may be an adb forward to a phone
-if (await fetch(`http://127.0.0.1:${cport}/json/version`).then(() => true, () => false)) { console.error(`port ${cport} already has a DevTools endpoint; set PORT_SHIFT`); stop(); process.exit(1); }
+if (await fetch(`http://127.0.0.1:${cport}/json/version`).then(async (r) => { await r.arrayBuffer().catch(() => null); return true; }, () => false)) { console.error(`port ${cport} already has a DevTools endpoint; set PORT_SHIFT`); stop(); process.exit(1); }
 const chrome = spawn(CHROME, ["--headless=new", `--remote-debugging-port=${cport}`, `--user-data-dir=${prof}`, "--no-first-run",
   "--no-default-browser-check", "--disable-gpu", ...(process.env.CI ? ["--no-sandbox"] : []), "about:blank"], { stdio: "ignore" });
 procs.push(chrome);

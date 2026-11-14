@@ -13,6 +13,7 @@ import atexit, http.server, json, os, shutil, sys, tempfile, threading, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import wallet_test as W  # noqa: E402
+from fake_chain import tx_hash  # noqa: E402
 
 call, check = W.call, W.check
 PIN = "357911"
@@ -32,6 +33,10 @@ class Node:
     pending = []                  # [(kind, body, inputs, outputs)] taken, not in a block yet
     posts = []                    # every POST body the app made: (path, body)
     deposit_mode = "ok"           # ok | refuse | hang
+    funded = {}                   # hash -> (key, inputs, outputs): transfers /wallet/fund built (none submitted)
+    blocks = []                   # [{"slot", "txs": [hash]}]
+    tx_inputs = {}                # hash -> the notes it spends
+    slot = 900
     channel_known = True
     lock = threading.Lock()
 
@@ -39,6 +44,12 @@ class Node:
 def node_include():
     """Puts everything taken in a block: inputs leave, outputs appear."""
     with Node.lock:
+        Node.slot += 1
+        Node.blocks.append({"slot": Node.slot, "txs": [b.get("hash") for k, b, i, o in Node.pending if b.get("hash")]})
+        for _ in range(2):                    # and two blocks on top: confirmed (the app's depth)
+            Node.slot += 1
+            Node.blocks.append({"slot": Node.slot, "txs": []})
+        Node.tx_inputs.update({b["hash"]: list(i) for k, b, i, o in Node.pending if b.get("hash")})
         for kind, body, inputs, outputs in Node.pending:
             key = body.get("change_public_key")
             for i in inputs:
@@ -74,8 +85,19 @@ class NodeH(http.server.BaseHTTPRequestHandler):
         self.wfile.write(b)
 
     def do_GET(self):
+        if self.path.startswith("/cryptarchia/blocks_range"):
+            lo = int(self.path.split("slot_from=")[1].split("&")[0])
+            lines = "".join(json.dumps({"block": {"header": {"slot": b["slot"], "id": "%064x" % (n + 1), "parent_block": "%064x" % n}, "transactions": [
+                {"mantle_tx": {"hash": h, "ops": [{"opcode": 0, "payload": {"inputs": Node.tx_inputs.get(h, []), "outputs": []}}]},
+                 "ops_proofs": []} for h in b["txs"]]}, "lib_slot": Node.blocks[-1]["slot"]}) + "\n" for n, b in enumerate(Node.blocks) if b["slot"] >= lo)
+            raw = lines.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            return self.wfile.write(raw)
         if self.path.startswith("/cryptarchia/info"):
-            return self.out(200, {"height": 500, "slot": 900, "tip": "aa" * 32, "lib": "bb" * 32, "state": "Online", "mode": "Online"})
+            return self.out(200, {"height": 500, "slot": Node.slot, "tip": "aa" * 32, "lib": "bb" * 32, "state": "Online", "mode": "Online"})
         if self.path.startswith("/network/info"):
             return self.out(200, {"connected_peers": ["p"]})
         if self.path.startswith("/wallet/") and self.path.endswith("/balance"):
@@ -93,6 +115,28 @@ class NodeH(http.server.BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         Node.posts.append((self.path, body))
         with Node.lock:
+            if self.path == "/wallet/fund":
+                key = body["change_public_key"]
+                out = body["tx_builder"]["pending_transfer"]["outputs"]
+                reserved = [i for f in Node.funded.values() if f[3] == "reserved" for i in f[1]]
+                try:
+                    inputs, change = spend(key, out[0]["value"], 2018, exclude=reserved)
+                except ValueError:
+                    return self.out(500, {"code": 500, "message": "Wallet does not have enough funds, available=0"})
+                outs = [dict(o) for o in out] + ([{"value": change, "pk": key}] if change else [])
+                tx = {"ops": [{"opcode": 0, "payload": {"inputs": inputs, "outputs": outs}}]}
+                Node.funded[tx_hash(tx)] = [key, inputs, [(o["pk"], o["value"]) for o in outs], "reserved"]
+                return self.out(200, {"tip": "aa" * 32, "funded_tx": tx, "transfer_proof": {"ZkSig": {"pi_a": "aa"}}})
+            if self.path == "/mempool/add/tx":
+                h = tx_hash(body["mantle_tx"])
+                f = Node.funded.get(h)
+                if f and f[3] == "reserved":
+                    f[3] = "submitted"
+                    Node.pending.append(("transfer", {"change_public_key": f[0], "hash": h}, f[1], f[2]))
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             if self.path == "/wallet/transactions/transfer-funds":
                 key = body["change_public_key"]
                 try:
@@ -115,7 +159,7 @@ class NodeH(http.server.BaseHTTPRequestHandler):
                 if any(i not in Node.notes[key] for i in dep):
                     return self.out(500, "note not found")
                 fee_in, change = spend(key, 0, 2054, exclude=dep)
-                Node.pending.append(("deposit", body, dep + fee_in, [(key, change)] if change else []))
+                Node.pending.append(("deposit", dict(body, hash="22" * 32), dep + fee_in, [(key, change)] if change else []))
                 return self.out(200, {"hash": "22" * 32})
         return self.out(404, {"code": 404})
 
@@ -209,7 +253,7 @@ os.environ.update(APP_EMBEDDED="android", APP_PORT="8097", APP_DATA=data, NODE_B
                   NODE_CFG=os.path.join(nodecfg, "user_config.yaml"), UPDATE_URL="", NODE_RESTART_CMD="",
                   NODE_API="http://127.0.0.1:%d" % node_srv.server_address[1], NAMES_BIN=os.path.join(bins, "libnames.so"),
                   NAMES_RPC_URL=seq_url, LNS_FAUCET_URL=seq_url + "faucet", BRIDGE_POLL="0.2", BRIDGE_GIVE_UP="3", BRIDGE_SLOW="0", BRIDGE_SPLIT_WAIT="2",
-                  HISTORY_POLL="1")
+                  HISTORY_POLL="1", XFER_RESCAN_SECONDS="0.5", DEPOSIT_RESCAN_SECONDS="1")
 sys.path.insert(0, os.path.join(HERE, "..", "app"))
 import server  # noqa: E402
 
@@ -330,9 +374,11 @@ check("and none left a bridge behind", bridge() == {} or call("/api/wallet/lns",
 code, d = call("/api/wallet/lns/bridge", {"from": MAIN, "amount": "1000000", "confirm": True}, session=s)
 check("the bridge starts by setting the amount aside", code == 200 and d["bridge"]["state"] == "splitting", d)
 split = Node.posts[-1]
-check("the split is a transfer of exactly the amount from Main to Main",
-      split[0] == "/wallet/transactions/transfer-funds" and split[1] == {"tip": None, "change_public_key": MAIN,
-      "funding_public_keys": [MAIN], "recipient_public_key": MAIN, "amount": 1000000}, split)
+fund = Node.posts[-2]
+check("the split is a transfer of exactly the amount from Main to Main: funded, then that transfer submitted",
+      fund[0] == "/wallet/fund" and fund[1]["change_public_key"] == MAIN and fund[1]["funding_public_keys"] == [MAIN]
+      and fund[1]["tx_builder"]["pending_transfer"]["outputs"] == [{"value": 1000000, "pk": MAIN}] and split[0] == "/mempool/add/tx"
+      and split[1]["mantle_tx"]["ops"][0]["payload"]["outputs"][0] == {"value": 1000000, "pk": MAIN}, (fund, split))
 code, d = call("/api/wallet/send", {"from": MAIN, "to": OTHER, "amount": "5"}, session=s)
 check("Send from Main waits while the bridge uses its notes", code == 409 and "name account" in d["error"], d)
 code, d = call("/api/wallet/lns/bridge", {"from": MAIN, "amount": "500000", "confirm": True}, session=s)

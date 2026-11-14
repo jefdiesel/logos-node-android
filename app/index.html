@@ -304,7 +304,7 @@ html.relock body{visibility:hidden}
       <div id="v-sent" hidden>
         <h2 style="margin-top:14px">Sent</h2>
         <dl>
-          <div><dt>Status</dt><dd id="s-state">Confirming…</dd></div>
+          <div><dt>Status</dt><dd id="s-state">Waiting for a block</dd></div>
           <div><dt>Fee paid</dt><dd id="s-fee">-</dd></div>
           <div><dt>Transaction</dt><dd class="hash" id="s-hash"></dd></div>
           <div><dt>Network</dt><dd>Logos blockchain, public Logos testnet</dd></div>
@@ -1530,12 +1530,19 @@ $("b-go").addEventListener("click", async () => {
     return void (m.textContent = r.data.error);
   }
   if (!r.ok) return void (m.textContent = r.data.error || "The transfer failed.");
-  const hash = r.data.hash; $("s-hash").textContent = hash; $("s-state").textContent = "Confirming…"; $("s-fee").textContent = "-";
+  const hash = r.data.hash; $("s-hash").textContent = hash; $("s-state").textContent = "Waiting for a block"; $("s-fee").textContent = "-";
   $("v-review").hidden = true; $("v-sent").hidden = false; $("to").value = ""; $("amount").value = "";
   clearInterval(txTimer);
   txTimer = setInterval(async () => {
     const s = await api("/api/wallet/tx?hash=" + encodeURIComponent(hash));
-    if (s.ok && s.data.state === "in_block") { clearInterval(txTimer); $("s-state").textContent = "Confirmed"; $("s-fee").textContent = amt(s.data.fee); loadAccounts(); loadHistory(); }
+    // in a block at first sight; confirmed once it is deep enough (then the account sends again); back to waiting if a
+    // fork takes its block away
+    if (!s.ok) return;
+    const st = s.data.state;
+    if (st === "in_block" && s.data.confirmed) { clearInterval(txTimer); $("s-state").textContent = "Confirmed"; $("s-fee").textContent = amt(s.data.fee); loadAccounts(); loadHistory(); }
+    else if (st === "in_block") { $("s-state").textContent = "In a block"; $("s-fee").textContent = amt(s.data.fee); }
+    else if (st === "waiting") $("s-state").textContent = "Waiting for a block";
+    else if (st === "not_found") { clearInterval(txTimer); $("s-state").textContent = "Not found in a block after " + s.data.hours + " hours"; loadAccounts(); loadHistory(); }
   }, 5000);
 });
 $("b-again").addEventListener("click", () => { resetSend(); loadAccounts(); loadHistory(); });
@@ -1564,10 +1571,10 @@ function histRow(e) {
     const split = e.bridge === "split";
     top.replaceChildren(span(split ? "Set aside for the bridge" : "Bridged to LEZ", "kind"), span(split ? (e.fee != null ? "−" + amtH(e.fee) : "") : "−" + amtH(e.amount), "amt"));
     sub.append(span("from " + e.label + (split ? ": " + amtH(e.bridge_amount || "0") + " kept apart for it" : " to your name account")));
-    sub.append(span(e.status === "pending" ? "Confirming…" : e.status === "in block" ? (e.fee != null ? "fee " + amtH(e.fee) : "in a block") : "not in a block"));
+    sub.append(span(sentState(e)));
   } else if (e.kind === "sent") {
     sub.append(span("from " + e.label + " to " + (e.name ? e.name + " " : "") + (e.to_label ? e.to_label + " " : "") + "(" + short(e.to) + ")"), copyBtn(e.to, "Copy address"));
-    sub.append(span(e.status === "in block" ? "fee " + amtH(e.fee) : e.status === "pending" ? "Confirming…" : "not in a block"));
+    sub.append(span(sentState(e)));
   } else if (e.kind === "tracking started") {
     sub.append(span("Earlier activity isn't listed."));
   } else {
@@ -1576,12 +1583,21 @@ function histRow(e) {
   }
   d.append(top, sub); return d;
 }
+// a transfer's state as the chain shows it: waiting, in a block (first sight), confirmed (deep enough; "final" once at
+// the node's last irreversible block), or not found in a block after the hours the network keeps a transfer waiting
+function sentState(e) {
+  return e.status === "pending" ? "waiting for a block" : e.status === "confirming" ? "in a block"
+    : e.status === "in block" ? (e.fee != null ? "confirmed, fee " + amtH(e.fee) : "confirmed") + (e.final ? " · final" : "")
+    : e.status === "not found" ? "not found in a block after " + (e.hours || "some") + " hours"
+    : e.status === "unknown" ? "can't tell" : "not in a block";
+}
 async function loadHistory() {
   const r = await api("/api/wallet/history?limit=50");
   if (r.status === 401) return lockedNow();
   if (!r.ok) return;
   const es = r.data.entries || [];
-  $("hist").replaceChildren(...(es.length ? es.map(histRow) : [Object.assign(document.createElement("p"), { className: "note",
+  const warn = r.data.warning ? [Object.assign(document.createElement("p"), { className: "msg warn", textContent: r.data.warning })] : [];
+  $("hist").replaceChildren(...warn, ...(es.length ? es.map(histRow) : [Object.assign(document.createElement("p"), { className: "note",
     textContent: "History starts from when this wallet started tracking, once the node is online. Earlier activity isn't listed." })]));
 }
 let popItems = [], afterUnlock = true;

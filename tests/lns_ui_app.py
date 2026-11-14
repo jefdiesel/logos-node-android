@@ -7,12 +7,15 @@ a stand-in node, for tests/lns_ui.mjs. Serves on 127.0.0.1:<port> until killed; 
 import http.server, json, os, shutil, signal, sys, tempfile, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from fake_chain import tx_hash  # noqa: E402
 port = sys.argv[1]
 
 
 LEZ = {"balance": 0, "faucet": "ok"}         # the name account's LEZ, and how the faucet answers
 NOTES = {"a1" * 32: {"%064x" % 1: 30000000, "%064x" % 2: 400000}}
 CHANNEL = "01" * 32
+FUNDED, BLOCKS = {}, []                       # transfers /wallet/fund built; blocks: [{"slot", "txs"}]
 nid = [100]
 
 
@@ -72,8 +75,16 @@ class Node(Seq):
     """The node's HTTP API: notes of Main, a transfer or a deposit in a block a second later, a deposit credited on
     LEZ a second after that."""
     def do_GET(self):
+        if self.path.startswith("/cryptarchia/blocks_range"):
+            lo = int(self.path.split("slot_from=")[1].split("&")[0])
+            raw = "".join(json.dumps({"block": {"header": {"slot": b["slot"], "id": "%064x" % (n + 1), "parent_block": "%064x" % n}, "transactions": [
+                {"mantle_tx": {"hash": h, "ops": []}, "ops_proofs": []} for h in b["txs"]]}, "lib_slot": BLOCKS[-1]["slot"]}) + "\n" for n, b in enumerate(BLOCKS) if b["slot"] >= lo).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            return self.wfile.write(raw)
         if self.path.startswith("/cryptarchia/info"):
-            return self.out(200, {"height": 500, "slot": 900, "tip": "aa" * 32, "lib": "bb" * 32, "state": "Online", "mode": "Online"})
+            return self.out(200, {"height": 500, "slot": 900 + len(BLOCKS), "tip": "aa" * 32, "lib": "bb" * 32, "state": "Online", "mode": "Online"})
         if self.path.startswith("/network/info"):
             return self.out(200, {"connected_peers": ["p"]})
         if self.path.startswith("/wallet/") and self.path.endswith("/balance"):
@@ -87,6 +98,34 @@ class Node(Seq):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         key = body.get("change_public_key")
         notes = NOTES.get(key, {})
+        if self.path == "/wallet/fund":
+            out = body["tx_builder"]["pending_transfer"]["outputs"][0]
+            big = max(notes, key=notes.get)
+            outs = [dict(out), {"value": notes[big] - out["value"] - 2018, "pk": key}]
+            tx = {"ops": [{"opcode": 0, "payload": {"inputs": [big], "outputs": outs}}]}
+            FUNDED[tx_hash(tx)] = {"key": key, "input": big, "outs": outs, "done": False}
+            return self.out(200, {"tip": "aa" * 32, "funded_tx": tx, "transfer_proof": {"ZkSig": {"pi_a": "aa"}}})
+        if self.path == "/mempool/add/tx":
+            h = tx_hash(body["mantle_tx"])
+            f = FUNDED.get(h)
+            if f and not f["done"]:
+                f["done"] = True
+
+                def land_tx():
+                    n = NOTES.get(f["key"], {})
+                    if f["input"] in n:
+                        n.pop(f["input"])
+                        for o in f["outs"]:
+                            nid[0] += 1
+                            NOTES.setdefault(o["pk"], {})["%064x" % nid[0]] = o["value"]
+                        BLOCKS.append({"slot": 901 + len(BLOCKS), "txs": [h]})
+                        for _ in range(2):    # and two blocks on top: confirmed (the app's depth)
+                            BLOCKS.append({"slot": 901 + len(BLOCKS), "txs": []})
+                later(land_tx)
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if self.path == "/wallet/transactions/transfer-funds":
             big = max(notes, key=notes.get)
 
@@ -165,7 +204,7 @@ os.environ.update(APP_EMBEDDED="android", APP_PORT=port, APP_DATA=data, NODE_BIN
                   NODE_CFG=os.path.join(node, "user_config.yaml"), UPDATE_URL="", NODE_RESTART_CMD="",
                   NAMES_BIN=os.path.join(bins, "libnames.so"), NAMES_RPC_URL="http://127.0.0.1:%d/" % seq.server_address[1],
                   NODE_API="http://127.0.0.1:%d" % node_api.server_address[1], BRIDGE_POLL="0.5", HISTORY_POLL="1",
-                  LNS_FLOW_POLL="0.5", LNS_FLOW_PAUSES="1,1,1,1", LNS_FLOW_GAP="0.5", LNS_FLOW_RESOLVE_EVERY="0.2,0.5", BRIDGE_SLOW="0", BRIDGE_SPLIT_WAIT="3", NET04_POLL_SECONDS="1",
+                  LNS_FLOW_POLL="0.5", LNS_FLOW_PAUSES="1,1,1,1", LNS_FLOW_GAP="0.5", LNS_FLOW_RESOLVE_EVERY="0.2,0.5", BRIDGE_SLOW="0", BRIDGE_SPLIT_WAIT="3", XFER_RESCAN_SECONDS="0.5", NET04_POLL_SECONDS="1",
                   LNS_FAUCET_URL="http://127.0.0.1:%d/faucet" % seq.server_address[1])
 sys.path.insert(0, os.path.join(HERE, "..", "app"))
 import server  # noqa: E402

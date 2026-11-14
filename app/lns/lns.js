@@ -334,12 +334,12 @@ $("b-lns-br-stop").addEventListener("click", async () => {
   if (!r.ok) brSay(r.data.error || "Can't stop it now.", "bad");
   await lezLoad();
 });
-const BR_TEXT = { splitting: "Setting the amount aside", ready: "Sending to the bridge", depositing: "Sending to the bridge",
+const BR_TEXT = { queued: "Waiting for an earlier transfer from this account to be confirmed", splitting: "Setting the amount aside", ready: "Sending to the bridge", depositing: "Sending to the bridge",
   sent: "Sent. Waiting for a block", landed: "In a block. Arrives in minutes to hours", arrived: "Arrived",
   overdue: "Not in a block yet", failed: "Didn't go", cancelled: "Stopped" };
 function bridgeDraw() {
   const b = (lnsLast || {}).bridge;
-  $("b-lns-br-stop").hidden = !(b && ["splitting", "ready"].includes(b.state));
+  $("b-lns-br-stop").hidden = !(b && ["queued", "splitting", "ready"].includes(b.state));
   if (!b || ($("lns-brf").hidden === false || $("lns-brr").hidden === false)) return;
   if (["arrived", "cancelled"].includes(b.state) && Date.now() / 1000 - (b.arrived_at || b.created || 0) > 3600) return brSay("");
   const ok = b.state === "arrived", bad = ["failed", "overdue"].includes(b.state);
@@ -356,7 +356,7 @@ async function lezLoad() {
   if (tokSel === "lez" && wTab === "hist") lezActRows();
   clearTimeout(lezTimer);
   const b = r.data.bridge;
-  if (tokSel === "lez" && !document.hidden && b && ["splitting", "ready", "depositing", "sent", "landed"].includes(b.state)) lezTimer = setTimeout(() => { lezLoad(); home(true); }, 5000);
+  if (tokSel === "lez" && !document.hidden && b && ["queued", "splitting", "ready", "depositing", "sent", "landed"].includes(b.state)) lezTimer = setTimeout(() => { lezLoad(); home(true); }, 5000);
 }
 
 // ---- the LEZ token in the Wallet -------------------------------------------------------------------------------
@@ -408,7 +408,7 @@ $("b-lez-copy").addEventListener("click", async () => {
 });
 const ACT_TEXT = { faucet: "From the faucet", bridge: "Bridged from wallet", register: "Registered", text: "Pointed", send: "Sent" };
 const ACT_STATE = { running: "running", done: "", failed: "didn't work", unsure: "may have been sent", sent: "", arrived: "", landed: "on its way",
-  splitting: "starting", ready: "starting", depositing: "starting", overdue: "not in a block yet", cancelled: "stopped" };
+  queued: "starting", splitting: "starting", ready: "starting", depositing: "starting", overdue: "not in a block yet", cancelled: "stopped" };
 function lezActRows() {
   const rows = ((lnsLast || {}).activity || []).map(a => {
     const what = a.kind === "register" ? "Registered " + a.name : a.kind === "text" ? "Pointed " + a.name : a.kind === "send" ? "Sent to " + short(a.to || "") : ACT_TEXT[a.kind] || a.kind;
