@@ -11,7 +11,9 @@ decimals), each definition's name, then one getAccount per watched public accoun
 program, token holdings under the token program).
 
 Settings come from a config file (lez04.json beside this file, overridden by wallet-net04-config.json in the data
-folder), not constants: the chain is re-genesised now and then.
+folder), not constants: the chain is re-genesised now and then. The Config's address is derived from bridge_program;
+a "config_account" key in either file overrides that (for a bridge whose Config lives elsewhere), and is not set by
+default, so a new bridge program id moves the Config with it.
 """
 import hashlib
 import json
@@ -30,9 +32,11 @@ MAX_DECIMALS = 38
 MAX_WATCHED = 10
 POLL = float(os.environ.get("NET04_POLL_SECONDS", "30"))          # never more often than this
 TOKENS_EVERY = 3600              # the token list is read again once an hour (and on a channel change)
-TIMEOUT = 8                      # seconds per request
+DEADLINE = 15                    # seconds for one request, all of it (a slow answer is cut off)
+REFRESH_DEADLINE = 60            # seconds for one whole refresh
 RESET_TEXT = "The bridge test network was reset. Balances there start again."
 UNREACHABLE_TEXT = "Can't reach the bridge test network now."
+TOKENS_ERROR_TEXT = "Bridged tokens can't be listed right now."
 PRIVATE_TEXT = "Private balances on the bridge test network are not shown yet."
 
 
@@ -317,11 +321,15 @@ class Net04:
         return 200, {"watched": w}
 
     # -- RPC --
-    def rpc(self, url, method, params):
-        """The result, or raises: Unreachable for no answer, a 5xx/429 or a body that isn't a JSON-RPC answer."""
+    def rpc(self, url, method, params, end=None):
+        """The result, or raises: Unreachable for no answer, a 5xx/429, a body that isn't a JSON-RPC answer, or no time
+        left before `end` (time.monotonic). The fetch gets the seconds it may take in all (at most DEADLINE)."""
         body = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+        left = DEADLINE if end is None else min(DEADLINE, end - time.monotonic())
+        if left <= 0:
+            raise Unreachable("too slow")
         try:
-            code, raw = self.fetch(url, body, REPLY_CAP, TIMEOUT)
+            code, raw = self.fetch(url, body, REPLY_CAP, left)
         except Exception:
             raise Unreachable("no answer")
         if code in (429, 503):
@@ -348,6 +356,8 @@ class Net04:
         old = self.state
         new = dict(old)
         now = self.clock()
+        end = time.monotonic() + REFRESH_DEADLINE
+        rpc = lambda method, params: self.rpc(url, method, params, end)
         ids = []
         for i in ([own] if own else []) + self.watched():
             if i and i not in ids:
@@ -355,8 +365,8 @@ class Net04:
         try:
             if not url:
                 raise Unreachable("no endpoint set")
-            channel = self.rpc(url, "getChannelId", [])
-            height = self.rpc(url, "getLastBlockId", [])
+            channel = rpc("getChannelId", [])
+            height = rpc("getLastBlockId", [])
             if not isinstance(channel, str) or len(channel) > 128 or type(height) is not int or height < 0:
                 raise Unreachable("odd chain identity")
             reset = (old.get("channel") and old["channel"] != channel) or \
@@ -367,11 +377,11 @@ class Net04:
             # the bridged tokens: on a new channel, after an hour, or if not read yet
             if reset or new.get("tokens") is None or now - self.tokens_at > TOKENS_EVERY or new.get("tokens_channel") != channel:
                 cfg_id = c.get("config_account") if isinstance(c.get("config_account"), str) else (config_address(bridge) if bridge else "")
-                cfg = self.rpc(url, "getAccount", [cfg_id]) if cfg_id else None
-                if cfg is None:
+                cfg = rpc("getAccount", [cfg_id]) if cfg_id else None
+                if cfg is None:                   # no Config to read: say the list can't be read, never show none
                     if old.get("tokens") and old.get("tokens_channel") == channel:
                         new = {"reset_at": now, "channel": channel, "height": height}    # the Config is gone: a reset
-                    new.update(tokens=[], token_program=None, tokens_error=None, tokens_channel=channel)
+                    new.update(tokens=[], token_program=None, tokens_error=TOKENS_ERROR_TEXT, tokens_channel=channel)
                 else:
                     try:
                         st = actor_states(cfg)
@@ -380,22 +390,23 @@ class Net04:
                         for eth, definition, decimals in entries:
                             name = None
                             try:
-                                dst = actor_states(self.rpc(url, "getAccount", [definition])) or {}
+                                dst = actor_states(rpc("getAccount", [definition])) or {}
                                 name = decode_definition_name(dst.get(tp, b""))
                             except (ValueError, Unreachable):
-                                pass
+                                if time.monotonic() > end:     # out of time: read the list again next time,
+                                    raise Unreachable("too slow")  # rather than keep it an hour without names
                             sym = symbols.get(eth) if isinstance(symbols.get(eth), str) else None
                             toks.append({"definition": definition, "decimals": decimals,
                                          "symbol": (sym or "token " + short(definition))[:16], "name": name})
                         new.update(tokens=toks, token_program=tp, tokens_error=None, tokens_channel=channel)
                     except ValueError:
-                        new.update(tokens=[], token_program=None, tokens_error="Can't read the bridge's token list.",
+                        new.update(tokens=[], token_program=None, tokens_error=TOKENS_ERROR_TEXT,
                                    tokens_channel=channel)
                 self.tokens_at = now
             accts = dict(new.get("accounts") or {})               # (empty after a reset: new was started afresh)
             for i in ids:
                 try:
-                    st = actor_states(self.rpc(url, "getAccount", [i]))
+                    st = actor_states(rpc("getAccount", [i]))
                     if st is None:
                         accts[i] = {"nothing": True, "at": now}
                         continue
@@ -441,8 +452,10 @@ class Net04:
     def view(self, own):
         s = self.state
         toks = s.get("tokens") or []
+        # a read that has run past its own deadline (an answer trickling in, or none) counts as "can't reach" now
+        slow = self.reading and self.clock() - self.last_try > REFRESH_DEADLINE + 5
         out = {"network": NETWORK, "short": "LEZ 0.4", "private": PRIVATE_TEXT, "tokens_error": s.get("tokens_error"),
-               "reset": RESET_TEXT if s.get("reset_at") and self.clock() - s["reset_at"] < 86400 else None, "unreachable": UNREACHABLE_TEXT if s.get("unreachable") else None,
+               "reset": RESET_TEXT if s.get("reset_at") and self.clock() - s["reset_at"] < 86400 else None, "unreachable": UNREACHABLE_TEXT if s.get("unreachable") or slow else None,
                "height": s.get("height") if type(s.get("height")) is int else None,
                "read_at": s.get("read_at"), "accounts": []}
         ids = ([own] if own else []) + [w for w in self.watched() if w != own]

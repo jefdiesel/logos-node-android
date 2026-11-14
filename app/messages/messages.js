@@ -50,19 +50,19 @@ const fetchBg = window.fetch;
 window.fetch = (url, opt = {}) => quietRpc > 0 && String(url) === NAMES_RPC
   ? fetchBg(url, { ...opt, headers: { ...(opt.headers || {}), "X-Background": "1" } }) : fetchBg(url, opt);
 const resolveBg = async name => { quietRpc++; try { return await resolve(name); } finally { quietRpc--; } };
-async function bgApi(path, body) {
+async function bgApi(path, body) {       // as the page's api(): nothing goes out while locking; a late answer is stale
+  if (locking) return STALE();
   const opt = { headers: { "X-Background": "1" }, cache: "no-store" }, sent = token;
   if (token) opt.headers["X-Session"] = token;
   if (body !== undefined) { opt.method = "POST"; opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
   try {
     const r = await fetch(path, opt);
     let data = null; try { data = await r.json(); } catch (e) {}
-    // as the page's api(): a read made under a session that has ended since shows nothing (the next sync, after
-    // an unlock, reads it again: nothing that came in is skipped, since the read point only moves on success)
-    if (body === undefined && sent && sent !== token) return { ok: false, status: 0, data: { error: "Try again." } };
-    if (r.status === 401 && sent !== token) return { ok: false, status: 0, data: { error: "Try again." } };
+    // an answer to a request made under a session that has ended since shows and does nothing (the next sync,
+    // after an unlock, reads it again: nothing that came in is skipped, since the read point only moves on success)
+    if (locking || (sent && sent !== token)) return STALE();
     return { ok: r.ok, status: r.status, data: data || {} };
-  } catch (e) { return { ok: false, status: 0, data: { error: "The app on this device isn't answering." } }; }
+  } catch (e) { return locking || (sent && sent !== token) ? STALE() : { ok: false, status: 0, data: { error: "The app on this device isn't answering." } }; }
 }
 
 // ---- look ----------------------------------------------------------------------------------------------
@@ -203,6 +203,9 @@ function setTab(t) {
   if (t === "msg") { home(); refresh(); }
 }
 navWallet.addEventListener("click", () => setTab("wallet"));
+// for the page's lock (index.html's lockedNow keeps the tab for the unlock; this is a module, so it says so here),
+// and bgApi for the tests
+window.MSG = { tab: () => tab, setTab, bgApi };
 navMsg.addEventListener("click", () => setTab("msg"));
 setTab("wallet");
 // Settings is its own view; going back returns to the screen it came from
@@ -418,19 +421,12 @@ function home() { if (view === "new" && stack.length && stack[stack.length - 1].
 
 // everything goes when the wallet locks
 const pageShow = window.show;
-// The lock screen covers everything (the page's own); after unlocking, back to where the user was: the
-// same tab, and the same chat if one was open, or the same Settings page.
-let resume = null, reopen = null;
+// A lock reloads the page (index.html's lockedNow), so nothing of the chats outlives it; after the unlock the page
+// comes back to the same tab (and Settings page), not into a chat. forget() empties all of it on any other view.
 window.show = v => {
-  if (v !== "v-open" && !resume && (chat || tab === "msg")) resume = { tab, convo: cv.id, settings: !$("page-settings").hidden };
   pageShow(v); setTimeout(kbSync, 0);
   if (v !== "v-open") forget();
-  else if (resume) {
-    const r = resume; resume = null;
-    if (r.settings && !$("page-settings").hidden) { tab = r.tab; refresh(); return; }    // Settings stays as it was
-    reopen = r.convo; setTab(r.tab); return;
-  }
-  if (tab === "msg") render();
+  else refresh();                                    // opened (after an unlock, a fresh page): the chats load now
 };
 
 const unlocked = () => !$("v-open").hidden && token;
@@ -461,7 +457,6 @@ async function refresh() {
   }
   if (!status.key) { me = null; chat = null; }
   if (loading) { await loading; loading = null; }
-  if (reopen && chat && chat.convo(reopen)) { const id = reopen; reopen = null; render(); openConvo(id); }
   else if (chat) { try { if (await chat.sync()) changed(); } catch (e) { if (e.status === 401) return lockedNow(); } }
   render(); msgSettingsUi();
 }

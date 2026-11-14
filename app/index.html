@@ -184,6 +184,7 @@ body.is-locked main > :not(#lock),body.is-locked #nav{display:none!important}
 .keypad .gap{width:72px;height:72px}
 .lk-msg{text-align:center}
 footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
+html.relock body{visibility:hidden}
 </style>
 </head>
 <body>
@@ -286,6 +287,7 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
           <div><dt>To</dt><dd class="hash" id="r-to"></dd></div>
           <div><dt>From</dt><dd id="r-from"></dd></div>
           <div><dt>Fee</dt><dd>Added on top. Shown after sending.</dd></div>
+          <div><dt>Network</dt><dd>Logos blockchain, public Logos testnet</dd></div>
         </dl>
         <p class="note" id="r-name-note" hidden>This address came from the name service. For a large amount, check it with the person you're paying.</p>
         <p class="note">This can't be undone.</p>
@@ -299,6 +301,7 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
           <div><dt>Status</dt><dd id="s-state">Confirming…</dd></div>
           <div><dt>Fee paid</dt><dd id="s-fee">-</dd></div>
           <div><dt>Transaction</dt><dd class="hash" id="s-hash"></dd></div>
+          <div><dt>Network</dt><dd>Logos blockchain, public Logos testnet</dd></div>
         </dl>
         <p class="note" id="s-note" hidden></p>
         <button type="button" id="b-again" class="primary">Done</button>
@@ -478,6 +481,7 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
     <div class="pop-card">
       <h2 id="pop-h"></h2>
       <div id="pop-list"></div>
+      <p class="runs">On the Logos blockchain, public Logos testnet.</p>
       <button type="button" class="primary" id="pop-ok">OK</button>
     </div>
   </div>
@@ -487,6 +491,17 @@ footer{color:var(--dim);font-size:12.5px;margin:18px 2px 0}
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
+// The page's history steps (Settings levels, Messages' pages and overlays): each step's state carries its depth above
+// the step the page loaded on, so a lock can go back to that step before it reloads, and no step of the old page is
+// left behind it for Back to land on. (This listener comes first: the others read the depth it sets.)
+let histDepth = 0;
+{
+  const push = history.pushState.bind(history), repl = history.replaceState.bind(history);
+  history.pushState = (st, t, u) => { histDepth++; push(Object.assign({}, st, { __d: histDepth }), t, u); };
+  history.replaceState = (st, t, u) => repl(Object.assign({}, st, { __d: histDepth }), t, u);
+  addEventListener("popstate", e => { histDepth = (e.state && e.state.__d) || 0; });
+  try { repl(history.state && typeof history.state === "object" ? Object.assign({}, history.state, { __d: 0 }) : { __d: 0 }, ""); } catch (e) {}
+}
 // inside the Android app (the server sets this): updates come with the app, fingerprint goes through the phone
 const EMBEDDED = ((document.querySelector('meta[name="app-embedded"]') || {}).content || "") === "android";
 const NATIVE = EMBEDDED && typeof window.LogosAndroid === "object" && window.LogosAndroid !== null;
@@ -523,23 +538,26 @@ $("b-eye").addEventListener("click", () => {
 $("l-amount").textContent = "Amount, in " + UNIT;
 const short = k => k.slice(0, 10) + "…" + k.slice(-8);
 let scanHandler = null;   // where a scan started from the Android app's scanner goes (see startScan)
+let locking = false;      // set by lockedNow(): the page is on its way to a fresh, locked load
 let token = null, nodeState = null, nodeInfo = null, nodeWaiting = null, prev = null, accts = [], pending = null, txTimer = null;
 try { token = sessionStorage.getItem("session"); } catch (e) {}
 
+// An answer to a request made under a session that has ended since (a lock came in between), GET or POST, is
+// "stale": it shows nothing and does nothing. Once the page is locking, nothing goes out at all. (A request made
+// with no session can't carry anything private: its answer counts after an unlock too.)
+const STALE = () => ({ ok: false, status: 0, stale: true, data: { error: "Try again." } });
 async function api(path, body) {
+  if (locking) return STALE();
   const opt = { headers: {}, cache: "no-store" }, sent = token;
   if (token) opt.headers["X-Session"] = token;
   if (body !== undefined) { opt.method = "POST"; opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
   try {
     const r = await fetch(path, opt);
     let data = null; try { data = await r.json(); } catch (e) {}
-    // a read made under a session that has ended since (a lock came in between) shows nothing: whatever it would
-    // render belongs behind the lock
-    if (body === undefined && sent && sent !== token) return { ok: false, status: 0, data: { error: "Try again." } };
-    // a "locked" answer to a request made with an older session (before an unlock) must not lock the new one
-    if (r.status === 401 && sent !== token) return { ok: false, status: 0, data: { error: "Try again." } };
+    // (a "locked" answer to a request made with an older session, before an unlock, doesn't lock the new one)
+    if (locking || (sent && sent !== token)) return STALE();
     return { ok: r.ok, status: r.status, data: data || {} };
-  } catch (e) { return { ok: false, status: 0, data: { error: "The app on this device isn't answering." } }; }
+  } catch (e) { return locking || (sent && sent !== token) ? STALE() : { ok: false, status: 0, data: { error: "The app on this device isn't answering." } }; }
 }
 function setToken(t) { token = t; try { t ? sessionStorage.setItem("session", t) : sessionStorage.removeItem("session"); } catch (e) {} }
 // ---- the Wallet: a list of tokens, then Send / Receive / Activity for the one picked ----------------------------
@@ -606,6 +624,7 @@ function show(view) {
     for (const id of ["r-amount", "r-to", "r-from", "r-name", "s-hash", "s-note"]) $(id).textContent = "";
     openPanel(null);
     if (window.LNS && window.LNS.home) window.LNS.home(false);   // the LEZ row and panels empty too
+    if (window.NET04) window.NET04.lock();                         // and the LEZ 0.4 view, back on LEZ 0.3
   }
   settingsUi();
   if (view === "v-locked" && !wasLocked) lockAppeared();
@@ -677,7 +696,49 @@ document.addEventListener("visibilitychange", () => {
 });
 // ---- auto-lock: the server decides; this page only says when the user is active, and when it is hidden ----
 let lastActivity = 0;
-function lockedNow() { setToken(null); resetSend(); show("v-locked"); }
+// THE lock, for every path: the Lock button, the auto-lock (a 401 from any request, the visibility report) and a
+// page that finds itself locked. Nothing of the open wallet survives it: the session is dropped, the page is hidden
+// at once and loaded again from scratch, into the lock screen. So no field, title, pop-up, review, pending send,
+// timer, poll or answer still on its way outlives a lock, and after the unlock every view starts at its first step.
+// (Messages: a message typed but not sent goes with it; sends already queued are on the server and go on. Name jobs
+// run on the server and are read again after the unlock.) `manual`: the user's own Lock tap (no fingerprint prompt
+// comes up by itself after it).
+// Where the user was (the tab, and the Settings page if one was open: never a chat, a name or a step of a flow) is
+// kept for the unlock.
+function lockedNow(manual = false) {
+  if (locking) return;
+  if (!token && $("v-open").hidden) return void show("v-locked");   // nothing open since this load: nothing to drop
+  locking = true;
+  const where = { tab: window.MSG && window.MSG.tab() === "msg" ? "msg" : "wallet", st: $("page-settings").hidden ? null : stLevel };
+  setToken(null);
+  try { sessionStorage.setItem("lock-why", manual || manualLock ? "manual" : "auto"); sessionStorage.setItem("lock-where", JSON.stringify(where)); } catch (e) {}
+  document.documentElement.classList.add("relock");
+  clearInterval(txTimer);
+  relockPage();
+}
+function relockPage() {                 // back to the step the page loaded on, then load it again
+  let done = false;
+  const go = () => { if (!done) { done = true; location.reload(); } };
+  if (histDepth > 0) { addEventListener("popstate", go); setTimeout(go, 600); history.go(-histDepth); }
+  else go();
+}
+let lockWhere = null;
+try {
+  if (sessionStorage.getItem("lock-why") === "manual") manualLock = true;
+  lockWhere = JSON.parse(sessionStorage.getItem("lock-where") || "null");
+  sessionStorage.removeItem("lock-why"); sessionStorage.removeItem("lock-where");
+} catch (e) {}
+/** After the unlock that follows a lock: the same tab, and the same Settings page, each at its first step. */
+function restoreWhere() {
+  const w = lockWhere; lockWhere = null;
+  if (!w || typeof w !== "object") return;
+  if (w.tab === "msg" && window.MSG) window.MSG.setTab("msg");
+  if (typeof w.st === "string") {
+    const g = ST_GROUPS.find(x => x.id === w.st);
+    openSettings();                    // Settings' list first, as when the gear was tapped: Back goes up to it
+    if (g) openSettings(g.sections.find(id => $(id) && !$(id).hidden) || g.sections[0]);
+  }
+}
 function reportActivity() {
   if (!token || $("v-open").hidden || Date.now() - lastActivity < 30000) return;
   lastActivity = Date.now();
@@ -895,6 +956,7 @@ function syncText(n, sy) {
 }
 async function tickStatus() {
   const r = await api("/api/status");
+  if (r.stale) return;                 // (answered after a lock: says nothing, not "stopped")
   const n = r.ok ? r.data.node : null;
   nodeState = n ? n.state : null; nodeInfo = n; nodeWaiting = r.ok ? r.data.waiting : null;
   const pill = $("pill");
@@ -1060,7 +1122,7 @@ async function applyUpdate(body) {
   $("b-upd").disabled = true; $("b-upd-fp").disabled = true;
   const r = await api("/api/update/apply", body);
   $("upd-pin").value = ""; $("b-upd-fp").disabled = false; pinButtons();
-  if (r.status === 401) { setToken(null); return show("v-locked"); }
+  if (r.status === 401) return lockedNow();
   if (!r.ok) return void (m.className = "msg bad", m.textContent = r.data.error || "The update didn't work.");
   m.className = "msg ok"; m.textContent = "Updated to " + r.data.to + ". The app is restarting; this page reloads when it is back.";
   $("upd-go").hidden = true;
@@ -1068,7 +1130,7 @@ async function applyUpdate(body) {
 $("b-upd-fp").addEventListener("click", async () => {
   const m = $("m-upd"); m.className = "msg"; m.textContent = "";
   const f = await fpConfirm("/api/update/passkey/challenge");
-  if (f.status === 401) { setToken(null); return show("v-locked"); }
+  if (f.status === 401) return lockedNow();
   if (f.error) return void (m.className = "msg bad", m.textContent = f.error + " Try again, or use your PIN.");
   applyUpdate({ assertion: f.assertion });
 });
@@ -1077,7 +1139,7 @@ $("b-upd").addEventListener("click", () => { if (pinOk($("upd-pin").value)) appl
 $("b-upd-check").addEventListener("click", async () => {
   const m = $("m-upd-check"); m.className = "msg"; m.textContent = "Checking GitHub…";
   const r = await api("/api/update/check", {});
-  if (r.status === 401) { setToken(null); return show("v-locked"); }
+  if (r.status === 401) return lockedNow();
   if (!r.ok || r.data.error) return void (m.className = "msg bad", m.textContent = (r.data && r.data.error) || "Couldn't check for updates.");
   m.textContent = r.data.available ? "" : "This app is up to date (version " + r.data.current + ").";
   updateUi(r.data.current, r.data.available);
@@ -1183,14 +1245,19 @@ async function fpOn() {
 // ---- wallet views ----
 async function loadWallet() {
   const r = await api("/api/wallet");
+  if (r.stale) return;                 // a lock (or an unlock) came meanwhile: that path goes on from here
   if (!r.ok) { show("v-loading"); $("v-loading").textContent = r.data.error || "The wallet isn't available."; return; }
   passkeys = r.data.passkeys || 0; namesProgram = r.data.names_program || null; nativeFp = !!r.data.native_fingerprint; fpUi();
   if (r.data.autolock_minutes) $("al-min").value = String(r.data.autolock_minutes);
   const g = Number(r.data.leave_grace || 60); $("al-grace").textContent = g === 60 ? "a minute" : g + " seconds";
   if (!r.data.pin_set) return show("v-setup");
-  if (!r.data.unlocked) { setToken(null); return show("v-locked"); }
+  if (!r.data.unlocked) {             // open until now: that's a lock (every lock goes the one way); else a locked load
+    if (!$("v-open").hidden) return lockedNow();
+    setToken(null); return show("v-locked");
+  }
   show("v-open"); loadAccounts(); loadHistory();
   if (afterUnlock) checkReceipts();
+  restoreWhere();
 }
 function acctNode(a) {   // Receive: the account's name, its address in full, Copy (no balance)
   const d = document.createElement("div"); d.className = "acct";
@@ -1209,7 +1276,7 @@ function acctNode(a) {   // Receive: the account's name, its address in full, Co
 }
 async function loadAccounts() {
   const r = await api("/api/wallet/accounts");
-  if (r.status === 401) { setToken(null); return show("v-locked"); }
+  if (r.status === 401) return lockedNow();
   if (!r.ok) return;
   accts = r.data.accounts || [];
   const lb = r.data.last_backup, st = $("bk-state"); lastBackup = lb;
@@ -1273,7 +1340,7 @@ $("b-fp-set").addEventListener("click", fpOn);
 $("b-fp-off").addEventListener("click", () => fpAskOff(true));
 $("b-fp-no").addEventListener("click", () => fpAskOff(false));
 $("b-fp-yes").addEventListener("click", fpOff);
-$("b-lock").addEventListener("click", async () => { manualLock = true; await api("/api/wallet/lock", {}); setToken(null); resetSend(); resetBackup(); resetRestore(); show("v-locked"); });
+$("b-lock").addEventListener("click", async () => { manualLock = true; await api("/api/wallet/lock", {}); lockedNow(true); });
 
 // ---- backup: the server encrypts the node's key file; this page only ever sees the encrypted file ----
 // ---- restore: the server decrypts the file and has the node check it before replacing the keys ----
@@ -1315,7 +1382,7 @@ $("b-rs").addEventListener("click", async () => {
   const r = await api("/api/wallet/restore", { backup: rsDoc, password: $("rs-pw").value, pin: $("rs-pin").value,
                                                replace_name_account: !$("rs-lns-row").hidden && $("rs-lns").checked });
   $("rs-pin").value = ""; pinButtons();
-  if (r.status === 401) { setToken(null); resetRestore(); return show("v-locked"); }
+  if (r.status === 401) return lockedNow();
   if (!r.ok) return void (m.className = "msg bad", m.textContent = r.data.error || "The restore didn't work. Nothing was changed.");
   const msg = (r.data.unchanged ? r.data.message
     : "Restored: the wallet now has the " + r.data.addresses + " accounts from the backup. " + (r.data.restarted ? "The node is restarting with them." : r.data.manual))
@@ -1352,7 +1419,7 @@ $("f-bk").addEventListener("submit", async e => {
   $("b-bk").disabled = true; m.className = "msg"; m.textContent = "Encrypting. This takes a few seconds.";
   const r = await api("/api/wallet/backup", { password: p1, pin: $("bk-pin").value });
   $("bk-pin").value = ""; pinButtons();
-  if (r.status === 401) { setToken(null); resetBackup(); return show("v-locked"); }
+  if (r.status === 401) return lockedNow();
   if (!r.ok) return void (m.className = "msg bad", m.textContent = r.data.error || "The backup couldn't be made.");
   const d = new Date(), name = "logos-node-wallet-backup-" + d.getFullYear() + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0") + ".json";
   const url = URL.createObjectURL(new Blob([JSON.stringify(r.data.backup, null, 2)], { type: "application/json" }));
@@ -1411,7 +1478,7 @@ $("b-go").addEventListener("click", async () => {
   }
   b.textContent = "Sending…";
   const r = await api("/api/wallet/send", pending); b.disabled = false; b.textContent = "Send now";
-  if (r.status === 401) { setToken(null); resetSend(); return show("v-locked"); }
+  if (r.status === 401) return lockedNow();
   if (!r.ok && r.data.unsure) {        // no answer: it may have gone through, so no second click on the same review
     b.disabled = true; loadAccounts(); loadHistory();
     return void (m.textContent = r.data.error);
@@ -1477,7 +1544,7 @@ function histRow(e) {
 }
 async function loadHistory() {
   const r = await api("/api/wallet/history?limit=50");
-  if (r.status === 401) { setToken(null); return show("v-locked"); }
+  if (r.status === 401) return lockedNow();
   if (!r.ok) return;
   const es = r.data.entries || [];
   $("hist").replaceChildren(...(es.length ? es.map(histRow) : [Object.assign(document.createElement("p"), { className: "note",
@@ -1487,7 +1554,7 @@ let popItems = [], afterUnlock = true;
 async function checkReceipts() {
   const away = afterUnlock; afterUnlock = false;
   const r = await api("/api/wallet/receipts", {});
-  if (r.status === 401) { setToken(null); return show("v-locked"); }
+  if (r.status === 401) return lockedNow();
   const list = (r.ok && r.data.receipts) || [];
   if (!list.length) return;
   popItems = popItems.concat(list);

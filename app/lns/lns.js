@@ -102,6 +102,7 @@ if (panels) panels.innerHTML = `
             <div><dt>Amount</dt><dd id="lez-rv-amt"></dd></div>
             <div><dt>To</dt><dd class="hash" id="lez-rv-to"></dd></div>
             <div><dt>Fee</dt><dd id="lez-rv-fee"></dd></div>
+            <div><dt>Network</dt><dd>LEZ 0.3, public Logos testnet</dd></div>
           </dl>
           <p class="note">Can't be undone.</p>
           <div class="row"><button type="button" id="b-lez-back">Back</button><button type="button" class="primary" id="b-lez-go">Send now</button></div>
@@ -454,7 +455,7 @@ async function lezFollow() {          // until the send has finished: then its r
   if (r.status === 401) return lockedNow();
   const j = (r.ok && r.data.job) || {};
   if (j.kind === "send" && j.state === "running") return void setTimeout(lezFollow, 3000);
-  if (j.kind === "send") lezSay(j.state === "done" ? "Sent " + LEZ(j.amount) + "." : j.unsure ? j.error : "Didn't work: " + j.error,
+  if (j.kind === "send") lezSay(j.state === "done" ? "Sent " + LEZ(j.amount) + " on LEZ 0.3, public Logos testnet." : j.unsure ? j.error : "Didn't work: " + j.error,
                                 j.state === "done" ? "ok" : j.unsure ? "warn" : "bad");
   home(true); lezLoad();
 }

@@ -16,6 +16,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 APP = os.path.join(HERE, "..", "app")
 sys.path.insert(0, APP)
 import lez04  # noqa: E402
+import atexit, shutil  # noqa: E402
+
+_tmp = []
+
+
+def mkdtemp():
+    """A temporary folder, removed when the test ends."""
+    d = tempfile.mkdtemp()
+    _tmp.append(d)
+    return d
+
+
+atexit.register(lambda: [shutil.rmtree(d, ignore_errors=True) for d in _tmp])
 
 FAILS = []
 
@@ -59,7 +72,7 @@ class Chain:
 
 
 now = [1_800_000_000.0]
-data = tempfile.mkdtemp()
+data = mkdtemp()
 with open(os.path.join(data, "wallet-net04-config.json"), "w") as f:
     json.dump({"rpc_url": "https://lez.example/"}, f)
 
@@ -97,7 +110,7 @@ check("private balances are said not to be shown", "not shown yet" in v["private
 check("no reset or unreachable message", not v["reset"] and not v["unreachable"])
 
 ch2 = Chain()
-n2 = lez04.Net04(tempfile.mkdtemp(), APP, ch2.fetch, clock=lambda: now[0])
+n2 = lez04.Net04(mkdtemp(), APP, ch2.fetch, clock=lambda: now[0])
 n2.refresh(OWNER)
 v = n2.view(OWNER)
 check("the phone's own account comes first, marked as its own and not view-only",
@@ -240,6 +253,55 @@ time.sleep(0.5)
 check("nothing reads unless the page looks", len(ch.calls) == calls)
 check("at most 10 watched addresses", all(n.watch(lez04.b58encode(bytes([i + 1] * 32)))[0] == 200 for i in range(9)) and n.watch(lez04.b58encode(bytes([99] * 32)))[0] == 400)
 
+# ---- the bridge's token list can't be read: it says so, never "none" ----------------------------------------------------------
+check("the Config's address isn't pinned in lez04.json: it is derived from the bridge program",
+      "config_account" not in json.load(open(os.path.join(APP, "lez04.json"))) and lez04.config_address(BRIDGE) == REC["config_account"])
+ch = Chain()
+ch.accounts.pop(REC["config_account"])
+n = reader(ch)
+n.state = {}
+now[0] += 10
+n.refresh(OWNER)
+v = n.view(OWNER)
+check("no Config on a first read: 'Bridged tokens can't be listed right now', the native balance still shown",
+      v["tokens_error"] == "Bridged tokens can't be listed right now." and v["accounts"][0].get("native") == "23,786,858" and not v["reset"], v)
+
+# ---- a slow read: cut off at its deadline, and meanwhile the view says it can't reach the network --------------------------------
+ch = Chain()
+n = reader(ch)
+try:
+    n.rpc("https://lez.example/", "getChannelId", [], time.monotonic() - 1)
+    check("a request with no time left isn't made", False)
+except lez04.Unreachable:
+    check("a request with no time left isn't made", ch.calls == [])
+n.refresh(None)
+n.reading, n.last_try = True, now[0] - 20
+check("a read 20 s in, still within its refresh's 60 s: not 'can't reach' yet", not n.view(None)["unreachable"])
+n.reading, n.last_try = True, now[0] - lez04.REFRESH_DEADLINE - 6
+v = n.view(None)
+check("a read running past its deadline: 'Can't reach the bridge test network now.', the last numbers kept with their time",
+      v["unreachable"] == lez04.UNREACHABLE_TEXT and v["read_at"] and v["accounts"] and v["accounts"][0].get("native") == "23,786,858", v)
+n.reading = False
+
+
+class SlowChain(Chain):
+    """Each answer takes 0.3 s."""
+    def fetch(self, url, body, cap, timeout):
+        time.sleep(0.3)
+        return Chain.fetch(self, url, body, cap, timeout)
+
+
+real_deadline = lez04.REFRESH_DEADLINE
+lez04.REFRESH_DEADLINE = 0.5
+ch = SlowChain()
+n = reader(ch)
+n.state = {}
+t0 = time.monotonic()
+n.refresh(None)
+lez04.REFRESH_DEADLINE = real_deadline
+check("a refresh stops at its own deadline (0.5 s here): 'can't reach', no more requests after it",
+      n.state.get("unreachable") == "too slow" and len(ch.calls) <= 3 and time.monotonic() - t0 < 1.5, (n.state.get("unreachable"), ch.calls))
+
 # ---- the module stands apart: it imports and names nothing of the wallet ----------------------------------------------------
 tree = ast.parse(open(os.path.join(APP, "lez04.py")).read())
 imports = {a.name for node_ in ast.walk(tree) if isinstance(node_, (ast.Import, ast.ImportFrom)) for a in node_.names} | \
@@ -266,7 +328,7 @@ class RPC(http.server.BaseHTTPRequestHandler):
 rpc = http.server.ThreadingHTTPServer(("127.0.0.1", 0), RPC)
 threading.Thread(target=rpc.serve_forever, daemon=True).start()
 PORT = 8102 + int(os.environ.get("PORT_SHIFT", "0"))
-adata = tempfile.mkdtemp()
+adata = mkdtemp()
 with open(os.path.join(adata, "wallet-net04-config.json"), "w") as f:
     json.dump({"rpc_url": "http://127.0.0.1:%d/" % rpc.server_address[1]}, f)
 os.environ.update(APP_EMBEDDED="android", APP_PORT=str(PORT), APP_DATA=adata, NODE_BIN="/nonexistent", UPDATE_URL="",
@@ -317,6 +379,73 @@ time.sleep(0.6)
 code, v = W.call("/api/wallet/net04", session=s)
 check("garbage from the network is 'can't reach', the old numbers kept", code == 200 and v["unreachable"] and v["accounts"][0].get("native") == "23,786,858", v)
 W.call("/api/wallet/net04/watch", {"remove": OWNER}, session=s)
+
+
+class Trickle(http.server.BaseHTTPRequestHandler):
+    """An answer that comes a byte every half second: each byte is within the per-read timeout."""
+    def do_POST(self):
+        self.rfile.read(int(self.headers["Content-Length"]))
+        self.send_response(200); self.send_header("Content-Length", "100000"); self.end_headers()
+        try:
+            for _ in range(40):
+                self.wfile.write(b" "); self.wfile.flush(); time.sleep(0.5)
+        except Exception:
+            pass
+
+    def log_message(self, *a):
+        pass
+
+
+import socket  # noqa: E402
+
+
+def raw_server(behave):
+    """A plain TCP server: `behave(conn)` for each connection."""
+    ls = socket.socket()
+    ls.bind(("127.0.0.1", 0))
+    ls.listen(8)
+
+    def loop():
+        while True:
+            try:
+                c, _ = ls.accept()
+            except Exception:
+                return
+            threading.Thread(target=behave, args=(c,), daemon=True).start()
+    threading.Thread(target=loop, daemon=True).start()
+    return ls
+
+
+def trickle_status(c):        # the status line, a byte every half second
+    try:
+        c.recv(65536)
+        for ch_ in b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}" * 3:
+            c.send(bytes([ch_])); time.sleep(0.5)
+    except Exception:
+        pass
+
+
+def silent(c):                # never answers
+    try:
+        c.recv(65536); time.sleep(30)
+    except Exception:
+        pass
+
+
+slow = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Trickle)
+threading.Thread(target=slow.serve_forever, daemon=True).start()
+for what, port in (("a body trickling in", slow.server_address[1]), ("a status line trickling in", raw_server(trickle_status).getsockname()[1]),
+                   ("no answer at all", raw_server(silent).getsockname()[1])):
+    t0, err = time.monotonic(), None
+    try:
+        server.fetch_outside("http://127.0.0.1:%d/" % port, {"x": 1}, cap=1 << 20, timeout=8, total=2)
+    except Exception as e:
+        err = e
+    check("%s: cut off at the request's overall limit (2 s here), not waited for" % what, isinstance(err, TimeoutError) and time.monotonic() - t0 < 3.5, (err, time.monotonic() - t0))
+slow.shutdown()
+chain.raw = None
+code, raw = server.fetch_outside("http://127.0.0.1:%d/" % rpc.server_address[1], {"jsonrpc": "2.0", "id": 1, "method": "getChannelId", "params": []}, cap=1 << 16, total=5)
+check("an ordinary answer within the limit comes through", code == 200 and json.loads(raw)["result"] == REC["channel"], raw[:100])
 check("nothing on the 0.4 path reached a send, the node, the names service, the 0.3 balances or the messages", not tripped, tripped)
 print("all checks passed" if not FAILS else "%d FAILED" % len(FAILS))
 sys.exit(1 if FAILS else 0)

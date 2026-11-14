@@ -1173,6 +1173,33 @@ print(json.dumps(res))`);
   check("the next try reads everything from the start: both show, both unread", j2.storeOk && texts(j2) === "locked one|locked two" && j2.unreadTotal() === 2, [texts(j2), j2.unreadTotal()]);
   J.proc.kill();
 }
+{
+  // the messaging key file is synced when written; a store swap whose last rename fails puts the old file back
+  const T = mkdtempSync(join(tmpdir(), "io-"));
+  const out = pyIn(T, `import json, os, errno
+res, synced = [], []
+real_fsync = os.fsync
+os.fsync = lambda fd: synced.append(fd) or real_fsync(fd)
+server.msg_key_save({"secret": "11" * 32, "public": "22" * 32}, quiet=True)
+res.append(len(synced) > 0); res.append(json.load(open(server.MSG_KEY_FILE))["public"] == "22" * 32)
+json.dump({"rev": 3, "blob": "QUJD"}, open(server.STORE_FILE, "w"))
+real_replace = os.replace
+def eio(a, b, *k, **kw):
+    if b == server.STORE_FILE and str(a).endswith(".tmp"):
+        raise OSError(errno.EIO, "Input/output error")
+    return real_replace(a, b, *k, **kw)
+os.replace = eio
+got = {}
+try: server.store_aside("aside", got); res.append("no error")
+except OSError: res.append("refused")
+os.replace = real_replace
+res.append(json.load(open(server.STORE_FILE))["blob"]); res.append(got.get("aside"))
+res.append(sorted(f for f in os.listdir(os.path.dirname(server.STORE_FILE)) if f.startswith(os.path.basename(server.STORE_FILE))))
+print(json.dumps(res))`);
+  rmSync(T, { recursive: true, force: true });
+  check("the messaging key file is synced; an I/O error on a store swap's last rename puts the saved chats back (no file left aside, no tmp)",
+    out === JSON.stringify([true, true, "refused", "QUJD", null, ["wallet-chat.json"]]).replace(/,/g, ", "), out);
+}
 
 stopAll();
 console.log("all checks passed");

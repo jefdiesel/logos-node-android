@@ -18,6 +18,7 @@ const CHROME = process.env.CHROME || "/Applications/Google Chrome.app/Contents/M
 const PORT = 8141 + Number(process.env.PORT_SHIFT || 0), BASE = `http://127.0.0.1:${PORT}`, PIN = "246813";
 const OWN = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";        // the stand-in signer's account (tests/fake_names_bin.py)
 const BASECAMP = "CCVd76Tk3WvFb63Wbuu4exMeLRTbSuMWHqxuvysapKnk";   // the account recorded in tests/fixtures/net04
+const LATE = "US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx";       // an id watched while the page locks
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
 const procs = [];
 let prof = "";
@@ -90,6 +91,13 @@ check("Send says it runs on the public Logos testnet", /Runs on the public Logos
 check("Receive says so too", /on the public Logos testnet\./.test(await words("#p-recv")));
 check("Get this name and Get LEZ say which network", /Runs on the public Logos testnet \(LEZ 0\.3\)\.Not on the bridge test network \(LEZ 0\.4\)\./.test(await js(`document.body.textContent`))
   && /Both run on the public Logos testnet \(LEZ 0\.3\)\./.test(await js(`document.body.textContent`)));
+check("the send screens and the Received pop-up name the network: the Logos coin runs on the Logos blockchain",
+  /Network\s*Logos blockchain, public Logos testnet/.test(await words("#v-review")) && /Network\s*Logos blockchain, public Logos testnet/.test(await words("#v-sent"))
+  && /On the Logos blockchain, public Logos testnet\./.test(await words("#pop")));
+check("by the switch, before anything is asked: what choosing LEZ 0.4 tells lez.nameswallet.app",
+  (await text("#nw-asks")) === "Choosing LEZ 0.4 asks lez.nameswallet.app about this phone's account and the addresses you watch; it sees them and your IP address." && (await shown("#nw-asks")));
+await sleep(2000);
+check("on LEZ 0.3 the page asks nothing about LEZ 0.4", !(await js(`window.__req.some(r => r.includes("/api/wallet/net04"))`)), await js(`window.__req`));
 await shot("lez-0.3");
 
 // ---- LEZ 0.4: the phone's own LEZ account and what it holds there ----
@@ -128,6 +136,13 @@ await waitFor("the watched account shows, marked view-only, with its bridged coi
 check("the phone's own account has no Stop watching", !/Stop watching/.test(await js(`document.querySelector("#n4-accts .n4-acct").innerText`)));
 await shot("lez-0.4-watched");
 
+// ---- the 0.4 view reads only while the Wallet shows: not under Settings ----
+await js(`openSettings(); window.__req = []; document.dispatchEvent(new Event("visibilitychange")); true`);
+await sleep(1500);
+check("Settings open over LEZ 0.4: no 0.4 read", !(await js(`window.__req.some(r => r.includes("/api/wallet/net04"))`)), await js(`window.__req`));
+await js(`closeSettings(); window.__req = window.__req.filter(r => !r.includes("/api/wallet/visibility")); true`);   // (the page's own report of the test's event)
+await waitFor("back on the Wallet: it reads again", `window.__req.some(r => r.includes("GET /api/wallet/net04"))`, 5000);
+
 // ---- the eye (on the 0.3 token list) hides the numbers on 0.4 too ----
 await click("#nw-03"); await click("#b-eye"); await click("#nw-04");
 await waitFor("the eye: no number shows on 0.4", `!/23,786,858|0\\.1\\b/.test(document.getElementById("n4-accts").innerText) && /LEZ: /.test(document.getElementById("n4-accts").innerText)`);
@@ -164,12 +179,41 @@ await cdp("Page.navigate", { url: BASE + "/" });
 await waitFor("after a reload: unlocked", `!document.getElementById("v-open").hidden && !!document.getElementById("nw-03")`);
 check("after a reload: LEZ 0.3 again", (await js(`document.getElementById("nw-03").getAttribute("aria-checked")`)) === "true" && (await shown("#tokens")) && !(await shown("#net04")));
 
+// ---- a lock with LEZ 0.4 showing: nothing of it stays in the page, and it is LEZ 0.3 after the unlock ----
+const relock = async () => { await js(`sessionStorage.setItem("session", ${JSON.stringify(session)}); true`); await cdp("Page.navigate", { url: BASE + "/" });
+  await waitFor("unlocked again", `!document.getElementById("v-open").hidden && !!document.getElementById("nw-04")`); };
+await click("#nw-04");
+await val("#n4-watch", BASECAMP); await click("#n4-add");
+await waitFor("LEZ 0.4 with the phone's account and a watched one", `document.getElementById("n4-watch-m").textContent.includes(${JSON.stringify(BASECAMP)}) && document.querySelectorAll("#n4-accts .n4-acct").length === 2 && /LEZ: 23,786,858/.test(document.getElementById("n4-accts").innerText)`, 20000);
+await val("#n4-watch", "typed, not sent");
+await js(`lockedNow(); true`);
+await waitFor("locked: the page loaded again, into the lock screen", `!document.getElementById("v-locked").hidden && !document.documentElement.classList.contains("relock")`);
+const left = await js(`(() => { const h = document.documentElement.outerHTML, v = document.getElementById("net04");
+  return { own: h.includes(${JSON.stringify(OWN)}), watched: h.includes(${JSON.stringify(BASECAMP)}), amounts: /23,786,858|wETH: /.test(v.textContent),
+    accts: document.getElementById("n4-accts").textContent, msg: document.getElementById("n4-watch-m").textContent, state: document.getElementById("n4-state").textContent,
+    typed: document.getElementById("n4-watch").value, on03: document.getElementById("nw-03").getAttribute("aria-checked") === "true" && v.hidden }; })()`);
+check("locked: no account id, watched id, amount, message or typed text of LEZ 0.4 left in the page, and the switch back on LEZ 0.3",
+  !left.own && !left.watched && !left.amounts && !left.accts && !left.msg && !left.state && !left.typed && left.on03, left);
+await relock();
+check("after the unlock: LEZ 0.3", (await js(`document.getElementById("nw-03").getAttribute("aria-checked")`)) === "true" && !(await shown("#net04")));
+// a Watch answered after a lock writes nothing
+await click("#nw-04");
+await waitFor("LEZ 0.4 again", `/LEZ: 23,786,858/.test(document.getElementById("n4-accts").innerText)`, 20000);
+await js(`document.getElementById("n4-watch").value = ${JSON.stringify(LATE)}; document.getElementById("n4-add").click(); lockedNow(); true`);
+await waitFor("locked with the Watch on its way", `!document.getElementById("v-locked").hidden && !document.documentElement.classList.contains("relock")`);
+await sleep(1500);
+const lateW = await js(`({ html: document.documentElement.outerHTML.includes(${JSON.stringify(LATE)}), msg: document.getElementById("n4-watch-m").textContent, accts: document.getElementById("n4-accts").textContent })`);
+check("a Watch answered after the lock writes nothing behind it", !lateW.html && !lateW.msg && !lateW.accts, lateW);
+await relock();
+await post("/api/wallet/net04/watch", { remove: LATE }, session);
+
 // ---- a read still on its way when the page locks renders nothing behind the lock ----
-const late = await js(`(async () => { const p = api("/api/wallet/accounts"), q = loadAccounts(); lockedNow(); const r = await p; await q;
+// (relockPage, the reload, held back so the page that is locking can be looked at)
+const late = await js(`(async () => { relockPage = () => {}; document.getElementById("accts").replaceChildren();
+  const p = api("/api/wallet/accounts"), q = loadAccounts(); lockedNow(); const r = await p; await q;
   await new Promise(ok => setTimeout(ok, 300));
-  return { status: r.status, ok: r.ok, accts: document.querySelectorAll(".acct").length, total: document.getElementById("bal-total").textContent,
-    locked: !document.getElementById("v-locked").hidden }; })()`);
-check("a read answered after a lock is dropped: nothing rendered behind the lock", late.locked && !late.ok && late.status === 0 && late.accts === 0 && !/[0-9]/.test(late.total), late);
+  return { status: r.status, ok: r.ok, stale: r.stale, accts: document.querySelectorAll("#accts .acct").length, hidden: document.documentElement.classList.contains("relock") }; })()`);
+check("a read answered after a lock is dropped: stale, nothing rendered, the page hidden", late.stale && !late.ok && late.status === 0 && late.accts === 0 && late.hidden, late);
 
 check("no page errors", errors.length === 0, errors);
 stop();

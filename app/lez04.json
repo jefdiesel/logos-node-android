@@ -2,7 +2,6 @@
   "network": "bridge test network (LEZ 0.4)",
   "rpc_url": "https://lez.nameswallet.app/",
   "bridge_program": "JECKBkvoc2e3dC18Wm6zZJEC2BGMwUwLsdZiQzYTnUx7",
-  "config_account": "HugSoWM7Hp1eXMqknfCewWNMoraweLG3HkezfNGtqKf3",
   "native_program": "11111111111111111111111111111111",
   "symbols": {
     "0x0000000000000000000000000000000000000000": "wETH",

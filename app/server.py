@@ -8,7 +8,7 @@ Python standard library only. Wallet calls need a PIN that is set on first use.
 import base64, calendar, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.9.24"
+APP_VERSION = "0.9.26"
 # APP_EMBEDDED=android: this app runs inside the Android app (embedded Python, page in a WebView).
 # Then it never updates or restarts itself (the Android app brings new versions), and fingerprint
 # unlock goes through the phone's own fingerprint check instead of a passkey. Unset: nothing changes.
@@ -301,22 +301,82 @@ def outside_url_ok(url):
     return bool(u.hostname) and (u.scheme == "https" or (u.scheme == "http" and u.hostname in ("127.0.0.1", "localhost", "::1")))
 
 
-def fetch_outside(url, body=None, cap=65536, timeout=8):
-    """GET (or POST `body` as JSON) to a fixed outside URL: no redirects, at most `cap` bytes.
-    Returns (http status, bytes); raises on a bad URL, no answer or an answer that is too big."""
+def _read_capped(r, cap, end):
+    """At most cap + 1 bytes of an answer, a piece at a time; raises TimeoutError once time.monotonic() passes `end`
+    (an answer that trickles in a byte at a time is cut off, not waited for)."""
+    read = getattr(r, "read1", None) or r.read
+    out = bytearray()
+    while len(out) <= cap:
+        if end is not None and time.monotonic() > end:
+            raise TimeoutError("answer too slow")
+        piece = read(min(16384, cap + 1 - len(out)))
+        if not piece:
+            break
+        out += piece
+    return bytes(out)
+
+
+def _fetch_within(url, data, method, headers, cap, timeout, total):
+    """One request with an overall limit of `total` seconds for all of it: connecting, TLS, the status line, the
+    headers and the body. A timer shuts the socket at the limit, which wakes any read waiting on it. TLS is verified
+    (the default context); a redirect is answered as it is, never followed. (status, bytes), or raises."""
+    import ssl
+    u = urllib.parse.urlsplit(url)
+    end = time.monotonic() + total
+    per = max(0.1, min(timeout, total))
+    if u.scheme == "https":
+        conn = http.client.HTTPSConnection(u.hostname, u.port, timeout=per, context=ssl.create_default_context())
+    else:
+        conn = http.client.HTTPConnection(u.hostname, u.port, timeout=per)
+    cut = []
+
+    def stop():
+        cut.append(1)
+        sk = conn.sock
+        try:
+            if sk is not None:
+                sk.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+    timer = threading.Timer(total, stop)
+    timer.daemon = True
+    timer.start()
+    try:
+        path = (u.path or "/") + ("?" + u.query if u.query else "")
+        conn.request(method, path, body=data, headers=headers)
+        r = conn.getresponse()
+        return r.status, _read_capped(r, cap, end)
+    except Exception:
+        if cut or time.monotonic() > end:
+            raise TimeoutError("answer too slow")
+        raise
+    finally:
+        timer.cancel()
+        conn.close()
+
+
+def fetch_outside(url, body=None, cap=65536, timeout=8, total=None):
+    """GET (or POST `body` as JSON) to a fixed outside URL: no redirects, at most `cap` bytes, `timeout` seconds per
+    socket operation and, with `total`, that many seconds for the whole request (connecting and the headers too).
+    Returns (http status, bytes); raises on a bad URL, no answer, an answer that is too big or too slow."""
     if not outside_url_ok(url):
         raise ValueError("refused URL")
-    req = urllib.request.Request(url, data=None if body is None else json.dumps(body).encode(),
-                                 method="GET" if body is None else "POST",
-                                 headers={"Content-Type": "application/json", "User-Agent": "logos-node-app"})
-    try:
-        with _outside.open(req, timeout=timeout) as r:
-            code, data = r.status, r.read(cap + 1)
-    except urllib.error.HTTPError as e:
-        code, data = e.code, e.read(cap + 1)
-    if len(data) > cap:
+    data = None if body is None else json.dumps(body).encode()
+    method = "GET" if body is None else "POST"
+    headers = {"Content-Type": "application/json", "User-Agent": "logos-node-app"}
+    if total is not None:
+        code, raw = _fetch_within(url, data, method, headers, cap, timeout, total)
+    else:
+        req = urllib.request.Request(url, data=data, method=method, headers=headers)
+        try:
+            with _outside.open(req, timeout=timeout) as r:
+                code, raw = r.status, r.read(cap + 1)
+        except urllib.error.HTTPError as e:
+            with e:
+                code, raw = e.code, e.read(cap + 1)
+    if len(raw) > cap:
         raise ValueError("answer too big")
-    return code, data
+    return code, raw
 
 
 # ---- LNS names: the page resolves names itself; this only forwards the one read it needs -----
@@ -4631,10 +4691,7 @@ def msg_key_mark():
 
 
 def msg_key_save(d, quiet=False):
-    fd = os.open(MSG_KEY_FILE + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(d, f)
-    os.replace(MSG_KEY_FILE + ".tmp", MSG_KEY_FILE)
+    _fsync_write(MSG_KEY_FILE, json.dumps(d).encode())      # synced: a power cut leaves the old key or the new one
     if not quiet:
         with msg_lock:
             msg_state["subscribed"] = None        # the inbox topic may have changed: subscribe again
@@ -5172,7 +5229,21 @@ def store_replace_keeping_aside(why, blob, out=None):
             raise
     if out is not None:
         out["aside"] = name
-    os.replace(tmp, STORE_FILE)
+    try:
+        os.replace(tmp, STORE_FILE)
+    except Exception:                     # (an I/O error: space was found above) the old file goes back in place
+        if name:
+            try:
+                os.rename(name, STORE_FILE)
+                if out is not None:
+                    out["aside"] = None
+            except Exception:
+                event("saved chats left aside as " + os.path.basename(name) + " (couldn't be put back)")
+        try:
+            os.unlink(tmp)
+        except Exception:
+            pass
+        raise
     _fsync_dir(STORE_FILE)
     return rev
 
@@ -6098,7 +6169,7 @@ def net04():
     if not _net04:
         try:
             import lez04
-            _net04.append(lez04.Net04(DATA_DIR, APP_DIR, lambda url, body, cap, timeout: fetch_outside(url, body, cap=cap, timeout=timeout)))
+            _net04.append(lez04.Net04(DATA_DIR, APP_DIR, lambda url, body, cap, total: fetch_outside(url, body, cap=cap, total=total)))
         except Exception:
             _net04.append(None)
     return _net04[0]

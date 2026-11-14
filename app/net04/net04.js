@@ -2,13 +2,16 @@
 // test network (read-only here). Loaded by index.html in the Android app; uses its globals ($, api, lockedNow,
 // balHidden, MASK). The switch is above the token list; LEZ 0.3 is the default. On LEZ 0.4 the page shows the phone's
 // own LEZ account and the addresses the person watches (view-only), read by the server (app/lez04.py) at most every
-// 30 s and only while this view is on screen. Nothing here sends: Send and Receive say they aren't available there.
+// 30 s and only while this view is on screen (the Wallet, not Settings or Messages). Nothing here sends: Send and
+// Receive say they aren't available there. A lock empties the view, goes back to LEZ 0.3 and drops any answer still
+// on its way (index.html's show() calls NET04.lock()).
 (() => {
   const sw = $("net-sw"), view = $("net04");
   if (!sw || !view) return;
   const NAMES = { "03": "public Logos testnet", "04": "bridge test network" };
   let net = "03";                // LEZ 0.3 every time the page opens
-  let timer = null, last = null, busy = false;
+  let timer = null, busy = false;
+  let gen = 0;                   // moves on every lock: an answer to a request made before it renders nothing
 
   sw.innerHTML = `
     <div class="netsw">
@@ -17,7 +20,8 @@
         <button type="button" role="radio" id="nw-04" aria-checked="false">LEZ 0.4</button>
       </div>
       <small id="nw-name"></small>
-    </div>`;
+    </div>
+    <p class="note" id="nw-asks">Choosing LEZ 0.4 asks lez.nameswallet.app about this phone's account and the addresses you watch; it sees them and your IP address.</p>`;
   view.innerHTML = `
     <p class="note" id="n4-about">Bridge test network (LEZ 0.4): read-only here. Balances are read from the network, which is reset now and then.</p>
     <p class="msg warn" id="n4-state" role="status" hidden></p>
@@ -31,11 +35,15 @@
     <p class="msg" id="n4-watch-m" role="status"></p>`;
 
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
-  const hhmm = t => { try { return new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); } catch (e) { return ""; } };
+  const hhmm = t => {            // the time, and the date too when it isn't today
+    try {
+      const d = new Date(t * 1000), tm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      return d.toDateString() === new Date().toDateString() ? tm : d.toLocaleDateString([], { day: "numeric", month: "short" }) + " " + tm;
+    } catch (e) { return ""; }
+  };
   const amt = v => (typeof balHidden !== "undefined" && balHidden) ? MASK : v;
 
   function render(d) {
-    last = d;
     const st = $("n4-state");
     const says = [d.reset, d.unreachable && (d.unreachable + (d.read_at ? " Last read " + hhmm(d.read_at) + "." : "")), d.tokens_error].filter(Boolean);
     st.hidden = !says.length; st.textContent = says.join(" ");
@@ -56,18 +64,23 @@
       if (a.at) c.append(el("p", "note", "As of " + hhmm(a.at) + ", bridge test network"));
       if (!a.own) {
         const rm = el("button", null, "Stop watching"); rm.type = "button";
-        rm.addEventListener("click", async () => { const r = await api("/api/wallet/net04/watch", { remove: a.id }); if (r.status === 401) return lockedNow(); load(); });
+        rm.addEventListener("click", async () => { const g = gen; const r = await api("/api/wallet/net04/watch", { remove: a.id }); if (g !== gen) return; if (r.status === 401) return lockedNow(); load(); });
         c.append(rm);
       }
       box.append(c);
     }
   }
 
+  // the 0.4 view is on screen: the Wallet itself is showing (not locked, not Settings, not Messages)
+  const onScreen = () => net === "04" && !$("v-open").hidden && !$("page-main").hidden;
+
   async function load() {
-    if (busy || net !== "04" || $("v-open").hidden) return;
+    if (busy || !onScreen()) return;
     busy = true;
+    const g = gen;
     try {
       const r = await api("/api/wallet/net04");
+      if (g !== gen || !onScreen()) return;             // locked or left meanwhile: it shows nothing
       if (r.status === 401) return lockedNow();
       if (r.ok) render(r.data);
       else $("n4-state").hidden = false, $("n4-state").textContent = r.data.error || "Can't read the bridge test network now.";
@@ -75,7 +88,15 @@
   }
 
   function tick() {             // only while the 0.4 view is on screen and the page is visible
-    if (net === "04" && !$("v-open").hidden && document.visibilityState === "visible") load();
+    if (onScreen() && document.visibilityState === "visible") load();
+  }
+
+  // a lock: nothing of the 0.4 view stays in the page, and an answer still on its way writes nothing
+  function lock() {
+    gen++;
+    for (const id of ["n4-accts", "n4-watch-m", "n4-state", "n4-private"]) $(id).replaceChildren();
+    $("n4-watch-m").className = "msg"; $("n4-state").hidden = true; $("n4-watch").value = "";
+    setNet("03");
   }
 
   function setNet(n) {
@@ -101,7 +122,9 @@
   $("n4-add").addEventListener("click", async () => {
     const m = $("n4-watch-m"), v = $("n4-watch").value.trim();
     if (!v) return;
+    const g = gen;
     const r = await api("/api/wallet/net04/watch", { add: v });
+    if (g !== gen || $("v-open").hidden) return;      // answered after a lock: it writes nothing
     if (r.status === 401) return lockedNow();
     if (!r.ok) { m.className = "msg bad"; m.textContent = r.data.error || "That isn't a public account id."; return; }
     m.className = "msg"; m.textContent = "Watching " + r.data.short + " (view-only). Check it is the id you meant: " + r.data.id;
@@ -109,6 +132,9 @@
     load();
   });
   document.addEventListener("visibilitychange", tick);
-  new MutationObserver(tick).observe($("v-open"), { attributes: true, attributeFilter: ["hidden"] });   // after an unlock
+  const seen = new MutationObserver(tick);              // after an unlock, and back from Settings or Messages
+  seen.observe($("v-open"), { attributes: true, attributeFilter: ["hidden"] });
+  seen.observe($("page-main"), { attributes: true, attributeFilter: ["hidden"] });
+  window.NET04 = { lock };
   setNet(net);
 })();
