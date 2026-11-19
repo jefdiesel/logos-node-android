@@ -1,5 +1,5 @@
 name: names04-build
-# Builds the LEZ 0.4 LNS command line, `names` from the logos-names 0.4 line (wallet-1120), for
+# Builds the LEZ 0.4 LNS command line, `names` from the logos-names 0.4 line (wallet-1121), for
 # Android arm64 (aarch64-linux-android, API 28) with the NDK, NEXT TO the 0.3 one that
 # names-build.yml makes (that one stays as it is: the 0.3 money path depends on it). The app is to
 # run it as a second signer for LEZ 0.4 public transactions (NFT sends, the free LNS name NFT
@@ -16,7 +16,7 @@ name: names04-build
 # Results are workflow artifacts with their sha256; nothing is published.
 on:
   push:
-    branches: [names04-android]
+    branches: [names04-android, names04-app]
     paths: ['names04-cli/**', .github/workflows/names04-build.yml, tests/names04_emulator_e2e.sh]
   workflow_dispatch:
 permissions:
@@ -25,8 +25,13 @@ defaults:
   run:
     shell: bash
 env:
-  # logos-names wallet-1120 on 2026-11-19 (names-nft merged; CLI 0.17.0, LEZ v0.4.0-rc3).
-  NAMES_REV: d25d8f6b9382537b9a69f2e3ba4f787c669f0ca5
+  # logos-names wallet-1121 on 2026-11-19 (names-nft and lns-deeds merged: `names deed claim/show`, version 7
+  # records; LEZ v0.4.0-rc3).
+  NAMES_REV: 78b5896697ffacd5802b1c1e4701e4c9b129ac38
+  # The reference NFT program (logos-blockchain/lez-programs, refactor/lez-v0.4.x), built for the emulator test's
+  # throwaway chain only (any deployment of it serves `names nft ...`; the deeds' own one is pinned and can't be
+  # deployed there).
+  NFT_PROGRAMS_REV: dea23c2
   LEZ_TAG: v0.4.0-rc3
   LEZ_COMMIT: "bafd07be"
   ANDROID_API: "28"
@@ -255,6 +260,16 @@ jobs:
           mkdir -p ../host && cp target/release/names "$elf" shortlist/shortlist.bin ../host/
           cp ~/lez-seq/sequencer_service ~/lez-seq/local.json ../host/
           ls -la ../host
+      # For the emulator test's NFT steps only; without it they are skipped (said in the log).
+      - name: The reference NFT program's guest (lez-programs ${{ env.NFT_PROGRAMS_REV }})
+        continue-on-error: true
+        run: |
+          git init -q "$RUNNER_TEMP/lp" && cd "$RUNNER_TEMP/lp"
+          git fetch -q https://github.com/logos-blockchain/lez-programs.git refactor/lez-v0.4.x
+          git checkout -q "$NFT_PROGRAMS_REV"
+          cargo build --release -p nft-methods
+          elf=$(find target/riscv-guest -name nft.bin | head -1)
+          test -n "$elf" && cp "$elf" "$GITHUB_WORKSPACE/host/nft.bin" && ls -la "$GITHUB_WORKSPACE/host/nft.bin"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: names04-host-linux-x86_64
@@ -302,6 +317,7 @@ jobs:
           NAMES_ELF: ${{ github.workspace }}/host/logos_names.bin
           SHORTLIST: ${{ github.workspace }}/host/shortlist.bin
           DEV_NAMES: ${{ github.workspace }}/dev/names
+          NFT_ELF: ${{ github.workspace }}/host/nft.bin
           WORK: ${{ runner.temp }}/e2e
         with:
           api-level: 30
