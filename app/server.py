@@ -6195,8 +6195,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     page = page.replace(b"</body>", b'<script type="module" src="/messages/messages.js"></script>\n</body>', 1)
                 if lns_available():               # Your name, only in the Android app with the signer
                     page = page.replace(b"</body>", b'<script src="/lns/lns.js"></script>\n</body>', 1)
-                if net04():                       # the bridge test network (LEZ 0.4), read-only, in the Android app
-                    page = page.replace(b"</body>", b'<script src="/net04/net04.js"></script>\n<script src="/net04/sign04.js"></script>\n<script src="/net04/nft.js"></script>\n</body>', 1)
+                if net04():                       # the bridge test network (LEZ 0.4), in the Android app; sending there
+                    sign = b'<script src="/net04/sign04.js"></script>\n' if signer04() else b""   # only with the 0.4 signer
+                    page = page.replace(b"</body>", b'<script src="/net04/net04.js"></script>\n' + sign + b'<script src="/net04/nft.js"></script>\n</body>', 1)
                 return self.reply(200, raw=page, ctype="text/html; charset=utf-8")
             except Exception:
                 return self.reply(500, {"error": "index.html is missing"})
@@ -6215,7 +6216,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             code, obj = messaging_get(path, self.path)
             return self.reply(code, obj)
         if path in ("/net04/net04.js", "/net04/sign04.js", "/net04/nft.js") or path in NET04_FONTS:
-            if not net04():
+            if not net04() or (path == "/net04/sign04.js" and not signer04()):
                 return self.reply(404, {"error": "not found"})
             try:
                 if path in NET04_FONTS:
