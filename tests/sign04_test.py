@@ -348,6 +348,25 @@ for _ in range(60):
 check("then Collectibles reads its card: held by the restored account", row and row["status"] == "ok" and row["holder"] == AMAIN, row)
 code, r = W.call("/api/wallet/lez04/faucet", {}, session=sess)
 check("the faucet through the app, its proxy params", code == 200 and chain2.faucet_params[-1][1:] == [None, AMAIN], (code, r))
+W.call("/api/wallet/net04/nft", {"add_program": PROG, "label": "t"}, session=sess)
+for d in (ART, ART2):                    # the first takes the restored account; the second needs a new one
+    code, r = W.call("/api/wallet/lez04/nft/init", {"program": PROG, "definition": d}, session=sess)
+    for _ in range(100):
+        time.sleep(0.1)
+        j = W.call("/api/wallet/lez04", session=sess)[1]["job"]
+        if j["state"] != "running":
+            break
+NEW2 = j.get("account")
+check("Receive through the app on a taken account: a new account, the 17th of the wallet", j["state"] == "done" and NEW2 and server.signer04_extra() == [NEW2], (j, server.signer04_extra()))
+chain2.states[(NEW2, PROG)] = b"\1" + lez04.b58decode(ART2) + (1).to_bytes(16, "little")
+grp = None
+for _ in range(60):
+    time.sleep(0.2)
+    nv = W.call("/api/wallet/net04/nft", session=sess)[1]
+    grp = next((g for g in nv.get("groups", []) if g["account"] == NEW2), None)
+    if grp:
+        break
+check("an NFT on that account shows in Collectibles as the wallet's (so it can be sent)", grp and grp["mine"] and not grp["own"], grp)
 seen = set(c for c in chain2.calls if not c.startswith("("))
 check("the app asked the network only for reads, sendTransaction and the faucet", seen <= signer04.RPC_METHODS | {"bridge_faucet", "bridge_faucetInfo"}, seen)
 print("all checks passed" if not FAILS else "%d FAILED" % len(FAILS))

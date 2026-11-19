@@ -819,10 +819,11 @@ class Net04:
         st = actor_states(self.rpc(url, "getAccountView", [{"account_id": account, "program_account_id": program}], end))
         return (st or {}).get(program, b"")
 
-    def nft_refresh(self, own, own_name, derive, mine=()):
+    def nft_refresh(self, own, own_name, derive, mine=(), extra=()):
         """Reads the NFTs and the names' NFTs now; keeps the result in memory (nothing of it is written). `mine`: every
         account of the phone's LEZ 0.4 wallet (restored from the recovery phrase): a name held by any of them is the
-        phone's, matched by its owner tag here, with no read per account."""
+        phone's, matched by its owner tag here, with no read per account. `extra`: the wallet's accounts this phone
+        made itself to receive NFTs (read like the phone's own account; at most 8)."""
         c = self.config()
         url = c.get("rpc_url") if isinstance(c.get("rpc_url"), str) else ""
         registry = c.get("lns_registry") if isinstance(c.get("lns_registry"), str) else ""
@@ -830,7 +831,7 @@ class Net04:
         end = time.monotonic() + NFT_DEADLINE
         now = self.clock()
         ids = []
-        for i in ([own] if own else []) + self.watched():
+        for i in ([own] if own else []) + list(extra)[:8] + self.watched():
             if i and i not in ids:
                 ids.append(i)
         new = {"read_at": now, "programs": [], "names": []}
@@ -878,7 +879,7 @@ class Net04:
         self.nft = new
         return new
 
-    def nft_look(self, own, own_name, derive, mine=()):
+    def nft_look(self, own, own_name, derive, mine=(), extra=()):
         """Collectibles looked: read again in the background if the last read is POLL seconds old."""
         now = self.clock()
         with self.lock:
@@ -888,7 +889,7 @@ class Net04:
 
         def run():
             try:
-                self.nft_refresh(own, own_name, derive, mine)
+                self.nft_refresh(own, own_name, derive, mine, extra)
             except Exception:
                 pass
             finally:
@@ -896,7 +897,7 @@ class Net04:
         threading.Thread(target=run, name="net04-nft", daemon=True).start()
         return True
 
-    def nft_view(self, own, own_name, mine=()):
+    def nft_view(self, own, own_name, mine=(), extra=()):
         """What Collectibles shows: the names with their NFTs, the collections with how many accounts hold each, the
         NFTs by account, the holdings ready to receive, and the programs listed. With `mine` (the phone's LEZ 0.4
         accounts, when it can sign there), a name held by one of them with no NFT yet is marked `claim` when it is in
@@ -931,7 +932,10 @@ class Net04:
                             c["count"] += 1
                 elif h["state"] in ("master", "copy"):
                     out["ready"].append({"program": p["program"], "account": a, "definition": h["definition"], "collection": h.get("collection")})
-        order = ([own] if own else []) + [w for w in self.watched() if w != own]
+        order = []
+        for a in ([own] if own else []) + list(extra)[:8] + self.watched():
+            if a not in order:
+                order.append(a)
         out["groups"] = [groups[a] for a in order if a in groups]
         names_read = {n["name"]: n for n in s.get("names", [])} if s.get("channel") == ch else {}
         for n in self.nft_names(own_name):

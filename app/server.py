@@ -6021,9 +6021,16 @@ def signer04():
 
 
 def signer04_mine():
-    """The phone's LEZ 0.4 accounts (restored from the recovery phrase), or none."""
+    """The phone's LEZ 0.4 accounts (restored from the recovery phrase, and any it made since), or none."""
     s = signer04()
     return s.state()["accounts"] if s and s.ready() else []
+
+
+def signer04_extra():
+    """The accounts the phone made itself to receive NFTs (after the 16 the phrase restored): Collectibles reads them
+    like the phone's own account."""
+    import signer04 as m4
+    return signer04_mine()[m4.RESTORED:]
 
 
 def net04_own():
@@ -6287,9 +6294,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply(401, {"error": "locked"})
             if path.endswith("/choice"):
                 return self.reply(200, {"net": net04_choice(), "network": n.network()})
-            own, name, mine = net04_own(), net04_name(), signer04_mine()
-            n.nft_look(own, name, lns_name_id, mine)   # reads again in the background, 30 s at most
-            return self.reply(200, n.nft_view(own, name, mine))
+            own, name, mine, extra = net04_own(), net04_name(), signer04_mine(), signer04_extra()
+            n.nft_look(own, name, lns_name_id, mine, extra)   # reads again in the background, 30 s at most
+            return self.reply(200, n.nft_view(own, name, mine, extra))
         if path == "/api/wallet/lez04":                 # the LEZ 0.4 signer: its accounts, its job, the faucet
             s4 = signer04()
             if not s4:
@@ -6576,11 +6583,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if code == 200:
                     event("LEZ 0.4 network set", self, custom=obj.get("custom"))
                 return self.reply(code, obj)
-            own, name, mine = net04_own(), net04_name(), signer04_mine()
+            own, name, mine, extra = net04_own(), net04_name(), signer04_mine(), signer04_extra()
             code, obj = n.nft_change(body, name, lns_name_id)
             if code == 200:
-                n.nft_look(own, name, lns_name_id, mine)
-                obj["view"] = n.nft_view(own, name, mine)
+                n.nft_look(own, name, lns_name_id, mine, extra)
+                obj["view"] = n.nft_view(own, name, mine, extra)
             return self.reply(code, obj)
         if path.startswith("/api/wallet/lez04/"):      # the LEZ 0.4 signer: restore, send, NFTs, the name's NFT, the faucet
             s4 = signer04()

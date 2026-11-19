@@ -40,6 +40,7 @@ AMOUNT_RE = re.compile(r"\A[0-9]{1,39}\Z")
 ANSI_RE = re.compile(rb"\x1b\[[0-9;]*m")
 U128 = (1 << 128) - 1
 PHRASE_WORDS = (12, 24)
+RESTORED = 16                    # public accounts a restore brings back (`names module restore`'s default, as the desktop)
 
 # The locked-name list: `names deed claim` proves the name's tier with it (the registry checks the proof). `names`
 # would download it itself, but its HTTPS client can't check certificates outside an app's Java runtime; so it is
