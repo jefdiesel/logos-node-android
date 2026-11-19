@@ -186,6 +186,14 @@ check("the owner tag of alice for the phone's account is the one the names proje
 check("the deeds' NFT program id is the hex in the registry's deed.rs, in base58", unb58(DEEDS).hex() == "ae6ae5a379046c0c21b749d116a3e5ca3c6e82d0687742963744cef2e0c13fd7")
 check("lez04.json reads names on that registry, deeds under that program", json.load(open(os.path.join(APP, "lez04.json")))["lns_registry"] == REGISTRY
       and json.load(open(os.path.join(APP, "lez04.json")))["deed_nft_program"] == DEEDS)
+# the deed addresses against what the names project's own `names deed show` printed on a throwaway chain (registry
+# 6U6h3Re2…, the name lns-deeds-fresh, whose id is what `names address lns-deeds-fresh` prints), for two holders
+DR, DID = "6U6h3Re2CdWD5ioh2TvkNbpNF9uJmtbEZCNRcP3gqgGu", H("ae186dcdeb151f89ce9ef1f21958d6aab7dad93543df1ffcd379d24694fd073a")
+DDEF = lez04.deed_definition_address(DR, DID, H("58ab98f1d74ca04b821efd19f1e3a2f7411a1758b4a1bc919dc6339cb6d42531"))
+check("a deed's definition is where `names deed show` put it (GqXNGWj6…)", DDEF == "GqXNGWj6NZXb38YHCFbPfRetxaq6Rc5L2PQEXFwmVyvT", DDEF)
+check("a holder's deed account is where `names deed show` put it, for both holders it showed",
+      lez04.deed_holding_address(DR, DDEF, H("7283266f18cfde998e2d04706a358414c6407a03c9c4d61880f91a01b46ff3f6")) == "EYgtsfjakUosgVXJCckmajvyCqnGEJcRJ8WzoiFsr9m6"
+      and lez04.deed_holding_address(DR, DDEF, H("2a8fbb715724aae0351fd37f4d7200e87287efcbaef343fe3d23c6c68bf2e861")) == "EH3ABwiNUkP8sRQNqHduM1i7in7CpFGfzBbuuvxBh5UR")
 NONCE = bytes(range(32))
 TAG = lez04.owner_tag(ALICE, OWN)
 DEF = lez04.deed_definition_address(REGISTRY, ALICE, NONCE)
