@@ -284,7 +284,10 @@ jobs:
           path: dev-lp
       - name: Inputs
         run: |
+          # linux-host links the sequencer and names against PC/SC (the LEZ wallet's Keycard support)
+          sudo apt-get update -qq && sudo apt-get install -y -qq libpcsclite1 >/dev/null
           chmod +x host/names host/sequencer_service
+          for b in host/sequencer_service host/names; do echo "== ldd $b"; ldd "$b"; ! ldd "$b" | grep -q 'not found' || { echo "::error::$b is missing a library"; exit 1; }; done
           (cd dev && sha256sum -c SHA256SUMS)
           [ -f dev-lp/names ] && (cd dev-lp && sha256sum -c SHA256SUMS) && echo "DEV_NAMES_LP=$PWD/dev-lp/names" >> "$GITHUB_ENV" || echo "no local-prove build"
           ls -la host dev dev-lp 2>/dev/null || true
