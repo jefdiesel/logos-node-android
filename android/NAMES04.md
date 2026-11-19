@@ -16,9 +16,13 @@ actions stay off on the phone: they need a RISC Zero proof, and a phone has no p
   scratch: `signer04.Signer04.env`; `tests/sign04_test.py` checks).
 - The emulator test (`tests/names04_emulator_e2e.sh`, in names04-build) runs this binary on an Android emulator
   against a throwaway LEZ v0.4.0-rc3 chain: register, set-account, transfer, a native send; the desktop's phrase
-  restored with `names module restore` (the same first account and public key as `names setup` made on the host);
-  a send by account id and a public pay of a name; NFT InitializeHolding, receive and send. `names deed claim` can't
-  run there: the deeds' NFT program sits at a pinned header whose key isn't in CI.
+  restored with `names module restore`, checked to give the same first account and public key as `names setup` made
+  on the host; a send by account id and a public pay of a name; and, when the reference NFT program's guest builds
+  in that run, NFT InitializeHolding, receive and send. The device reaches the chain through a proxy that passes only
+  the app's forwarder allowlist. Which run passed which step: see the run's log, not this file.
+- `names deed claim` can't run there (the deeds' NFT program sits at a pinned header whose key isn't in CI), so a
+  claim from a bare build has not been run on any chain. It uses the same unchecked path as a bare register. Its cap:
+  `unchecked_limit(165,000 + 150,000)` = gas limit 945,000; a claim measured on our LEZ 0.4 used 164,922.
 
 ## The accounts: the desktop's recovery phrase
 
@@ -37,6 +41,11 @@ the desktop's phrase once, on the Wallet on LEZ 0.4 ("Use your recovery phrase")
   app's private storage, as the LEZ 0.3 key is. `<data>/wallet-lez04.json` keeps only public facts: the account ids,
   the first account's public key, whether the faucet was used.
 - Not in the app's backup file: the phrase is the way back for LEZ 0.4.
+- The restore needs an unlocked session, not the PIN typed again (the backup restore asks for both; this one only
+  adds keys, and only where there are none).
+- The phrase box asks the keyboard not to correct or capitalise, but a phone keyboard may still learn the words.
+- `nft init --new public` (Receive, when the first account is taken) derives the wallet's next account and saves it.
+- A phone with no desktop wallet has no LEZ 0.4 accounts: the phone only restores, it doesn't make a new phrase.
 
 ## What it sends
 
@@ -57,10 +66,18 @@ can't check certificates outside an app's Java runtime), so the server downloads
 `shortlist-9778bed4` (one redirect, to `*.githubusercontent.com` only), checks its pinned sha256, keeps it at
 `<data>/.lez04-wallet/cache/shortlist-9778bed4.bin` and hands it over as `NAMES_SHORTLIST`.
 
+**Fees.** A bare call holds its whole cap as the fee reserve while it runs: about 8.6M LEZ for a claim at today's base
+fees (gas limit 945,000), of which about 1.34M is paid. One faucet grant (10,000,000) covers one claim, and a second;
+a claim after spending more than about 1.4M of it is refused for its reserve. A tighter cap is a logos-names change.
+
+A job stopped part way (the app killed, the phone off) after its transaction was forwarded says it failed: check the
+balance or the card before trying again (there is no "may have been sent" hold as on LEZ 0.3).
+
 ## The faucet
 
 "Get free test LEZ": `bridge_faucet` on our proxy with `[public key, null, the first account]`, as the LNS page asks
-(the faucet gives once per account and once per wallet, ever). The phone remembers a grant and doesn't ask again.
+(the faucet gives once per account and once per wallet, ever). The phone remembers a grant, with the chain id it
+was on, and doesn't ask again on that chain (after a reset it may).
 
 ## HTTPS and the rate limit
 

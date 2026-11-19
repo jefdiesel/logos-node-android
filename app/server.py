@@ -6304,7 +6304,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply(404, {"error": "not found"})
             if not self.authed():
                 return self.reply(401, {"error": "locked"})
-            v = s4.view()
+            n = net04()
+            v = s4.view(n.state.get("channel") if n else None)
             v["faucet_info"] = s4.faucet_info() if v["ready"] and not v["faucet"]["used"] else None
             return self.reply(200, v)
         if path == "/api/wallet/lns/balance":          # the Wallet's LEZ row: the name account and its balance only

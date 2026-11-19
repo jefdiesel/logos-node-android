@@ -51,8 +51,9 @@ SHORTLIST_SHA256 = "ab03310848df6618943e81cf48e6c592fe2d8721de480906053dc295d543
 SHORTLIST_SIZE = 60892524
 SHORTLIST_REDIRECT_HOSTS = (".githubusercontent.com",)
 
-# Methods `names` may call through the forwarder: those the LEZ 0.4 tool was seen to call on the emulator test
-# (tests/names04_emulator_e2e.sh logs them), and nothing that changes anything but sendTransaction.
+# Methods `names` may call through the forwarder: the LEZ 0.3 forwarder's list (every one also on our LEZ 0.4 proxy's
+# allowlist), nothing that changes anything but sendTransaction. The emulator test's proxy passes only these
+# (tests/names04_emulator_e2e.sh), so a method the tool needs and this list lacks fails that run.
 RPC_METHODS = {"sendTransaction", "getFeeState", "checkHealth", "getBlock", "getBlockRange", "getLastBlockId",
                "getAccountBalance", "getTransaction", "getAccountsNonces", "getAccountView", "getProofsAndRoot",
                "getAccount", "getProgramIds", "getChannelId"}
@@ -385,12 +386,16 @@ class Signer04:
         return m.group(1).decode() if m else None
 
     # ---- the view ----
-    def view(self):
+    def view(self, channel=None):
+        """`channel`: the LEZ 0.4 network's chain id as last read; a faucet grant on another chain (before a reset)
+        doesn't count as used."""
         st = self.state()
         with self.lock:
             job = {k: self.job.get(k) for k in ("kind", "state", "progress", "error", "started", "finished", "name", "to",
                                                   "amount", "account", "said")}
         f = st["faucet"] or {}
+        if channel and f.get("channel") and f["channel"] != channel:
+            f = {}                                          # the network was reset since: the faucet can be asked again
         return {"available": self.available(), "ready": self.ready(), "account": st["main"], "public_key": st["public_key"],
                 "accounts": st["accounts"], "job": job,
                 "faucet": {"used": bool(f.get("ok")), "amount": f.get("amount"), "at": f.get("at")},
@@ -596,7 +601,13 @@ class Signer04:
         if not self.ready():
             return 409, {"error": TEXT["not_ready"]}
         st = self.state()
-        if (st["faucet"] or {}).get("ok"):
+        try:
+            channel = self.rpc("getChannelId", [], total=10)
+            channel = channel if isinstance(channel, str) and len(channel) <= 128 else None
+        except Exception:
+            channel = None
+        f = st["faucet"] or {}
+        if f.get("ok") and (not channel or not f.get("channel") or f["channel"] == channel):
             return 409, {"error": TEXT["faucet_once"], "code": "already_used"}
         pk = st["public_key"] or self.public_key_of(st["main"])
         if not pk:
@@ -619,13 +630,13 @@ class Signer04:
             return 502, {"error": "The faucet refused: " + plain(msg) if msg else "The faucet didn't give an answer."}
         if res.get("ok") is True:
             amount = str(res.get("amount")) if str(res.get("amount", "")).isdigit() else None
-            self.save(faucet={"ok": True, "amount": amount, "at": int(self.clock())})
+            self.save(faucet={"ok": True, "amount": amount, "at": int(self.clock()), "channel": channel})
             self.event("lez04 faucet paid", account=st["main"], amount=amount or "?")
             return 200, {"ok": True, "amount": amount, "account": st["main"]}
         codes = {"already_used", "already_today", "faucet_empty", "busy", "rate_limited", "bad_key"}
         c = res.get("code") if res.get("code") in codes else "refused"
         if c == "already_used":
-            self.save(faucet={"ok": True, "amount": None, "at": int(self.clock()), "before": True})
+            self.save(faucet={"ok": True, "amount": None, "at": int(self.clock()), "before": True, "channel": channel})
         return 409, {"error": plain(res.get("reason")) or "The faucet refused.", "code": c, "retry": res.get("retry") is True}
 
 

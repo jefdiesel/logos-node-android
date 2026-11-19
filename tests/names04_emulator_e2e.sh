@@ -108,18 +108,27 @@ H configure --admin "$F" --treasury "$F" --mode deposit --deposits 1000000,30000
 H settings | grep -q "$F" || fail "the registry is not configured"
 echo "registry $REG"
 
-say "a logging proxy for the device's calls on $DEV_RPC"
-python3 - "$DEV_RPC_PORT" "$RPC" "$WORK/methods.log" <<'PY' &
+# The app's forwarder passes only signer04.RPC_METHODS, at most 20 calls in a batch: this proxy does the same, so a
+# method the tool needs and the app would refuse fails this run.
+ALLOWED=$(cd "$(dirname "$0")/.." && python3 -c 'import sys; sys.path.insert(0, "app"); import signer04; print(",".join(sorted(signer04.RPC_METHODS)))')
+[ -n "$ALLOWED" ] || fail "can't read the app's forwarder allowlist"
+say "a proxy for the device's calls on $DEV_RPC: the app's forwarder allowlist ($ALLOWED), every method logged"
+python3 - "$DEV_RPC_PORT" "$RPC" "$WORK/methods.log" "$ALLOWED" <<'PY' &
 import http.server, json, sys, urllib.request
-port, up, log = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+port, up, log, allowed = int(sys.argv[1]), sys.argv[2], sys.argv[3], set(sys.argv[4].split(","))
 class P(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         try:
             body = json.loads(raw)
+            calls = body if isinstance(body, list) else [body]
             with open(log, "a") as f:
-                for c in body if isinstance(body, list) else [body]:
-                    f.write(str(c.get("method")) + "\n")
+                for c in calls:
+                    f.write(str(c.get("method")) + ("" if c.get("method") in allowed else " REFUSED") + "\n")
+            if len(calls) > 20 or not all(c.get("method") in allowed for c in calls):
+                out = json.dumps({"error": "That method isn't forwarded."}).encode()
+                self.send_response(403); self.send_header("Content-Length", str(len(out))); self.end_headers(); self.wfile.write(out)
+                return
         except Exception:
             pass
         req = urllib.request.Request(up, data=raw, headers={"Content-Type": "application/json"}, method="POST")
@@ -222,7 +231,10 @@ adb push "$WORK/dev_wallet_config.json" "$DEV/w04/wallet_config.json" > /dev/nul
 DEV_WALLET=$DEV/w04 D "./names module restore < $DEV/phrase.txt; echo exit=\$?; rm -f $DEV/phrase.txt" > "$WORK/restore.out" 2>&1 || true
 grep -q '^exit=0' "$WORK/restore.out" || { grep -vF "$PHRASE" "$WORK/restore.out" | tail -5; fail "names module restore on the device"; }
 ! grep -qF "$PHRASE" "$WORK/restore.out" || fail "the restore printed the phrase back"
-first=$(grep -E '^\{' "$WORK/restore.out" | tail -1 | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["public"][0], len(d["public"]))')
+first=$(python3 -c 'import json,sys
+t = open(sys.argv[1]).read()
+d = json.loads(t[t.rindex("{\"public\""):].splitlines()[0])      # (it may follow the prompt on the prompt'"'"'s line)
+print(d["public"][0], len(d["public"]))' "$WORK/restore.out")
 echo "restored on the device: $first"
 [ "${first%% *}" = "$DPUB" ] || fail "the device's first public account ${first%% *} isn't the desktop's $DPUB"
 DEV_WALLET=$DEV/w04 D ./names module account-list > "$WORK/account-list.json"
@@ -233,9 +245,11 @@ say "6b. the restored account sends to an account by its id, and pays a name pub
 F0=$(balance "$F")
 DEV_WALLET=$DEV/w04 D ./names wallet auth-transfer send --from "Public/$DPUB" --to "Public/$F" --amount 4321 | quiet
 [ "$(balance "$F")" -eq $((F0 + 4321)) ] || fail "F was not credited 4321 by the restored account"
-A0=$(balance "$A")
+H set-account "$NAME" "Public/$F" | quiet | tee "$WORK/set-account-host.log"     # F holds the name since step 3
+grep -q '^applied in block' "$WORK/set-account-host.log" || fail "the host's set-account did not apply"
+F0=$(balance "$F")
 DEV_WALLET=$DEV/w04 D ./names pay --public --from=Public/$DPUB $NAME 777 | quiet | tee "$WORK/pay.log"
-[ "$(balance "$A")" -eq $((A0 + 777)) ] || fail "$NAME's account was not paid 777"
+[ "$(balance "$F")" -eq $((F0 + 777)) ] || fail "$NAME's account (F) was not paid 777"
 
 if [ -n "${NFT_ELF:-}" ] && [ -f "$NFT_ELF" ]; then
   say "7. NFTs: the device receives (makes its account ready), takes the master, and sends it on"
@@ -265,4 +279,5 @@ else
 fi
 
 sort "$WORK/methods.log" | uniq -c | sort -rn | tee "$WORK/methods.txt"
+! grep -q REFUSED "$WORK/methods.log" || fail "the tool asked for a method the app's forwarder refuses"
 say "PASS: the Android build signed and sent every public call above, and each applied"

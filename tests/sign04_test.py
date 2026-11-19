@@ -247,7 +247,8 @@ check("the faucet: [public key, null, this wallet's account], once per wallet", 
 check("the test LEZ arrive", chain.balances[MAIN] == bal + 10000000)
 n = len(chain.faucet_params)
 check("a second press is refused here, the faucet isn't asked again", s.faucet() == (409, {"error": signer04.TEXT["faucet_once"], "code": "already_used"}) and len(chain.faucet_params) == n)
-check("the view says it was used", s.view()["faucet"]["used"] is True)
+check("the view says it was used", s.view()["faucet"]["used"] is True and s.view(chain.answer({"method": "getChannelId"})["result"])["faucet"]["used"] is True)
+check("after a reset of the network (another chain id) the faucet can be asked again", s.view("ee" * 32)["faucet"]["used"] is False)
 
 # the forwarder
 check("forwarder: a method not on its list is refused", s.forward(json.dumps({"method": "bridge_faucet", "params": []}).encode())[0] == 403)
