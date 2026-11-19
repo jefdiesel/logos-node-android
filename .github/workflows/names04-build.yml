@@ -221,13 +221,16 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/lez-seq
-          key: lez-seq-standalone-${{ env.LEZ_COMMIT }}
-      - name: Build sequencer_service --features standalone at ${{ env.LEZ_TAG }}
+          key: lez-seq-standalone-prove-${{ env.LEZ_COMMIT }}
+      # `prove` gives the sequencer RISC Zero's in-process executor (lee/prove), as our standalone
+      # chains on the Mini are built: without it the sequencer looks for an r0vm, and with none
+      # on the runner its genesis transaction fails ("No such file or directory").
+      - name: Build sequencer_service --features standalone,prove at ${{ env.LEZ_TAG }}
         if: steps.seqcache.outputs.cache-hit != 'true'
         run: |
           git clone --quiet --depth 1 --branch "$LEZ_TAG" https://github.com/logos-blockchain/logos-execution-zone.git "$RUNNER_TEMP/lez"
           test "$(git -C "$RUNNER_TEMP/lez" rev-parse --short=8 HEAD)" = "$LEZ_COMMIT"
-          (cd "$RUNNER_TEMP/lez" && cargo build --release --features standalone -p sequencer_service)
+          (cd "$RUNNER_TEMP/lez" && cargo build --release --features standalone,prove -p sequencer_service)
           mkdir -p ~/lez-seq
           cp "$RUNNER_TEMP/lez/target/release/sequencer_service" ~/lez-seq/
           cp "$RUNNER_TEMP/lez/lez/sequencer/service/networks/local.json" ~/lez-seq/
@@ -237,7 +240,7 @@ jobs:
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/lez-seq
-          key: lez-seq-standalone-${{ env.LEZ_COMMIT }}
+          key: lez-seq-standalone-prove-${{ env.LEZ_COMMIT }}
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: names
