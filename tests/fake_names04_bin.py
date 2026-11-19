@@ -82,15 +82,16 @@ def main():
             fail("this wallet opens, so there is nothing to restore")
         phrase = sys.stdin.readline().strip()
         record(stdin_len=len(phrase))
-        print("Input recovery phrase: ", end="")
+        print("Input recovery phrase: ", end="")        # (no newline, as the LEZ wallet prints it)
         if "zoo" in phrase.split():
             fail("invalid mnemonic")
         seed = hashlib.sha256(b"fake-seed/" + phrase.encode()).digest()
         os.makedirs(home, exist_ok=True)
         with open(os.path.join(home, "storage.json"), "w") as f:        # never the phrase itself
             json.dump({"seed_check": hashlib.sha256(seed).hexdigest()}, f)
-        print()
-        print("Stored persistent accounts at " + home)
+        if "legal" not in phrase.split():                 # (some runs: the JSON right after the prompt, on its line)
+            print()
+            print("Stored persistent accounts at " + home)
         print(json.dumps({"public": [account(seed, i) for i in range(16)], "private": account(seed, 99), "moved": []}))
         return
     record()

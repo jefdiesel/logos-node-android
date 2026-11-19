@@ -68,10 +68,16 @@
     if (about) about.textContent = !v || !v.available ? "Bridge test network (LEZ 0.4): read-only here. Balances are read from the network, which is reset now and then."
       : v.ready ? "Bridge test network (LEZ 0.4). Sends from this phone are public. Balances are read from the network, which is reset now and then."
       : "Bridge test network (LEZ 0.4): read-only until your accounts are restored below. Balances are read from the network, which is reset now and then.";
+    const sub = document.querySelector("#n4-open-col small");      // (Collectibles' row, from nft.js)
+    if (sub) sub.textContent = v && v.ready ? "NFTs and your LNS name cards" : "NFTs and your LNS name cards, view-only";
     if (!v) return;
     $("s4-restore").hidden = v.ready;
-    $("s4-fund").hidden = !v.ready || v.faucet.used;
+    // the faucet: offered until used; its last answer stays in view after that
+    $("s4-fund").hidden = !v.ready || (v.faucet.used && !$("s4-faucet-m").textContent);
+    $("s4-faucet").hidden = $("s4-faucet-n").hidden = v.faucet.used;
     $("s4-private").hidden = !v.ready;
+    if ($("n4-private")) $("n4-private").hidden = v.ready;          // (one line about private, not two)
+    if (v.ready && $("n4-na")) $("n4-na").hidden = true;            // ("restore first" is done)
     if (v.ready) {
       const fi = v.faucet_info || {};
       $("s4-faucet-n").textContent = fi.available === false ? "The faucet has nothing to give right now; try again later."
@@ -143,7 +149,7 @@
   });
   $("s4-faucet").addEventListener("click", () => run("/api/wallet/lez04/faucet", {}, $("s4-faucet"), $("s4-faucet-m"), "Asking the faucet…",
     v => (v.amount ? Number(v.amount).toLocaleString("en-US") + " test LEZ" : "Test LEZ") + " sent to this phone's account. The balance shows them in a moment.",
-    () => { $("s4-fund").hidden = false; $("s4-faucet").hidden = true; setTimeout(window.NET04.reload, 2000); }));
+    () => setTimeout(window.NET04.reload, 2000)));
   $("s4-send-go").addEventListener("click", () => {
     const to = $("s4-to").value.trim(), amount = $("s4-amt").value.trim().replace(/[,_\s]/g, ""), m = $("s4-send-m");
     if (!to) { m.className = "msg bad"; m.textContent = "Who gets it? Paste their account, their public key, or type their LNS name."; return; }

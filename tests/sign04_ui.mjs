@@ -117,8 +117,11 @@ await shot("restored", "#s4-fund");
 const p2 = await pressNow("#s4-faucet");
 check("Get free test LEZ: 'Asking the faucet…' at once", p2 === "Asking the faucet…|true", p2);
 await waitFor("then: the amount, sent to this phone's account", `document.getElementById("s4-faucet-m").textContent === "10,000,000 test LEZ sent to this phone's account. The balance shows them in a moment." && document.getElementById("s4-faucet-m").className === "msg ok"`);
+check("the 'restore first' line is gone", !(await shown("#n4-na")));
+check("one line about private, not two", (await shown("#s4-private")) && !(await shown("#n4-private")));
 await shot("faucet", "#s4-fund");
 await waitFor("the balance shows them", `document.getElementById("n4-accts").innerText.includes("LEZ: 10,000,000")`, 20000);
+check("the faucet's answer stays, its button doesn't come back", (await shown("#s4-faucet-m")) && !(await shown("#s4-faucet")));
 
 // ---- Send ----
 await click("#n4-send");
