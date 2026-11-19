@@ -137,7 +137,8 @@ D "cat $DEV/register.log" | quiet | tee "$WORK/register.log"
 grep -q '^exit=0' "$WORK/register.log" || fail "the device's registration failed"
 grep -q "can't check the call first" "$WORK/register.log" || fail "the registration was not sent unchecked"
 [ "$(grep -c '^applied in block' "$WORK/register.log")" -ge 2 ] || fail "commit and reveal did not both apply"
-H resolve "$NAME" | tee "$WORK/resolve-1.json" | grep -q "\"held_by\": \"$A\"" || fail "$NAME is not held by the device's account"
+# held_by is filled in only by the wallet that holds the name (resolve matches the owner tag against its own accounts), so ask the device
+D ./names resolve "$NAME" | quiet | tee "$WORK/resolve-1.json" | grep -q "\"held_by\": \"$A\"" || fail "$NAME is not held by the device's account"
 
 say "3. the device: set-account, then hands the name to F"
 D ./names set-account "$NAME" "Public/$A" | quiet | tee "$WORK/set-account.log"
