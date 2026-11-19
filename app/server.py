@@ -5982,6 +5982,30 @@ def net04_own():
         return None
 
 
+NET04_CHOICE_FILE = os.path.join(DATA_DIR, "wallet-net04-choice.json")   # {"net": "03"}: the network the person picked
+
+
+def net04_choice():
+    """The network the Wallet shows: "04" (our LEZ 0.4, the default) unless the person picked LEZ 0.3."""
+    try:
+        with open(NET04_CHOICE_FILE) as f:
+            return "03" if json.load(f).get("net") == "03" else "04"
+    except Exception:
+        return "04"
+
+
+def net04_choose(net):
+    try:
+        tmp = NET04_CHOICE_FILE + ".tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump({"net": net}, f)
+        os.replace(tmp, NET04_CHOICE_FILE)
+        return True
+    except Exception:
+        return False
+
+
 # ---- HTTP -----------------------------------------------------------------------------------
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -6055,7 +6079,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "/api/messages/store", "/api/wallet/lns/account", "/api/wallet/lns/register",
                     "/api/wallet/lns/name", "/api/wallet/lns/text", "/api/wallet/lns/faucet",
                     "/api/wallet/lns/bridge", "/api/wallet/lns/bridge/cancel", "/api/wallet/lns/send",
-                    "/api/wallet/lns/putback", "/api/wallet/lns/get", "/api/wallet/lns/get/retry", "/api/wallet/lns/get/stop"}
+                    "/api/wallet/lns/putback", "/api/wallet/lns/get", "/api/wallet/lns/get/retry", "/api/wallet/lns/get/stop",
+                    "/api/wallet/net04/choice", "/api/wallet/net04/network"}
     LNS_ROUTES = ("/api/wallet/lns/account", "/api/wallet/lns/register", "/api/wallet/lns/name", "/api/wallet/lns/text",
                   "/api/wallet/lns/faucet", "/api/wallet/lns/bridge", "/api/wallet/lns/bridge/cancel", "/api/wallet/lns/send",
                   "/api/wallet/lns/putback", "/api/wallet/lns/get", "/api/wallet/lns/get/retry", "/api/wallet/lns/get/stop")
@@ -6167,6 +6192,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             own = net04_own()
             n.look(own)                                # reads again in the background, 30 s at most
             return self.reply(200, n.view(own))
+        if path == "/api/wallet/net04/choice":        # the network the Wallet shows, and the LEZ 0.4 in use
+            n = net04()
+            if not n:
+                return self.reply(404, {"error": "not found"})
+            if not self.authed():
+                return self.reply(401, {"error": "locked"})
+            return self.reply(200, {"net": net04_choice(), "network": n.network()})
         if path == "/api/wallet/lns/balance":          # the Wallet's LEZ row: the name account and its balance only
             if not lns_available():
                 return self.reply(404, {"error": "not found"})
@@ -6406,6 +6438,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
             code, obj = send(body)
             if code == 200:
                 event("transfer sent", self, hash=obj.get("hash"))
+            return self.reply(code, obj)
+        if path in ("/api/wallet/net04/choice", "/api/wallet/net04/network"):
+            # the network the Wallet shows, the 0.4 network by RPC URL + chain id: reads only
+            n = net04()
+            if not n:
+                return self.reply(404, {"error": "not found"})
+            if not self.authed():
+                return self.reply(401, {"error": "locked"})
+            if path.endswith("/choice"):
+                if body.get("net") not in ("03", "04"):
+                    return self.reply(400, {"error": "bad request"})
+                if not net04_choose(body["net"]):
+                    return self.reply(500, {"error": "Can't keep the choice: is the phone's storage full?"})
+                return self.reply(200, {"net": body["net"]})
+            code, obj = n.set_network(None if body.get("ours") else body.get("rpc_url"), body.get("chain_id"))
+            if code == 200:
+                event("LEZ 0.4 network set", self, custom=obj.get("custom"))
             return self.reply(code, obj)
         if path == "/api/wallet/net04/watch":          # view-only addresses on the bridge test network
             n = net04()

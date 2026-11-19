@@ -1,20 +1,23 @@
 // The Wallet on two networks: LEZ 0.3, the public Logos testnet (everything the wallet does), and LEZ 0.4, the bridge
 // test network (read-only here). Loaded by index.html in the Android app; uses its globals ($, api, lockedNow,
 // openSettings, balHidden, MASK).
-// - The choice is made in Settings > Network (#s-net): the switch, each network's full name, what choosing LEZ 0.4
-//   tells its endpoint (shown before anything is asked), and the addresses watched there. LEZ 0.3 every time the
-//   page opens; nothing is asked of LEZ 0.4 until the person picks it.
+// - The choice is made in Settings > Network (#s-net): the switch, each network's full name, what LEZ 0.4 tells its
+//   endpoint, the addresses watched there, and the LEZ 0.4 network itself: ours (lez.nameswallet.app) or one entered
+//   by RPC URL and chain id, which the server switches to only if that RPC reports that chain id. LEZ 0.4 is the
+//   default; a pick of LEZ 0.3 is kept by the server (GET/POST /api/wallet/net04/choice) and comes back after a lock.
 // - The Wallet shows one line above the token list naming the network on screen (tap: Settings > Network). On
 //   LEZ 0.4 the token list gives way to the phone's own LEZ account and the watched addresses (view-only), read by
 //   the server (app/lez04.py) at most every 30 s and only while the Wallet itself is on screen (once more when the
 //   person picks LEZ 0.4 or changes what is watched). Nothing here sends: Send and Receive say they aren't available.
-// - A lock reloads the page (index.html's lockedNow), which is back on LEZ 0.3; NET04.lock() empties all of it too.
+// - A lock reloads the page (index.html's lockedNow); NET04.lock() empties all of it first. After the unlock the kept
+//   choice is read again before anything shows.
 (() => {
   const line = $("net-sw"), view = $("net04"), sec = $("s-net");
   if (!line || !view || !sec) return;
   const NAMES = { "03": "public Logos testnet", "04": "bridge test network" };
   const LABEL = n => "LEZ " + (n === "04" ? "0.4" : "0.3");
-  let net = "03";                // LEZ 0.3 every time the page opens
+  let net = "04";                // LEZ 0.4 by default; the person's pick of LEZ 0.3 is read from the server once unlocked
+  let chosen = false;            // the kept choice has been read since this page loaded
   let timer = null, busy = false;
   let gen = 0;                   // moves on every lock: an answer to a request made before it renders nothing
 
@@ -28,7 +31,20 @@
       </div>
       <small id="nw-name"></small>
     </div>
-    <p class="note" id="nw-asks">Choosing LEZ 0.4 asks lez.nameswallet.app about this phone's account and the addresses you watch; it sees them and your IP address.</p>
+    <p class="note" id="nw-asks">On LEZ 0.4 the wallet asks <span id="nw-host">lez.nameswallet.app</span> about this phone's account and the addresses you watch; it sees them and your IP address.</p>
+    <div id="n4-net-box" hidden>
+      <p class="note" id="n4-net-now"></p>
+      <button type="button" class="small" id="n4-net-ours" hidden>Back to our LEZ 0.4</button>
+      <details id="n4-net-other"><summary style="min-height:44px;display:flex;align-items:center">Another LEZ 0.4 network</summary>
+        <p class="note">For a new or reset LEZ 0.4: its RPC URL and its chain id. The wallet switches only if that RPC reports this chain id.</p>
+        <label for="n4-net-url">RPC URL</label>
+        <input id="n4-net-url" type="url" placeholder="https://…" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="200">
+        <label for="n4-net-id">Chain id</label>
+        <input id="n4-net-id" class="mono" type="text" placeholder="64 hexadecimal characters" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="70">
+        <button type="button" id="n4-net-set" style="margin-top:10px">Check and switch</button>
+      </details>
+      <p class="msg" id="n4-net-m" role="status"></p>
+    </div>
     <div id="n4-watch-box" hidden>
       <label for="n4-watch">Watch an address (view-only)</label>
       <div class="pwrow"><input id="n4-watch" type="text" placeholder="a public account id" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="80"><button type="button" id="n4-add">Watch</button></div>
@@ -78,6 +94,41 @@
     watchedList(d.accounts.filter(a => !a.own).map(a => a.id));
   }
 
+  // Settings > Network: which LEZ 0.4 network is in use
+  const hostOf = u => { try { return new URL(u).host; } catch (e) { return u; } };
+  function network(nw) {
+    if (!nw) return;
+    $("nw-host").textContent = hostOf(nw.rpc_url) || "lez.nameswallet.app";
+    $("n4-net-now").textContent = nw.custom ? "In use: " + hostOf(nw.rpc_url) + ", chain id " + nw.chain_id.slice(0, 8) + "…" + nw.chain_id.slice(-4) + "."
+      : "In use: our LEZ 0.4 (" + hostOf(nw.rpc_url) + ").";
+    $("n4-net-ours").hidden = !nw.custom;
+  }
+  // the kept choice, once per page load, after the unlock: until it is read the 0.4 view asks nothing
+  async function readChoice() {
+    if (chosen || $("v-open").hidden) return;
+    const g = gen, r = await api("/api/wallet/net04/choice");
+    if (g !== gen || r.stale || $("v-open").hidden) return;
+    if (r.status === 401) return lockedNow();
+    if (!r.ok) return;
+    chosen = true;
+    network(r.data.network);
+    setNet(r.data.net, false);
+  }
+  async function setNetwork(body, btn) {
+    const m = $("n4-net-m"), g = gen, label = btn.textContent;
+    btn.disabled = true; btn.textContent = "Checking…"; m.className = "msg"; m.textContent = "";
+    const r = await api("/api/wallet/net04/network", body);
+    if (g !== gen || r.stale || $("v-open").hidden) return;
+    btn.disabled = false; btn.textContent = label;
+    if (r.status === 401) return lockedNow();
+    if (!r.ok) { m.className = "msg bad"; m.textContent = r.data.error || "That didn't work. Nothing was changed."; return; }
+    network(r.data);
+    m.className = "msg ok"; m.textContent = r.data.custom ? "Switched. LEZ 0.4 is read from " + hostOf(r.data.rpc_url) + " now." : "Back on our LEZ 0.4.";
+    $("n4-net-url").value = ""; $("n4-net-id").value = ""; $("n4-net-other").open = false;
+    $("n4-accts").replaceChildren();
+    load(true);
+  }
+
   // Settings > Network: the watched addresses, each with Stop watching
   function watchedList(ids) {
     const box = $("n4-watched"); box.replaceChildren();
@@ -98,11 +149,11 @@
   }
 
   // the Wallet itself is on screen (not locked, not Settings, not Messages)
-  const onScreen = () => net === "04" && !$("v-open").hidden && !$("page-main").hidden;
+  const onScreen = () => chosen && net === "04" && !$("v-open").hidden && !$("page-main").hidden;
 
   // `once`: a read the person asked for (picked LEZ 0.4, changed what is watched), from Settings too
   async function load(once = false) {
-    if (busy || net !== "04" || $("v-open").hidden || (!once && !onScreen())) return;
+    if (busy || !chosen || net !== "04" || $("v-open").hidden || (!once && !onScreen())) return;
     busy = true;
     const g = gen;
     try {
@@ -115,18 +166,21 @@
   }
 
   function tick() {             // only while the Wallet shows LEZ 0.4 and the page is visible
+    if (!chosen) return void readChoice();
     if (onScreen() && document.visibilityState === "visible") load();
   }
 
   // a lock: nothing of the 0.4 view stays in the page, and an answer still on its way writes nothing
   function lock() {
     gen++;
-    for (const id of ["n4-accts", "n4-watch-m", "n4-state", "n4-private", "n4-watched"]) $(id).replaceChildren();
-    $("n4-watch-m").className = "msg"; $("n4-state").hidden = true; $("n4-watch").value = "";
-    setNet("03");
+    for (const id of ["n4-accts", "n4-watch-m", "n4-state", "n4-private", "n4-watched", "n4-net-m", "n4-net-now"]) $(id).replaceChildren();
+    $("n4-watch-m").className = "msg"; $("n4-net-m").className = "msg"; $("n4-state").hidden = true;
+    for (const id of ["n4-watch", "n4-net-url", "n4-net-id"]) $(id).value = "";
+    chosen = false;
   }
 
-  function setNet(n) {
+  // `keep`: the person picked it here (the server keeps it); false when it comes from the server
+  function setNet(n, keep = true) {
     const was = net;
     net = n === "04" ? "04" : "03";
     $("nw-03").setAttribute("aria-checked", String(net === "03"));
@@ -137,10 +191,12 @@
     $("v-open").classList.toggle("on04", net === "04");
     view.hidden = net !== "04";
     $("n4-watch-box").hidden = net !== "04";
+    $("n4-net-box").hidden = net !== "04";
+    if (keep && chosen && was !== net) api("/api/wallet/net04/choice", { net });
     clearInterval(timer); timer = null;
     $("n4-na").hidden = true;
-    if (net === "04") {
-      if (was !== "04") {
+    if (net === "04" && chosen) {
+      if (was !== "04" || !keep) {
         load(true);
         // the first look starts a read in the background; its answer comes a moment later: read it then, if the
         // Wallet or Settings > Network is still on screen (not after moving on to Messages or another page)
@@ -154,6 +210,12 @@
   $("net-line").addEventListener("click", () => openSettings("s-net"));
   $("nw-03").addEventListener("click", () => setNet("03"));
   $("nw-04").addEventListener("click", () => setNet("04"));
+  $("n4-net-ours").addEventListener("click", () => setNetwork({ ours: true }, $("n4-net-ours")));
+  $("n4-net-set").addEventListener("click", () => {
+    const u = $("n4-net-url").value.trim(), c = $("n4-net-id").value.trim(), m = $("n4-net-m");
+    if (!u || !c) { m.className = "msg bad"; m.textContent = "Enter both the RPC URL and the chain id."; return; }
+    setNetwork({ rpc_url: u, chain_id: c }, $("n4-net-set"));
+  });
   $("n4-send").addEventListener("click", () => { $("n4-na").hidden = false; });
   $("n4-recv").addEventListener("click", () => { $("n4-na").hidden = false; });
   $("n4-add").addEventListener("click", async () => {
@@ -173,6 +235,7 @@
   const seen = new MutationObserver(tick);              // after an unlock, and back from Settings or Messages
   seen.observe($("v-open"), { attributes: true, attributeFilter: ["hidden"] });
   seen.observe($("page-main"), { attributes: true, attributeFilter: ["hidden"] });
-  window.NET04 = { lock, state: () => LABEL(net) + " · " + NAMES[net] };
-  setNet(net);
+  window.NET04 = { lock, state: () => LABEL(net) + " · " + NAMES[net], net: () => net };
+  setNet(net, false);
+  readChoice();
 })();

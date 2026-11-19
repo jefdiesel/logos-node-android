@@ -10,6 +10,9 @@ the bridge's Config account (a PDA of the bridge program: the token program and 
 decimals), each definition's name, then one getAccount per watched public account (native balance under the native
 program, token holdings under the token program).
 
+The endpoint is lez04.json's, or one entered by RPC URL and chain id (set_network: it switches only if the RPC reports
+that chain id, and reads stop if it later reports another).
+
 Settings come from a config file (lez04.json beside this file, overridden by wallet-net04-config.json in the data
 folder), not constants: the chain is re-genesised now and then. The Config's address is derived from bridge_program;
 a "config_account" key in either file overrides that (for a bridge whose Config lives elsewhere), and is not set by
@@ -369,6 +372,9 @@ class Net04:
             height = rpc("getLastBlockId", [])
             if not isinstance(channel, str) or len(channel) > 128 or type(height) is not int or height < 0:
                 raise Unreachable("odd chain identity")
+            pinned = c.get("chain_id")             # a network entered by URL and chain id is read only while it is that chain
+            if isinstance(pinned, str) and pinned and pinned.lower() != channel.lower():
+                raise Unreachable("another chain")
             reset = (old.get("channel") and old["channel"] != channel) or \
                     (old.get("channel") == channel and isinstance(old.get("height"), int) and height < old["height"])
             if reset:
@@ -476,6 +482,66 @@ class Net04:
                            other_tokens=len([d for d in held if d not in {t["definition"] for t in toks}]))
             out["accounts"].append(row)
         return out
+
+
+    # -- the network: our LEZ 0.4, or one entered by RPC URL and chain id --
+    def network(self):
+        c = self.config()
+        over = self._load(os.path.join(self.data_dir, "wallet-net04-config.json"), {})
+        custom = isinstance(over, dict) and isinstance(over.get("rpc_url"), str) and isinstance(over.get("chain_id"), str)
+        return {"rpc_url": c.get("rpc_url") if isinstance(c.get("rpc_url"), str) else "", "custom": custom,
+                "chain_id": over.get("chain_id") if custom else None}
+
+    def set_network(self, url, chain_id):
+        """Switch to the network at `url`, only if it reports `chain_id` (getChannelId): (200, {...}) or (4xx/503,
+        {"error"}). url None: back to our LEZ 0.4 (lez04.json). The saved state of the network left is dropped, so
+        nothing of it shows as a reset of the new one."""
+        path = os.path.join(self.data_dir, "wallet-net04-config.json")
+        over = self._load(path, {})
+        if not isinstance(over, dict):
+            over = {}
+        if url is None:
+            over.pop("rpc_url", None)
+            over.pop("chain_id", None)
+        else:
+            if not isinstance(url, str) or not url_ok(url.strip()):
+                return 400, {"error": "The RPC URL starts with https:// and names a host."}
+            if not isinstance(chain_id, str) or len(chain_id.strip()) != 64 or any(ch not in "0123456789abcdefABCDEF" for ch in chain_id.strip()):
+                return 400, {"error": "The chain id is 64 hexadecimal characters (0-9, a-f)."}
+            url, chain_id = url.strip(), chain_id.strip().lower()
+            try:
+                got = self.rpc(url, "getChannelId", [])
+            except Unreachable:
+                return 503, {"error": "That RPC URL isn't answering. Nothing was changed."}
+            if not isinstance(got, str) or got.lower() != chain_id:
+                return 409, {"error": "That RPC reports another chain id, so the wallet didn't switch. Nothing was changed.",
+                             "reported": got[:128] if isinstance(got, str) else None}
+            over.update(rpc_url=url, chain_id=chain_id)
+        with self.lock:
+            if over:
+                self._save(path, over)
+            else:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            self.state, self.tokens_at = {}, 0.0
+            self.last_try = 0.0
+            try:
+                os.remove(self.state_file)
+            except OSError:
+                pass
+        return 200, self.network()
+
+
+def url_ok(url):
+    """An RPC URL the wallet may be pointed at: https with a host (plain http only to this machine, for tests), as the
+    wallet's outside fetch allows."""
+    for scheme, local in (("https://", False), ("http://127.0.0.1:", True), ("http://localhost:", True)):
+        if url.startswith(scheme):
+            host = url[len(scheme):].split("/", 1)[0]
+            return bool(host) and (local or all(ch.isalnum() or ch in ".-:" for ch in host)) and not any(ch.isspace() for ch in url)
+    return False
 
 
 class Unreachable(Exception):

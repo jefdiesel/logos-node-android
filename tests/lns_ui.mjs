@@ -29,6 +29,8 @@ const SEQ = await new Promise((ok) => app.stdout.on("data", (d) => { const m = /
 const ctl = (path) => fetch(`http://127.0.0.1:${SEQ}/ctl/${path}`, { method: "POST", body: "{}", headers: { "Content-Type": "application/json" } });
 const post = async (path, body, session) => (await fetch(BASE + path, { method: "POST", headers: { "Content-Type": "application/json", Origin: BASE, ...(session ? { "X-Session": session } : {}) }, body: JSON.stringify(body) })).json();
 const session = (await post("/api/wallet/setup", { pin: PIN })).session;
+// Your name and the LEZ token run on LEZ 0.3: picked in Settings > Network (LEZ 0.4 is the default), as a person would
+await post("/api/wallet/net04/choice", { net: "03" }, session);
 
 const cport = 9343 + Number(process.env.PORT_SHIFT || 0); prof = mkdtempSync(join(tmpdir(), "chrome-"));
 // never drive a browser this test didn't start: a DevTools port that already answers may be an adb forward to a phone

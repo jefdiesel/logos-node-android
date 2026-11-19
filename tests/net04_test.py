@@ -6,7 +6,9 @@
 Part 1 runs the reader with the network's answers replaced: the real answers recorded on 2026-11-13
 (tests/fixtures/net04/recorded.json, from the bridge repository's WALLET-READ.md), an account the network has never
 seen, a reset (new channel, lower height, the bridge's Config gone), garbage (not JSON, wrong types, bytes out of range,
-trailing bytes, huge numbers, oversized answers, errors) and an unreachable endpoint. Part 2 runs the app as the
+trailing bytes, huge numbers, oversized answers, errors) and an unreachable endpoint, then the network entered by RPC URL
+and chain id (it switches only when the RPC reports that chain id, and stops reading if it later reports another).
+Part 2 runs the app as the
 Android app does, with the network as a local stand-in, and shows the 0.4 routes never reach a send, the node, the
 names service or the 0.3 balances.
 """
@@ -310,6 +312,54 @@ names = {node_.id for node_ in ast.walk(tree) if isinstance(node_, ast.Name)}
 check("lez04 imports only the standard library", imports <= {"hashlib", "json", "os", "threading", "time"}, imports)
 check("lez04 names no send, node, names or 0.3 function", not (names & {"send", "node", "server", "lns_send", "lns_bridge", "names_rpc", "balance_of", "fetch_outside", "waku", "messaging_post", "outbox_save", "inbox_save", "store_write"}), names & {"send", "node"})
 
+CHANNEL = REC["channel"]
+
+
+class NetChain(Chain):
+    """The recorded network, also answering getChannelId by the URL asked (to see where reads go)."""
+    def __init__(self):
+        super().__init__()
+        self.urls, self.down = [], False
+
+    def fetch(self, url, body, cap, timeout):
+        self.urls.append(url)
+        return super().fetch(url, body, cap, timeout)
+
+
+def net_reader(chain, conf):
+    d = mkdtemp()
+    with open(os.path.join(d, "wallet-net04-config.json"), "w") as f:
+        json.dump(conf, f)
+    return lez04.Net04(d, APP, chain.fetch, clock=lambda: now[0])
+
+
+# ---- the network, entered by RPC URL and chain id --------------------------------------------------------------
+c = NetChain()
+n = net_reader(c, {"rpc_url": "https://lez.example/"})
+n.watch(OWNER)
+n.refresh(None)
+check("our network read once (state saved)", n.state.get("channel") == CHANNEL and os.path.exists(n.state_file))
+check("not https: refused", n.set_network("http://lez.example/", CHANNEL)[0] == 400)
+check("a chain id that isn't 64 hex: refused", n.set_network("https://other.example/", "abc")[0] == 400)
+code, r = n.set_network("https://other.example/", "ee" * 32)
+check("a chain id the RPC doesn't report: refused, nothing changed", code == 409 and "didn't switch" in r["error"] and r["reported"] == CHANNEL
+      and json.load(open(os.path.join(n.data_dir, "wallet-net04-config.json"))) == {"rpc_url": "https://lez.example/"}, r)
+c.down = True
+check("an RPC that doesn't answer: refused", n.set_network("https://other.example/", CHANNEL)[0] == 503)
+c.down = False
+code, r = n.set_network(" https://other.example/rpc ", CHANNEL.upper())
+check("the right chain id (any case): switched, the URL and chain id kept", code == 200 and r == {"rpc_url": "https://other.example/rpc", "custom": True, "chain_id": CHANNEL}, r)
+check("the old network's saved read is dropped (no 'reset' banner)", n.state == {} and not os.path.exists(n.state_file))
+c.urls.clear()
+n.refresh(None)
+check("reads now go to the entered URL", c.urls and all(u == "https://other.example/rpc" for u in c.urls), c.urls[:2])
+c.channel = "ff" * 32
+n.refresh(None)
+check("the entered network later reporting another chain id: not read ('can't reach'), nothing from the other chain",
+      n.view(None)["unreachable"] and n.state.get("channel") == CHANNEL, n.state)
+code, r = n.set_network(None, None)
+check("back to our LEZ 0.4: the entry removed", code == 200 and r["custom"] is False and r["rpc_url"] == json.load(open(os.path.join(APP, "lez04.json")))["rpc_url"], r)
+
 # ---- part 2: the app, with the network as a local stand-in ------------------------------------------------------------------
 chain = Chain()
 
@@ -457,6 +507,18 @@ slow.shutdown()
 chain.raw = None
 code, raw = server.fetch_outside("http://127.0.0.1:%d/" % rpc.server_address[1], {"jsonrpc": "2.0", "id": 1, "method": "getChannelId", "params": []}, cap=1 << 16, total=5)
 check("an ordinary answer within the limit comes through", code == 200 and json.loads(raw)["result"] == REC["channel"], raw[:100])
+check("the network routes need the session", W.call("/api/wallet/net04/choice")[0] == 401 and W.call("/api/wallet/net04/choice", {"net": "03"})[0] == 401
+      and W.call("/api/wallet/net04/network", {"rpc_url": "https://x.example/", "chain_id": CHANNEL})[0] == 401)
+check("the choice of network: LEZ 0.4 when none was made", W.call("/api/wallet/net04/choice", session=s)[1]["net"] == "04")
+check("picking LEZ 0.3 is kept", W.call("/api/wallet/net04/choice", {"net": "03"}, session=s)[0] == 200 and W.call("/api/wallet/net04/choice", session=s)[1]["net"] == "03")
+check("anything else is refused", W.call("/api/wallet/net04/choice", {"net": "05"}, session=s)[0] == 400)
+W.call("/api/wallet/net04/choice", {"net": "04"}, session=s)
+RPC_URL = "http://127.0.0.1:%d/" % rpc.server_address[1]
+code, r = W.call("/api/wallet/net04/network", {"rpc_url": RPC_URL, "chain_id": "ee" * 32}, session=s)
+check("the network entry through the app: a wrong chain id is refused", code == 409, r)
+code, r = W.call("/api/wallet/net04/network", {"rpc_url": RPC_URL, "chain_id": CHANNEL}, session=s)
+check("the right one switches", code == 200 and r["custom"] and r["chain_id"] == CHANNEL, r)
+check("the choice route says which network is in use", W.call("/api/wallet/net04/choice", session=s)[1]["network"]["chain_id"] == CHANNEL)
 check("nothing on the 0.4 path reached a send, the node, the names service, the 0.3 balances or the messages", not tripped, tripped)
 print("all checks passed" if not FAILS else "%d FAILED" % len(FAILS))
 sys.exit(1 if FAILS else 0)

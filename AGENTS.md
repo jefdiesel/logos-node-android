@@ -11,11 +11,12 @@ phone. Unofficial community work, testnet only.
   talks to the node and the messaging node, and keeps the wallet's and the chats' files. `messages/` is the
   Messages screen (`messages.js`) and its model (`chat-core.js`); `msg-crypto.js` and the `noble-*` folders
   are vendored (see `app/messages/VENDORED.txt`). `lns/` is "Your name" (Android only). `lez04.py` (with its
-  settings in `lez04.json`) and `net04/net04.js` are the Wallet's LEZ 0.4 view (Android only; chosen in Settings > Network): read-only
-  balances on the bridge test network, read by the server from an outside endpoint, never on the money path;
+  settings in `lez04.json`) and `net04/net04.js` are the Wallet's LEZ 0.4 view (Android only; LEZ 0.4 is the
+  default, LEZ 0.3 can be picked in Settings > Network and the pick is kept): read-only balances on the bridge test
+  network, read by the server from an outside endpoint, never on the money path;
   `<data>/wallet-net04-config.json` overrides `lez04.json` (for example `rpc_url`, or `config_account`, which
-  is otherwise derived from `bridge_program`). `release.json` lists every file and its sha256: the in-app
-  updater uses it.
+  is otherwise derived from `bridge_program`); Settings > Network writes `rpc_url` + `chain_id` there only when
+  that RPC reports that chain id. `release.json` lists every file and its sha256: the in-app updater uses it.
 - `android/`: the Android app (Kotlin) that runs the node, the messaging node and `server.py` (in embedded
   Python), and shows the page in a WebView. Read `android/README.md` first.
 - `native/`: builds the blockchain node for Android from its source, with the patches in `native/patches/`.
@@ -70,7 +71,7 @@ python3 tests/autolock_test.py            # auto-lock
 python3 tests/embedded_test.py            # inside the Android app (APP_EMBEDDED=android)
 python3 tests/app_key_test.py             # the app key: every route refused without it
 python3 tests/messaging_socket_test.py    # the messaging node over its Unix socket
-python3 tests/net04_test.py              # the LEZ 0.4 reader, apart from the money path
+python3 tests/net04_test.py              # the LEZ 0.4 reader, apart from the money path; the network entry
 node tests/chat_test.mjs                  # chats: 1:1, history, key changes, backup and restore
 node tests/msg_v2_test.mjs                # Requests, padding, safety codes, store and inbox safety
 node tests/msg_hostile_test.mjs           # hostile sender names never stop the chats

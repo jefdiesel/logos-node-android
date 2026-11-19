@@ -113,7 +113,7 @@ jobs:
         run: python3 tests/embedded_test.py
       - name: Android app key - other apps on the phone get only the page's public files (android/LOCAL-APIS.md)
         run: python3 tests/app_key_test.py
-      - name: The bridge test network (LEZ 0.4) reader - recorded answers, an empty account, resets, garbage, oversized answers; nothing on its path reaches a send
+      - name: The bridge test network (LEZ 0.4) reader - recorded answers, an empty account, resets, garbage, oversized answers, the network entered by RPC URL + chain id; nothing on its path reaches a send
         run: python3 tests/net04_test.py
       - name: The node API on a Unix socket (node patch 0002) - server.py's transport; it never touches the old TCP port, and takes answers only whole
         run: python3 tests/node_socket_test.py

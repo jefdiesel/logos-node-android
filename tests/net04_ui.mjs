@@ -1,9 +1,10 @@
 // The Wallet's network switch (app/net04/net04.js) in a real browser (headless Chrome over the DevTools protocol), at
 // phone width, with the stand-ins of tests/lns_ui_app.py and the bridge test network answering from the answers
-// recorded in tests/fixtures/net04: LEZ 0.3 by default with its full name beside it, every action saying which network
-// it runs on, LEZ 0.4 showing the phone's own LEZ account and watched addresses (view-only), the watch field refusing
-// what isn't a 32-byte id and echoing the id it took, Send and Receive saying they aren't available there (and the page
-// sending nothing), the network unreachable and reset, the eye, no green or blue, and LEZ 0.3 again after a reload.
+// recorded in tests/fixtures/net04: LEZ 0.4 by default, LEZ 0.3 with its full name beside it, every action saying which
+// network it runs on, LEZ 0.4 showing the phone's own LEZ account and watched addresses (view-only), the watch field
+// refusing what isn't a 32-byte id and echoing the id it took, Send and Receive saying they aren't available there (and
+// the page sending nothing), the network unreachable and reset, the eye, no green or blue, and the person's pick kept
+// across a reload and a lock.
 //
 //   CHROME=<path to chrome> SHOTS=<folder, optional> node tests/net04_ui.mjs
 import { spawn } from "node:child_process";
@@ -86,7 +87,15 @@ const toWallet = async () => { await js(`closeSettings(); true`); await waitFor(
 const pick = async (n) => { await netPage(); await click(`#nw-0${n}`); await toWallet(); };
 const tall = (sel) => js(`[...document.querySelectorAll(${JSON.stringify(sel)})].every(e => e.getBoundingClientRect().height >= 44)`);
 
-// ---- the Wallet: one line naming the network on screen, above the token list; LEZ 0.3 by default ----
+// ---- LEZ 0.4 by default (nothing picked yet) ----
+await waitFor("by default: LEZ 0.4, the Wallet's line says so and the 0.4 view shows", `document.getElementById("net-line").textContent === "LEZ 0.4 · bridge test network" && document.getElementById("net04").offsetParent !== null && document.getElementById("tokens").offsetParent === null`);
+check("by default the switch is on LEZ 0.4", (await js(`document.getElementById("nw-04").getAttribute("aria-checked")`)) === "true");
+await waitFor("by default the phone's LEZ account is read from LEZ 0.4", `/This phone's LEZ account/.test(document.getElementById("n4-accts").innerText)`, 20000);
+await shot("wallet-lez-0.4-default");
+await pick(3);
+await js(`window.__req = []; true`);
+
+// ---- the Wallet: one line naming the network on screen, above the token list; LEZ 0.3 when picked ----
 await waitFor("one line above the token list: LEZ 0.3 · public Logos testnet", `!!document.getElementById("net-line") && document.getElementById("net-line").offsetParent !== null && document.getElementById("net-line").textContent === "LEZ 0.3 · public Logos testnet"`);
 check("no switch on the Wallet page", !(await js(`!!document.querySelector("#page-main [role=radiogroup][aria-labelledby=h-s-net], #page-main #nw-03, #page-main #nw-asks, #page-main #n4-watch")`)));
 check("the line is a 44 px target, just above the token list", await js(`(() => { const b = document.getElementById("net-line").getBoundingClientRect(), t = document.getElementById("tokens").getBoundingClientRect(); return b.height >= 44 && b.bottom <= t.top + 1 && t.top - b.bottom < 60; })()`));
@@ -108,8 +117,8 @@ await waitFor("tapping the line opens Settings > Network", `!document.getElement
 check("the two choices", (await js(`[...document.querySelectorAll("#s-net .seg button")].map(b => b.textContent).join("|")`)) === "LEZ 0.3|LEZ 0.4");
 check("LEZ 0.3 is chosen", (await js(`document.getElementById("nw-03").getAttribute("aria-checked")`)) === "true" && (await js(`document.getElementById("nw-04").getAttribute("aria-checked")`)) === "false");
 check("its full name beside it: public Logos testnet", (await text("#nw-name")) === "public Logos testnet");
-check("under the switch, before anything is asked: what choosing LEZ 0.4 tells lez.nameswallet.app",
-  (await text("#nw-asks")) === "Choosing LEZ 0.4 asks lez.nameswallet.app about this phone's account and the addresses you watch; it sees them and your IP address." && (await shown("#nw-asks")));
+check("under the switch: what LEZ 0.4 tells its endpoint (the stand-in's host here)",
+  /^On LEZ 0\.4 the wallet asks 127\.0\.0\.1:\d+ about this phone's account and the addresses you watch; it sees them and your IP address\.$/.test(await text("#nw-asks")) && (await shown("#nw-asks")), await text("#nw-asks"));
 check("no watch field while LEZ 0.3 is chosen", !(await shown("#n4-watch")));
 check("the switch's buttons are 44 px", await tall("#s-net .seg button"));
 await shot("settings-network-lez-0.3");
@@ -200,8 +209,8 @@ await waitFor("and off the Wallet", `![...document.querySelectorAll("#n4-accts .
 // ---- what the 0.4 view asked for: only its own routes ----
 const reqs = await js(`window.__req.slice()`);
 // (the Wallet's own background reads go on as before: status, accounts, history, and the receipts it pops up)
-const other = reqs.filter(r => /^POST /.test(r) && !["POST /api/wallet/net04/watch", "POST /api/wallet/receipts"].includes(r));
-check("on 0.4 the page posted only to its watch route (no send, no bridge, no name)", other.length === 0 && reqs.some(r => /net04/.test(r)), other);
+const other = reqs.filter(r => /^POST /.test(r) && !["POST /api/wallet/net04/watch", "POST /api/wallet/net04/choice", "POST /api/wallet/receipts"].includes(r));
+check("on 0.4 the page posted only to its watch route and the network pick (no send, no bridge, no name)", other.length === 0 && reqs.some(r => /net04/.test(r)), other);
 check("never a send route", !reqs.some(r => /send|bridge|register|faucet/.test(r)), reqs);
 
 // ---- back to LEZ 0.3, and 0.3 again after a reload ----
@@ -210,7 +219,11 @@ await waitFor("LEZ 0.3: the token list again, the 0.4 view gone", `document.getE
 await pick(4);
 await cdp("Page.navigate", { url: BASE + "/" });
 await waitFor("after a reload: unlocked", `!document.getElementById("v-open").hidden && !!document.getElementById("nw-03")`);
-check("after a reload: LEZ 0.3 again", (await js(`document.getElementById("nw-03").getAttribute("aria-checked")`)) === "true" && (await shown("#tokens")) && !(await shown("#net04")) && (await js(`document.getElementById("net-line").textContent`)) === "LEZ 0.3 · public Logos testnet");
+await waitFor("after a reload: the pick is kept (LEZ 0.4)", `document.getElementById("nw-04").getAttribute("aria-checked") === "true" && document.getElementById("net04").offsetParent !== null`);
+await pick(3);
+await cdp("Page.navigate", { url: BASE + "/" });
+await waitFor("after a reload: unlocked", `!document.getElementById("v-open").hidden && !!document.getElementById("nw-03")`);
+await waitFor("after a reload: a pick of LEZ 0.3 is kept too", `document.getElementById("nw-03").getAttribute("aria-checked") === "true" && document.getElementById("tokens").offsetParent !== null && document.getElementById("net04").offsetParent === null && document.getElementById("net-line").textContent === "LEZ 0.3 · public Logos testnet"`);
 
 // ---- a lock with LEZ 0.4 showing: nothing of it stays in the page, and it is LEZ 0.3 after the unlock ----
 const relock = async () => { await js(`sessionStorage.setItem("session", ${JSON.stringify(session)}); true`); await cdp("Page.navigate", { url: BASE + "/" });
@@ -226,11 +239,13 @@ await waitFor("locked: the page loaded again, into the lock screen", `!document.
 const left = await js(`(() => { const h = document.documentElement.outerHTML, v = document.getElementById("net04");
   return { own: h.includes(${JSON.stringify(OWN)}), watched: h.includes(${JSON.stringify(BASECAMP)}), amounts: /23,786,858|wETH: /.test(v.textContent),
     accts: document.getElementById("n4-accts").textContent, msg: document.getElementById("n4-watch-m").textContent, state: document.getElementById("n4-state").textContent,
-    typed: document.getElementById("n4-watch").value, on03: document.getElementById("nw-03").getAttribute("aria-checked") === "true" && v.hidden }; })()`);
-check("locked: no account id, watched id, amount, message or typed text of LEZ 0.4 left in the page, and the switch back on LEZ 0.3",
-  !left.own && !left.watched && !left.amounts && !left.accts && !left.msg && !left.state && !left.typed && left.on03, left);
+    typed: document.getElementById("n4-watch").value }; })()`);
+check("locked: no account id, watched id, amount, message or typed text of LEZ 0.4 left in the page",
+  !left.own && !left.watched && !left.amounts && !left.accts && !left.msg && !left.state && !left.typed, left);
 await relock();
-check("after the unlock: LEZ 0.3", (await js(`document.getElementById("nw-03").getAttribute("aria-checked")`)) === "true" && !(await shown("#net04")));
+await waitFor("after the unlock: the kept pick, LEZ 0.4", `document.getElementById("nw-04").getAttribute("aria-checked") === "true" && document.getElementById("net04").offsetParent !== null`);
+await pick(3); await relock();
+await waitFor("after a lock and unlock with LEZ 0.3 picked: LEZ 0.3", `document.getElementById("nw-03").getAttribute("aria-checked") === "true" && document.getElementById("net04").offsetParent === null`);
 // a Watch answered after a lock writes nothing
 await pick(4);
 await waitFor("LEZ 0.4 again", `/LEZ: 23,786,858/.test(document.getElementById("n4-accts").innerText)`, 20000);

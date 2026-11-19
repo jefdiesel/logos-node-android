@@ -76,7 +76,8 @@ try:
     code, _ = call("/names/names.js")
     check("the names resolver file loads without the key (public file)", code == 200, code)
     for path in ("/api/wallet", "/api/status", "/cryptarchia/info", "/network/info", "/api/wallet/accounts",
-                 "/api/messages/key", "/api/messages/status", "/api/wallet/lns", "/wallet-events.log", "/nothing"):
+                 "/api/messages/key", "/api/messages/status", "/api/wallet/lns", "/wallet-events.log", "/nothing",
+                 "/api/wallet/net04", "/api/wallet/net04/choice"):
         code, d = call(path)
         check("GET %s without the key is refused" % path, code == 403 and d.get("app_key") is False, (code, d))
     # first come, first served before: another app could set the PIN and get a session
@@ -89,7 +90,9 @@ try:
         check("a wrong app key is refused (%s)" % what, code == 403, (code, d))
     for path, body in (("/api/wallet/unlock", {"pin": "000000"}), ("/api/wallet/lock", {}),
                        ("/api/wallet/send", {}), ("/api/wallet/visibility", {"state": "hidden"}),
-                       ("/api/names/rpc", {}), ("/api/messages/send", {}), ("/api/wallet/passkey/challenge", {})):
+                       ("/api/names/rpc", {}), ("/api/messages/send", {}), ("/api/wallet/passkey/challenge", {}),
+                       ("/api/wallet/net04/choice", {"net": "03"}),
+                       ("/api/wallet/net04/network", {"rpc_url": "https://evil.example/", "chain_id": "ee" * 32})):
         code, d = call(path, body)
         check("POST %s without the key is refused" % path, code == 403 and d.get("app_key") is False, (code, d))
     code, d = call("/lez-rpc/" + "ab" * 16, {"jsonrpc": "2.0"})

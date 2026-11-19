@@ -2,7 +2,7 @@
  "files": {
   "index.html": "ce31ffe9ddcee6a4dc7dfceeec5b5db932ecb6ffae2bb77e753d91e1d144dde8",
   "lez04.json": "16fcdad838d7a90725a2937fd37a31479184b5b59c3806e927e93cd1f5fe259c",
-  "lez04.py": "7fe6cf900750e1413ab4650dd6cbac3cde58d20e82ccf0af8bc2d64cfd666e62",
+  "lez04.py": "3827c5fa7fe7086a5961f59708dfe2d0a2f7f75bcc862db449f65a1226e50c73",
   "lns/lns.js": "93686db76760e8b8530153efdaa87a0a427d2643674b25c09937b2320a3942f7",
   "messages/VENDORED.txt": "6fbf95fc9f8f846e65996ac4c9e2179002b631af229d8c222ab19a4a756d98e0",
   "messages/chat-core.js": "b0c42d5a21d1f3a07812cc97204cab28319bf24660e9c058abf2a17e3673e62e",
@@ -33,7 +33,7 @@
   "names/noble-hashes/argon2.js": "f39753324bdf2f484150731d24b1d71236f26bf10bedd594f7d190fcdfdefdc9",
   "names/noble-hashes/blake2.js": "03f00237bcc0b4d822a80f7c0ac22e42632c48e246c3b6da584e6452186e32f0",
   "names/noble-hashes/utils.js": "037ad49adb78168b6b699598fd33f85f7877456b1d28b4d032e2a1a16807947c",
-  "net04/net04.js": "f17a34bedd6389c16247eb2dcfc00a7e99d3ff1ac224543354031804aa9b1df1",
+  "net04/net04.js": "e419ce182b27ad706668f044b4d02ba66e8cdf5e17a8fcc9242608bd7375834f",
   "noble-curves/LICENSE": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec",
   "noble-curves/abstract/curve.js": "dbaeee3b41ff47efb76b78e14170fe4dda7c7ecdc387c402f16c5118e0bac356",
   "noble-curves/abstract/edwards.js": "f24a9c221a549a8fff259eb8f245ab0dc17679b13c532c3970d91acc4df9fffd",
@@ -47,7 +47,7 @@
   "noble-curves/utils.js": "ba29ee6d5c0129f0913e0cb11e1c84d09b7e1dd73c55e158cd49b5987bb62a65",
   "qr/VENDORED.txt": "1d4fc608d725afe81619262b9fb4323fe2d77318579396d9429f3a6f04b873ad",
   "qr/qrcode.js": "ea91d7118a5395289170da848b7c6758b996163bfbccf312591ab65a4911b7c0",
-  "server.py": "43326433de7a1cd2d2ca7245f4d1a4c66e0a0d8188cf061fdc1143db72b95902"
+  "server.py": "436d834aa694fd4b97fca4e8adf627493dd405172851dc36ee01791afea09262"
  },
  "version": "0.9.28"
 }
