@@ -1,0 +1,324 @@
+name: names04-build
+# Builds the LEZ 0.4 LNS command line, `names` from the logos-names 0.4 line (wallet-1120), for
+# Android arm64 (aarch64-linux-android, API 28) with the NDK, NEXT TO the 0.3 one that
+# names-build.yml makes (that one stays as it is: the 0.3 money path depends on it). The app is to
+# run it as a second signer for LEZ 0.4 public transactions (NFT sends, the free LNS name NFT
+# claim once deeds are in this line). Private transactions are out of scope on the phone.
+#
+# The 0.4 tool runs a call's programs locally before a public send, to size the gas. A phone
+# has no r0vm, so this build is "bare" (cli/src/prover.rs): public registry and token calls go
+# unchecked with their measured caps. names04-cli/patches/ adds the same for public NFT calls.
+# The `local-prove` leg tries the other way (RISC Zero's in-process executor, which in risc0
+# 3.0.5 only comes with the whole in-process prover) to see whether it builds for Android at all.
+#
+# emulator-e2e runs the Android binary on an x86_64 Android emulator (its ARM translation)
+# against a throwaway LEZ v0.4.0-rc3 chain started in the job: tests/names04_emulator_e2e.sh.
+# Results are workflow artifacts with their sha256; nothing is published.
+on:
+  push:
+    branches: [names04-android]
+    paths: ['names04-cli/**', .github/workflows/names04-build.yml, tests/names04_emulator_e2e.sh]
+  workflow_dispatch:
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+env:
+  # logos-names wallet-1120 on 2026-11-19 (names-nft merged; CLI 0.17.0, LEZ v0.4.0-rc3).
+  NAMES_REV: d25d8f6b9382537b9a69f2e3ba4f787c669f0ca5
+  LEZ_TAG: v0.4.0-rc3
+  LEZ_COMMIT: "bafd07be"
+  ANDROID_API: "28"
+  NDK_VERSION: "30.0.16248370"
+  CARGO_TERM_COLOR: never
+jobs:
+  # Does an arm64 Android executable run on the x86_64 emulator images (ARM translation)?
+  emulator-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [30, 34]
+    steps:
+      - name: KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: An arm64 hello
+        run: |
+          NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
+          [ -f "$NDK/source.properties" ] || yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" >/dev/null
+          TC="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
+          printf '#include <stdio.h>\nint main(void){puts("hello from arm64");return 0;}\n' > hello.c
+          "$TC/bin/aarch64-linux-android$ANDROID_API-clang" -O2 hello.c -o hello && file hello
+      - uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: ${{ matrix.api }}
+          target: google_apis
+          arch: x86_64
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          script: |
+            adb shell getprop ro.product.cpu.abilist
+            adb shell getprop ro.enable.native.bridge.exec
+            adb shell getprop ro.dalvik.vm.native.bridge
+            adb shell "ls /proc/sys/fs/binfmt_misc/ 2>&1" || true
+            adb push hello /data/local/tmp/hello
+            adb shell "chmod 755 /data/local/tmp/hello && /data/local/tmp/hello"
+
+  android-arm64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [bare, local-prove]
+    # the local-prove leg is an experiment: its failure is the answer, not a broken build
+    continue-on-error: ${{ matrix.variant == 'local-prove' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL /usr/local/.ghcup
+          df -h /
+      - name: Names source at the pinned commit, with names04-cli/patches
+        run: |
+          git init -q names && cd names
+          git fetch -q --depth 1 https://github.com/jefdiesel/logos-names.git "$NAMES_REV"
+          git checkout -q FETCH_HEAD
+          [ "$(git rev-parse HEAD)" = "$NAMES_REV" ] || { echo "::error::wrong commit"; exit 1; }
+          git log -1 --format='names %H %cd %s'
+          for p in "$GITHUB_WORKSPACE"/names04-cli/patches/*.patch; do git apply --verbose "$p"; done
+          git diff --stat
+      - name: Versions from the names Cargo.lock
+        id: v
+        run: |
+          LBC_TAG=$(grep -m1 -oE 'logos-blockchain-circuits\.git\?tag=[^#"]+' names/Cargo.lock | sed 's/.*tag=//')
+          RS_REV=$(grep -m1 -oE 'logos-blockchain-rust-rapidsnark\.git\?rev=[0-9a-f]+' names/Cargo.lock | sed 's/.*rev=//')
+          [ -n "$LBC_TAG" ] && [ -n "$RS_REV" ] || { echo "::error::circuits tag or rapidsnark rev not found in Cargo.lock"; exit 1; }
+          mkdir -p lock-versions
+          printf 'lbc-pol-sys = { git = "https://github.com/logos-blockchain/logos-blockchain-circuits.git", tag = "%s" }\n' "$LBC_TAG" > lock-versions/Cargo.toml
+          printf 'rust-rapidsnark = { git = "https://github.com/logos-blockchain/logos-blockchain-rust-rapidsnark.git", rev = "%s" }\n' "$RS_REV" >> lock-versions/Cargo.toml
+          cat lock-versions/Cargo.toml
+          sudo apt-get update -qq && sudo apt-get install -y -qq nlohmann-json3-dev m4 unzip >/dev/null
+          NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
+          if [ ! -f "$NDK/source.properties" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" >/dev/null
+          fi
+          printf 'ANDROID_NDK_HOME=%s\nANDROID_NDK_ROOT=%s\n' "$NDK" "$NDK" >> "$GITHUB_ENV"
+          curl -fsSL -o "$RUNNER_TEMP/lbc-ci.yml" "https://raw.githubusercontent.com/logos-blockchain/logos-blockchain-circuits/$LBC_TAG/.github/workflows/ci.yml"
+          CIRCOM_TAG=$(grep -m1 'CIRCOM_TAG:' "$RUNNER_TEMP/lbc-ci.yml" | awk '{print $2}')
+          echo "lbc=$LBC_TAG" >> "$GITHUB_OUTPUT"
+          echo "circom=$CIRCOM_TAG" >> "$GITHUB_OUTPUT"
+          echo "ndk=$(basename "$NDK")" >> "$GITHUB_OUTPUT"
+      - name: Cache circuits folder
+        id: lbc
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: lbc-android
+          key: names-lbc-android-${{ steps.v.outputs.lbc }}-${{ steps.v.outputs.ndk }}-api${{ env.ANDROID_API }}-${{ hashFiles('native/build-circuits.sh', 'lock-versions/Cargo.toml') }}
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: steps.lbc.outputs.cache-hit != 'true'
+        with:
+          path: ~/.cargo/bin/circom
+          key: circom-bin-${{ steps.v.outputs.circom }}
+      - name: Circuits libraries for Android
+        if: steps.lbc.outputs.cache-hit != 'true'
+        run: WORK="$RUNNER_TEMP/lbc-work" native/build-circuits.sh lock-versions "$GITHUB_WORKSPACE/lbc-android"
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: steps.lbc.outputs.cache-hit != 'true'
+        continue-on-error: true
+        with:
+          path: lbc-android
+          key: ${{ steps.lbc.outputs.cache-primary-key }}
+      - name: PC/SC stand-in
+        run: |
+          TC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+          mkdir -p pcsc-stub
+          "$TC/bin/aarch64-linux-android$ANDROID_API-clang" -O2 -fPIC -Wall -Werror -c names-cli/pcsc-stub.c -o pcsc-stub/pcsc-stub.o
+          "$TC/bin/llvm-ar" rcs pcsc-stub/libpcscstub.a pcsc-stub/pcsc-stub.o
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: names
+          key: names04-android-${{ matrix.variant }}-${{ env.NAMES_REV }}-${{ hashFiles('names04-cli/patches/*') }}
+          cache-on-failure: true
+      - name: Build names (LEZ 0.4) for Android, ${{ matrix.variant }}
+        working-directory: names
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add aarch64-linux-android
+          rustc -V; cargo -V
+          TC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+          T=aarch64-linux-android; CLANG="$TC/bin/$T$ANDROID_API-clang"
+          export CC_aarch64_linux_android="$CLANG" CXX_aarch64_linux_android="$CLANG++"
+          export AR_aarch64_linux_android="$TC/bin/llvm-ar" RANLIB_aarch64_linux_android="$TC/bin/llvm-ranlib"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CLANG"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_AR="$TC/bin/llvm-ar"
+          export CXXSTDLIB_aarch64_linux_android=c++
+          export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--target=$T$ANDROID_API --sysroot=$TC/sysroot"
+          export LBC_ROOT_DIR="$GITHUB_WORKSPACE/lbc-android"
+          export PCSC_LIB_DIR="$GITHUB_WORKSPACE/pcsc-stub" PCSC_LIB_NAME=static=pcscstub
+          export RISC0_SKIP_BUILD=1
+          features=()
+          [ "${{ matrix.variant }}" = local-prove ] && features=(--features local-prove)
+          cargo build --locked --release --target $T -p names_cli "${features[@]}" 2>&1 | tee "$RUNNER_TEMP/build.log"
+          df -h /
+      - name: Build log tail (what failed, if it did)
+        if: failure()
+        run: |
+          grep -nE "^error|error:|warning: .*failed|cargo:warning" "$RUNNER_TEMP/build.log" | tail -60 || true
+      - name: Describe and package the result
+        run: |
+          TC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+          B=names/target/aarch64-linux-android/release/names
+          file "$B"; ls -la "$B"
+          mkdir out && cp "$B" out/names && "$TC/bin/llvm-strip" out/names
+          "$TC/bin/llvm-readelf" -d out/names | tee "$RUNNER_TEMP/dynamic.txt" | grep -E "NEEDED|RUNPATH|RPATH" || true
+          bad=$(grep NEEDED "$RUNNER_TEMP/dynamic.txt" | grep -vE '\[(libc|libm|libdl|liblog)\.so\]' || true)
+          [ -z "$bad" ] || { echo "::error::unexpected shared libraries: $bad"; exit 1; }
+          if "$TC/bin/llvm-nm" -D --undefined-only out/names | grep -q SCard; then
+            echo "::error::PC/SC symbols are still undefined"; exit 1
+          fi
+          { echo "names (jefdiesel/logos-names $NAMES_REV + names04-cli/patches) LEZ 0.4, ${{ matrix.variant }}, for aarch64-linux-android API $ANDROID_API, NDK $NDK_VERSION"
+            echo "patches: $(cd "$GITHUB_WORKSPACE" && sha256sum names04-cli/patches/*.patch | tr '\n' ' ')"
+            echo "built by $GITHUB_REPOSITORY run $GITHUB_RUN_ID from $GITHUB_SHA"; } > out/BUILD.txt
+          (cd out && sha256sum names > SHA256SUMS)
+          cat out/SHA256SUMS out/BUILD.txt; ls -la out
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: names04-cli-android-arm64${{ matrix.variant == 'local-prove' && '-local-prove' || '' }}
+          path: out/
+
+  # The host side of the emulator test: the standalone rc3 sequencer, the same patched names for
+  # Linux x86_64, and the registry guest (as logos-names' wallet-e2e.yml builds them).
+  linux-host:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL /usr/local/.ghcup
+      - name: Names source at the pinned commit, with names04-cli/patches
+        run: |
+          git init -q names && cd names
+          git fetch -q --depth 1 https://github.com/jefdiesel/logos-names.git "$NAMES_REV"
+          git checkout -q FETCH_HEAD
+          for p in "$GITHUB_WORKSPACE"/names04-cli/patches/*.patch; do git apply "$p"; done
+      - name: System libraries
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libpcsclite-dev pkg-config >/dev/null
+      - name: rzup (the risc0 toolchain, for the registry guest only)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -L https://risczero.com/install | bash
+          echo "$HOME/.risc0/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.risc0/bin:$PATH"
+          rzup install cargo-risczero 3.0.5
+          rzup install rust
+      - name: Restore the standalone sequencer
+        id: seqcache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/lez-seq
+          key: lez-seq-standalone-prove-${{ env.LEZ_COMMIT }}
+      # `prove` gives the sequencer RISC Zero's in-process executor (lee/prove), as our standalone
+      # chains on the Mini are built: without it the sequencer looks for an r0vm, and with none
+      # on the runner its genesis transaction fails ("No such file or directory").
+      - name: Build sequencer_service --features standalone,prove at ${{ env.LEZ_TAG }}
+        if: steps.seqcache.outputs.cache-hit != 'true'
+        run: |
+          git clone --quiet --depth 1 --branch "$LEZ_TAG" https://github.com/logos-blockchain/logos-execution-zone.git "$RUNNER_TEMP/lez"
+          test "$(git -C "$RUNNER_TEMP/lez" rev-parse --short=8 HEAD)" = "$LEZ_COMMIT"
+          (cd "$RUNNER_TEMP/lez" && cargo build --release --features standalone,prove -p sequencer_service)
+          mkdir -p ~/lez-seq
+          cp "$RUNNER_TEMP/lez/target/release/sequencer_service" ~/lez-seq/
+          cp "$RUNNER_TEMP/lez/lez/sequencer/service/networks/local.json" ~/lez-seq/
+          rm -rf "$RUNNER_TEMP/lez"
+      - name: Save the standalone sequencer
+        if: steps.seqcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/lez-seq
+          key: lez-seq-standalone-prove-${{ env.LEZ_COMMIT }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: names
+          key: names04-linux-${{ env.NAMES_REV }}-${{ hashFiles('names04-cli/patches/*') }}
+          cache-on-failure: true
+      - name: Build names (Linux) and the registry guest
+        working-directory: names
+        run: |
+          cargo build --release -p names_cli -p names_methods
+          elf=$(find target/riscv-guest -path '*names_methods*' -name logos_names.bin | head -1)
+          test -n "$elf"
+          mkdir -p ../host && cp target/release/names "$elf" shortlist/shortlist.bin ../host/
+          cp ~/lez-seq/sequencer_service ~/lez-seq/local.json ../host/
+          ls -la ../host
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: names04-host-linux-x86_64
+          path: host/
+          retention-days: 7
+
+  emulator-e2e:
+    needs: [android-arm64, linux-host]
+    if: ${{ always() && needs.linux-host.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: names04-host-linux-x86_64
+          path: host
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: names04-cli-android-arm64
+          path: dev
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        continue-on-error: true
+        with:
+          name: names04-cli-android-arm64-local-prove
+          path: dev-lp
+      - name: Inputs
+        run: |
+          # linux-host links the sequencer and names against PC/SC (the LEZ wallet's Keycard support)
+          sudo apt-get update -qq && sudo apt-get install -y -qq libpcsclite1 >/dev/null
+          chmod +x host/names host/sequencer_service
+          for b in host/sequencer_service host/names; do echo "== ldd $b"; ldd "$b"; ! ldd "$b" | grep -q 'not found' || { echo "::error::$b is missing a library"; exit 1; }; done
+          (cd dev && sha256sum -c SHA256SUMS)
+          [ -f dev-lp/names ] && (cd dev-lp && sha256sum -c SHA256SUMS) && echo "DEV_NAMES_LP=$PWD/dev-lp/names" >> "$GITHUB_ENV" || echo "no local-prove build"
+          ls -la host dev dev-lp 2>/dev/null || true
+      - uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        env:
+          SEQ_BIN: ${{ github.workspace }}/host/sequencer_service
+          SEQ_CONFIG: ${{ github.workspace }}/host/local.json
+          HOST_NAMES: ${{ github.workspace }}/host/names
+          NAMES_ELF: ${{ github.workspace }}/host/logos_names.bin
+          SHORTLIST: ${{ github.workspace }}/host/shortlist.bin
+          DEV_NAMES: ${{ github.workspace }}/dev/names
+          WORK: ${{ runner.temp }}/e2e
+        with:
+          api-level: 30
+          target: google_apis
+          arch: x86_64
+          ram-size: 4096M
+          disk-size: 6G
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          script: bash tests/names04_emulator_e2e.sh
+      - name: Logs
+        if: always()
+        run: |
+          tail -40 "$RUNNER_TEMP/e2e/sequencer.log" || true
+          echo "== register.log"; cat "$RUNNER_TEMP/e2e/register.log" || true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: names04-emulator-e2e-logs
+          path: ${{ runner.temp }}/e2e*
+          retention-days: 14
