@@ -152,7 +152,7 @@ for (const [label, extra, port] of [["without WAKU_API", { WAKU_API: null }, 809
   check(`${label}, /api/status has nothing new`, !JSON.stringify(st.d).includes("messag"), st.d);
   const res = await fetch(c.base + "/");
   check(`${label}, the page's CSP is unchanged (no data: pictures)`, res.headers.get("content-security-policy") ===
-    "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'");
+    "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; font-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'");
   const page = Buffer.from(await res.arrayBuffer());
   const want = Buffer.from(indexFile.toString("utf8").replace("__APP_VERSION__", JSON.parse(readFileSync(join(ROOT, "app", "release.json"))).version).replace("__APP_EMBEDDED__", ""));
   check(`${label}, the page served is the page file, with only its version filled in`, page.equals(want));
