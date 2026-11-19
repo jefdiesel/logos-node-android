@@ -2,8 +2,11 @@
 // - The NFTs the wallet's LEZ 0.4 accounts hold (this phone's LEZ account and the watched addresses) under the NFT
 //   programs listed for the network, read by the server (app/lez04.py, getAccountView per account per program) at most
 //   every 30 s and only while Collectibles is on screen. Words and states follow the desktop wallet's Collectibles page
-//   (basecamp/qml/nft.mjs of the names project). Nothing here sends: no Receive, Send, Print or Burn on the phone yet,
-//   and no collection image is ever fetched.
+//   (basecamp/qml/nft.mjs of the names project). No collection image is ever fetched. With the LEZ 0.4 signer
+//   (/net04/sign04.js) and the accounts restored from the recovery phrase: Receive (make an account ready for a
+//   collection), Send (an NFT one of the wallet's accounts holds), and "Claim NFT (free)" on each LNS name the wallet
+//   holds in the normal tier with no NFT yet; all public, each press followed until it ends. Print and Burn: not here.
+//   Without the signer it is view-only, as before.
 // - An LNS name's NFT sits in an account only the LNS registry controls, so it is read from the name's record
 //   (lez04.read_deed), never found by a holdings scan. Its card is drawn here, on the phone, with the holder's own
 //   name (design: LNS name card, approved 2026-11-19): forest green, Gloock for the name, λ top right, a yellow rule,
@@ -129,7 +132,7 @@
     <div class="bar" style="margin:0 -16px 8px;background:none;border:0;padding-left:0"><button type="button" class="back" id="n4-col-back" aria-label="Back to the Wallet" title="Back"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" focusable="false"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button><h2 class="bar-t" id="h-col" style="margin:0">Collectibles</h2></div>
     <p class="runs" id="n4-col-runs">Runs on <b>LEZ 0.4</b> · bridge test network</p>
     <p class="note">NFTs of the NFT programs listed below. Under each program an account holds one NFT, and takes NFTs of one collection only; a second NFT needs another account.</p>
-    <p class="note">View-only on this phone: receiving, sending, printing and burning NFTs aren't here yet. Images are never loaded.</p>
+    <p class="note" id="n4-col-mode">View-only on this phone: receiving, sending, printing and burning NFTs aren't here yet. Images are never loaded.</p>
     <p class="msg warn" id="n4-col-state" role="status" hidden></p>
     <h3>Your LNS names</h3>
     <div id="n4-names"></div>
@@ -137,8 +140,21 @@
     <p class="msg" id="n4-name-m" role="status"></p>
     <h3>Collections</h3>
     <div id="n4-colls"></div>
+    <p class="msg" id="n4-send-m" role="status"></p>
     <div id="n4-groups"></div>
     <div id="n4-ready"></div>
+    <div id="n4-recv-box" hidden>
+      <button type="button" class="small" id="n4-recv-open" style="margin-top:12px">Receive an NFT</button>
+      <div class="card" id="n4-recv" hidden style="margin-top:10px">
+        <p class="note" style="margin-top:0">Make one of your accounts ready for a collection, then give the sender that account. Under each NFT program an account takes NFTs of one collection only: if your first account is taken, a new one is made.</p>
+        <label for="n4-recv-prog">NFT program</label>
+        <select id="n4-recv-prog"></select>
+        <label for="n4-recv-def" style="margin-top:10px;display:block">Collection ID</label>
+        <input id="n4-recv-def" class="mono" type="text" placeholder="the collection's account ID" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="80">
+        <button type="button" id="n4-recv-go" style="margin-top:10px">Make my account ready</button>
+        <p class="msg" id="n4-recv-m" role="status"></p>
+      </div>
+    </div>
     <h3>NFT programs on this network</h3>
     <div id="n4-progs"></div>
     <div class="n4-add"><input id="n4-prog" class="mono" type="text" placeholder="NFT program ID" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="80" aria-label="NFT program ID"><input id="n4-prog-label" type="text" placeholder="Your name for it" maxlength="40" aria-label="Your name for it" style="flex:1 1 8em"><button type="button" id="n4-prog-add">Add</button></div>
@@ -170,6 +186,27 @@
     return c;
   }
 
+  const signs = () => !!(window.SIGN04 && window.SIGN04.ready());
+  // Send, under an NFT one of the wallet's accounts holds: To, then "Sending…" until it is in a block
+  function sendSheet(from, t) {
+    const wrap = el("div"), open = el("button", "small", "Send"); open.type = "button"; open.style.marginTop = "8px";
+    const f = el("div"); f.hidden = true;
+    const i = el("input"); i.type = "text"; i.placeholder = "Public/… or an LNS name"; i.setAttribute("aria-label", "Send this NFT to");
+    i.autocomplete = "off"; i.setAttribute("autocapitalize", "off"); i.spellcheck = false; i.maxLength = 90; i.style.marginTop = "8px";
+    const go = el("button", null, "Send NFT"); go.type = "button"; go.style.marginTop = "8px";
+    const m = $("n4-send-m");          // (above the list: the list is drawn again once the NFT has moved)
+    f.append(el("p", "note", "Public: the network shows both accounts. The account it goes to must be ready for this collection."), i, go);
+    open.addEventListener("click", () => { f.hidden = !f.hidden; if (!f.hidden) i.focus(); });
+    go.addEventListener("click", () => {
+      const to = i.value.trim();
+      if (!to) { m.className = "msg bad"; m.textContent = "Who gets it? Paste their account, or type their LNS name."; return; }
+      window.SIGN04.run("/api/wallet/lez04/nft/send", { program: t.program, from, to }, go, m, "Sending…",
+        () => "Sent to " + to + ". It is in a block.", () => { i.value = ""; f.hidden = true; load(true); setTimeout(() => load(true), 4000); });
+    });
+    wrap.append(open, f);
+    return wrap;
+  }
+
   function render(d) {
     last = d;
     const st = $("n4-col-state");
@@ -186,7 +223,17 @@
         box.append(el("p", "k", "Its NFT, held for it by the LNS registry. It moves with the name."));
         box.append(fact("Holder", CORE.accountShown(n.holder), n.holder), fact("NFT ID", CORE.idShown(n.definition), n.definition),
           fact("Program", CORE.idShown(n.program), n.program));
-      } else box.append(el("p", n.status === "unreadable" ? "k bad" : "k", n.text || "Not read yet."));
+      } else {
+        box.append(el("p", n.status === "unreadable" ? "k bad" : "k", n.text || "Not read yet."));
+        if (n.claim && signs()) {
+          box.append(el("p", "k", "Held by your account " + CORE.accountShown(n.holder) + ", which pays the network fee. The NFT itself is free."));
+          const b = el("button", null, "Claim NFT (free)"); b.type = "button"; b.dataset.claim = n.name;
+          const m = el("p", "msg"); m.setAttribute("role", "status");
+          b.addEventListener("click", () => window.SIGN04.run("/api/wallet/lez04/claim", { name: n.name }, b, m, "Claiming…",
+            () => "Claimed. " + n.name + "'s card shows here in a moment.", () => { load(true); setTimeout(() => load(true), 4000); setTimeout(() => load(true), 31000); }));
+          box.append(b, m);
+        }
+      }
       if (!n.own) { const rm = el("button", "small", "Stop showing"); rm.type = "button"; rm.addEventListener("click", () => change({ remove_name: n.name }, rm, $("n4-name-m"))); box.append(rm); }
       nb.append(box);
     }
@@ -199,7 +246,7 @@
     const gb = $("n4-groups"); gb.replaceChildren();
     if (d.groups.length) gb.append(el("h3", null, "By account"));
     for (const g of d.groups) {
-      gb.append(el("p", "n4-grp", CORE.accountShown(g.account) + (g.own ? " · this phone" : " · watched, view-only")));
+      gb.append(el("p", "n4-grp", CORE.accountShown(g.account) + (g.own ? " · this phone" : g.mine ? " · your account" : " · watched, view-only")));
       for (const t of g.nfts) {
         const c = el("div", "card n4-nft");
         c.append(el("p", "t", CORE.collectionTitle(t.collection, t.definition)));
@@ -208,12 +255,21 @@
         if (t.state !== "unreadable") for (const r of CORE.metadataRows(t.collection)) c.append(fact(r.label, r.value));
         c.append(fact("Program", t.programLabel || CORE.idShown(t.program), t.program));
         if (t.definition) c.append(copyBtn(CORE.linkOf(t.program, t.definition), "Copy the collection's link"));
+        if (g.mine && signs() && (t.state === "master" || t.state === "copy")) c.append(sendSheet(g.account, t));
         gb.append(c);
       }
     }
     const rb = $("n4-ready"); rb.replaceChildren();
     if (d.ready.length) rb.append(el("h3", null, "Ready to receive"));
     for (const r of d.ready) { const p = el("div", "n4-f"); p.append(el("span", "v", CORE.accountShown(r.account) + " takes " + CORE.collectionTitle(r.collection, r.definition)), copyBtn(r.account, "Copy the account")); rb.append(p); }
+    // Receive: with the signer, for the listed programs
+    const can = signs();
+    $("n4-col-mode").textContent = can ? "Receiving and sending NFTs here are public: the network shows the accounts. Printing and burning aren't on this phone yet. Images are never loaded."
+      : "View-only on this phone: receiving, sending, printing and burning NFTs aren't here yet. Images are never loaded.";
+    $("n4-recv-box").hidden = !can || !d.programs.length;
+    const sel = $("n4-recv-prog"), keep = sel.value;
+    sel.replaceChildren(...d.programs.map(p => { const o = el("option", null, (p.label || "NFT program") + " · " + CORE.idShown(p.program)); o.value = p.program; return o; }));
+    if (keep && d.programs.some(p => p.program === keep)) sel.value = keep;
     // the programs
     const pb = $("n4-progs"); pb.replaceChildren();
     if (!d.programs.length) pb.append(el("p", "note", "None yet. Every deployment of the NFT program is a different program: add the one your collections live under, by its program ID."));
@@ -230,10 +286,12 @@
     busy = true;
     const g = gen;
     try {
+      if (window.SIGN04 && !window.SIGN04.view()) await window.SIGN04.load();     // (whether this phone can sign here)
       const r = await api("/api/wallet/net04/nft");
       if (g !== gen || r.stale || !open() || $("v-open").hidden) return;
       if (r.status === 401) return lockedNow();
-      if (r.ok) render(r.data);
+      if (r.ok && window.SIGN04 && window.SIGN04.running()) last = r.data;      // (a press is followed: drawn when it ends)
+      else if (r.ok) render(r.data);
       else { $("n4-col-state").hidden = false; $("n4-col-state").textContent = r.data.error || "Can't read the bridge test network now."; }
     } finally { busy = false; }
   }
@@ -264,12 +322,22 @@
   function lock() {
     gen++; last = null;
     for (const c of view.querySelectorAll("canvas")) { try { c.width = 0; c.height = 0; } catch (e) {} c.remove(); }
-    for (const id of ["n4-names", "n4-colls", "n4-groups", "n4-ready", "n4-progs", "n4-name-m", "n4-prog-m", "n4-col-state"]) $(id).replaceChildren();
-    for (const id of ["n4-name", "n4-prog", "n4-prog-label"]) $(id).value = "";
+    for (const id of ["n4-names", "n4-colls", "n4-groups", "n4-ready", "n4-progs", "n4-name-m", "n4-prog-m", "n4-col-state", "n4-send-m"]) $(id).replaceChildren();
+    $("n4-send-m").className = "msg";
+    for (const id of ["n4-name", "n4-prog", "n4-prog-label", "n4-recv-def"]) $(id).value = "";
+    $("n4-recv-prog").replaceChildren(); $("n4-recv-m").replaceChildren(); $("n4-recv").hidden = true; $("n4-recv-box").hidden = true;
     $("n4-col-state").hidden = true;
     show(false);
   }
 
+  $("n4-recv-open").addEventListener("click", () => { $("n4-recv").hidden = !$("n4-recv").hidden; });
+  $("n4-recv-go").addEventListener("click", () => {
+    const program = $("n4-recv-prog").value, definition = $("n4-recv-def").value.trim(), m = $("n4-recv-m");
+    if (!CORE.programOk(definition)) { m.className = "msg bad"; m.textContent = "Paste the collection's ID (its account ID, base58)."; return; }
+    window.SIGN04.run("/api/wallet/lez04/nft/init", { program, definition }, $("n4-recv-go"), m, "Getting ready…",
+      v => "Ready. Give the sender " + ((v.job && v.job.account) ? "Public/" + v.job.account : "your account") + ": it takes this collection now.",
+      () => { $("n4-recv-def").value = ""; load(true); });
+  });
   $("n4-open-col").addEventListener("click", () => show(true));
   $("n4-col-back").addEventListener("click", () => show(false));
   $("n4-prog-add").addEventListener("click", () => {

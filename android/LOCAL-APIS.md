@@ -6,7 +6,7 @@ The app runs three local HTTP servers:
 |---|---|---|
 | **Unix socket `files/node/api/api.sock`** (a 0700 folder in the app's files; app 0.5.16 and later) — before: `127.0.0.1:18180` | the blockchain node's own API (node 0.3.4 with patch 0002) | `server.py`; the app's Kotlin status calls (NodeService, Battery's open timer, NodeActivity) |
 | **Unix socket `files/waku/api/api.sock`** (0700 folder; 0.5.16) — before: `127.0.0.1:18645` | the messaging (Waku) node: the runner's own API (before: the library's REST API) | `server.py` only |
-| `127.0.0.1:18190` | the wallet server, `app/server.py` in the app's `:wallet` process | the app's WebView; the app's `names` child (`/lez-rpc/<secret>` only) |
+| `127.0.0.1:18190` | the wallet server, `app/server.py` in the app's `:wallet` process | the app's WebView; the app's `names` children (`/lez-rpc/<secret>` and `/lez04-rpc/<secret>` only) |
 
 ## The node the app ships
 
@@ -92,8 +92,8 @@ prompt to pages that call `127.0.0.1` was not verified here; this document does 
 - every request needs the cookie, compared in constant time, **except** the page's public files
   (`/`, the page's scripts under `/messages/`, `/noble-curves/`, `/names/`, `/lns/lns.js`,
   `/qr/qrcode.js`, the manifest and icons: the same for everyone, from this repository) and the
-  names forwarder `/lez-rpc/<secret>` (it has its own secret path, and the `names` child sends no
-  cookie). A request without it gets `403 {"error": "this app only answers its own page", "app_key": false}`;
+  names forwarders `/lez-rpc/<secret>` and `/lez04-rpc/<secret>` (each has its own secret path, and the `names`
+  children send no cookie). A request without it gets `403 {"error": "this app only answers its own page", "app_key": false}`;
 - so `/api/wallet/setup`, unlock, lock, status, every `/api/messages/*` route including
   `GET /api/messages/key`, `/cryptarchia/info` and `/network/info` answer only the app's own page;
 - the existing `Host`, `Origin`, `Content-Type` and session checks stay as they were;

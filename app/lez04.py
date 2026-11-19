@@ -819,8 +819,10 @@ class Net04:
         st = actor_states(self.rpc(url, "getAccountView", [{"account_id": account, "program_account_id": program}], end))
         return (st or {}).get(program, b"")
 
-    def nft_refresh(self, own, own_name, derive):
-        """Reads the NFTs and the names' NFTs now; keeps the result in memory (nothing of it is written)."""
+    def nft_refresh(self, own, own_name, derive, mine=()):
+        """Reads the NFTs and the names' NFTs now; keeps the result in memory (nothing of it is written). `mine`: every
+        account of the phone's LEZ 0.4 wallet (restored from the recovery phrase): a name held by any of them is the
+        phone's, matched by its owner tag here, with no read per account."""
         c = self.config()
         url = c.get("rpc_url") if isinstance(c.get("rpc_url"), str) else ""
         registry = c.get("lns_registry") if isinstance(c.get("lns_registry"), str) else ""
@@ -867,7 +869,8 @@ class Net04:
                 if nid is None:
                     new["names"].append({"name": n, "status": "no_id"})
                     continue
-                new["names"].append(read_deed(lambda a, prog: self.state_of(url, a, prog, end), registry, deed_program, n, nid, ids, now_ms))
+                new["names"].append(read_deed(lambda a, prog: self.state_of(url, a, prog, end), registry, deed_program, n, nid,
+                                              ids + [m for m in mine if m not in ids], now_ms))
             new.pop("unreachable", None)
         except Unreachable as e:
             old = self.nft or {}
@@ -875,7 +878,7 @@ class Net04:
         self.nft = new
         return new
 
-    def nft_look(self, own, own_name, derive):
+    def nft_look(self, own, own_name, derive, mine=()):
         """Collectibles looked: read again in the background if the last read is POLL seconds old."""
         now = self.clock()
         with self.lock:
@@ -885,7 +888,7 @@ class Net04:
 
         def run():
             try:
-                self.nft_refresh(own, own_name, derive)
+                self.nft_refresh(own, own_name, derive, mine)
             except Exception:
                 pass
             finally:
@@ -893,9 +896,12 @@ class Net04:
         threading.Thread(target=run, name="net04-nft", daemon=True).start()
         return True
 
-    def nft_view(self, own, own_name):
+    def nft_view(self, own, own_name, mine=()):
         """What Collectibles shows: the names with their NFTs, the collections with how many accounts hold each, the
-        NFTs by account, the holdings ready to receive, and the programs listed."""
+        NFTs by account, the holdings ready to receive, and the programs listed. With `mine` (the phone's LEZ 0.4
+        accounts, when it can sign there), a name held by one of them with no NFT yet is marked `claim` when it is in
+        the normal tier by its length (5-32 characters; a reserved one is refused by the registry when claimed), and
+        each NFT an account of `mine` holds is marked `mine` (it can be sent)."""
         s = self.nft or {}
         ch = s.get("channel") or self.state.get("channel")
         listed = self.nft_programs(ch)
@@ -911,7 +917,7 @@ class Net04:
             for h in e.get("holdings", []):
                 a = h["account"]
                 if nft_holds(h) or h["state"] == "unreadable":
-                    g = groups.setdefault(a, {"account": a, "own": a == own, "nfts": []})
+                    g = groups.setdefault(a, {"account": a, "own": a == own, "mine": a in mine, "nfts": []})
                     g["nfts"].append({"program": p["program"], "programLabel": p["label"], "definition": h.get("definition"),
                                       "state": h["state"], "print_balance": str(h["print_balance"]) if "print_balance" in h else None,
                                       "collection": h.get("collection"), "unreadable": h.get("why")})
@@ -934,6 +940,11 @@ class Net04:
                    "text": DEED_TEXT.get(r["status"]) if r["status"] else "Not read yet."}
             if r["status"] == "ok":
                 row.update(holder=r["holder"], definition=r["definition"], holding=r["holding"], program=r["program"])
+            elif r["status"] == "no_nft" and r.get("holder"):
+                row["holder"] = r["holder"]
+                row["claim"] = r["holder"] in mine and 5 <= len(n) <= 32
+                if r["holder"] in mine and len(n) < 5:
+                    row["text"] = "Locked (one to four characters): it has no NFT."
             out["names"].append(row)
         return out
 

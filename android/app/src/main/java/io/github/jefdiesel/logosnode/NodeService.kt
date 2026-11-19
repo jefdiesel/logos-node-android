@@ -104,10 +104,13 @@ class NodeService : Service() {
 
     private fun readOrNull(f: File): String? = try { if (f.isFile) f.readText() else null } catch (_: Exception) { null }
 
-    /** The `names` signer (libnames.so) runs while a name change is made. */
+    /** A `names` signer (libnames.so for LEZ 0.3, libnames04.so for LEZ 0.4) runs while a change is made. */
     private fun namesRunning(): Boolean =
         File("/proc").listFiles { f -> f.name.all(Char::isDigit) }.orEmpty().any { dir ->
-            try { File(dir, "cmdline").readText().substringBefore('\u0000').endsWith("/libnames.so") } catch (_: Exception) { false }
+            try {
+                val cmd = File(dir, "cmdline").readText().substringBefore('\u0000')
+                cmd.endsWith("/libnames.so") || cmd.endsWith("/libnames04.so")
+            } catch (_: Exception) { false }
         }
 
     private fun walletBusy(now: Long): String? {

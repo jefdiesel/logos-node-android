@@ -83,6 +83,21 @@ jobs:
           cat ndl/BUILD.txt
           cp ndl/names android/app/src/main/jniLibs/arm64-v8a/libnames.so   # Android installs only lib*.so files
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+      - name: LEZ 0.4 signer pinned in android/names04.properties
+        id: names04
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prop() { sed -n "s/^$1=//p" android/names04.properties | tr -d '[:space:]'; }
+          RUN=$(prop run); SHA=$(prop sha256)
+          [ -n "$RUN" ] && [ -n "$SHA" ] || { echo "::error::android/names04.properties is incomplete"; exit 1; }
+          gh run download "$RUN" -R "$GITHUB_REPOSITORY" -n names04-cli-android-arm64 -D n04dl
+          [ "$(sha256sum n04dl/names | cut -d' ' -f1)" = "$SHA" ] \
+            || { echo "::error::names (LEZ 0.4) from run $RUN doesn't match the pinned sha256"; exit 1; }
+          cat n04dl/BUILD.txt
+          grep -q ', bare, ' n04dl/BUILD.txt || { echo "::error::the pinned LEZ 0.4 signer is not the bare build"; exit 1; }
+          cp n04dl/names android/app/src/main/jniLibs/arm64-v8a/libnames04.so   # next to libnames.so (LEZ 0.3), not in its place
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -141,9 +156,12 @@ jobs:
           # the LNS signer, byte for byte as pinned in android/names.properties
           [ "$(unzip -p "$A" lib/arm64-v8a/libnames.so | sha256sum | cut -d' ' -f1)" = "${{ steps.names.outputs.sha }}" ] \
             || fail "lib/arm64-v8a/libnames.so is missing or differs from the pinned names build"
+          # the LEZ 0.4 signer, byte for byte as pinned in android/names04.properties, beside the LEZ 0.3 one
+          [ "$(unzip -p "$A" lib/arm64-v8a/libnames04.so | sha256sum | cut -d' ' -f1)" = "${{ steps.names04.outputs.sha }}" ] \
+            || fail "lib/arm64-v8a/libnames04.so is missing or differs from the pinned names04 build"
           # the wallet: the repository's own app/ files, unchanged, and Python to run them
           for f in server.py index.html release.json names/names.js names/lookup.js messages/messages.js qr/qrcode.js lns/lns.js \
-                   lez04.py lez04.json net04/net04.js net04/nft.js net04/fonts/Gloock-Regular.ttf net04/fonts/FiraCode-VF.ttf; do
+                   lez04.py lez04.json signer04.py net04/net04.js net04/sign04.js net04/nft.js net04/fonts/Gloock-Regular.ttf net04/fonts/FiraCode-VF.ttf; do
             [ "$(unzip -p "$A" "assets/webapp/$f" | sha256sum | cut -d' ' -f1)" = "$(sha256sum "app/$f" | cut -d' ' -f1)" ] \
               || fail "assets/webapp/$f is missing or differs from app/$f"
           done

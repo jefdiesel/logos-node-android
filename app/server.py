@@ -8,7 +8,7 @@ Python standard library only. Wallet calls need a PIN that is set on first use.
 import base64, calendar, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.9.30"
+APP_VERSION = "0.9.31"
 # APP_EMBEDDED=android: this app runs inside the Android app (embedded Python, page in a WebView).
 # Then it never updates or restarts itself (the Android app brings new versions), and fingerprint
 # unlock goes through the phone's own fingerprint check instead of a passkey. Unset: nothing changes.
@@ -5960,6 +5960,18 @@ def passkey_unlock(body):
 _net04 = []
 
 
+_lez04_pacer = []
+
+
+def lez04_pacer():
+    """The one pacer every call of this app to the LEZ 0.4 network goes through (the reader, the signer's forwarder and
+    the faucet): the network allows 50 requests per 10 s per address, this app makes at most 4 a second."""
+    if not _lez04_pacer:
+        import signer04
+        _lez04_pacer.append(signer04.Pacer(signer04.PACE))
+    return _lez04_pacer[0]
+
+
 def net04():
     """The reader (made once), or None outside the Android app or if lez04.py can't load."""
     if not EMBEDDED:
@@ -5967,15 +5979,61 @@ def net04():
     if not _net04:
         try:
             import lez04
-            _net04.append(lez04.Net04(DATA_DIR, APP_DIR, lambda url, body, cap, total: fetch_outside(url, body, cap=cap, total=total)))
+            pacer = lez04_pacer()
+
+            def paced(url, body, cap, total):
+                pacer.wait()
+                return fetch_outside(url, body, cap=cap, total=total)
+            _net04.append(lez04.Net04(DATA_DIR, APP_DIR, paced))
         except Exception:
             _net04.append(None)
     return _net04[0]
 
 
+# ---- the LEZ 0.4 signer (app/signer04.py): public sends on LEZ 0.4, from the accounts of the desktop's recovery phrase ----
+# Inside the Android app only, with libnames04.so bundled (NAMES04_BIN). It shares nothing with the LEZ 0.3 name account:
+# its own wallet folder, its own forwarder secret, its own job.
+NAMES04_BIN = os.environ.get("NAMES04_BIN", "")
+_signer04 = []
+
+
+def signer04():
+    """The LEZ 0.4 signer (made once), or None outside the Android app, without the 0.4 tool, or if it can't load."""
+    if not EMBEDDED or not NAMES04_BIN:
+        return None
+    if not _signer04:
+        n = net04()
+        try:
+            import signer04 as s4
+            if n is None:
+                raise ValueError("no LEZ 0.4 reader")
+
+            def done(kind):                  # read the balances and the NFTs again at the next look
+                n.last_try = n.nft_last_try = 0.0
+            holder = []
+            holder.append(s4.Signer04(DATA_DIR, NAMES04_BIN, lambda url, body, cap, total: fetch_outside(url, body, cap=cap, total=total),
+                                      n.config, lambda: "http://127.0.0.1:%d/lez04-rpc/%s" % (PORT, holder[0].secret),
+                                      lez04_pacer(), event=lambda name, **d: event(name, None, **d), on_done=done))
+            _signer04.append(holder[0] if holder[0].available() else None)
+        except Exception:
+            _signer04.append(None)
+    return _signer04[0]
+
+
+def signer04_mine():
+    """The phone's LEZ 0.4 accounts (restored from the recovery phrase), or none."""
+    s = signer04()
+    return s.state()["accounts"] if s and s.ready() else []
+
+
 def net04_own():
-    """The phone's own LEZ account id (base58), the same id on both networks; None without one."""
+    """The phone's own LEZ account id (base58) on LEZ 0.4: the first account of its LEZ 0.4 wallet once restored from
+    the recovery phrase (the desktop's first account); before that the LEZ 0.3 name account, view-only. None without
+    either."""
     try:
+        s = signer04()
+        if s and s.ready():
+            return s.state()["main"]
         import lez04
         a = lns_state()["account"] if lns_available() else None
         return lez04.account_id(a) if a else None
@@ -6088,7 +6146,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def public_file(path):
         """The page's own files, the same for everyone (from this repository): served without the app key, so a
         resource the WebView fetches without cookies still loads. Everything else needs it."""
-        return (path in ("/", "/manifest.webmanifest", "/lns/lns.js", "/net04/net04.js", "/net04/nft.js", QR_FILE,
+        return (path in ("/", "/manifest.webmanifest", "/lns/lns.js", "/net04/net04.js", "/net04/sign04.js", "/net04/nft.js", QR_FILE,
                          "/lambda-192.png", "/lambda-512.png", "/lambda-maskable-512.png")
                 or bool(MESSAGES_FILE_RE.match(path)) or bool(NAMES_FILE_RE.match(path)) or path in NET04_FONTS)
 
@@ -6131,7 +6189,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if lns_available():               # Your name, only in the Android app with the signer
                     page = page.replace(b"</body>", b'<script src="/lns/lns.js"></script>\n</body>', 1)
                 if net04():                       # the bridge test network (LEZ 0.4), read-only, in the Android app
-                    page = page.replace(b"</body>", b'<script src="/net04/net04.js"></script>\n<script src="/net04/nft.js"></script>\n</body>', 1)
+                    page = page.replace(b"</body>", b'<script src="/net04/net04.js"></script>\n<script src="/net04/sign04.js"></script>\n<script src="/net04/nft.js"></script>\n</body>', 1)
                 return self.reply(200, raw=page, ctype="text/html; charset=utf-8")
             except Exception:
                 return self.reply(500, {"error": "index.html is missing"})
@@ -6149,7 +6207,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply(401, {"error": "locked"})
             code, obj = messaging_get(path, self.path)
             return self.reply(code, obj)
-        if path in ("/net04/net04.js", "/net04/nft.js") or path in NET04_FONTS:
+        if path in ("/net04/net04.js", "/net04/sign04.js", "/net04/nft.js") or path in NET04_FONTS:
             if not net04():
                 return self.reply(404, {"error": "not found"})
             try:
@@ -6229,9 +6287,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply(401, {"error": "locked"})
             if path.endswith("/choice"):
                 return self.reply(200, {"net": net04_choice(), "network": n.network()})
-            own, name = net04_own(), net04_name()
-            n.nft_look(own, name, lns_name_id)         # reads again in the background, 30 s at most
-            return self.reply(200, n.nft_view(own, name))
+            own, name, mine = net04_own(), net04_name(), signer04_mine()
+            n.nft_look(own, name, lns_name_id, mine)   # reads again in the background, 30 s at most
+            return self.reply(200, n.nft_view(own, name, mine))
+        if path == "/api/wallet/lez04":                 # the LEZ 0.4 signer: its accounts, its job, the faucet
+            s4 = signer04()
+            if not s4:
+                return self.reply(404, {"error": "not found"})
+            if not self.authed():
+                return self.reply(401, {"error": "locked"})
+            v = s4.view()
+            v["faucet_info"] = s4.faucet_info() if v["ready"] and not v["faucet"]["used"] else None
+            return self.reply(200, v)
         if path == "/api/wallet/lns/balance":          # the Wallet's LEZ row: the name account and its balance only
             if not lns_available():
                 return self.reply(404, {"error": "not found"})
@@ -6271,9 +6338,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
         code, data = lns_forward(self.rfile.read(n))
         return self.reply(code, raw=data) if isinstance(data, bytes) else self.reply(code, data)
 
+    def lez04_rpc(self):
+        """The forwarder for the LEZ 0.4 signer's `names` (app/signer04.py): as lez_rpc, with its own secret, to the
+        LEZ 0.4 network in use, paced with every other call this app makes there."""
+        s4 = signer04()
+        secret = self.path.split("?", 1)[0][len("/lez04-rpc/"):].rstrip("/")
+        if not s4 or not self.host_ok() or not hmac.compare_digest(secret.encode(), s4.secret.encode()):
+            return self.reply(404, {"error": "not found"})
+        try:
+            n = int(self.headers.get("Content-Length", "0"))
+        except Exception:
+            n = -1
+        import signer04 as m4
+        if not 0 < n <= m4.RPC_MAX:
+            return self.reply(413 if n > m4.RPC_MAX else 400, {"error": "bad request"})
+        code, data = s4.forward(self.rfile.read(n))
+        return self.reply(code, raw=data) if isinstance(data, bytes) else self.reply(code, data)
+
     def do_POST(self):
         if self.path.startswith("/lez-rpc/"):
             return self.lez_rpc()
+        if self.path.startswith("/lez04-rpc/"):
+            return self.lez04_rpc()
         if not self.key_ok():
             return self.reply(403, self.KEY_REFUSED)
         if not self.host_ok() or self.headers.get("Origin", "") not in ORIGINS:
@@ -6490,11 +6576,43 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if code == 200:
                     event("LEZ 0.4 network set", self, custom=obj.get("custom"))
                 return self.reply(code, obj)
-            own, name = net04_own(), net04_name()
+            own, name, mine = net04_own(), net04_name(), signer04_mine()
             code, obj = n.nft_change(body, name, lns_name_id)
             if code == 200:
-                n.nft_look(own, name, lns_name_id)
-                obj["view"] = n.nft_view(own, name)
+                n.nft_look(own, name, lns_name_id, mine)
+                obj["view"] = n.nft_view(own, name, mine)
+            return self.reply(code, obj)
+        if path.startswith("/api/wallet/lez04/"):      # the LEZ 0.4 signer: restore, send, NFTs, the name's NFT, the faucet
+            s4 = signer04()
+            if not s4:
+                return self.reply(404, {"error": "not found"})
+            if not self.authed():
+                return self.reply(401, {"error": "locked"})
+            what = path[len("/api/wallet/lez04/"):]
+            if what == "restore":
+                code, obj = s4.restore(body.pop("phrase", None))    # the phrase: never logged, never kept
+                body.clear()
+            elif what == "send":
+                code, obj = s4.send(body)
+            elif what == "faucet":
+                code, obj = s4.faucet()
+            elif what == "nft/init":
+                code, obj = s4.nft_init(body)
+            elif what == "nft/send":
+                code, obj = s4.nft_send(body)
+            elif what == "claim":
+                n = net04()
+                name = body.get("name") if isinstance(body.get("name"), str) else ""
+                rows = n.nft_view(net04_own(), net04_name(), signer04_mine())["names"] if n else []
+                row = next((r for r in rows if r["name"] == name), None)
+                if row is None or row.get("status") != "no_nft" or not row.get("holder"):
+                    code, obj = 409, {"error": "Read the name first: add it under Your LNS names, and wait until it says it has no NFT yet."}
+                else:
+                    code, obj = s4.claim(name, row["holder"])
+            else:
+                return self.reply(404, {"error": "not found"})
+            if code == 200 and what != "restore":
+                event("lez04 " + what, self)
             return self.reply(code, obj)
         if path == "/api/wallet/net04/watch":          # view-only addresses on the bridge test network
             n = net04()

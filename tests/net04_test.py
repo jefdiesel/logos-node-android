@@ -382,7 +382,7 @@ adata = mkdtemp()
 with open(os.path.join(adata, "wallet-net04-config.json"), "w") as f:
     json.dump({"rpc_url": "http://127.0.0.1:%d/" % rpc.server_address[1]}, f)
 os.environ.update(APP_EMBEDDED="android", APP_PORT=str(PORT), APP_DATA=adata, NODE_BIN="/nonexistent", UPDATE_URL="",
-                  NET04_POLL_SECONDS="0.2")
+                  NET04_POLL_SECONDS="0.2", LEZ04_PACE_SECONDS="0.01")      # (the pacer itself: tests/sign04_test.py)
 lez04.POLL = 0.2
 import server  # noqa: E402
 

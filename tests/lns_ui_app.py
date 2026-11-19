@@ -193,11 +193,44 @@ def account_view(account, program):
     return {"nonce": 0, "data": {"actor_states": {} if st is None else {program: st}}}
 
 
+# With WITH_SIGNER04=1 (tests/sign04_ui.mjs): the app carries the LEZ 0.4 signer (the stand-in tool,
+# fake_names04_bin.py), and the network also answers as tests/fake_chain04.py: balances, sends, NFT moves, a name's
+# NFT claimed, the faucet. Accounts it knows are answered from it; the recorded ones as before.
+SIGNER04 = os.environ.get("WITH_SIGNER04") == "1"
+from fake_chain04 import Chain04  # noqa: E402
+CHAIN04 = Chain04()
+
+
 class Net04(Seq):
     """The bridge test network (LEZ 0.4), from the answers recorded in tests/fixtures/net04; POST /ctl/net04/<mode>
     makes it answer as reset (a new channel) or not at all (down)."""
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])) or b"{}")
+        if self.path.startswith("/ctl/chain04/"):         # (WITH_SIGNER04) set up the stand-in: names, balances, NFTs
+            what = self.path.rsplit("/", 1)[1]
+            if what == "register":
+                CHAIN04.register(body["name"], body["owner"], body.get("deed", False))
+            elif what == "balance":
+                CHAIN04.balances[body["account"]] = int(body["amount"])
+            elif what == "nft":
+                CHAIN04.states[(body["account"], body["program"])] = bytes.fromhex(body["hex"])
+            return self.out(200, {})
+        if SIGNER04 and not self.path.startswith("/ctl/"):
+            calls = body if isinstance(body, list) else [body]
+            def known(c):
+                m, p = c.get("method"), c.get("params") or [None]
+                if m in ("sendTransaction", "bridge_faucet", "bridge_faucetInfo", "getAccountBalance", "getFeeState"):
+                    return True
+                if m == "getAccount":
+                    return p[0] in CHAIN04.balances or any(a == p[0] for a, _ in CHAIN04.states)
+                if m == "getAccountView" and isinstance(p[0], dict):
+                    return (p[0].get("account_id"), p[0].get("program_account_id")) in CHAIN04.states or p[0].get("account_id") in CHAIN04.balances
+                return False
+            if all(known(c) for c in calls):
+                code, raw = CHAIN04.handle(body)
+                self.send_response(code); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(raw)))
+                self.end_headers(); self.wfile.write(raw)
+                return
         if self.path.startswith("/ctl/net04/"):
             NET04["mode"] = self.path.rsplit("/", 1)[1]
             if NET04["mode"] == "reset":
@@ -233,14 +266,20 @@ with open(os.path.join(node, "keystore.yaml"), "w") as f:
     f.write("public_keys:\n  LeaderFunding: %s\n  SdpFunding: %s\nsecret_keys:\n  LeaderFunding: %s\n" % ("a1" * 32, "b2" * 32, "c3" * 32))
 with open(os.path.join(data, "wallet-net04-config.json"), "w") as f:
     json.dump({"rpc_url": "http://127.0.0.1:%d/" % net04.server_address[1]}, f)
-for src, dst in (("fake_node_bin.py", "fake_node_bin.py"), ("fake_names_bin.py", "libnames.so")):
+for src, dst in (("fake_node_bin.py", "fake_node_bin.py"), ("fake_names_bin.py", "libnames.so"), ("fake_names04_bin.py", "libnames04.so")):
     shutil.copy(os.path.join(HERE, src), os.path.join(bins, dst))
     os.chmod(os.path.join(bins, dst), 0o755)
+if SIGNER04:                                             # the locked-name list, already here (never downloaded in a test)
+    os.makedirs(os.path.join(data, ".lez04-wallet", "cache"), mode=0o700)
+    with open(os.path.join(data, ".lez04-wallet", "cache", "shortlist-9778bed4.bin"), "wb") as f:
+        f.write(b"stand-in list")
+    os.environ["NAMES04_BIN"] = os.path.join(bins, "libnames04.so")
 os.environ.update(APP_EMBEDDED="android", APP_PORT=port, APP_DATA=data, NODE_BIN=os.path.join(bins, "fake_node_bin.py"),
                   NODE_CFG=os.path.join(node, "user_config.yaml"), UPDATE_URL="", NODE_RESTART_CMD="",
                   NAMES_BIN=os.path.join(bins, "libnames.so"), NAMES_RPC_URL="http://127.0.0.1:%d/" % seq.server_address[1],
                   NODE_API="http://127.0.0.1:%d" % node_api.server_address[1], BRIDGE_POLL="0.5", HISTORY_POLL="1",
                   LNS_FLOW_POLL="0.5", LNS_FLOW_PAUSES="1,1,1,1", LNS_FLOW_GAP="0.5", LNS_FLOW_RESOLVE_EVERY="0.2,0.5", BRIDGE_SLOW="0", BRIDGE_SPLIT_WAIT="3", XFER_RESCAN_SECONDS="0.5", NET04_POLL_SECONDS="1",
+                  LEZ04_PACE_SECONDS="0.01",
                   LNS_FAUCET_URL="http://127.0.0.1:%d/faucet" % seq.server_address[1])
 sys.path.insert(0, os.path.join(HERE, "..", "app"))
 lez04.POLL = float(os.environ["NET04_POLL_SECONDS"])     # (lez04 was imported above, for the fixtures, before this was set)

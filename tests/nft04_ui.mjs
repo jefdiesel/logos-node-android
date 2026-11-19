@@ -115,7 +115,7 @@ await waitFor("Collections: Harbour at dawn, held by 2 of your accounts", `docum
 await waitFor("by account: this phone's master, then the watched account's copy", `(() => { const t = document.getElementById("n4-groups").innerText;
   return /Public 9xQeWv…VFin · this phone/.test(t) && /Master · can print 1 more copy/.test(t) && /Public CCVd76…pKnk · watched, view-only/.test(t) && /\\bCopy\\b/.test(t)
     && t.includes("https://img.example.com/harbour.png") && /Creators\\s*ada/.test(t) && /Supply\\s*3/.test(t) && /Program\\s*Test chain NFTs/.test(t); })()`, 20000);
-check("no Send, Burn, Print or Receive anywhere", !/\b(Send|Burn|Print|Receive)…/.test(await text("#n4-col")) && !(await js(`[...document.querySelectorAll("#n4-col button")].some(b => /^(Send|Burn|Print|Receive)/.test(b.textContent))`)));
+check("no Send, Burn, Print or Receive shown (a build without the LEZ 0.4 signer)", !/\b(Send|Burn|Print|Receive)…/.test(await text("#n4-col")) && !(await js(`[...document.querySelectorAll("#n4-col button")].some(b => b.offsetParent !== null && /^(Send|Burn|Print|Receive)/.test(b.textContent))`)));
 check("every button 44 px, nothing past the screen", (await tall("#n4-col button, #n4-col input")) && (await fits()));
 await js(`document.getElementById("n4-groups").scrollIntoView(); true`);
 await shot("collectibles-nfts");

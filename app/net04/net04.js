@@ -8,7 +8,9 @@
 // - The Wallet shows one line above the token list naming the network on screen (tap: Settings > Network). On
 //   LEZ 0.4 the token list gives way to the phone's own LEZ account and the watched addresses (view-only), read by
 //   the server (app/lez04.py) at most every 30 s and only while the Wallet itself is on screen (once more when the
-//   person picks LEZ 0.4 or changes what is watched). Nothing here sends: Send and Receive say they aren't available.
+//   person picks LEZ 0.4 or changes what is watched). Nothing here sends: with the LEZ 0.4 signer in the app
+//   (/net04/sign04.js) Send and Receive open its panels once the accounts are restored from the recovery phrase;
+//   without it they say they aren't available.
 // - A lock reloads the page (index.html's lockedNow); NET04.lock() empties all of it first, Collectibles too
 //   (NFT04.lock, /net04/nft.js). After the unlock the kept choice is read again before anything shows.
 (() => {
@@ -76,7 +78,9 @@
     st.hidden = !says.length; st.textContent = says.join(" ");
     $("n4-private").textContent = d.private || "";
     const box = $("n4-accts"); box.replaceChildren();
-    if (!d.accounts.length) box.append(el("p", "note", "No account to show yet. Watch an address in Settings → Network, or make a name account (Settings → Your name)."));
+    if (!d.accounts.length) box.append(el("p", "note", window.SIGN04 && window.SIGN04.available()
+      ? "No account to show yet. Restore your accounts from your recovery phrase (above), or watch an address in Settings → Network."
+      : "No account to show yet. Watch an address in Settings → Network, or make a name account (Settings → Your name)."));
     for (const a of d.accounts) {
       const c = el("div", "card n4-acct");
       c.append(el("p", "n4-who", a.own ? "This phone's LEZ account" : "Watched, view-only"));
@@ -163,6 +167,7 @@
       if (r.status === 401) return lockedNow();
       if (r.ok) render(r.data);
       else $("n4-state").hidden = false, $("n4-state").textContent = r.data.error || "Can't read the bridge test network now.";
+      if (window.SIGN04) await window.SIGN04.load();
     } finally { busy = false; }
   }
 
@@ -175,6 +180,7 @@
   function lock() {
     gen++;
     if (window.NFT04) window.NFT04.lock();
+    if (window.SIGN04) window.SIGN04.lock();
     for (const id of ["n4-accts", "n4-watch-m", "n4-state", "n4-private", "n4-watched", "n4-net-m", "n4-net-now"]) $(id).replaceChildren();
     $("n4-watch-m").className = "msg"; $("n4-net-m").className = "msg"; $("n4-state").hidden = true;
     for (const id of ["n4-watch", "n4-net-url", "n4-net-id"]) $(id).value = "";
@@ -195,6 +201,7 @@
     $("n4-watch-box").hidden = net !== "04";
     $("n4-net-box").hidden = net !== "04";
     if (net !== "04" && window.NFT04) window.NFT04.show(false);
+    if (window.SIGN04 && net !== "04") window.SIGN04.render(null);
     if (keep && chosen && was !== net) api("/api/wallet/net04/choice", { net });
     clearInterval(timer); timer = null;
     $("n4-na").hidden = true;
@@ -219,9 +226,19 @@
     if (!u || !c) { m.className = "msg bad"; m.textContent = "Enter both the RPC URL and the chain id."; return; }
     setNetwork({ rpc_url: u, chain_id: c }, $("n4-net-set"));
   });
-  $("n4-send").addEventListener("click", () => { $("n4-na").hidden = false; });
-  $("n4-recv").addEventListener("click", () => { $("n4-na").hidden = false; });
-  $("n4-na").addEventListener("click", () => openSettings("s-net"));        // the line says where to switch: a tap goes there
+  // Send / Receive: the signer's panels once the accounts are restored; until then, what stands in the way
+  const na = which => {
+    if (window.SIGN04 && window.SIGN04.panel(which)) { $("n4-na").hidden = true; return; }
+    $("n4-na").textContent = window.SIGN04 && window.SIGN04.available() ? "Restore your LEZ 0.4 accounts from your recovery phrase first (above)."
+      : "Not available on the bridge test network yet. To send or receive, switch to LEZ 0.3 in Settings → Network.";
+    $("n4-na").hidden = false;
+  };
+  $("n4-send").addEventListener("click", () => na("send"));
+  $("n4-recv").addEventListener("click", () => na("recv"));
+  $("n4-na").addEventListener("click", () => {        // the line says where to go: a tap goes there
+    if (window.SIGN04 && window.SIGN04.available()) { const t = $("s4-phrase"); if (t) { t.scrollIntoView({ block: "center" }); t.focus(); } }
+    else openSettings("s-net");
+  });
   $("n4-add").addEventListener("click", async () => {
     const m = $("n4-watch-m"), v = $("n4-watch").value.trim();
     if (!v || net !== "04") return;
@@ -239,7 +256,7 @@
   const seen = new MutationObserver(tick);              // after an unlock, and back from Settings or Messages
   seen.observe($("v-open"), { attributes: true, attributeFilter: ["hidden"] });
   seen.observe($("page-main"), { attributes: true, attributeFilter: ["hidden"] });
-  window.NET04 = { lock, state: () => LABEL(net) + " · " + NAMES[net], net: () => net };
+  window.NET04 = { lock, state: () => LABEL(net) + " · " + NAMES[net], net: () => net, reload: () => load(true) };
   setNet(net, false);
   readChoice();
 })();

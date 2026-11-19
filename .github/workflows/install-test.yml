@@ -119,6 +119,8 @@ jobs:
         run: python3 tests/nft04_test.py
       - name: The LNS name card - its size rule (60 px to 12 characters, 36 px from 13, scaled), line breaks, what it draws where; the desktop's NFT words
         run: node tests/nft04_test.mjs
+      - name: The LEZ 0.4 signer - the desktop's accounts from its recovery phrase (on stdin, never kept), sends, NFT receive and send, an LNS name's free NFT, the faucet once per wallet, the paced forwarder; through the app's routes
+        run: python3 tests/sign04_test.py
       - name: The node API on a Unix socket (node patch 0002) - server.py's transport; it never touches the old TCP port, and takes answers only whole
         run: python3 tests/node_socket_test.py
       - name: Transfers - fund, save, submit the same one; one per account until 2 blocks deep; forks, crashes, the not-found exit (fixed cases and seeded runs against a stand-in chain)
@@ -181,6 +183,8 @@ jobs:
         run: CHROME="$(command -v google-chrome || command -v chromium)" node tests/net04_ui.mjs
       - name: Collectibles at 360 px - LEZ 0.4 by default, programs added by ID, NFTs by account, an LNS name's card drawn with the bundled fonts, 44 px targets, the network entry, nothing left after a lock
         run: CHROME="$(command -v google-chrome || command -v chromium)" node tests/nft04_ui.mjs
+      - name: Sending on LEZ 0.4 at 360 px - the recovery phrase, the faucet, Send and Receive, Claim NFT (free) to the card, an NFT's Send and Receive sheets, nothing left after a lock
+        run: CHROME="$(command -v google-chrome || command -v chromium)" node tests/sign04_ui.mjs
       - name: The lock - every way it comes, one lock that reloads the page; nothing left, nothing sent after it
         run: CHROME="$(command -v google-chrome || command -v chromium)" node tests/lock_ui.mjs
       - name: Android app key in a real browser - the page's requests carry the cookie, its scripts can't read it

@@ -19,8 +19,11 @@ phone. Unofficial community work, testnet only.
   that RPC reports that chain id. `net04/nft.js` is Collectibles (Wallet on LEZ 0.4 > Collectibles): NFTs of the
   watched accounts under the NFT programs the person lists, and the LNS name card, drawn on the phone with the
   bundled fonts in `net04/fonts/` (OFL, see its `VENDORED.txt`); an LNS name's NFT is read from the name's record
-  (`lez04.read_deed`, following the names project's LNS name NFT ("deed") design, live on our LEZ 0.4). View-only: nothing
-  there signs. `release.json` lists every file and its sha256: the in-app updater uses it.
+  (`lez04.read_deed`, following the names project's LNS name NFT ("deed") design, live on our LEZ 0.4).
+  `signer04.py` (with `net04/sign04.js`) is the LEZ 0.4 signer (Android only, with `libnames04.so`; see
+  `android/NAMES04.md`): the desktop's accounts restored from its recovery phrase, then public sends, NFT receive and
+  send, "Claim NFT (free)" on an LNS name, and the faucet; its own wallet folder and forwarder. Without it, LEZ 0.4 is
+  view-only. `release.json` lists every file and its sha256: the in-app updater uses it.
 - `android/`: the Android app (Kotlin) that runs the node, the messaging node and `server.py` (in embedded
   Python), and shows the page in a WebView. Read `android/README.md` first.
 - `native/`: builds the blockchain node for Android from its source, with the patches in `native/patches/`.
@@ -52,7 +55,8 @@ Everything is built in CI. Nothing needs to be built on a laptop.
   unit tests and checks the APK. The APK is a workflow artifact only.
 - `.github/workflows/native-build.yml`: the blockchain node for Android arm64 (and Linux arm64).
 - `.github/workflows/waku-build.yml`: the messaging library and its runner.
-- `.github/workflows/names-build.yml`: the LNS command line `names` for Android arm64.
+- `.github/workflows/names-build.yml`: the LNS command line `names` for Android arm64 (LEZ 0.3).
+- `.github/workflows/names04-build.yml`: the LEZ 0.4 `names` for Android arm64, built bare, and its emulator test.
 - `.github/workflows/install-test.yml`: the installers on clean arm64 Linux machines, and the web app's
   tests (below).
 
@@ -77,6 +81,8 @@ python3 tests/app_key_test.py             # the app key: every route refused wit
 python3 tests/messaging_socket_test.py    # the messaging node over its Unix socket
 python3 tests/net04_test.py              # the LEZ 0.4 reader, apart from the money path; the network entry
 python3 tests/nft04_test.py              # Collectibles: NFT states, holdings, an LNS name's NFT from its record
+python3 tests/sign04_test.py             # the LEZ 0.4 signer: restore from the phrase, sends, NFTs, the claim, the faucet
+CHROME=/path/to/chrome node tests/sign04_ui.mjs  # sending on LEZ 0.4 at 360 px (SHOTS=<folder> for screenshots)
 node tests/nft04_test.mjs                 # the LNS name card: size rule, line breaks, what it draws
 CHROME=/path/to/chrome node tests/nft04_ui.mjs   # Collectibles at 360 px in headless Chrome
 node tests/chat_test.mjs                  # chats: 1:1, history, key changes, backup and restore
@@ -106,15 +112,15 @@ CHROME=/path/to/chrome node tests/chat_ui.mjs   # the Messages screen in headles
 - **Pins.** The APK uses binaries from pinned CI runs, each checked against a sha256:
   `android/node.properties` (the node: variant, version, commit, run and sha256s),
   `android/messaging-run.txt` and `android/messaging.sha256` (the messaging runner and library), and
-  `android/names.properties` (the LNS signer). To change a pin, run the build workflow, then put the new
+  `android/names.properties` (the LNS signer), `android/names04.properties` (the LEZ 0.4 signer). To change a pin, run the build workflow, then put the new
   run id and the sha256 from its `SHA256SUMS` in those files, in one commit, and let `android-app` check
   it. Never edit a sha256 by hand to make a check pass.
 - **Never weaken the local-API auth.** In the Android app the node and the messaging node listen on private
   Unix sockets, and every request to the wallet server except the page's own public files needs the app key
   cookie (set by the app, `APP_KEY`). Wallet and messages requests also need the right Host (a POST, the
   right Origin too) and, for their data, an unlocked session (a few reads, like the lock state at
-  `GET /api/wallet`, don't). One route is not behind the app key: `POST /lez-rpc/<secret>`, the forwarder the
-  app's `names` child uses, which is checked by its secret path and the Host instead. On Linux and in Termux there is no app key (`APP_KEY` unset): Host, Origin and
+  `GET /api/wallet`, don't). Two routes are not behind the app key: `POST /lez-rpc/<secret>` and `POST /lez04-rpc/<secret>`, the
+  forwarders the app's `names` children (LEZ 0.3, LEZ 0.4) use, each checked by its own secret path and the Host instead. On Linux and in Termux there is no app key (`APP_KEY` unset): Host, Origin and
   the session are the checks, and the node's API is on TCP on 127.0.0.1. Read `android/LOCAL-APIS.md` before
   touching any of it.
 - **Vendored code** is changed only by re-vendoring from its source, never edited in place (see the
@@ -128,7 +134,7 @@ CHROME=/path/to/chrome node tests/chat_ui.mjs   # the Messages screen in headles
 
 - `README.md`: what it is, installing on Linux or Termux, what works.
 - `android/README.md`: the Android app, building, signing. `android/LOCAL-APIS.md`: the local APIs and
-  their protection. `android/NAMES.md`: "Your name" and the LNS signer. `android/BATTERY.md`: battery.
+  their protection. `android/NAMES.md`: "Your name" and the LNS signer. `android/NAMES04.md`: the LEZ 0.4 signer. `android/BATTERY.md`: battery.
 - `native/README.md`, `native/patches/README.md`: the node build and its patches.
 - `messaging/README.md`: the messaging node.
 - `docs/messages.md`: Messages (requests, safety codes, limits). `docs/backup.md`, `docs/updating.md`.

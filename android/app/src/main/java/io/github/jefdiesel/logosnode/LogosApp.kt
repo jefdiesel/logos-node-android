@@ -90,6 +90,9 @@ object WalletServer {
                         "APP_EMBEDDED" to "android",
                         // the LNS signer (android/NAMES.md); server.py offers "Your name" only if it exists
                         "NAMES_BIN" to File(app.applicationInfo.nativeLibraryDir, "libnames.so").path,
+                        // the LEZ 0.4 signer (android/NAMES04.md), beside the LEZ 0.3 one; server.py offers LEZ 0.4
+                        // sends only if it exists. No RISC0_* variable is ever set for it.
+                        "NAMES04_BIN" to File(app.applicationInfo.nativeLibraryDir, "libnames04.so").path,
                     )
                 ).toString()
                 Python.getInstance().getModule("logos_embed").callAttr("start", web.path, env)
