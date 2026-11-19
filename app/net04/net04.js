@@ -59,7 +59,7 @@
     <div id="n4-accts"></div>
     <p class="note" id="n4-private"></p>
     <div class="row" style="margin-top:10px"><button type="button" id="n4-send">Send</button><button type="button" id="n4-recv">Receive</button></div>
-    <p class="msg" id="n4-na" role="status" hidden>Not available on the bridge test network yet.</p>`;
+    <button type="button" class="notice" id="n4-na" role="status" hidden>Not available on the bridge test network yet. To send or receive, switch to LEZ 0.3 in Settings → Network.</button>`;
 
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
   const hhmm = t => {            // the time, and the date too when it isn't today
@@ -221,6 +221,7 @@
   });
   $("n4-send").addEventListener("click", () => { $("n4-na").hidden = false; });
   $("n4-recv").addEventListener("click", () => { $("n4-na").hidden = false; });
+  $("n4-na").addEventListener("click", () => openSettings("s-net"));        // the line says where to switch: a tap goes there
   $("n4-add").addEventListener("click", async () => {
     const m = $("n4-watch-m"), v = $("n4-watch").value.trim();
     if (!v || net !== "04") return;

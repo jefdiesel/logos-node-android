@@ -8,7 +8,7 @@ Part 1 decodes the reference NFT program's states with the bytes the names proje
 its nft_wire.rs tests) and refuses what the program never writes. Part 2 reads NFTs from a stand-in network: the
 program list per network, holdings of the phone's account and the watched ones, collections, the unreadable shown as
 such. Part 3 reads an LNS name's NFT from its record (read_deed; the deeds' format is the names project's design,
-not published or on any chain yet), with the record address checked against the real names command line. Part 4 runs
+live on our LEZ 0.4, also checked there read-only unless offline), with the record address checked against the real names command line. Part 4 runs
 the app as the Android app does.
 """
 import atexit, copy, hashlib, http.server, json, os, shutil, sys, tempfile, threading, time, urllib.request
@@ -286,6 +286,40 @@ check("at most 10 names besides the phone's", n.nft_change({"add_name": "n99"}, 
 nn = reader(deed_chain())
 nn.nft_refresh(OWN, "alice", lambda name: None)
 check("no id (no names command line): said, no card", nn.nft_view(OWN, "alice")["names"][0]["status"] == "no_id")
+
+# ---- live, read-only: the deeds on our LEZ 0.4 (skipped offline, with NFT04_LIVE=0, or once that chain is reset) ----
+def live_view(account, program):
+    body = {"jsonrpc": "2.0", "id": 1, "method": "getAccountView", "params": [{"account_id": account, "program_account_id": program}]}
+    req = urllib.request.Request("https://lez.nameswallet.app/", data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json", "User-Agent": "logos-node-app"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return (lez04.actor_states(json.loads(r.read())["result"]) or {}).get(program, b"")
+
+
+CHECK_NAME, CHECK_ID = "lns-deed-check", H("a90744c8d529e90e4d78b378ad79025e0a607a156148e880b4d93c258074c145")   # `names address`
+SMOKE_NAME, SMOKE_ID = "lns-smoke-ourzerofour", H("a4fd9fc6123be9baa68f75647f940a17aa99f2d68770c0b20350e6fa836a0a5f")
+CHECK_HOLDER = "6SeHY2Nc9mqm6eFUydxio8c42rjWGFKoaJPA42rQsPwm"
+live = None
+if os.environ.get("NFT04_LIVE", "1") != "0":
+    try:
+        live = live_view(lez04.record_address(REGISTRY, CHECK_ID), REGISTRY) or None
+    except Exception as e:
+        print("skip live deeds check: can't reach lez.nameswallet.app (%s)" % str(e)[:80])
+    else:
+        if live is None:
+            print("skip live deeds check: %s isn't registered there (was our LEZ 0.4 reset?)" % CHECK_NAME)
+if live:
+    rec = lez04.decode_record(live)
+    check("live: lns-deed-check's record is version 7 and its deed tail reads (definition 9fPKWRnv…, a 32-byte nonce, nothing after)",
+          rec["version"] == 7 and rec["deed"] and rec["deed"]["definition"] == "9fPKWRnv8LVnMsJmHjLeN22bkf2Q4irjPcTra7c3y6ro" and len(rec["deed"]["nonce"]) == 32, rec)
+    r = lez04.read_deed(live_view, REGISTRY, DEEDS, CHECK_NAME, CHECK_ID, [OWN, CHECK_HOLDER], int(time.time() * 1000))
+    check("live: its NFT, held by Public/6SeHY2Nc…, in the deed account B56NfHYK…, master of 9fPKWRnv…",
+          r["status"] == "ok" and r["holder"] == CHECK_HOLDER and r["definition"] == "9fPKWRnv8LVnMsJmHjLeN22bkf2Q4irjPcTra7c3y6ro"
+          and r["holding"] == "B56NfHYKptfSXimHLuVX4S6nNBfhVkWP8GWVCWAWxFCC" and r["collection"]["name"] == "LNS name deed", r)
+    check("live: the same name for an account that doesn't hold it: no card", lez04.read_deed(live_view, REGISTRY, DEEDS, CHECK_NAME, CHECK_ID, [OWN], int(time.time() * 1000))["status"] == "not_yours")
+    raw = live_view(lez04.record_address(REGISTRY, SMOKE_ID), REGISTRY)
+    check("live: lns-smoke-ourzerofour (no deed) is a version 6 record with no deed", bool(raw) and lez04.decode_record(raw)["version"] == 6 and lez04.decode_record(raw)["deed"] is None)
+    check("live: and no card for it", lez04.read_deed(live_view, REGISTRY, DEEDS, SMOKE_NAME, SMOKE_ID, [OWN, CHECK_HOLDER], int(time.time() * 1000))["status"] in ("no_nft", "not_yours"))
 
 # ---- part 4: the app ---------------------------------------------------------------------------------------------------
 chain = deed_chain()

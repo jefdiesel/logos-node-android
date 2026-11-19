@@ -381,12 +381,13 @@ def read_deed(state_of, registry, nft_program, name, name_id, accounts, now_ms):
     """The NFT of the LNS name `name` (its 32-byte id `name_id`), read from the name's record: the one function the
     Collectibles page reads a name's NFT through.
 
-    FORMAT NOT FINAL: this follows the names project's LNS name NFT ("deed") design as of 2026-11-19, which is not
-    published and which no chain runs yet. `state_of(account, program)` -> bytes (b"" for none) reads one account. A
-    card is drawn only when all of these hold: the record is held (not lapsed) by the owner tag of one of `accounts`; it names a deed; the
-    deed's definition is the registry's PDA for this name and the record's nonce; the holder's deed account (the
-    registry's PDA for the definition and the owner tag) holds that definition's master with a balance of 1; and the
-    definition reads as an NFT definition. Anything else is said, never drawn."""
+    This follows the names project's LNS name NFT ("deed") design as of 2026-11-19, live on our LEZ 0.4 since then
+    (tests/nft04_test.py reads a claimed deed there); the design itself is not yet published.
+    `state_of(account, program)` -> bytes (b"" for none) reads one account. A card is drawn only when all of these
+    hold: the record is held (not lapsed) by the owner tag of one of `accounts`; it names a deed; the deed's definition
+    is the registry's PDA for this name and the record's nonce; the holder's deed account (the registry's PDA for the
+    definition and the owner tag) holds that definition's master with a balance of 1; and the definition reads as an
+    NFT definition. Anything else is said, never drawn."""
     out = {"name": name, "status": "unregistered"}
     try:
         raw = state_of(record_address(registry, name_id), registry)

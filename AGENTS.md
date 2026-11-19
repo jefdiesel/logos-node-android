@@ -19,7 +19,7 @@ phone. Unofficial community work, testnet only.
   that RPC reports that chain id. `net04/nft.js` is Collectibles (Wallet on LEZ 0.4 > Collectibles): NFTs of the
   watched accounts under the NFT programs the person lists, and the LNS name card, drawn on the phone with the
   bundled fonts in `net04/fonts/` (OFL, see its `VENDORED.txt`); an LNS name's NFT is read from the name's record
-  (`lez04.read_deed`, following the names project's LNS name NFT ("deed") design, not on a chain yet). View-only: nothing
+  (`lez04.read_deed`, following the names project's LNS name NFT ("deed") design, live on our LEZ 0.4). View-only: nothing
   there signs. `release.json` lists every file and its sha256: the in-app updater uses it.
 - `android/`: the Android app (Kotlin) that runs the node, the messaging node and `server.py` (in embedded
   Python), and shows the page in a WebView. Read `android/README.md` first.

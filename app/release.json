@@ -2,7 +2,7 @@
  "files": {
   "index.html": "2024c75ed9774fb6538e8c1051a20a8a37dde273d5db81283f6c711eaf3e4dd6",
   "lez04.json": "cb4567db83ce8ea534d18da93731b292435b0c760afe79adee27dcc61b080a89",
-  "lez04.py": "41e1fe736b00c71452a856d52f42c3cda0c5fe067b3bd99abd6f9957bcab2255",
+  "lez04.py": "4b38a23c1615e3045d1b1f6b21b8fab3888909d092f26a4ff459d5059b07e79a",
   "lns/lns.js": "93686db76760e8b8530153efdaa87a0a427d2643674b25c09937b2320a3942f7",
   "messages/VENDORED.txt": "6fbf95fc9f8f846e65996ac4c9e2179002b631af229d8c222ab19a4a756d98e0",
   "messages/chat-core.js": "b0c42d5a21d1f3a07812cc97204cab28319bf24660e9c058abf2a17e3673e62e",
@@ -38,7 +38,7 @@
   "net04/fonts/OFL-FiraCode.txt": "926041dac670e6922505e35ac1661a4e8d20f1ffeabbbcb5edb5544370702369",
   "net04/fonts/OFL-Gloock.txt": "321e28d45a430e017d9d1d6a47ef1fd261aad354723b014cf1933a765036c311",
   "net04/fonts/VENDORED.txt": "fa96ba64ea739becfb01f3edd79acf20cf0eb77f18c067512d9fc2340e9221a6",
-  "net04/net04.js": "3afa9dd6ad8e3d0c27ac7910f86d09fa343c7fb59ba815d49a65197d6afe5475",
+  "net04/net04.js": "28d1bb8861e5e159b73859cee7804510221877bc8a02c54599a025949f36f100",
   "net04/nft.js": "f802e983ac07aee6dde240c6b247c1df34c48693940caf822f78781bb436c2a0",
   "noble-curves/LICENSE": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec",
   "noble-curves/abstract/curve.js": "dbaeee3b41ff47efb76b78e14170fe4dda7c7ecdc387c402f16c5118e0bac356",
@@ -53,7 +53,7 @@
   "noble-curves/utils.js": "ba29ee6d5c0129f0913e0cb11e1c84d09b7e1dd73c55e158cd49b5987bb62a65",
   "qr/VENDORED.txt": "1d4fc608d725afe81619262b9fb4323fe2d77318579396d9429f3a6f04b873ad",
   "qr/qrcode.js": "ea91d7118a5395289170da848b7c6758b996163bfbccf312591ab65a4911b7c0",
-  "server.py": "7c2db88b9c69dcef10bdf32783fbce326ae39c49b274aba019d957a999a2a3c2"
+  "server.py": "f7bae2009d76a3b1915da88415e3e9f8236f3c29cda487f65742d66f7f9f8670"
  },
- "version": "0.9.29"
+ "version": "0.9.30"
 }

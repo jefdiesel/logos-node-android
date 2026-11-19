@@ -147,7 +147,12 @@ await shot("lez-0.4-own");
 // ---- Send and Receive on 0.4 say they aren't available, and send nothing ----
 check("the 0.4 message is hidden at first", !(await shown("#n4-na")));
 await click("#n4-send");
-await waitFor("Send on 0.4: Not available on the bridge test network yet.", `document.getElementById("n4-na").offsetParent !== null && document.getElementById("n4-na").textContent === "Not available on the bridge test network yet."`);
+await waitFor("Send on 0.4: not available yet, and where to switch", `document.getElementById("n4-na").offsetParent !== null && document.getElementById("n4-na").textContent === "Not available on the bridge test network yet. To send or receive, switch to LEZ 0.3 in Settings → Network."`);
+check("the line is a 44 px target", await tall("#n4-na"));
+await click("#n4-na");
+await waitFor("tapping it opens Settings > Network", `!document.getElementById("page-settings").hidden && document.getElementById("s-net").offsetParent !== null && document.getElementById("h-settings").textContent === "Network"`);
+await toWallet();
+await click("#n4-send");
 await pick(3); await pick(4);
 check("the message goes with a switch", !(await shown("#n4-na")));
 await click("#n4-recv");
