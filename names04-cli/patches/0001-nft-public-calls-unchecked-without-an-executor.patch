@@ -1,0 +1,50 @@
+names (logos-names wallet-1120, d25d8f6): a public NFT call from a build that can't run programs
+here is sent unchecked with a fixed cap, as registry and token calls already are.
+
+Without this, `names nft ...` on a public account in a bare build (no r0vm, no local-prove: the
+Android tool) calls `simulate`, which refuses ("can't check this call on this computer"), and the
+LEZ wallet's own pre-send run would need an executor as well. With it: cycles NFT_PUBLIC_CYCLES
+(40,000; Job A measured 28-37k gas for the NFT messages), gas limit unchecked_limit(40,000) =
+120,000, and both FeeParams (gas_limit, max_fee) pinned so the wallet skips its run, exactly as
+tokens.rs does for a token call. Builds that can run programs are unchanged.
+
+--- a/cli/src/nft.rs
++++ b/cli/src/nft.rs
+@@ -750,9 +750,17 @@
+             println!("proved in {}s", started.elapsed().as_secs());
+             hash
+         } else {
+-            let deployed = self.program_at(program, "NAMES_NFT_PROGRAM_ELF", "names-nft", "the NFT program").await?;
+-            let cycles = self.simulate(&mentions, &bytes, vec![(program, deployed)]).await?;
+-            let limit = gas_limit_for(cycles);
++            // A build that can't run programs here (the bundled LEZ 0.4 tool with no r0vm, as on
++            // a phone) sends a public NFT call unchecked with a fixed cap, as it does a registry or
++            // token call (`unchecked_limit`); one that can tries it first and sizes the limit.
++            let (cycles, limit) = if crate::prover::can_run() {
++                let deployed = self.program_at(program, "NAMES_NFT_PROGRAM_ELF", "names-nft", "the NFT program").await?;
++                let cycles = self.simulate(&mentions, &bytes, vec![(program, deployed)]).await?;
++                (cycles, gas_limit_for(cycles))
++            } else {
++                println!("This computer can't check the NFT call first. If the network refuses it, its whole fee reserve is still paid.");
++                (NFT_PUBLIC_CYCLES, crate::unchecked_limit(NFT_PUBLIC_CYCLES))
++            };
+             let paying: Vec<AccountMention> = match fee_payer {
+                 Some(payer) => vec![AccountIdentity::Public(payer).balance()],
+                 None => mentions.clone(),
+@@ -765,8 +773,16 @@
+             let mut config = saved.clone();
+             config.gas_limit = limit;
+             self.wallet.set_config(config);
++            // Unchecked, the wallet's own run before sending is skipped too: it runs only when
++            // the limit or the cap is left to it, so both are pinned (and put back after).
++            if !crate::prover::can_run() {
++                self.wallet.set_fee_params(wallet::FeeParams { gas_limit: Some(limit), max_fee: Some(wallet::max_fee_for(limit)), ..wallet::FeeParams::default() });
++            }
+             let sent = self.wallet.send_pub_tx_paid_by(mentions, 0, bytes, fee_payer).await;
+             self.wallet.set_config(saved);
++            if !crate::prover::can_run() {
++                self.wallet.set_fee_params(wallet::FeeParams::default());
++            }
+             sent.context("the sequencer did not accept the transaction")?
+         };
+         println!("submitted {hash}");
