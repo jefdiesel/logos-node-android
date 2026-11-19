@@ -157,6 +157,41 @@ NET04_ACCOUNTS = dict(REC["definitions"], **{REC["config_account"]: REC["config"
 NET04_ACCOUNTS["9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"] = list(REC["accounts"].values())[0]   # the stand-in signer's account
 NET04_ACCOUNTS.update(REC["accounts"])
 
+# Collectibles (tests/nft04_ui.mjs): NFT states read with getAccountView, {account: {program: bytes}}. Under the test's
+# NFT program: the phone's account holds the master of "Harbour at dawn" (2 print rights), the recorded Basecamp account
+# a copy. The LNS name "alice" (its id as the stand-in signer prints it) is held by the phone's account and has its NFT.
+sys.path.insert(0, os.path.join(HERE, "..", "app"))
+import hashlib, lez04  # noqa: E402
+NFT_PROGRAM, NFT_ART = "ErycMYqXUUtducaYmpHZjRgdbLXchrMiV4NZRnmRDNmu", "HA47ERcmfSbDChGcYfBcC4SKaPQ8pJJnv4wxCLu1ejL5"
+_txt = lambda t: len(t.encode()).to_bytes(4, "little") + t.encode()      # noqa: E731
+_u128 = lambda n: n.to_bytes(16, "little")                                  # noqa: E731
+OWN04 = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"
+NFT_STATES = {
+    NFT_ART: {NFT_PROGRAM: b"\0" + _txt("Harbour at dawn") + _u128(3) + b"\0" + _txt("https://img.example.com/harbour.png") + _txt("ada")},
+    OWN04: {NFT_PROGRAM: b"\1" + lez04.b58decode(NFT_ART) + _u128(2)},
+    "CCVd76Tk3WvFb63Wbuu4exMeLRTbSuMWHqxuvysapKnk": {NFT_PROGRAM: b"\2" + lez04.b58decode(NFT_ART) + b"\1"},
+}
+_cfg = json.load(open(os.path.join(HERE, "..", "app", "lez04.json")))
+_reg, _deeds = _cfg["lns_registry"], _cfg["deed_nft_program"]
+_alice = hashlib.sha256(b"fake-id/alice").digest()                            # what fake_names_bin.py prints for `address alice`
+_tag, _nonce = lez04.owner_tag(_alice, OWN04), bytes(range(32))
+_def = lez04.deed_definition_address(_reg, _alice, _nonce)
+NFT_STATES[lez04.record_address(_reg, _alice)] = {_reg: b"\7" + _tag + (2 ** 64 - 1).to_bytes(8, "little") + _txt("sealed") + b"\0" + b"\1" + lez04.b58decode(_def) + _nonce}
+NFT_STATES[lez04.deed_holding_address(_reg, _def, _tag)] = {_deeds: b"\1" + lez04.b58decode(_def) + _u128(1)}
+NFT_STATES[_def] = {_deeds: b"\0" + _txt("LNS name deed") + _u128(1) + b"\0" + _txt("https://nameswallet.app/lns/deed.png") + _txt("LNS registry")}
+
+
+def account_view(account, program):
+    """getAccountView: the account's state under one program, from NFT_STATES or the recorded accounts."""
+    if account in NFT_STATES:
+        st = NFT_STATES[account].get(program)
+        return {"nonce": 0, "data": {"actor_states": {} if st is None else {program: list(st)}}}
+    a = NET04_ACCOUNTS.get(account)
+    if a is None:
+        return None
+    st = a["data"]["actor_states"].get(program)
+    return {"nonce": 0, "data": {"actor_states": {} if st is None else {program: st}}}
+
 
 class Net04(Seq):
     """The bridge test network (LEZ 0.4), from the answers recorded in tests/fixtures/net04; POST /ctl/net04/<mode>
@@ -171,7 +206,8 @@ class Net04(Seq):
         if NET04["mode"] == "down":
             return self.out(503, {"error": "down"})
         m, p = body.get("method"), body.get("params") or [None]
-        res = NET04["channel"] if m == "getChannelId" else REC["height"] if m == "getLastBlockId" else NET04_ACCOUNTS.get(p[0]) if m == "getAccount" else None
+        res = NET04["channel"] if m == "getChannelId" else REC["height"] if m == "getLastBlockId" else NET04_ACCOUNTS.get(p[0]) if m == "getAccount" \
+            else account_view(p[0].get("account_id"), p[0].get("program_account_id")) if m == "getAccountView" and isinstance(p[0], dict) else None
         self.out(200, {"jsonrpc": "2.0", "id": body.get("id"), "result": res})
 
 
@@ -207,6 +243,8 @@ os.environ.update(APP_EMBEDDED="android", APP_PORT=port, APP_DATA=data, NODE_BIN
                   LNS_FLOW_POLL="0.5", LNS_FLOW_PAUSES="1,1,1,1", LNS_FLOW_GAP="0.5", LNS_FLOW_RESOLVE_EVERY="0.2,0.5", BRIDGE_SLOW="0", BRIDGE_SPLIT_WAIT="3", XFER_RESCAN_SECONDS="0.5", NET04_POLL_SECONDS="1",
                   LNS_FAUCET_URL="http://127.0.0.1:%d/faucet" % seq.server_address[1])
 sys.path.insert(0, os.path.join(HERE, "..", "app"))
+lez04.POLL = float(os.environ["NET04_POLL_SECONDS"])     # (lez04 was imported above, for the fixtures, before this was set)
+lez04.NFT_GAP = 0.0                                      # no pacing against the stand-in
 import server  # noqa: E402
 
 threading.Thread(target=server.main, daemon=True).start()

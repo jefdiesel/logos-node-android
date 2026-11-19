@@ -16,7 +16,11 @@ phone. Unofficial community work, testnet only.
   network, read by the server from an outside endpoint, never on the money path;
   `<data>/wallet-net04-config.json` overrides `lez04.json` (for example `rpc_url`, or `config_account`, which
   is otherwise derived from `bridge_program`); Settings > Network writes `rpc_url` + `chain_id` there only when
-  that RPC reports that chain id. `release.json` lists every file and its sha256: the in-app updater uses it.
+  that RPC reports that chain id. `net04/nft.js` is Collectibles (Wallet on LEZ 0.4 > Collectibles): NFTs of the
+  watched accounts under the NFT programs the person lists, and the LNS name card, drawn on the phone with the
+  bundled fonts in `net04/fonts/` (OFL, see its `VENDORED.txt`); an LNS name's NFT is read from the name's record
+  (`lez04.read_deed`, following the names project's LNS name NFT ("deed") design, not on a chain yet). View-only: nothing
+  there signs. `release.json` lists every file and its sha256: the in-app updater uses it.
 - `android/`: the Android app (Kotlin) that runs the node, the messaging node and `server.py` (in embedded
   Python), and shows the page in a WebView. Read `android/README.md` first.
 - `native/`: builds the blockchain node for Android from its source, with the patches in `native/patches/`.
@@ -72,6 +76,9 @@ python3 tests/embedded_test.py            # inside the Android app (APP_EMBEDDED
 python3 tests/app_key_test.py             # the app key: every route refused without it
 python3 tests/messaging_socket_test.py    # the messaging node over its Unix socket
 python3 tests/net04_test.py              # the LEZ 0.4 reader, apart from the money path; the network entry
+python3 tests/nft04_test.py              # Collectibles: NFT states, holdings, an LNS name's NFT from its record
+node tests/nft04_test.mjs                 # the LNS name card: size rule, line breaks, what it draws
+CHROME=/path/to/chrome node tests/nft04_ui.mjs   # Collectibles at 360 px in headless Chrome
 node tests/chat_test.mjs                  # chats: 1:1, history, key changes, backup and restore
 node tests/msg_v2_test.mjs                # Requests, padding, safety codes, store and inbox safety
 node tests/msg_hostile_test.mjs           # hostile sender names never stop the chats

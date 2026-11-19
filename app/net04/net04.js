@@ -9,8 +9,8 @@
 //   LEZ 0.4 the token list gives way to the phone's own LEZ account and the watched addresses (view-only), read by
 //   the server (app/lez04.py) at most every 30 s and only while the Wallet itself is on screen (once more when the
 //   person picks LEZ 0.4 or changes what is watched). Nothing here sends: Send and Receive say they aren't available.
-// - A lock reloads the page (index.html's lockedNow); NET04.lock() empties all of it first. After the unlock the kept
-//   choice is read again before anything shows.
+// - A lock reloads the page (index.html's lockedNow); NET04.lock() empties all of it first, Collectibles too
+//   (NFT04.lock, /net04/nft.js). After the unlock the kept choice is read again before anything shows.
 (() => {
   const line = $("net-sw"), view = $("net04"), sec = $("s-net");
   if (!line || !view || !sec) return;
@@ -31,7 +31,7 @@
       </div>
       <small id="nw-name"></small>
     </div>
-    <p class="note" id="nw-asks">On LEZ 0.4 the wallet asks <span id="nw-host">lez.nameswallet.app</span> about this phone's account and the addresses you watch; it sees them and your IP address.</p>
+    <p class="note" id="nw-asks">On LEZ 0.4 the wallet asks <span id="nw-host">lez.nameswallet.app</span> about this phone's account, the addresses you watch and their NFTs; it sees them and your IP address.</p>
     <div id="n4-net-box" hidden>
       <p class="note" id="n4-net-now"></p>
       <button type="button" class="small" id="n4-net-ours" hidden>Back to our LEZ 0.4</button>
@@ -126,6 +126,7 @@
     m.className = "msg ok"; m.textContent = r.data.custom ? "Switched. LEZ 0.4 is read from " + hostOf(r.data.rpc_url) + " now." : "Back on our LEZ 0.4.";
     $("n4-net-url").value = ""; $("n4-net-id").value = ""; $("n4-net-other").open = false;
     $("n4-accts").replaceChildren();
+    if (window.NFT04) window.NFT04.show(false);
     load(true);
   }
 
@@ -149,7 +150,7 @@
   }
 
   // the Wallet itself is on screen (not locked, not Settings, not Messages)
-  const onScreen = () => chosen && net === "04" && !$("v-open").hidden && !$("page-main").hidden;
+  const onScreen = () => chosen && net === "04" && !$("v-open").hidden && !$("page-main").hidden && !(window.NFT04 && window.NFT04.open());
 
   // `once`: a read the person asked for (picked LEZ 0.4, changed what is watched), from Settings too
   async function load(once = false) {
@@ -173,6 +174,7 @@
   // a lock: nothing of the 0.4 view stays in the page, and an answer still on its way writes nothing
   function lock() {
     gen++;
+    if (window.NFT04) window.NFT04.lock();
     for (const id of ["n4-accts", "n4-watch-m", "n4-state", "n4-private", "n4-watched", "n4-net-m", "n4-net-now"]) $(id).replaceChildren();
     $("n4-watch-m").className = "msg"; $("n4-net-m").className = "msg"; $("n4-state").hidden = true;
     for (const id of ["n4-watch", "n4-net-url", "n4-net-id"]) $(id).value = "";
@@ -192,6 +194,7 @@
     view.hidden = net !== "04";
     $("n4-watch-box").hidden = net !== "04";
     $("n4-net-box").hidden = net !== "04";
+    if (net !== "04" && window.NFT04) window.NFT04.show(false);
     if (keep && chosen && was !== net) api("/api/wallet/net04/choice", { net });
     clearInterval(timer); timer = null;
     $("n4-na").hidden = true;

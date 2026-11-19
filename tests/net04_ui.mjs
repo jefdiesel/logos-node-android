@@ -118,7 +118,7 @@ check("the two choices", (await js(`[...document.querySelectorAll("#s-net .seg b
 check("LEZ 0.3 is chosen", (await js(`document.getElementById("nw-03").getAttribute("aria-checked")`)) === "true" && (await js(`document.getElementById("nw-04").getAttribute("aria-checked")`)) === "false");
 check("its full name beside it: public Logos testnet", (await text("#nw-name")) === "public Logos testnet");
 check("under the switch: what LEZ 0.4 tells its endpoint (the stand-in's host here)",
-  /^On LEZ 0\.4 the wallet asks 127\.0\.0\.1:\d+ about this phone's account and the addresses you watch; it sees them and your IP address\.$/.test(await text("#nw-asks")) && (await shown("#nw-asks")), await text("#nw-asks"));
+  /^On LEZ 0\.4 the wallet asks 127\.0\.0\.1:\d+ about this phone's account, the addresses you watch and their NFTs; it sees them and your IP address\.$/.test(await text("#nw-asks")) && (await shown("#nw-asks")), await text("#nw-asks"));
 check("no watch field while LEZ 0.3 is chosen", !(await shown("#n4-watch")));
 check("the switch's buttons are 44 px", await tall("#s-net .seg button"));
 await shot("settings-network-lez-0.3");

@@ -318,7 +318,7 @@ html.relock body{visibility:hidden}
         <div id="hist" aria-label="Activity"><p class="note">Loading…</p></div>
       </section>
       <div id="tok-panels" class="n03"></div>   <!-- other tokens' Send / Receive / Activity (LEZ: filled by /lns/lns.js) -->
-      <div id="net04" hidden></div>   <!-- the bridge test network (LEZ 0.4), read-only: /net04/net04.js -->
+      <div id="net04" hidden></div>   <!-- the bridge test network (LEZ 0.4), read-only: /net04/net04.js, Collectibles /net04/nft.js -->
     </div>
   </section>
 
@@ -633,7 +633,7 @@ function show(view) {
     for (const id of ["r-amount", "r-to", "r-from", "r-name", "s-hash"]) $(id).textContent = "";
     openPanel(null);
     if (window.LNS && window.LNS.home) window.LNS.home(false);   // the LEZ row and panels empty too
-    if (window.NET04) window.NET04.lock();                         // and the LEZ 0.4 view, back on LEZ 0.3
+    if (window.NET04) window.NET04.lock();                         // and the LEZ 0.4 view, Collectibles too
   }
   settingsUi();
   if (view === "v-locked" && !wasLocked) lockAppeared();
@@ -732,6 +732,7 @@ function wipePage() {
   const KEEP = new Set(["id", "class", "hidden", "type", "role", "for", "name", "style"]);
   for (const i of document.querySelectorAll("input, textarea, select")) { i.value = ""; if (i.type === "checkbox" || i.type === "radio") i.checked = false; }
   for (const svg of document.body.querySelectorAll("svg")) svg.replaceChildren();
+  for (const c of document.body.querySelectorAll("canvas")) { c.width = 0; c.height = 0; }   // (an LNS name card)
   const w = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
   for (let n = w.nextNode(); n; n = w.nextNode()) {
     if (n.nodeType === 3) { if (!n.parentElement || !n.parentElement.closest("script, style")) n.data = ""; continue; }

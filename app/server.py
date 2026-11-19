@@ -396,6 +396,7 @@ NAMES_DIR = os.path.join(APP_DIR, "names")
 MESSAGES_FILE_RE = re.compile(r"^/((?:messages/(?:noble-(?:ciphers|hashes)/)?|noble-curves/(?:abstract/)?)[A-Za-z0-9_][A-Za-z0-9_.-]*\.js)$")
 NAMES_FILE_RE = re.compile(r"^/names/((?:noble-hashes/)?[A-Za-z0-9_][A-Za-z0-9_.-]*\.js)$")
 QR_FILE = "/qr/qrcode.js"                 # the QR code drawer (vendored, see app/qr/VENDORED.txt)
+NET04_FONTS = {"/net04/fonts/Gloock-Regular.ttf": "Gloock-Regular.ttf", "/net04/fonts/FiraCode-VF.ttf": "FiraCode-VF.ttf"}   # the name card's (OFL)
 
 
 def names_rpc(body):
@@ -5982,6 +5983,31 @@ def net04_own():
         return None
 
 
+def net04_name():
+    """The phone's own LNS name ("" without one): Collectibles looks for its NFT first."""
+    try:
+        return lns_state()["name"] if lns_available() else ""
+    except Exception:
+        return ""
+
+
+LNS_ID_RE = re.compile(r"^id\s+([0-9a-f]{64})\s*$", re.M)
+
+
+def lns_name_id(name):
+    """The 32-byte id the chain knows the LNS name by (Argon2id, slow on purpose), worked out by the bundled `names`
+    (`names address <name>`: offline, no wallet, no network); None if it can't say. Only the id line is read."""
+    if not lns_available() or not lns_name_ok(name):
+        return None
+    try:
+        r = subprocess.run([NAMES_BIN, "address", name], env=lns_env(), cwd=LNS_HOME if os.path.isdir(LNS_HOME) else DATA_DIR,
+                           capture_output=True, timeout=60, stdin=subprocess.DEVNULL, umask=0o077)
+    except Exception:
+        return None
+    m = LNS_ID_RE.search(ANSI_RE.sub(b"", r.stdout).decode("utf-8", "replace")) if r.returncode == 0 else None
+    return bytes.fromhex(m.group(1)) if m else None
+
+
 NET04_CHOICE_FILE = os.path.join(DATA_DIR, "wallet-net04-choice.json")   # {"net": "03"}: the network the person picked
 
 
@@ -6026,7 +6052,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # with messages, a name's avatar (an inline data: picture, as the Names SPEC has them) can show
             img = "img-src 'self' data:" if messaging_on() else "img-src 'self'"
             self.send_header("Content-Security-Policy",
-                             "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; %s; manifest-src 'self'; base-uri 'none'; form-action 'none'" % img)
+                             "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; %s; font-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'" % img)
         self.end_headers()
         self.wfile.write(data)
 
@@ -6062,9 +6088,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def public_file(path):
         """The page's own files, the same for everyone (from this repository): served without the app key, so a
         resource the WebView fetches without cookies still loads. Everything else needs it."""
-        return (path in ("/", "/manifest.webmanifest", "/lns/lns.js", "/net04/net04.js", QR_FILE,
+        return (path in ("/", "/manifest.webmanifest", "/lns/lns.js", "/net04/net04.js", "/net04/nft.js", QR_FILE,
                          "/lambda-192.png", "/lambda-512.png", "/lambda-maskable-512.png")
-                or bool(MESSAGES_FILE_RE.match(path)) or bool(NAMES_FILE_RE.match(path)))
+                or bool(MESSAGES_FILE_RE.match(path)) or bool(NAMES_FILE_RE.match(path)) or path in NET04_FONTS)
 
     KEY_REFUSED = {"error": "this app only answers its own page", "app_key": False}
 
@@ -6080,7 +6106,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "/api/wallet/lns/name", "/api/wallet/lns/text", "/api/wallet/lns/faucet",
                     "/api/wallet/lns/bridge", "/api/wallet/lns/bridge/cancel", "/api/wallet/lns/send",
                     "/api/wallet/lns/putback", "/api/wallet/lns/get", "/api/wallet/lns/get/retry", "/api/wallet/lns/get/stop",
-                    "/api/wallet/net04/choice", "/api/wallet/net04/network"}
+                    "/api/wallet/net04/nft", "/api/wallet/net04/choice", "/api/wallet/net04/network"}
     LNS_ROUTES = ("/api/wallet/lns/account", "/api/wallet/lns/register", "/api/wallet/lns/name", "/api/wallet/lns/text",
                   "/api/wallet/lns/faucet", "/api/wallet/lns/bridge", "/api/wallet/lns/bridge/cancel", "/api/wallet/lns/send",
                   "/api/wallet/lns/putback", "/api/wallet/lns/get", "/api/wallet/lns/get/retry", "/api/wallet/lns/get/stop")
@@ -6105,7 +6131,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if lns_available():               # Your name, only in the Android app with the signer
                     page = page.replace(b"</body>", b'<script src="/lns/lns.js"></script>\n</body>', 1)
                 if net04():                       # the bridge test network (LEZ 0.4), read-only, in the Android app
-                    page = page.replace(b"</body>", b'<script src="/net04/net04.js"></script>\n</body>', 1)
+                    page = page.replace(b"</body>", b'<script src="/net04/net04.js"></script>\n<script src="/net04/nft.js"></script>\n</body>', 1)
                 return self.reply(200, raw=page, ctype="text/html; charset=utf-8")
             except Exception:
                 return self.reply(500, {"error": "index.html is missing"})
@@ -6123,11 +6149,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply(401, {"error": "locked"})
             code, obj = messaging_get(path, self.path)
             return self.reply(code, obj)
-        if path == "/net04/net04.js":
+        if path in ("/net04/net04.js", "/net04/nft.js") or path in NET04_FONTS:
             if not net04():
                 return self.reply(404, {"error": "not found"})
             try:
-                with open(os.path.join(APP_DIR, "net04", "net04.js"), "rb") as f:
+                if path in NET04_FONTS:
+                    with open(os.path.join(APP_DIR, "net04", "fonts", NET04_FONTS[path]), "rb") as f:
+                        return self.reply(200, raw=f.read(), ctype="font/ttf")
+                with open(os.path.join(APP_DIR, "net04", path.rsplit("/", 1)[1]), "rb") as f:
                     return self.reply(200, raw=f.read(), ctype="text/javascript; charset=utf-8")
             except Exception:
                 return self.reply(404, {"error": "not found"})
@@ -6192,13 +6221,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
             own = net04_own()
             n.look(own)                                # reads again in the background, 30 s at most
             return self.reply(200, n.view(own))
-        if path == "/api/wallet/net04/choice":        # the network the Wallet shows, and the LEZ 0.4 in use
+        if path in ("/api/wallet/net04/nft", "/api/wallet/net04/choice"):   # Collectibles; the network shown: read-only
             n = net04()
             if not n:
                 return self.reply(404, {"error": "not found"})
             if not self.authed():
                 return self.reply(401, {"error": "locked"})
-            return self.reply(200, {"net": net04_choice(), "network": n.network()})
+            if path.endswith("/choice"):
+                return self.reply(200, {"net": net04_choice(), "network": n.network()})
+            own, name = net04_own(), net04_name()
+            n.nft_look(own, name, lns_name_id)         # reads again in the background, 30 s at most
+            return self.reply(200, n.nft_view(own, name))
         if path == "/api/wallet/lns/balance":          # the Wallet's LEZ row: the name account and its balance only
             if not lns_available():
                 return self.reply(404, {"error": "not found"})
@@ -6439,8 +6472,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if code == 200:
                 event("transfer sent", self, hash=obj.get("hash"))
             return self.reply(code, obj)
-        if path in ("/api/wallet/net04/choice", "/api/wallet/net04/network"):
-            # the network the Wallet shows, the 0.4 network by RPC URL + chain id: reads only
+        if path in ("/api/wallet/net04/nft", "/api/wallet/net04/choice", "/api/wallet/net04/network"):
+            # Collectibles' lists, the network the Wallet shows, the 0.4 network by RPC URL + chain id: reads only
             n = net04()
             if not n:
                 return self.reply(404, {"error": "not found"})
@@ -6452,9 +6485,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if not net04_choose(body["net"]):
                     return self.reply(500, {"error": "Can't keep the choice: is the phone's storage full?"})
                 return self.reply(200, {"net": body["net"]})
-            code, obj = n.set_network(None if body.get("ours") else body.get("rpc_url"), body.get("chain_id"))
+            if path.endswith("/network"):
+                code, obj = n.set_network(None if body.get("ours") else body.get("rpc_url"), body.get("chain_id"))
+                if code == 200:
+                    event("LEZ 0.4 network set", self, custom=obj.get("custom"))
+                return self.reply(code, obj)
+            own, name = net04_own(), net04_name()
+            code, obj = n.nft_change(body, name, lns_name_id)
             if code == 200:
-                event("LEZ 0.4 network set", self, custom=obj.get("custom"))
+                n.nft_look(own, name, lns_name_id)
+                obj["view"] = n.nft_view(own, name)
             return self.reply(code, obj)
         if path == "/api/wallet/net04/watch":          # view-only addresses on the bridge test network
             n = net04()

@@ -6,5 +6,7 @@
   "symbols": {
     "0x0000000000000000000000000000000000000000": "wETH",
     "0xac207b9bfebf3ef7c26297ea6abadeeccc4aa71e": "dUSDC"
-  }
+  },
+  "lns_registry": "6Yxj5k8AiuBSuMAYVQFGrYKjJGUSSaWWgoB9D9XXN3gA",
+  "deed_nft_program": "CjrUpegdA1RjqDN43T8P19kAkwnD1quAkNkER8k3dw9G"
 }

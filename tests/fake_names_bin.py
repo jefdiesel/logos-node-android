@@ -6,7 +6,7 @@
 # and prints progress lines with some noise. Every call is recorded in <data dir>/fake-names-calls.jsonl.
 #
 # Special names: "taken" fails as the real CLI does for a held name; "slow" takes 4 s.
-import json, os, sys, time, urllib.request
+import hashlib, json, os, sys, time, urllib.request
 
 FAKE_PHRASE = "abandon ability able about above absent absorb abstract absurd abuse access accident"
 ACCOUNT = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"
@@ -112,6 +112,11 @@ def main():
         except Exception:
             mine = False
         print(json.dumps({"name": args[1], "held_by": owner if mine else None, "texts": rec, "page": None}, indent=2))
+        sys.exit(0)
+    if args[:1] == ["address"] and len(args) == 2:   # offline, no wallet: the name's id (here a stand-in derivation)
+        record()
+        print("id     " + hashlib.sha256(b"fake-id/" + args[1].encode()).hexdigest())
+        print("record 11111111111111111111111111111111")
         sys.exit(0)
     if not os.path.exists(storage):
         fail("there is no wallet")       # the real one would make a new wallet and print its phrase here

@@ -1,0 +1,11 @@
+Fonts of the LNS name card (app/net04/nft.js), bundled so the phone loads nothing from the web.
+Both are under the SIL Open Font License 1.1 (the OFL-*.txt files here). Unmodified: copied byte for byte from
+github.com/google/fonts at cc5661d43cd4f9aad5567033a8e15ca28dc35c86 (2026-11-19). Re-vendor from there; never edit.
+
+Gloock-Regular.ttf   ofl/gloock/Gloock-Regular.ttf       sha256 c3a67e0212f7da01764796ae721cb9bab3e122d142354f97cf9c63fb763e6d77
+OFL-Gloock.txt       ofl/gloock/OFL.txt                  sha256 321e28d45a430e017d9d1d6a47ef1fd261aad354723b014cf1933a765036c311
+FiraCode-VF.ttf      ofl/firacode/FiraCode[wght].ttf     sha256 9335b082b3c7850d98a64b584f3417f65355f3471278bb5eeb8c6c0e8657aeeb
+OFL-FiraCode.txt     ofl/firacode/OFL.txt                sha256 926041dac670e6922505e35ac1661a4e8d20f1ffeabbbcb5edb5544370702369
+
+(FiraCode-VF.ttf is renamed only: the updater takes no brackets in a file name.)
+Gloock has no Greek: the card's λ is drawn in the phone's serif, as the approved render's was in the computer's.

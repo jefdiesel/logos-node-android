@@ -1,8 +1,8 @@
 {
  "files": {
-  "index.html": "ce31ffe9ddcee6a4dc7dfceeec5b5db932ecb6ffae2bb77e753d91e1d144dde8",
-  "lez04.json": "16fcdad838d7a90725a2937fd37a31479184b5b59c3806e927e93cd1f5fe259c",
-  "lez04.py": "3827c5fa7fe7086a5961f59708dfe2d0a2f7f75bcc862db449f65a1226e50c73",
+  "index.html": "2024c75ed9774fb6538e8c1051a20a8a37dde273d5db81283f6c711eaf3e4dd6",
+  "lez04.json": "cb4567db83ce8ea534d18da93731b292435b0c760afe79adee27dcc61b080a89",
+  "lez04.py": "41e1fe736b00c71452a856d52f42c3cda0c5fe067b3bd99abd6f9957bcab2255",
   "lns/lns.js": "93686db76760e8b8530153efdaa87a0a427d2643674b25c09937b2320a3942f7",
   "messages/VENDORED.txt": "6fbf95fc9f8f846e65996ac4c9e2179002b631af229d8c222ab19a4a756d98e0",
   "messages/chat-core.js": "b0c42d5a21d1f3a07812cc97204cab28319bf24660e9c058abf2a17e3673e62e",
@@ -33,7 +33,13 @@
   "names/noble-hashes/argon2.js": "f39753324bdf2f484150731d24b1d71236f26bf10bedd594f7d190fcdfdefdc9",
   "names/noble-hashes/blake2.js": "03f00237bcc0b4d822a80f7c0ac22e42632c48e246c3b6da584e6452186e32f0",
   "names/noble-hashes/utils.js": "037ad49adb78168b6b699598fd33f85f7877456b1d28b4d032e2a1a16807947c",
-  "net04/net04.js": "e419ce182b27ad706668f044b4d02ba66e8cdf5e17a8fcc9242608bd7375834f",
+  "net04/fonts/FiraCode-VF.ttf": "9335b082b3c7850d98a64b584f3417f65355f3471278bb5eeb8c6c0e8657aeeb",
+  "net04/fonts/Gloock-Regular.ttf": "c3a67e0212f7da01764796ae721cb9bab3e122d142354f97cf9c63fb763e6d77",
+  "net04/fonts/OFL-FiraCode.txt": "926041dac670e6922505e35ac1661a4e8d20f1ffeabbbcb5edb5544370702369",
+  "net04/fonts/OFL-Gloock.txt": "321e28d45a430e017d9d1d6a47ef1fd261aad354723b014cf1933a765036c311",
+  "net04/fonts/VENDORED.txt": "fa96ba64ea739becfb01f3edd79acf20cf0eb77f18c067512d9fc2340e9221a6",
+  "net04/net04.js": "3afa9dd6ad8e3d0c27ac7910f86d09fa343c7fb59ba815d49a65197d6afe5475",
+  "net04/nft.js": "f802e983ac07aee6dde240c6b247c1df34c48693940caf822f78781bb436c2a0",
   "noble-curves/LICENSE": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec",
   "noble-curves/abstract/curve.js": "dbaeee3b41ff47efb76b78e14170fe4dda7c7ecdc387c402f16c5118e0bac356",
   "noble-curves/abstract/edwards.js": "f24a9c221a549a8fff259eb8f245ab0dc17679b13c532c3970d91acc4df9fffd",
@@ -47,7 +53,7 @@
   "noble-curves/utils.js": "ba29ee6d5c0129f0913e0cb11e1c84d09b7e1dd73c55e158cd49b5987bb62a65",
   "qr/VENDORED.txt": "1d4fc608d725afe81619262b9fb4323fe2d77318579396d9429f3a6f04b873ad",
   "qr/qrcode.js": "ea91d7118a5395289170da848b7c6758b996163bfbccf312591ab65a4911b7c0",
-  "server.py": "436d834aa694fd4b97fca4e8adf627493dd405172851dc36ee01791afea09262"
+  "server.py": "7c4fce9e53c728896f5c1a3a2958be32ae9295330118c7c3f7c8e0f4aba5b9d1"
  },
  "version": "0.9.28"
 }

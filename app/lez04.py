@@ -10,6 +10,11 @@ the bridge's Config account (a PDA of the bridge program: the token program and 
 decimals), each definition's name, then one getAccount per watched public account (native balance under the native
 program, token holdings under the token program).
 
+Collectibles (Settings > Network > LEZ 0.4, Wallet > Collectibles) read the NFTs of the watched accounts the same way:
+getAccountView of each account under each NFT program the person listed for the network, then each collection's
+definition; an LNS name's NFT from the name's record (read_deed). Still reads only, fail-closed, and nothing of it is
+sent anywhere but the endpoint.
+
 The endpoint is lez04.json's, or one entered by RPC URL and chain id (set_network: it switches only if the RPC reports
 that chain id, and reads stop if it later reports another).
 
@@ -231,6 +236,203 @@ def shown(amount, decimals):
     return "{:,}".format(whole) + ("." + frac if frac else "")
 
 
+# ---- NFTs (Collectibles) and LNS name NFTs, read-only ------------------------------------------------------------------
+# The reference NFT program (logos-blockchain/lez-programs, programs/nft, refactor/lez-v0.4.x dea23c2), its states as the
+# names project's nft_wire.rs decodes them: Borsh, a tag byte then the fields, strict (unknown tags, a bool other than 0
+# or 1, text that isn't UTF-8 or longer than the program allows, trailing bytes: "unreadable", never a guess).
+
+NFT_MAX_NAME, NFT_MAX_URI, NFT_MAX_CREATORS = 64, 256, 256
+NFT_PROGRAMS_MAX = 16             # programs one network lists (as the desktop wallet)
+NFT_LABEL_MAX = 40
+NFT_NAMES_MAX = 10                # LNS names the person asked to see, besides the phone's own
+NFT_COLLECTIONS_MAX = 64          # collection definitions read in one refresh
+RECORD_SEALED_MAX = 12 * 1024     # names_core MAX_SEALED_RECORD_LEN
+# lez.nameswallet.app allows 50 requests per 10 s per IP address, and a phone on home wifi shares its address with the
+# desktop wallet: Collectibles asks at most one request per NFT_GAP seconds (25 per 10 s), and a whole read may take
+# NFT_DEADLINE (16 programs x 11 accounts is about 75 s at that pace).
+NFT_GAP = float(os.environ.get("NET04_NFT_GAP_SECONDS", "0.4"))
+NFT_DEADLINE = 150
+NAME_CHARS = set("abcdefghijklmnopqrstuvwxyz0123456789-")
+
+
+def clean(text, cap):
+    """Someone else's text, safe to show: no control, format (direction-changing, zero-width) or separator characters
+    other than a plain space, at most `cap` characters."""
+    return "".join(ch for ch in text if ch.isprintable())[:cap].strip()
+
+
+def nft_text(r, cap):
+    n = r.u32()
+    if n > cap:
+        raise ValueError("a text field is longer than the program allows")
+    try:
+        return r.take(n).decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError("a text field isn't UTF-8")
+
+
+def nft_flag(r):
+    v = r.u8()
+    if v > 1:
+        raise ValueError("a yes/no field holds another value")
+    return v == 1
+
+
+def decode_nft(b):
+    """One account's state under an NFT program: {"state": "empty" | "definition" | "master" | "copy" | "unreadable", ...}."""
+    if not b:
+        return {"state": "empty"}
+    try:
+        r = Reader(b)
+        tag = r.u8()
+        if tag == 0:
+            name, supply = nft_text(r, NFT_MAX_NAME), r.u128()
+            standard = r.u8()
+            if standard > 1:
+                raise ValueError("an unknown metadata standard")
+            out = {"state": "definition", "name": name, "printable_supply": supply, "standard": ("Simple", "Expanded")[standard],
+                   "uri": nft_text(r, NFT_MAX_URI), "creators": nft_text(r, NFT_MAX_CREATORS)}
+        elif tag == 1:
+            out = {"state": "master", "definition": r.id(), "print_balance": r.u128()}
+        elif tag == 2:
+            out = {"state": "copy", "definition": r.id(), "owned": nft_flag(r)}
+        else:
+            raise ValueError("not a state the NFT program writes")
+        r.done()
+        return out
+    except ValueError as e:
+        return {"state": "unreadable", "why": str(e)[:80]}
+
+
+def nft_holds(s):
+    """Whether a state holds an NFT: a master with print rights, or an owned copy."""
+    return (s["state"] == "master" and s["print_balance"] > 0) or (s["state"] == "copy" and s["owned"])
+
+
+def collection_of(s):
+    """A definition's fields as the page shows them (the maker's text cleaned), or None for anything else."""
+    if s.get("state") != "definition":
+        return None
+    return {"name": clean(s["name"], NFT_MAX_NAME), "printable_supply": str(s["printable_supply"]), "standard": s["standard"],
+            "uri": clean(s["uri"], NFT_MAX_URI), "creators": clean(s["creators"], NFT_MAX_CREATORS)}
+
+
+def pda(program, seed):
+    """A public PDA: SHA-256 of the LEE prefix, the program's 32 bytes and the 32-byte seed (lee core for_public_pda)."""
+    raw = b58decode(program)
+    if len(raw) != 32 or len(seed) != 32:
+        raise ValueError("not 32 bytes")
+    return b58encode(hashlib.sha256(b"/LEE/v0.2/AccountId/PDA/" + b"\0" * 8 + raw + seed).digest())
+
+
+def sha(*parts):
+    return hashlib.sha256(b"".join(parts)).digest()
+
+
+def record_address(registry, name_id):
+    return pda(registry, sha(b"logos-names/v5/name/", name_id))
+
+
+def owner_tag(name_id, account):
+    return sha(b"logos-names/v5/owner", name_id, b58decode(account))
+
+
+def deed_definition_address(registry, name_id, nonce):
+    return pda(registry, sha(b"lns-deed/v1/definition/", name_id, nonce))
+
+
+def deed_holding_address(registry, definition, owner):
+    return pda(registry, sha(b"lns-deed/v1/holding/", b58decode(definition), owner))
+
+
+def decode_record(b):
+    """A name record under the LNS registry: {version, owner (32 bytes), expires (ms), claimed, deed: None or
+    {definition, nonce}}, or ValueError. Versions 3-6 have no deed (6 adds `claimed`); version 7 adds the deed
+    (names_core decode_record of the names project's deeds work)."""
+    r = Reader(b)
+    version = r.u8()
+    if version < 3:
+        raise ValueError("a record older than this wallet reads")
+    owner, expires = r.take(32), r.u64()
+    r.take(r.count(RECORD_SEALED_MAX))
+    claimed = nft_flag(r) if version >= 6 else False
+    deed = None
+    if version >= 7:
+        tag = r.u8()
+        if tag == 1:
+            deed = {"definition": r.id(), "nonce": r.take(32)}
+        elif tag != 0:
+            raise ValueError("bad option")
+    r.done()
+    return {"version": version, "owner": owner, "expires": expires, "claimed": claimed, "deed": deed}
+
+
+DEED_TEXT = {
+    "unregistered": "Not registered on this network.",
+    "lapsed": "Its registration has run out on this network.",
+    "not_yours": "Held by an account this phone doesn't show. Watch that account in Settings → Network to see its card.",
+    "no_nft": "No NFT claimed for this name yet.",
+    "unreadable": "This name's NFT can't be read, so no card is shown.",
+    "no_id": "Can't work out where this name's record is right now. Try again later.",
+}
+
+
+def read_deed(state_of, registry, nft_program, name, name_id, accounts, now_ms):
+    """The NFT of the LNS name `name` (its 32-byte id `name_id`), read from the name's record: the one function the
+    Collectibles page reads a name's NFT through.
+
+    FORMAT NOT FINAL: this follows the names project's LNS name NFT ("deed") design as of 2026-11-19, which is not
+    published and which no chain runs yet. `state_of(account, program)` -> bytes (b"" for none) reads one account. A
+    card is drawn only when all of these hold: the record is held (not lapsed) by the owner tag of one of `accounts`; it names a deed; the
+    deed's definition is the registry's PDA for this name and the record's nonce; the holder's deed account (the
+    registry's PDA for the definition and the owner tag) holds that definition's master with a balance of 1; and the
+    definition reads as an NFT definition. Anything else is said, never drawn."""
+    out = {"name": name, "status": "unregistered"}
+    try:
+        raw = state_of(record_address(registry, name_id), registry)
+        if not raw:
+            return out
+        rec = decode_record(raw)
+    except ValueError as e:
+        return dict(out, status="unreadable", why=str(e)[:80])
+    if rec["expires"] < now_ms:
+        return dict(out, status="lapsed")
+    holder = next((a for a in accounts if owner_tag(name_id, a) == rec["owner"]), None)
+    if holder is None:
+        return dict(out, status="not_yours")
+    if rec["deed"] is None:
+        return dict(out, status="no_nft", holder=holder)
+    d = rec["deed"]
+    try:
+        if deed_definition_address(registry, name_id, d["nonce"]) != d["definition"]:
+            raise ValueError("the record's NFT isn't this name's")
+        holding = deed_holding_address(registry, d["definition"], rec["owner"])
+        h = decode_nft(state_of(holding, nft_program))
+        if h["state"] != "master" or h["definition"] != d["definition"] or h["print_balance"] != 1:
+            raise ValueError("the name's NFT account doesn't hold it")
+        defn = collection_of(decode_nft(state_of(d["definition"], nft_program)))
+        if defn is None:
+            raise ValueError("the NFT's definition can't be read")
+    except ValueError as e:
+        return dict(out, status="unreadable", why=str(e)[:80], holder=holder)
+    return dict(out, status="ok", holder=holder, definition=d["definition"], holding=holding, program=nft_program, collection=defn)
+
+
+def lns_name(text):
+    """A name as typed (any case, a leading @ or lns:, an old .lez ending), in its one form, or ValueError."""
+    if not isinstance(text, str):
+        raise ValueError("not text")
+    t = text.strip().lower()
+    for p in ("@", "lns:"):
+        if t.startswith(p):
+            t = t[len(p):]
+    if t.endswith(".lez"):
+        t = t[:-4]
+    if not 1 <= len(t) <= 32 or not set(t) <= NAME_CHARS or t.startswith("-") or t.endswith("-"):
+        raise ValueError("not an LNS name")
+    return t
+
+
 # ---- the reader --------------------------------------------------------------------------------------------------------
 
 class Net04:
@@ -249,6 +451,13 @@ class Net04:
         self.state = self._load(self.state_file, {})
         if not isinstance(self.state, dict):
             self.state = {}
+        # Collectibles: the programs listed per network, the names asked for and their ids (a file); the last read
+        # (memory only)
+        self.nft_file = os.path.join(data_dir, "wallet-net04-nft.json")
+        self.nft = None
+        self.nft_reading = False
+        self.nft_last_try = 0.0
+        self.nft_next = 0.0               # (time.monotonic) the next NFT read may go then
 
     # -- files --
     @staticmethod
@@ -484,6 +693,249 @@ class Net04:
         return out
 
 
+    # -- Collectibles: the NFT programs listed per network, the LNS names asked for, and their last read --
+    def nft_file_load(self):
+        d = self._load(self.nft_file, {})
+        if not isinstance(d, dict):
+            d = {}
+        progs = d.get("programs") if isinstance(d.get("programs"), dict) else {}
+        names = [n for n in (d.get("names") if isinstance(d.get("names"), list) else []) if isinstance(n, str)]
+        ids = d.get("ids") if isinstance(d.get("ids"), dict) else {}
+        return {"programs": progs, "names": names, "ids": ids}
+
+    def nft_programs(self, channel):
+        """The programs listed for the network with this channel: [{program, label, added}]."""
+        out = []
+        for e in self.nft_file_load()["programs"].get(channel or "", []) if channel else []:
+            try:
+                p = account_id(e.get("program"))
+            except (ValueError, AttributeError):
+                continue
+            label = e.get("label") if isinstance(e.get("label"), str) else None
+            if p not in [x["program"] for x in out]:
+                out.append({"program": p, "label": clean(label, NFT_LABEL_MAX) if label else None})
+        return out[:NFT_PROGRAMS_MAX]
+
+    def nft_names(self, own_name):
+        """The LNS names Collectibles looks for: the phone's own first, then the ones the person added."""
+        out = [own_name] if own_name else []
+        for n in self.nft_file_load()["names"]:
+            try:
+                n = lns_name(n)
+            except ValueError:
+                continue
+            if n not in out:
+                out.append(n)
+        return out[:NFT_NAMES_MAX + 1]
+
+    def channel_now(self):
+        """The channel of the network in use: the last read's, or asked now."""
+        if isinstance(self.state.get("channel"), str):
+            return self.state["channel"]
+        c = self.config()
+        url = c.get("rpc_url") if isinstance(c.get("rpc_url"), str) else ""
+        ch = self.rpc(url, "getChannelId", [])
+        if not isinstance(ch, str) or len(ch) > 128:
+            raise Unreachable("odd chain identity")
+        return ch
+
+    def nft_change(self, body, own_name, derive):
+        """Add or remove an NFT program, or a name to look for. (200, {"said"}) or (4xx/503, {"error"})."""
+        ch = None
+        if "add_program" in body or "remove_program" in body:
+            try:
+                p = account_id(body.get("add_program", body.get("remove_program")))
+            except ValueError:
+                return 400, {"error": "An NFT program is written as its account ID (base58)."}
+            if p == "1" * 32:
+                return 400, {"error": "That is the native token, not an NFT program."}
+            try:
+                ch = self.channel_now()             # programs are listed per network: by its channel
+            except Unreachable:
+                return 503, {"error": UNREACHABLE_TEXT}
+        with self.lock:
+            d = self.nft_file_load()
+            if ch is not None:
+                lst = [e for e in d["programs"].get(ch, []) if isinstance(e, dict) and e.get("program") != p]
+                if "add_program" in body:
+                    if len(lst) >= NFT_PROGRAMS_MAX:
+                        return 400, {"error": "The wallet lists at most %d NFT programs per network: remove one first." % NFT_PROGRAMS_MAX}
+                    label = clean(body.get("label"), NFT_LABEL_MAX) if isinstance(body.get("label"), str) else ""
+                    lst.append({"program": p, "label": label or None, "added": int(self.clock())})
+                    said = "Added %s. Its NFTs show in a moment." % short(p)
+                else:
+                    said = "Removed %s." % short(p)
+                d["programs"][ch] = lst
+            elif "add_name" in body or "remove_name" in body:
+                try:
+                    n = lns_name(body.get("add_name", body.get("remove_name")))
+                except ValueError:
+                    return 400, {"error": "That isn't an LNS name: 1 to 32 of a-z, 0-9 and -, like alice."}
+                names = [x for x in d["names"] if x != n]
+                if "add_name" in body:
+                    if len(names) >= NFT_NAMES_MAX:
+                        return 400, {"error": "At most %d names can be shown: stop showing one first." % NFT_NAMES_MAX}
+                    names.append(n)
+                    said = "Looking for %s's NFT. It shows in a moment." % n
+                else:
+                    said = "Stopped showing %s." % n
+                d["names"] = names
+            else:
+                return 400, {"error": "Nothing to change."}
+            d["ids"] = {k: v for k, v in d["ids"].items() if k in d["names"] or k == own_name}
+            self._save(self.nft_file, d)
+            self.nft_last_try = 0.0                 # read again at the next look
+        return 200, {"said": said}
+
+    def name_id(self, name, derive):
+        """The name's 32-byte id: kept once worked out (it never changes), else from `derive` (the names CLI); None."""
+        d = self.nft_file_load()
+        h = d["ids"].get(name)
+        if isinstance(h, str) and len(h) == 64:
+            try:
+                return bytes.fromhex(h)
+            except ValueError:
+                pass
+        try:
+            i = derive(name)
+        except Exception:
+            i = None
+        if not isinstance(i, (bytes, bytearray)) or len(i) != 32:
+            return None
+        with self.lock:
+            d = self.nft_file_load()
+            d["ids"][name] = bytes(i).hex()
+            self._save(self.nft_file, d)
+        return bytes(i)
+
+    def state_of(self, url, account, program, end):
+        """One account's state under one program (getAccountView), as bytes: b"" for none; ValueError for a malformed
+        answer; Unreachable for no answer. Paced: at most one every NFT_GAP seconds."""
+        wait = self.nft_next - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        self.nft_next = time.monotonic() + NFT_GAP
+        st = actor_states(self.rpc(url, "getAccountView", [{"account_id": account, "program_account_id": program}], end))
+        return (st or {}).get(program, b"")
+
+    def nft_refresh(self, own, own_name, derive):
+        """Reads the NFTs and the names' NFTs now; keeps the result in memory (nothing of it is written)."""
+        c = self.config()
+        url = c.get("rpc_url") if isinstance(c.get("rpc_url"), str) else ""
+        registry = c.get("lns_registry") if isinstance(c.get("lns_registry"), str) else ""
+        deed_program = c.get("deed_nft_program") if isinstance(c.get("deed_nft_program"), str) else ""
+        end = time.monotonic() + NFT_DEADLINE
+        now = self.clock()
+        ids = []
+        for i in ([own] if own else []) + self.watched():
+            if i and i not in ids:
+                ids.append(i)
+        new = {"read_at": now, "programs": [], "names": []}
+        try:
+            if not url:
+                raise Unreachable("no endpoint set")
+            channel = self.rpc(url, "getChannelId", [], end)
+            if not isinstance(channel, str) or len(channel) > 128:
+                raise Unreachable("odd chain identity")
+            pinned = c.get("chain_id")
+            if isinstance(pinned, str) and pinned and pinned.lower() != channel.lower():
+                raise Unreachable("another chain")
+            new["channel"] = channel
+            defs = {}
+            for p in self.nft_programs(channel):
+                entry = {"program": p["program"], "label": p["label"], "holdings": []}
+                try:
+                    for a in ids:
+                        s = decode_nft(self.state_of(url, a, p["program"], end))
+                        entry["holdings"].append(dict(s, account=a))
+                        dd = s.get("definition")
+                        if dd and (p["program"], dd) not in defs and len(defs) < NFT_COLLECTIONS_MAX:
+                            try:
+                                defs[(p["program"], dd)] = collection_of(decode_nft(self.state_of(url, dd, p["program"], end)))
+                            except ValueError:
+                                defs[(p["program"], dd)] = None
+                except ValueError:
+                    entry = {"program": p["program"], "label": p["label"], "error": "Its answer can't be read."}
+                for h in entry.get("holdings", []):
+                    if h.get("definition"):
+                        h["collection"] = defs.get((p["program"], h["definition"]))
+                new["programs"].append(entry)
+            now_ms = int(now * 1000)
+            for n in self.nft_names(own_name):
+                nid = self.name_id(n, derive) if registry and deed_program else None
+                if nid is None:
+                    new["names"].append({"name": n, "status": "no_id"})
+                    continue
+                new["names"].append(read_deed(lambda a, prog: self.state_of(url, a, prog, end), registry, deed_program, n, nid, ids, now_ms))
+            new.pop("unreachable", None)
+        except Unreachable as e:
+            old = self.nft or {}
+            new = dict(old, unreachable=str(e)[:80], tried_at=now)
+        self.nft = new
+        return new
+
+    def nft_look(self, own, own_name, derive):
+        """Collectibles looked: read again in the background if the last read is POLL seconds old."""
+        now = self.clock()
+        with self.lock:
+            if self.nft_reading or now - self.nft_last_try < POLL or now < self.backoff_until:
+                return False
+            self.nft_reading, self.nft_last_try = True, now
+
+        def run():
+            try:
+                self.nft_refresh(own, own_name, derive)
+            except Exception:
+                pass
+            finally:
+                self.nft_reading = False
+        threading.Thread(target=run, name="net04-nft", daemon=True).start()
+        return True
+
+    def nft_view(self, own, own_name):
+        """What Collectibles shows: the names with their NFTs, the collections with how many accounts hold each, the
+        NFTs by account, the holdings ready to receive, and the programs listed."""
+        s = self.nft or {}
+        ch = s.get("channel") or self.state.get("channel")
+        listed = self.nft_programs(ch)
+        read = {e["program"]: e for e in s.get("programs", [])} if s.get("channel") == ch else {}
+        slow = self.nft_reading and self.clock() - self.nft_last_try > NFT_DEADLINE + 5
+        out = {"network": NETWORK, "read_at": s.get("read_at"), "unreachable": UNREACHABLE_TEXT if s.get("unreachable") or slow else None,
+               "note": None if s.get("read_at") or s.get("unreachable") else "Reading your NFTs… this updates in a moment.",
+               "programs": [], "collections": [], "groups": [], "ready": [], "names": []}
+        groups = {}
+        for p in listed:
+            e = read.get(p["program"], {})
+            out["programs"].append({"program": p["program"], "label": p["label"], "error": e.get("error")})
+            for h in e.get("holdings", []):
+                a = h["account"]
+                if nft_holds(h) or h["state"] == "unreadable":
+                    g = groups.setdefault(a, {"account": a, "own": a == own, "nfts": []})
+                    g["nfts"].append({"program": p["program"], "programLabel": p["label"], "definition": h.get("definition"),
+                                      "state": h["state"], "print_balance": str(h["print_balance"]) if "print_balance" in h else None,
+                                      "collection": h.get("collection"), "unreadable": h.get("why")})
+                    if nft_holds(h):
+                        c = next((x for x in out["collections"] if x["program"] == p["program"] and x["definition"] == h["definition"]), None)
+                        if c is None:
+                            col = h.get("collection")
+                            out["collections"].append({"program": p["program"], "definition": h["definition"], "count": 1,
+                                                       "title": col["name"] if col and col["name"] else "Unreadable collection " + short(h["definition"])})
+                        else:
+                            c["count"] += 1
+                elif h["state"] in ("master", "copy"):
+                    out["ready"].append({"program": p["program"], "account": a, "definition": h["definition"], "collection": h.get("collection")})
+        order = ([own] if own else []) + [w for w in self.watched() if w != own]
+        out["groups"] = [groups[a] for a in order if a in groups]
+        names_read = {n["name"]: n for n in s.get("names", [])} if s.get("channel") == ch else {}
+        for n in self.nft_names(own_name):
+            r = names_read.get(n, {"status": None})
+            row = {"name": n, "own": n == own_name, "status": r["status"] or "not_read",
+                   "text": DEED_TEXT.get(r["status"]) if r["status"] else "Not read yet."}
+            if r["status"] == "ok":
+                row.update(holder=r["holder"], definition=r["definition"], holding=r["holding"], program=r["program"])
+            out["names"].append(row)
+        return out
+
     # -- the network: our LEZ 0.4, or one entered by RPC URL and chain id --
     def network(self):
         c = self.config()
@@ -525,8 +977,8 @@ class Net04:
                     os.remove(path)
                 except OSError:
                     pass
-            self.state, self.tokens_at = {}, 0.0
-            self.last_try = 0.0
+            self.state, self.nft, self.tokens_at = {}, None, 0.0
+            self.last_try = self.nft_last_try = 0.0
             try:
                 os.remove(self.state_file)
             except OSError:
