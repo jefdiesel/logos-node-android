@@ -19,7 +19,7 @@ u128 = lambda n: n.to_bytes(16, "little")                               # noqa: 
 
 
 def name_id(name):
-    """The stand-in id the stand-in LEZ 0.3 tool prints for `names address <name>` (fake_names_bin.py)."""
+    """The stand-in id the stand-in tool prints for `names address <name>` (fake_names04_bin.py)."""
     return hashlib.sha256(b"fake-id/" + name.encode()).digest()
 
 
@@ -32,6 +32,7 @@ class Chain04:
         self.sent = []                # every change applied
         self.faucet_given = {}        # owner -> params
         self.faucet_params = []
+        self.names = {}               # a name registered here -> {"owner", "account", "texts"}
         self.mode = "ok"              # "down": every call 503; "busy": 429 to reads; "lose_send": a send is applied, then
                                       # answered 502 (its answer lost on the way); "reject_send": a send refused (JSON-RPC error)
 
@@ -71,6 +72,17 @@ class Chain04:
             held = self.states.get((s["from"], s["program"]), b"")
             self.states[(s["to"], s["program"])] = held
             self.states[(s["from"], s["program"])] = b"\2" + held[1:33] + b"\0"
+        elif "commit" in ch:
+            self.balances[ch["commit"]["owner"]] = self.balances.get(ch["commit"]["owner"], 0) - FEE
+        elif "register" in ch:
+            r = ch["register"]
+            self.balances[r["owner"]] = self.balances.get(r["owner"], 0) - FEE - 1000000
+            self.register(r["name"], r["owner"])
+            self.names[r["name"]] = {"owner": r["owner"], "account": None, "texts": {}}
+        elif "set_account" in ch:
+            self.names.setdefault(ch["set_account"]["name"], {"texts": {}})["account"] = ch["set_account"]["account"]
+        elif "profile" in ch:
+            self.names.setdefault(ch["profile"]["name"], {"texts": {}})["texts"].update(ch["profile"]["texts"])
         elif "claim" in ch:
             rec = self.holder_of(ch["claim"]["name"])
             nid = name_id(ch["claim"]["name"])

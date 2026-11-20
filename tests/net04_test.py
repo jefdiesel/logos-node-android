@@ -310,7 +310,7 @@ imports = {a.name for node_ in ast.walk(tree) if isinstance(node_, (ast.Import, 
           {node_.module for node_ in ast.walk(tree) if isinstance(node_, ast.ImportFrom)}
 names = {node_.id for node_ in ast.walk(tree) if isinstance(node_, ast.Name)}
 check("lez04 imports only the standard library", imports <= {"hashlib", "json", "os", "threading", "time"}, imports)
-check("lez04 names no send, node, names or 0.3 function", not (names & {"send", "node", "server", "lns_send", "lns_bridge", "names_rpc", "balance_of", "fetch_outside", "waku", "messaging_post", "outbox_save", "inbox_save", "store_write"}), names & {"send", "node"})
+check("lez04 names no send, node or names function", not (names & {"send", "node", "server", "names_rpc", "balance_of", "fetch_outside", "waku", "messaging_post", "outbox_save", "inbox_save", "store_write"}), names & {"send", "node"})
 
 CHANNEL = REC["channel"]
 
@@ -387,7 +387,7 @@ lez04.POLL = 0.2
 import server  # noqa: E402
 
 tripped = []
-WIRES = ("send", "node", "lns_send", "lns_bridge", "names_rpc", "balance_of", "bridge_deposit", "history_record_send",
+WIRES = ("send", "node", "names_rpc", "balance_of", "history_record_send",
          # the messages: their routes, the messaging node, and every file they keep
          "messaging_post", "messaging_get", "messaging_round", "waku", "outbox_save", "inbox_save", "store_write", "msg_key_save", "msg_key_mark")
 missing = [fn for fn in WIRES if not callable(getattr(server, fn, None))]
@@ -507,18 +507,17 @@ slow.shutdown()
 chain.raw = None
 code, raw = server.fetch_outside("http://127.0.0.1:%d/" % rpc.server_address[1], {"jsonrpc": "2.0", "id": 1, "method": "getChannelId", "params": []}, cap=1 << 16, total=5)
 check("an ordinary answer within the limit comes through", code == 200 and json.loads(raw)["result"] == REC["channel"], raw[:100])
-check("the network routes need the session", W.call("/api/wallet/net04/choice")[0] == 401 and W.call("/api/wallet/net04/choice", {"net": "03"})[0] == 401
+check("the network routes need the session", W.call("/api/wallet/net04/network")[0] == 401
       and W.call("/api/wallet/net04/network", {"rpc_url": "https://x.example/", "chain_id": CHANNEL})[0] == 401)
-check("the choice of network: LEZ 0.4 when none was made", W.call("/api/wallet/net04/choice", session=s)[1]["net"] == "04")
-check("picking LEZ 0.3 is kept", W.call("/api/wallet/net04/choice", {"net": "03"}, session=s)[0] == 200 and W.call("/api/wallet/net04/choice", session=s)[1]["net"] == "03")
-check("anything else is refused", W.call("/api/wallet/net04/choice", {"net": "05"}, session=s)[0] == 400)
-W.call("/api/wallet/net04/choice", {"net": "04"}, session=s)
+check("there is no network choice any more (LEZ 0.4 only)", W.call("/api/wallet/net04/choice", session=s)[0] == 404
+      and W.call("/api/wallet/net04/choice", {"net": "03"}, session=s)[0] == 404)
+check("the network in use: ours when none was entered", W.call("/api/wallet/net04/network", session=s)[1]["network"]["custom"] is False)
 RPC_URL = "http://127.0.0.1:%d/" % rpc.server_address[1]
 code, r = W.call("/api/wallet/net04/network", {"rpc_url": RPC_URL, "chain_id": "ee" * 32}, session=s)
 check("the network entry through the app: a wrong chain id is refused", code == 409, r)
 code, r = W.call("/api/wallet/net04/network", {"rpc_url": RPC_URL, "chain_id": CHANNEL}, session=s)
 check("the right one switches", code == 200 and r["custom"] and r["chain_id"] == CHANNEL, r)
-check("the choice route says which network is in use", W.call("/api/wallet/net04/choice", session=s)[1]["network"]["chain_id"] == CHANNEL)
-check("nothing on the 0.4 path reached a send, the node, the names service, the 0.3 balances or the messages", not tripped, tripped)
+check("the network route says which network is in use", W.call("/api/wallet/net04/network", session=s)[1]["network"]["chain_id"] == CHANNEL)
+check("nothing on the 0.4 path reached a send, the node, the names service or the messages", not tripped, tripped)
 print("all checks passed" if not FAILS else "%d FAILED" % len(FAILS))
 sys.exit(1 if FAILS else 0)

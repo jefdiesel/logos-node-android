@@ -132,20 +132,10 @@ object NodeProfileConfig {
  * record stuck at "pending" can't hold the node on one profile forever.
  */
 object WalletBusy {
-    /** server.py's BRIDGE_ACTIVE */
-    val BRIDGE_ACTIVE = setOf("splitting", "ready", "depositing", "sent")
     const val SEND_MAX_AGE_MS = 60 * 60_000L
-    const val BRIDGE_MAX_AGE_MS = 2 * 60 * 60_000L
 
-    fun reason(bridgeJson: String?, historyJson: String?, namesRunning: Boolean, now: Long): String? {
+    fun reason(historyJson: String?, namesRunning: Boolean, now: Long): String? {
         if (namesRunning) return "a name change is running"
-        try {
-            if (bridgeJson != null) {
-                val b = JSONObject(bridgeJson)
-                val updatedMs = (b.optDouble("updated", 0.0) * 1000).toLong()
-                if (b.optString("state") in BRIDGE_ACTIVE && now - updatedMs < BRIDGE_MAX_AGE_MS) return "a bridge is in progress"
-            }
-        } catch (_: Exception) {}
         try {
             if (historyJson != null) {
                 val entries = JSONObject(historyJson).optJSONArray("entries")

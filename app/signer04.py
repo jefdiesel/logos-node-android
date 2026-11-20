@@ -14,13 +14,18 @@ What it does, and nothing else:
 - Sends from those accounts, one job at a time, `names` started with fixed arguments: native LEZ to an account, a
   public key or an LNS name; an NFT made ready to receive (InitializeHolding) and sent; an LNS name's free NFT
   claimed (`names deed claim`). All public. Nothing private: a phone has no prover.
+- Registers an LNS name for the phone's own first account (public): `names register <name> --owner Public/<first>
+  --wait` (commit, then the reveal at least 15 minutes later, with the name's deposit), then publishes that account on
+  the name (`set-account`) and points the name at this phone (`profile --set blockchain=… --set msg=…`: the node
+  wallet's address and the messaging address), so it can be paid and messaged. One job; if the app stops part way it
+  is offered again ("Continue"), and `names` resumes the same commitment (it keeps it in names.json for 24 hours).
 - Asks the LEZ 0.4 faucet (`bridge_faucet` on our proxy) for free test LEZ, once per wallet.
 - Forwards the calls of `names` to the network over HTTPS (it can't check TLS outside an app's Java runtime, the same
-  as the LEZ 0.3 tool: android/NAMES.md "HTTPS"), at a secret path, only the methods it needs, paced with every other
+  android/NAMES04.md "HTTPS and the rate limit"), at a secret path, only the methods it needs, paced with every other
   call this app makes there (the proxy allows 50 requests per 10 s per address).
 
 The keys stay in this module's wallet folder (`.lez04-wallet` in the app's data folder, 0700, files 0600), written by
-`names` itself, as the LEZ 0.3 key is (android/NAMES.md "Where the key lives"). This module never reads them. Of what
+`names` itself. This module never reads them. Of what
 `names` prints, only fixed progress texts and fixed error texts (allowlists below), account ids and a public key ever
 reach a reply, a log or the page.
 """
@@ -55,8 +60,8 @@ SHORTLIST_SHA256 = "ab03310848df6618943e81cf48e6c592fe2d8721de480906053dc295d543
 SHORTLIST_SIZE = 60892524
 SHORTLIST_REDIRECT_HOSTS = (".githubusercontent.com",)
 
-# Methods `names` may call through the forwarder: the LEZ 0.3 forwarder's list (every one also on our LEZ 0.4 proxy's
-# allowlist), nothing that changes anything but sendTransaction. The emulator test's proxy passes only these
+# Methods `names` may call through the forwarder (every one also on our LEZ 0.4 proxy's allowlist), nothing that changes
+# anything but sendTransaction. The emulator test's proxy passes only these
 # (tests/names04_emulator_e2e.sh), so a method the tool needs and this list lacks fails that run.
 RPC_METHODS = {"sendTransaction", "getFeeState", "checkHealth", "getBlock", "getBlockRange", "getLastBlockId",
                "getAccountBalance", "getTransaction", "getAccountsNonces", "getAccountView", "getProofsAndRoot",
@@ -66,9 +71,14 @@ RPC_REPLY_MAX = 16 * 1048576     # one answer (a program's bytecode comes in seg
 RPC_BATCH_MAX = 20               # the proxy's own cap on a batch
 PACE = float(os.environ.get("LEZ04_PACE_SECONDS", "0.25"))   # at most 4 requests a second from this app: 40 in 10 s
 
-# How long a job may run: a send waits for its block (the wallet polls 5 rounds of 12 s by the config below), a claim
-# may first fetch the 61 MB list.
-JOB_TIMEOUT = {"send": 10 * 60, "nft_init": 10 * 60, "nft_send": 10 * 60, "claim": 30 * 60}
+# How long one run of `names` in a job may take: a send waits for its block (the wallet polls 5 rounds of 12 s by the
+# config below), a claim may first fetch the 61 MB list, a registration waits 15 minutes between its commit and reveal
+# and may try the reveal again (each step of a job has its own limit).
+JOB_TIMEOUT = {"send": 10 * 60, "nft_init": 10 * 60, "nft_send": 10 * 60, "claim": 30 * 60, "register": 60 * 60, "entries": 10 * 60}
+# The name's id prefix in `names address`, and what `names` prints for a name.
+LNS_ID_RE = re.compile(r"^id\s+([0-9a-f]{64})\s*$", re.M)
+# A public account's id from its public key (LEZ `AccountId::from(&PublicKey)`): sha256 of this 32-byte prefix and the key.
+PUBLIC_ID_PREFIX = b"/LEE/v0.3/AccountId/Public/" + b"\0" * 5
 WALLET_CONFIG = {"gas_limit": 2000000, "fee_headroom_blocks": 5, "seq_block_poll_max_amount": 100, "seq_poll_max_retries": 5,
                  "seq_poll_timeout": "12s", "seq_tx_poll_max_blocks": 5}
 
@@ -91,12 +101,23 @@ PROGRESS = [
     (re.compile(r"\Amaking (?:Public/)?" + _ID + r" ready for .{0,80}\Z"), "making {0} ready for the collection"),
     (re.compile(r"\Asending the NFT of .{0,80} from (?:Public/)?" + _ID + r" to .{0,120}\Z"), "sending the NFT"),
     (re.compile(r"\Anew account Public/" + _ID + r"\Z"), "a new account: {0}"),
+    (re.compile(r"\A" + _NAME + r"\S{0,8} takes a deposit of " + _N + r",.{0,120}\Z"), "{0} takes a deposit of {1}, given back if you release it"),
+    (re.compile(r"\Astep 1 of 2: committing to " + _NAME + r"\b.{0,40}\Z"), "step 1 of 2: committing to {0}"),
+    (re.compile(r"\Aresuming the commitment to " + _NAME + r"\b.{0,40}\Z"), "going on with the commitment to {0} made earlier"),
+    (re.compile(r"\Awaiting ([0-9]{1,6})s before revealing.{0,80}\Z"), "waiting {0} s before step 2 (the commitment must be 15 minutes old)"),
+    (re.compile(r"\Astep 2 of 2: registering " + _NAME + r"\b.{0,120}\Z"), "step 2 of 2: registering {0}"),
+    (re.compile(r"\A" + _NAME + r"\S{0,8} is registered\Z"), "{0} is registered"),
+    (re.compile(r"\Athe (?:commitment|reveal) did not land.{0,200}\(attempt ([0-9]) of ([0-9])\)\Z"), "trying again (attempt {0} of {1})"),
 ]
 ERRORS = [
     (re.compile(r"\b" + _NAME + r" already has a deed"), "{0} already has its NFT."),
     (re.compile(r"\b" + _NAME + r" is locked"), "{0} is locked (one to four characters, or reserved), so it has no NFT."),
     (re.compile(r"this wallet does not hold " + _NAME), "None of this wallet's accounts holds {0}."),
     (re.compile(r"\b" + _NAME + r" is not registered"), "{0} isn't registered on this network."),
+    (re.compile(r"\b" + _NAME + r"\S{0,8} is already registered"), "{0} is taken: someone holds it already. Pick another name."),
+    (re.compile(r"\b" + _NAME + r"\S{0,8} was not registered"), "{0} was not registered. Try again: the deposit is taken only when it is."),
+    (re.compile(r"Public/" + _ID + r" holds " + _N + r", less than the " + _N + r" that registering"),
+     "Public/{0} holds {1}, less than the {2} deposit the name takes. Add test LEZ first."),
     (re.compile(r"Public/" + _ID + r" holds " + _N + r"; this takes " + _N + r", and about " + _N + r" more is held"),
      "Public/{0} holds {1}; this takes {2}, and about {3} more is held for the fee while it runs. Add test LEZ first."),
     (re.compile(r"Public/" + _ID + r" holds " + _N + r"; about " + _N + r" is held for the fee"),
@@ -126,7 +147,9 @@ ERROR_OTHER = "It stopped with an error this app doesn't show. Check the account
 # press makes a new transaction (a send would then pay twice). LEZ 0.4 has no Activity list on the phone: what shows a
 # send is the balance; an NFT or a name's NFT, Collectibles.
 UNSURE = {"send": "It may have been sent. Check this account's balance before you try again.",
-          "other": "It may have been sent. Check Collectibles before you try again."}
+          "other": "It may have been sent. Check NFTs before you try again.",
+          "register": "It stopped part way, and the last step may have gone through. Tap Continue: it reads the network "
+                      "first and goes on from where it is (the deposit is taken once)."}
 UNSURE_RESTARTED = "The app stopped while this was being sent. "
 UNSURE_KEEP = 24 * 3600          # how long, after the app stopped part way, the page says so
 
@@ -141,6 +164,10 @@ TEXT = {
     "none_here": "This phone has no LEZ 0.4 accounts to remove.",
     "restore_failed": "The accounts couldn't be restored from that phrase. Nothing was kept. Check the words and try again.",
     "faucet_once": "This wallet already got its free test LEZ: once per wallet.",
+    "name": "An LNS name is 5 to 32 characters: lowercase letters a-z, digits and inner hyphens. Shorter names are locked.",
+    "have_name": "This phone already has its LNS name.",
+    "no_entries": "Nothing to point the name at yet: the node's address and the messaging address are both unknown.",
+    "pair": "That address and public key don't belong together. Copy them again from the person's Receive.",
     "unused": "That account has never been used on this network, so it can only be paid by its public key. Ask for the key "
               "(Receive shows it), or pay their LNS name.",
     "to": "Send to an account (Public/… or its ID), a public key (64 hexadecimal characters), or an LNS name.",
@@ -251,6 +278,30 @@ def backup_part_ok(part):
         return False
 
 
+def unsure_kind(kind):
+    return "send" if kind == "send" else "register" if kind in ("register", "entries") else "other"
+
+
+def public_id(pk_hex):
+    """The public account id (base58) of a 64-hex public key."""
+    import lez04
+    return lez04.b58encode(hashlib.sha256(PUBLIC_ID_PREFIX + bytes.fromhex(pk_hex)).digest())
+
+
+def pair_of(text):
+    """"Public/<id> <public key>" (this app's Receive gives an account and its key as one item, for a first payment):
+    (id, key) when the key is that account's, False when it isn't, None for anything else."""
+    if not isinstance(text, str):
+        return None
+    parts = text.strip().split()
+    if len(parts) != 2 or not HEX64_RE.fullmatch(parts[1].lower()):
+        return None
+    acct = account_of(parts[0])
+    if not acct:
+        return None
+    return (acct, parts[1].lower()) if public_id(parts[1].lower()) == acct else False
+
+
 def account_of(text):
     """`Public/<id>` or a bare id, as the bare id, or None."""
     if not isinstance(text, str):
@@ -296,7 +347,11 @@ class Signer04:
         main = d.get("main") if isinstance(d.get("main"), str) and d.get("main") in accts else (accts[0] if accts else None)
         pk = d.get("public_key") if isinstance(d.get("public_key"), str) and HEX64_RE.fullmatch(d["public_key"]) else None
         faucet = d.get("faucet") if isinstance(d.get("faucet"), dict) else None
-        return {"accounts": accts, "main": main, "public_key": pk, "faucet": faucet}
+        name = d.get("name") if isinstance(d.get("name"), str) and NAME_RE.fullmatch(d["name"]) else None
+        reg = d.get("registering")
+        reg = {"name": reg["name"], "at": int(reg.get("at", 0)) if str(reg.get("at", "")).isdigit() else 0} \
+            if isinstance(reg, dict) and isinstance(reg.get("name"), str) and NAME_RE.fullmatch(reg["name"]) else None
+        return {"accounts": accts, "main": main, "public_key": pk, "faucet": faucet, "name": name, "registering": reg}
 
     def save(self, **changes):
         d = self.state()
@@ -423,7 +478,7 @@ class Signer04:
         kind = u.get("kind") if u.get("kind") in JOB_TIMEOUT else "send"
         shown = {k: u.get(k) if isinstance(u.get(k), str) and len(u.get(k)) <= 100 else "" for k in ("to", "amount", "name", "account")}
         self.job = dict(shown, kind=kind, state="failed", progress="", unsure=True, restarted=True, started=float(u["at"]),
-                        finished=float(u["at"]), said="", error=UNSURE_RESTARTED + UNSURE["send" if kind == "send" else "other"])
+                        finished=float(u["at"]), said="", error=UNSURE_RESTARTED + UNSURE[unsure_kind(kind)])
 
     def rpc(self, method, params, total=15):
         """One read of the 0.4 network (paced), its result, or raises."""
@@ -529,7 +584,7 @@ class Signer04:
                 with open(names_file, "rb") as f:
                     names = f.read().decode("utf-8")
             part = {"storage": storage, "names": names, "accounts": st["accounts"], "main": st["main"],
-                    "public_key": st["public_key"]}
+                    "public_key": st["public_key"], "name": st["name"]}
             return part if backup_part_ok(part) else None
         except Exception:
             return None
@@ -563,7 +618,8 @@ class Signer04:
                     f.flush()
                     os.fsync(f.fileno())
                 os.replace(path + ".tmp", path)
-            self.save(accounts=part["accounts"], main=part["main"], public_key=part.get("public_key"), faucet=None)
+            name = part.get("name") if isinstance(part.get("name"), str) and NAME_RE.fullmatch(part["name"]) else None
+            self.save(accounts=part["accounts"], main=part["main"], public_key=part.get("public_key"), faucet=None, name=name)
             self.lockdown()
             self.event("lez04 wallet restored from a backup", account=part["main"], accounts=len(part["accounts"]))
             return "added", "The LEZ 0.4 wallet is back: this phone sends from Public/" + part["main"] + "."
@@ -652,11 +708,13 @@ class Signer04:
         return {"available": self.available(), "ready": self.ready(), "stored": os.path.exists(self.storage()),
                 "account": st["main"], "public_key": st["public_key"], "accounts": st["accounts"], "job": job,
                 "faucet": {"used": bool(f.get("ok")), "amount": f.get("amount"), "at": f.get("at")},
-                "shortlist": os.path.isfile(self.shortlist)}
+                "shortlist": os.path.isfile(self.shortlist), "name": st["name"], "registering": st["registering"]}
 
     # ---- jobs ----
     def start(self, kind, args, extra_env=None, before=None, **shown):
-        """Starts one job (refused while another runs). `before()` runs first on the job's thread (the shortlist)."""
+        """Starts one job (refused while another runs). `before()` runs first on the job's thread (the shortlist).
+        `args` is one run of `names`, or a list of steps [(args, extra_env, after)] run in turn until one fails;
+        `after(ok)` runs after each step, on the job's thread."""
         if not self.change.acquire(blocking=False):
             return 409, {"error": TEXT["busy"]}
         job = dict(kind=kind, state="running", progress="starting", error="", started=self.clock(), finished=None,
@@ -683,25 +741,37 @@ class Signer04:
                 if why:
                     final = {"state": "failed", "error": why}
                     return
-            self.lockdown()
-            self.write_config()
-            proc = subprocess.Popen([self.bin] + args, env=self.env(extra_env), cwd=self.home, stdin=subprocess.DEVNULL,
-                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, umask=0o077)
-            timer = threading.Timer(JOB_TIMEOUT.get(kind, 600), proc.kill)
-            timer.daemon = True
-            timer.start()
+            steps = args if args and isinstance(args[0], tuple) else [(args, extra_env, None)]
             new_account = None
-            for line in proc.stdout:
-                tail = (tail + [line])[-40:]
-                shown = clean_line(line)
-                if shown:
-                    m = re.match(r"a new account: (" + B58_ID + ")", shown)
-                    if m:
-                        new_account = m.group(1)
-                    self._set(progress=shown)
-            code = proc.wait(timeout=60)
-            timer.cancel()
-            ok = code == 0
+            for step_args, step_env, after in steps:
+                if step_args is None:                       # a step found to be done already
+                    continue
+                self.lockdown()
+                self.write_config()
+                tail = []
+                proc = subprocess.Popen([self.bin] + step_args, env=self.env(step_env), cwd=self.home, stdin=subprocess.DEVNULL,
+                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, umask=0o077)
+                timer = threading.Timer(JOB_TIMEOUT.get(kind, 600), proc.kill)
+                timer.daemon = True
+                timer.start()
+                for line in proc.stdout:
+                    tail = (tail + [line])[-40:]
+                    shown = clean_line(line)
+                    if shown:
+                        m = re.match(r"a new account: (" + B58_ID + ")", shown)
+                        if m:
+                            new_account = m.group(1)
+                        self._set(progress=shown)
+                code = proc.wait(timeout=60)
+                timer.cancel()
+                ok = code == 0
+                if after is not None:
+                    try:
+                        after(ok)
+                    except Exception:
+                        pass
+                if not ok:
+                    break
             if new_account:
                 st = self.state()
                 if new_account not in st["accounts"]:
@@ -720,8 +790,11 @@ class Signer04:
             tail = None
             # a transaction went out and nothing said it was refused: unless the tool saw it in a block (done, or in a
             # block without effect), it may be on the network
-            if final.get("state") == "failed" and self.job_unsure() and not final.get("error", "").startswith("It was included in block"):
-                final = {"state": "failed", "error": UNSURE["send" if kind == "send" else "other"], "unsure": True}
+            # (a registration's own error is kept when the tool said what happened: it reads the chain before saying so,
+            # and Continue goes on with the same commitment)
+            said = kind in ("register", "entries") and final.get("error") not in (ERROR_OTHER, "It stopped without saying why.")
+            if final.get("state") == "failed" and self.job_unsure() and not said and not final.get("error", "").startswith("It was included in block"):
+                final = {"state": "failed", "error": UNSURE[unsure_kind(kind)], "unsure": True}
             try:
                 self.lockdown()
             except Exception:
@@ -745,7 +818,10 @@ class Signer04:
             return 400, {"error": TEXT["amount"]}
         to = body.get("to")
         to = to.strip() if isinstance(to, str) else ""
-        pk = to.lower() if HEX64_RE.fullmatch(to.lower()) else None
+        pair = pair_of(to)
+        if pair is False:
+            return 400, {"error": TEXT["pair"]}
+        pk = pair[1] if pair else to.lower() if HEX64_RE.fullmatch(to.lower()) else None
         acct = account_of(to) if not pk else None
         name = to.lower().lstrip("@") if not pk and not acct and NAME_RE.fullmatch(to.lower().lstrip("@")) else None
         if acct == main:
@@ -760,8 +836,10 @@ class Signer04:
             args = ["wallet", "auth-transfer", "send", "--from", "Public/" + main, "--to", "Public/" + acct, "--amount", amount]
             shown_to = "Public/" + acct
         elif pk:
+            if pair and pair[0] == main:
+                return 400, {"error": "That is this account. Send to another one."}
             args = ["wallet", "auth-transfer", "send", "--from", "Public/" + main, "--to-pk", pk, "--amount", amount]
-            shown_to = "public key " + pk[:8] + "…" + pk[-4:]
+            shown_to = "Public/" + pair[0] if pair else "public key " + pk[:8] + "…" + pk[-4:]
         elif name:
             args = ["pay", "--public", "--from=Public/" + main, "--", name, amount]
             shown_to = name
@@ -823,7 +901,82 @@ class Signer04:
         return self.start("claim", ["deed", "claim", name], extra_env={"NAMES_SHORTLIST": self.shortlist},
                           before=self.fetch_shortlist, name=name, account=holder)
 
-    # ---- the locked-name list (for a claim) ----
+    # ---- the phone's own LNS name ----
+    def name_id(self, name):
+        """The name's 32-byte id, from `names address` (offline, no wallet, no network), or None."""
+        try:
+            code, out, _ = self.run(["address", name], timeout=60)
+        except Exception:
+            return None
+        m = LNS_ID_RE.search(ANSI_RE.sub(b"", out).decode("utf-8", "replace")) if code == 0 else None
+        return bytes.fromhex(m.group(1)) if m else None
+
+    def held_here(self, name):
+        """Whether the name's record on the network is held by this wallet's first account (True), held by someone
+        else (False), or not there / unreadable (None)."""
+        import lez04
+        reg, main, nid = self.config().get("lns_registry"), self.state()["main"], self.name_id(name)
+        if not isinstance(reg, str) or not ID_RE.fullmatch(reg) or not main or nid is None:
+            return None
+        try:
+            acct = self.rpc("getAccountView", [{"account_id": lez04.record_address(reg, nid), "program_account_id": reg}])
+            raw = (lez04.actor_states(acct) or {}).get(reg, b"")
+            if not raw:
+                return None
+            return lez04.decode_record(raw)["owner"] == lez04.owner_tag(nid, main)
+        except Exception:
+            return None
+
+    def entry_steps(self, name, entries):
+        """The steps that point `name` at this phone: its public account, then its `blockchain` and `msg` entries (the
+        node wallet's address and the messaging address, as known), in one profile change."""
+        main = self.state()["main"]
+        sets = [x for k in ("blockchain", "msg") if entries.get(k) and HEX64_RE.fullmatch(entries[k]) for x in ("--set", k + "=" + entries[k])]
+        steps = [(["set-account", name, "Public/" + main], None, None)]
+        if sets:
+            steps.append((["profile", name] + sets, None, None))
+        return steps
+
+    def register(self, name, entries):
+        """(http status, reply). Registers `name` for this wallet's first account (public; it pays the deposit and the
+        fees), then points it at this phone (entry_steps). `entries`: {"blockchain": hex, "msg": hex}, either may be
+        missing. Kept in the state file while it runs, so a registration the app's end cut short is offered again."""
+        if not self.ready():
+            return 409, {"error": TEXT["not_ready"]}
+        name = name.strip().lower().lstrip("@") if isinstance(name, str) else ""
+        if not NAME_RE.fullmatch(name) or not 5 <= len(name) <= 32:
+            return 400, {"error": TEXT["name"]}
+        st = self.state()
+        if st.get("name"):
+            return 409, {"error": TEXT["have_name"]}
+        main = st["main"]
+        reg = (st.get("registering") or {})
+        reg = reg if reg.get("name") == name else {"name": name, "at": int(self.clock())}
+        self.save(registering=reg)
+
+        def registered(ok):
+            if ok:
+                self.save(name=name, registering=None)
+        # a registration whose reveal landed before the app stopped: the name is ours already, only the entries are left
+        held = self.held_here(name) if st.get("registering") else None
+        step = (None if held else ["register", name, "--owner", "Public/" + main, "--wait"], {"NAMES_SHORTLIST": self.shortlist}, registered)
+        if held:
+            self.save(name=name, registering=None)
+        return self.start("register", [step] + self.entry_steps(name, entries), before=self.fetch_shortlist, name=name, account=main)
+
+    def point(self, entries):
+        """(http status, reply). Points the phone's own name at this phone again (its account, the node's address and the
+        messaging address): after a registration whose last steps failed, or a new messaging address."""
+        if not self.ready():
+            return 409, {"error": TEXT["not_ready"]}
+        name = self.state().get("name")
+        if not name:
+            return 409, {"error": "Register a name first."}
+        if not any(entries.get(k) for k in ("blockchain", "msg")):
+            return 409, {"error": TEXT["no_entries"]}
+        return self.start("entries", self.entry_steps(name, entries), name=name, account=self.state()["main"])
+
+    # ---- the locked-name list (for a claim or a registration) ----
     def fetch_shortlist(self):
         """Makes sure the list is here and whole (None), or says why not. Runs on a job's thread."""
         if os.path.isfile(self.shortlist):
@@ -844,7 +997,7 @@ class Signer04:
                 os.remove(part)
             except OSError:
                 pass
-            return "The list of locked names couldn't be downloaded (it is needed once, to claim). Nothing was sent. Try again."
+            return "The list of locked names couldn't be downloaded (61 MB, needed once). Nothing was sent. Try again."
 
     # ---- the faucet ----
     def faucet_info(self):

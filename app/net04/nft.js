@@ -1,7 +1,8 @@
-// Collectibles on LEZ 0.4, read-only, and the LNS name card. Loaded after /net04/net04.js in the Android app.
+// NFTs on LEZ 0.4 (the bar's NFTs screen) and the LNS name card. Loaded after /net04/net04.js in the Android app; the
+// bar (Wallet | NFTs | Messages, /messages/messages.js) shows the screen with NFT04.show(true).
 // - The NFTs the wallet's LEZ 0.4 accounts hold (this phone's LEZ account and the watched addresses) under the NFT
 //   programs listed for the network, read by the server (app/lez04.py, getAccountView per account per program) at most
-//   every 30 s and only while Collectibles is on screen. Words and states follow the desktop wallet's Collectibles page
+//   every 30 s and only while the NFTs screen is on screen. Words and states follow the desktop wallet's Collectibles page
 //   (basecamp/qml/nft.mjs of the names project). No collection image is ever fetched. With the LEZ 0.4 signer
 //   (/net04/sign04.js) and the accounts restored from the recovery phrase: Receive (make an account ready for a
 //   collection), Send (an NFT one of the wallet's accounts holds), and "Claim NFT (free)" on each LNS name the wallet
@@ -108,8 +109,9 @@
   if (typeof document === "undefined" || !window.NET04) return;
 
   // ---- the page ----------------------------------------------------------------------------------------------------
-  const view = $("net04");
-  if (!view) return;
+  if (!$("page-main")) return;
+  const view = document.createElement("div"); view.id = "page-nft"; view.hidden = true;
+  $("page-main").after(view);
   const fonts = document.createElement("style");
   fonts.textContent = `@font-face{font-family:"Gloock";src:url("/net04/fonts/Gloock-Regular.ttf") format("truetype");font-display:block}
 @font-face{font-family:"NW Fira Code";src:url("/net04/fonts/FiraCode-VF.ttf") format("truetype");font-weight:300 700;font-display:block}
@@ -121,16 +123,9 @@
 .n4-prog small{display:block;color:var(--dim);font-size:13px}.n4-prog button{min-height:44px;padding:4px 12px;font-size:14px;font-weight:550}
 .n4-add{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.n4-add input{flex:1 1 12em;min-width:0}.n4-add button{flex:none;min-width:72px}`;
   document.head.append(fonts);
-  const home = document.createElement("div"); home.id = "n4-home";
-  while (view.firstChild) home.append(view.firstChild);
-  view.append(home);
-  home.insertAdjacentHTML("beforeend", `<button type="button" class="grow" id="n4-open-col" style="margin-top:14px;border:1px solid var(--line);border-radius:12px">
-      <span class="gi" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" focusable="false"><rect x="4" y="4" width="16" height="16" rx="3.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 15l3-3 2 2 3-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-      <span class="gt"><b>Collectibles</b><small>NFTs and your LNS name cards, view-only</small></span>
-      <span class="gc" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" focusable="false"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button>`);
-  view.insertAdjacentHTML("beforeend", `<div id="n4-col" hidden>
-    <div class="bar" style="margin:0 -16px 8px;background:none;border:0;padding-left:0"><button type="button" class="back" id="n4-col-back" aria-label="Back to the Wallet" title="Back"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" focusable="false"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button><h2 class="bar-t" id="h-col" style="margin:0">Collectibles</h2></div>
-    <p class="runs" id="n4-col-runs">Runs on <b>LEZ 0.4</b> · bridge test network</p>
+  view.insertAdjacentHTML("beforeend", `<section class="card" id="n4-col" aria-labelledby="h-col">
+    <h2 id="h-col" style="margin:0">NFTs</h2>
+    <p class="runs" id="n4-col-runs">On <b>LEZ 0.4</b></p>
     <p class="note">NFTs of the NFT programs listed below. Under each program an account holds one NFT, and takes NFTs of one collection only; a second NFT needs another account.</p>
     <p class="note" id="n4-col-mode">View-only on this phone: receiving, sending, printing and burning NFTs aren't here yet. Images are never loaded.</p>
     <p class="msg warn" id="n4-col-state" role="status" hidden></p>
@@ -159,13 +154,13 @@
     <div id="n4-progs"></div>
     <div class="n4-add"><input id="n4-prog" class="mono" type="text" placeholder="NFT program ID" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="80" aria-label="NFT program ID"><input id="n4-prog-label" type="text" placeholder="Your name for it" maxlength="40" aria-label="Your name for it" style="flex:1 1 8em"><button type="button" id="n4-prog-add">Add</button></div>
     <p class="msg" id="n4-prog-m" role="status"></p>
-  </div>`);
+  </section>`);
 
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
   const fact = (label, value, full) => { const r = el("div", "n4-f"); r.append(el("span", null, label), el("span", "v", value)); if (full) r.append(copyBtn(full, "Copy")); return r; };
   let gen = 0, busy = false, timer = null, last = null;
-  const open = () => !$("n4-col").hidden;
-  const onScreen = () => open() && window.NET04.net() === "04" && !$("v-open").hidden && !$("page-main").hidden;
+  const open = () => !view.hidden;
+  const onScreen = () => open() && !$("v-open").hidden;
 
   // a card, drawn once the bundled fonts are in (never with a stand-in font)
   async function card(name) {
@@ -293,7 +288,7 @@
       if (r.status === 401) return lockedNow();
       if (r.ok && window.SIGN04 && window.SIGN04.running()) last = r.data;      // (a press is followed: drawn when it ends)
       else if (r.ok) render(r.data);
-      else { $("n4-col-state").hidden = false; $("n4-col-state").textContent = r.data.error || "Can't read the bridge test network now."; }
+      else { $("n4-col-state").hidden = false; $("n4-col-state").textContent = r.data.error || "Can't read LEZ 0.4 now."; }
     } finally { busy = false; }
   }
 
@@ -313,7 +308,7 @@
   }
 
   function show(on) {
-    $("n4-home").hidden = on; $("n4-col").hidden = !on;
+    view.hidden = !on;
     clearInterval(timer); timer = null;
     if (on) { load(true); setTimeout(() => { if (onScreen()) load(true); }, 3000); timer = setInterval(() => { if (onScreen() && document.visibilityState === "visible") load(); }, 30000); }
     window.scrollTo(0, 0);
@@ -340,8 +335,6 @@
       () => { $("n4-recv-def").value = ""; load(true); },
       () => { $("n4-recv-def").value = ""; load(true); });
   });
-  $("n4-open-col").addEventListener("click", () => show(true));
-  $("n4-col-back").addEventListener("click", () => show(false));
   $("n4-prog-add").addEventListener("click", () => {
     const v = $("n4-prog").value.trim(), m = $("n4-prog-m");
     if (!v) { m.className = "msg bad"; m.textContent = "Paste the NFT program's ID first."; return; }

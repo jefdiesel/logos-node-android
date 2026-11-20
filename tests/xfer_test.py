@@ -7,10 +7,9 @@ Against tests/fake_chain.py (the node's wallet, pool and chain as the real node 
 
 Part 1: the encoder against the node's own vectors and a hash the real node gave. Part 2: fixed cases: a send and
 its hold; a lost answer; a crash at each step (the identical transfer resubmitted lands once); a depth-1 fork (back to
-waiting, then it lands); the same fund twice (one transfer); the "not found in a block" exit; a bridge waiting behind
-the hold, then going on by itself; a records file that doesn't read; the phone's node kept from the network past the
-exit time (never "not found" against an old tip); a "not found" one that lands after all; a bridge whose split was
-cut short, made by an older version, or funded as a transfer already held. Part 3: random runs with forks up to 2
+waiting, then it lands); the same fund twice (one transfer); the "not found in a block" exit; a records file that
+doesn't read; the phone's node kept from the network past the exit time (never "not found" against an old tip); a "not
+found" one that lands after all. Part 3: random runs with forks up to 2
 blocks and the node now and then kept from the network, checking after every step that (a) no payment lands twice,
 (b) nothing reads "confirmed" unless 2 blocks deep, (c) nothing reads "not in a block" or "nothing was sent", (d)
 every hold ends within the depth plus the exit time (counted while the node sees the network).
@@ -83,7 +82,6 @@ def world(seed=0, a=(600000, 400000, 250000), b=(300000,)):
 
 
 def restart():
-    server.bridge_split_busy.clear()
     server.xfers.clear()
     server.xfer_loaded[0] = False
     server.xfer_loaded_now.clear()
@@ -242,24 +240,6 @@ check("the same payment again: the node funds the identical transfer: it is the 
 blocks(D + 1)
 check("  it lands once, confirmed", list(chain.landed).count(h) == 1 and entry(h)["status"] == "in block", entry(h))
 
-# a bridge waits behind the hold, then goes on by itself
-world()
-plan = {"from": A, "label": "Main", "to": "acct", "amount": "150000", "split": True, "note": None, "channel": "cc" * 32,
-        "fee_max": "100000", "split_fee_max": "10000", "balance": "1250000", "notes_before": []}
-server.bridge_check = lambda frm, amount: (None, dict(plan, notes_before=sorted(server.notes_of(A))))
-h = send(A, BOB, 100000)[1]["hash"]
-code, d = server.lns_bridge({"from": A, "amount": "150000", "confirm": True})
-check("a bridge started while a send is unsettled: accepted and waiting, not an error", code == 200 and d["bridge"]["state"] == "queued", d)
-blocks(D + 1)
-server.bridge_round()
-b = server.bridge_load()
-split = [e for e in server.history["entries"] if e.get("bridge") == "split"]
-check("  once the send is confirmed, the bridge sets its amount aside by itself", b["state"] == "splitting" and split, b)
-blocks(D + 1)
-server.bridge_round()
-check("  and goes on to the deposit once that is confirmed", server.bridge_load()["state"] in ("ready", "depositing", "sent", "failed")
-      and split[0]["status"] == "in block", (server.bridge_load()["state"], split[0]["status"]))
-
 world()
 with open(server.XFER_FILE, "w") as f:
     f.write("{not json")
@@ -304,65 +284,6 @@ send(A, CAROL, 1000)                            # (the file is pruned whenever i
 check("  records that are over are dropped after %d days" % (server.XFER_KEEP // 86400), rec(h) is None
       and not [r for r in server.xfers.values() if r["state"] == "ended"])
 
-
-def bridge_start():
-    try:
-        return server.lns_bridge({"from": A, "amount": "150000", "confirm": True})
-    except fake_chain.Crash:
-        return "crash", None
-
-
-for when in ("before", "after"):
-    world()
-    server.bridge_check = lambda frm, amount: (None, dict(plan, notes_before=sorted(server.notes_of(A))))
-    chain.crash["/wallet/fund"] = [when]
-    check("the app stops %s the node funds a bridge's split" % when, bridge_start()[0] == "crash")
-    restart()
-    server.bridge_round()
-    b = server.bridge_load()
-    check("  after the restart the bridge ends plainly (nothing set aside), never stuck", b["state"] == "failed"
-          and b["error"] == server.BRIDGE_SPLIT_GONE, b)
-    check("  and the account sends again", send(A, BOB, 1000)[0] == 200)
-
-world()
-with server.bridge_lock:                         # a bridge mid-split left by the previous version (no transfer record)
-    server.bridge_save({"id": "1", "state": "splitting", "from": A, "label": "Main", "to": "acct", "amount": "150000",
-                        "channel": "cc" * 32, "note": None, "split": True, "notes_before": [], "created": clock.wall,
-                        "fee": None, "split_fee": None, "error": "", "wait": "", "lez": {}})
-server.bridge_round()
-check("a bridge mid-split from the previous version: ends plainly, the account free", server.bridge_load()["state"] == "failed"
-      and send(A, BOB, 1000)[0] == 200, server.bridge_load())
-
-world()
-server.bridge_check = lambda frm, amount: (None, dict(plan, notes_before=sorted(server.notes_of(A))))
-chain.fail["/mempool/add/tx"] = ["unreached"] * 10 ** 6
-bridge_start()
-first = server.bridge_load()["split_hash"]
-for _ in range(12):
-    chain.block()
-advance(server.XFER_GIVE_UP + server.XFER_RESUBMIT_FOR)
-server.bridge_round()
-check("a split never found in a block: the bridge ends", server.bridge_load()["state"] == "failed", server.bridge_load())
-chain.fail["/mempool/add/tx"] = []
-code, d = bridge_start()
-check("  a new bridge of the same amount: the node funds the same split again, taken up again", code == 200
-      and server.bridge_load()["split_hash"] == first and rec(first)["state"] == "submitted", (code, d, server.bridge_load()))
-blocks(D + 1)
-server.bridge_round()
-blocks(1)
-server.bridge_round()
-check("  the bridge follows that split and goes on once it is confirmed", server.bridge_load()["state"] in ("ready", "depositing", "sent")
-      or server.bridge_load().get("error") != server.BRIDGE_SPLIT_GONE and server.bridge_load()["state"] != "splitting", server.bridge_load())
-
-world()
-server.bridge_check = lambda frm, amount: (None, dict(plan, notes_before=sorted(server.notes_of(A))))
-chain.fail["/mempool/add/tx"] = ["unreached"] * 10 ** 6
-send(A, BOB, 100000)
-bridge_start()
-advance(server.BRIDGE_READY_MAX + 60)
-server.bridge_round()
-check("a bridge queued longer than %d minutes doesn't start by itself: stopped, to be confirmed again"
-      % (server.BRIDGE_READY_MAX // 60), server.bridge_load()["state"] == "cancelled", server.bridge_load())
 
 # ---- part 3: random runs, forks up to 2 blocks --------------------------------------------------------------------------
 RUNS = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.environ.get("XFER_RUNS", "300"))

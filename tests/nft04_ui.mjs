@@ -1,5 +1,5 @@
 // Collectibles (app/net04/nft.js) in a real browser (headless Chrome over the DevTools protocol) at the narrowest phone
-// width the app supports (360 px), with the stand-ins of tests/lns_ui_app.py: LEZ 0.4 on by default, the Collectibles
+// width the app supports (360 px), with the stand-ins of tests/ui_app.py: LEZ 0.4 on by default, the Collectibles
 // row, the empty page with the desktop wallet's words, an NFT program added by its ID ("Checking…" at once, then a
 // plain result), the NFTs of the phone's account and of a watched one grouped by account and counted per collection,
 // an LNS name's card drawn on the phone with the bundled fonts (forest green, yellow rule, the size rule), 44 px tap
@@ -28,7 +28,7 @@ const stop = () => { for (const p of procs) { try { p.kill(p === app ? "SIGTERM"
 process.on("uncaughtException", e => { console.error(e); stop(); process.exit(1); });     // Chrome and its profile go too
 const check = (name, ok, detail) => { console.log((ok ? "ok   " : "FAIL ") + name + (!ok && detail !== undefined ? " - " + JSON.stringify(detail).slice(0, 400) : "")); if (!ok) { stop(); process.exit(1); } };
 
-const app = spawn("python3", [join(here, "lns_ui_app.py"), String(PORT)], { stdio: ["ignore", "pipe", "inherit"] });
+const app = spawn("python3", [join(here, "ui_app.py"), String(PORT)], { stdio: ["ignore", "pipe", "inherit"] });
 procs.push(app);
 const NET = await new Promise((ok) => app.stdout.on("data", (d) => { const m = /net04 (\d+)/.exec(String(d)); if (m) ok(Number(m[1])); }));
 const net04 = (mode) => fetch(`http://127.0.0.1:${NET}/ctl/net04/${mode}`, { method: "POST", body: "{}", headers: { "Content-Type": "application/json" } });
@@ -73,8 +73,6 @@ await cdp("Page.addScriptToEvaluateOnNewDocument", { source: "window.__req = [];
 
 const PROGRAM = "ErycMYqXUUtducaYmpHZjRgdbLXchrMiV4NZRnmRDNmu", ART = "HA47ERcmfSbDChGcYfBcC4SKaPQ8pJJnv4wxCLu1ejL5";
 // ---- the name account exists (made through the app, with the stand-in signer); the Basecamp account is watched ----
-await post("/api/wallet/lns/account", {}, session);
-for (let i = 0; i < 100; i++) { const b = await (await fetch(BASE + "/api/wallet/lns/balance", { headers: { "X-Session": session } })).json(); if (b.account) break; await sleep(200); }
 await post("/api/wallet/net04/watch", { add: BASECAMP }, session);
 
 await cdp("Page.navigate", { url: BASE + "/" });

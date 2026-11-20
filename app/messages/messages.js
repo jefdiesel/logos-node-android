@@ -1,6 +1,7 @@
 // Messages: chats between LNS names, end-to-end encrypted in the names project's format (msg-crypto.js).
 // The server includes this module only when a Logos Messaging node can run on this device (WAKU_API, or the
-// Android app). It adds a Wallet / Messages bar to the page and a Messages screen; the model is in
+// Android app). It adds the bar to the page (Wallet | Messages, and in the Android app Wallet | NFTs | Messages: the NFTs
+// screen is /net04/nft.js's, shown with NFT04.show) and a Messages screen; the model is in
 // chat-core.js (the tests run it too). It uses the page's own helpers ($, api, token, show, lockedNow,
 // openSettings, closeSettings, the names forwarder), so it runs after the page's main script.
 //
@@ -20,6 +21,8 @@ const P = {      // icon paths (constants)
   back: '<path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>',
   send: '<path d="M5 12h12M12 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>',
   chat: '<path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.2 3.2c-.5.4-1.3 0-1.3-.6V17.0A2.5 2.5 0 0 1 4 14.5z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/>',
+  // the NFTs tab: a picture card in the same line style
+  nft: '<g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M7.5 16l3.5-3.8 2.6 2.6 2.4-2.6 2 3.8"/><circle cx="9" cy="9" r="1.4"/></g>',
   // the Wallet tab: a wallet in the same line style as the chat bubble
   wallet: '<g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h11A2.5 2.5 0 0 1 20 7.5v9a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 16.5z"/><path d="M20 10h-3.5a2 2 0 0 0 0 4H20"/></g>',
   plus: '<path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>',
@@ -185,22 +188,26 @@ const kbSync = () => document.body.classList.toggle("kb", typing(document.active
 document.addEventListener("focusin", kbSync);
 document.addEventListener("focusout", () => setTimeout(kbSync, 0));
 
-// ---- the bar: Wallet / Messages ----------------------------------------------------------------------
+// ---- the bar: Wallet | NFTs | Messages --------------------------------------------------------------
 const badge = el("span", { className: "badge", hidden: true });
 const navWallet = el("button", { type: "button", id: "nav-wallet" }, svg(P.wallet), "Wallet");
+const nfts = window.NFT04 && typeof window.NFT04.show === "function" ? window.NFT04 : null;   // (the Android app's NFTs screen)
+const navNft = nfts ? el("button", { type: "button", id: "nav-nft" }, svg(P.nft), "NFTs") : null;
 const navMsg = el("button", { type: "button", id: "nav-msg" }, svg(P.chat), "Messages", badge);
-const nav = el("nav", { id: "nav", ariaLabel: "Screens" }, el("div", { className: "in" }, navWallet, navMsg));
+const nav = el("nav", { id: "nav", ariaLabel: "Screens" }, el("div", { className: "in" }, navWallet, navNft, navMsg));
 document.body.append(nav); document.body.classList.add("has-nav");
 const page = el("div", { id: "page-msg", hidden: true });
 $("page-main").after(page);
 let tab = "wallet";
 const pageHeader = document.querySelector("main > header");
 function setTab(t) {
+  if (t === "nft" && !nfts) t = "wallet";
   tab = t;
   $("page-main").hidden = t !== "wallet"; page.hidden = t !== "msg"; $("page-settings").hidden = true;
+  if (nfts && nfts.open() !== (t === "nft")) nfts.show(t === "nft");
   pageHeader.hidden = t === "msg";               // Messages has its own top; the node's header is the wallet's
-  navWallet.removeAttribute("aria-current"); navMsg.removeAttribute("aria-current");
-  (t === "wallet" ? navWallet : navMsg).setAttribute("aria-current", "page");
+  for (const b of [navWallet, navNft, navMsg]) if (b) b.removeAttribute("aria-current");
+  ({ wallet: navWallet, nft: navNft, msg: navMsg })[t].setAttribute("aria-current", "page");
   window.scrollTo(0, 0); kbSync();
   if (t === "msg") { home(); refresh(); }
 }
@@ -209,6 +216,7 @@ navWallet.addEventListener("click", () => setTab("wallet"));
 // and bgApi for the tests
 window.MSG = { tab: () => tab, setTab, bgApi };
 navMsg.addEventListener("click", () => setTab("msg"));
+if (navNft) navNft.addEventListener("click", () => setTab("nft"));
 // this module runs once the page has loaded, which can be after Settings was opened: then it stays open
 if ($("page-settings").hidden) setTab("wallet");
 else { tab = "wallet"; navWallet.setAttribute("aria-current", "page"); nav.hidden = true; document.body.classList.remove("has-nav"); }
@@ -218,6 +226,7 @@ window.openSettings = (...a) => {
   msgSettingsUi(true);
   if (a[0] === "s-msg") mgsShow("list");
   pageOpenSettings(...a); page.hidden = true; nav.hidden = true; document.body.classList.remove("has-nav");
+  if (nfts && nfts.open()) nfts.show(false);
 };
 window.closeSettings = () => { pageCloseSettings(); nav.hidden = false; document.body.classList.add("has-nav"); setTab(tab); };
 

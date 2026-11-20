@@ -5,8 +5,11 @@
 #   accounts derived from the phrase (a stand-in derivation: the same phrase, the same accounts), and makes storage.json.
 #   A phrase with the word "zoo" in it fails as a broken restore does.
 # - `wallet account get --keys`: prints `pk <hex>` (a stand-in key of the account).
-# - `address <name>`: prints `id     <hex>`, the stand-in id of fake_names_bin.py (sha256 of "fake-id/<name>"); offline,
-#   nothing recorded.
+# - `address <name>`: prints `id     <hex>`, the stand-in id (sha256 of "fake-id/<name>"); offline, nothing recorded.
+# - `register <name> --owner Public/<id> --wait`: commit, a wait (FAKE04_REVEAL_WAIT seconds, default 0), reveal, each a
+#   `sendTransaction`; needs NAMES_SHORTLIST to be a file. The commitment is kept in <wallet>/names.json until the reveal,
+#   and a second run resumes it, as the real tool does. "taken" is already registered; "reserved" is locked; a name starting "once-" fails its first reveal.
+# - `set-account <name> Public/<id>`, `profile <name> --set k=v ...`: one `sendTransaction` each.
 # - sends (`wallet auth-transfer send`, `pay --public`, `nft init|send`, `deed claim`): progress lines as the real tool
 #   prints them, with some noise, and a `sendTransaction` to LOGOS_NAMES_RPC (the app's forwarder) carrying what the
 #   stand-in chain should change. `deed claim` needs NAMES_SHORTLIST to be a file.
@@ -145,6 +148,59 @@ def main():
         print("  the network sees both accounts")
         print("This computer can't check the NFT call first. If the network refuses it, its whole fee reserve is still paid.")
         send({"nft_send": {"program": nft_program, "from": frm, "to": to[len("Public/"):] if to.startswith("Public/") else to, "fee_payer": opt("--fee-payer")}})
+        return
+    if args[:1] == ["register"] and "--wait" in args:
+        name, owner = args[1], opt("--owner")[len("Public/"):]
+        sl = os.environ.get("NAMES_SHORTLIST")
+        if not sl or not os.path.isfile(sl):
+            fail("the locked-name list: NAMES_SHORTLIST names %s, which isn't a file" % sl)
+        if name == "taken":
+            fail("%s is already registered" % name)
+        if name == "reserved":
+            fail("%s is locked (one to four characters, or on the reserved list): only the registry's admin registers it" % name)
+        nf = os.path.join(home, "names.json")
+        try:
+            defaults = json.load(open(nf))
+        except Exception:
+            defaults = {}
+        pending = defaults.setdefault("pending", {})
+        print("%s takes a deposit of 1000000, held for as long as you keep the name and refunded when you release it" % name)
+        if name in pending:
+            print("resuming the commitment to %s made earlier" % name)
+        else:
+            print("step 1 of 2: committing to " + name)
+            print("This computer can't check the call first. If the network refuses it, the fee (about 190,000) is still paid.")
+            send({"commit": {"name": name, "owner": owner}})
+            pending[name] = {"owner": "Public/" + owner, "secret": "00" * 32, "made": int(time.time() * 1000)}
+            json.dump(defaults, open(nf, "w"))
+        wait = float(os.environ.get("FAKE04_REVEAL_WAIT", "0"))
+        if wait:
+            print("waiting %ds before revealing (the commitment must be 15 minutes old)" % int(wait))
+            sys.stdout.flush()
+            time.sleep(wait)
+        mark = os.path.join(home, "once-failed-" + name)
+        if name.startswith("once-") and not os.path.exists(mark):     # the reveal fails the first time only
+            open(mark, "w").close()
+            time.sleep(1.5)
+            fail("%s was not registered; `names register %s` tries again" % (name, name))
+        print("payments to %s will arrive privately at Private/%s" % (name, account(b"recv", len(name))))
+        print("step 2 of 2: registering %s at 1795000000000 for a deposit of 1000000" % name)
+        print("This computer can't check the call first. If the network refuses it, the fee (about 1.32M) is still paid.")
+        send({"register": {"name": name, "owner": owner}})
+        pending.pop(name, None)
+        json.dump(defaults, open(nf, "w"))
+        print("%s is registered" % name)
+        return
+    if args[:1] == ["set-account"] and len(args) == 3:
+        print("This computer can't check the call first. If the network refuses it, the fee (about 520,000) is still paid.")
+        send({"set_account": {"name": args[1], "account": args[2][len("Public/"):]}})
+        return
+    if args[:1] == ["profile"]:
+        sets = dict(args[i + 1].split("=", 1) for i in range(2, len(args) - 1) if args[i] == "--set")
+        if args[1] == "failentries":
+            fail("the sequencer did not accept the transaction: nonce")
+        print("This computer can't check the call first. If the network refuses it, the fee (about 520,000) is still paid.")
+        send({"profile": {"name": args[1], "texts": sets}})
         return
     if args[:2] == ["deed", "claim"]:
         name = args[2]

@@ -79,8 +79,8 @@ try:
         code, _ = call(path)
         check("%s loads without the key (public file)" % path, code == 200, code)
     for path in ("/api/wallet", "/api/status", "/cryptarchia/info", "/network/info", "/api/wallet/accounts",
-                 "/api/messages/key", "/api/messages/status", "/api/wallet/lns", "/wallet-events.log", "/nothing",
-                 "/api/wallet/net04", "/api/wallet/net04/nft", "/api/wallet/net04/choice"):
+                 "/api/messages/key", "/api/messages/status", "/wallet-events.log", "/nothing",
+                 "/api/wallet/net04", "/api/wallet/net04/nft", "/api/wallet/net04/network", "/api/wallet/lez04"):
         code, d = call(path)
         check("GET %s without the key is refused" % path, code == 403 and d.get("app_key") is False, (code, d))
     # first come, first served before: another app could set the PIN and get a session
@@ -94,12 +94,14 @@ try:
     for path, body in (("/api/wallet/unlock", {"pin": "000000"}), ("/api/wallet/lock", {}),
                        ("/api/wallet/send", {}), ("/api/wallet/visibility", {"state": "hidden"}),
                        ("/api/names/rpc", {}), ("/api/messages/send", {}), ("/api/wallet/passkey/challenge", {}),
-                       ("/api/wallet/net04/nft", {"add_name": "alice"}), ("/api/wallet/net04/choice", {"net": "03"}),
+                       ("/api/wallet/net04/nft", {"add_name": "alice"}), ("/api/wallet/lez04/register", {"name": "alice"}),
                        ("/api/wallet/net04/network", {"rpc_url": "https://evil.example/", "chain_id": "ee" * 32})):
         code, d = call(path, body)
         check("POST %s without the key is refused" % path, code == 403 and d.get("app_key") is False, (code, d))
-    code, d = call("/lez-rpc/" + "ab" * 16, {"jsonrpc": "2.0"})
+    code, d = call("/lez04-rpc/" + "ab" * 16, {"jsonrpc": "2.0"})
     check("the names forwarder still answers a wrong secret path with a plain 404", code == 404, (code, d))
+    code, d = call("/lez-rpc/" + "ab" * 16, {"jsonrpc": "2.0"})
+    check("the LEZ 0.3 forwarder is gone (a plain refusal, nothing forwarded)", code in (403, 404), (code, d))
     code, d = call("/api/wallet", cookie=GOOD)
     check("with the key the page's own calls work, and no PIN was set by the refused calls", code == 200 and d.get("pin_set") is False, (code, d))
     code, d = call("/api/wallet/setup", {"pin": PIN}, cookie="theme=dark; " + GOOD + "; other=1")

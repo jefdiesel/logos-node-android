@@ -1,5 +1,5 @@
 // The Wallet's network switch (app/net04/net04.js) in a real browser (headless Chrome over the DevTools protocol), at
-// phone width, with the stand-ins of tests/lns_ui_app.py and the bridge test network answering from the answers
+// phone width, with the stand-ins of tests/ui_app.py and the bridge test network answering from the answers
 // recorded in tests/fixtures/net04: LEZ 0.4 by default, LEZ 0.3 with its full name beside it, every action saying which
 // network it runs on, LEZ 0.4 showing the phone's own LEZ account and watched addresses (view-only), the watch field
 // refusing what isn't a 32-byte id and echoing the id it took, Send and Receive saying they aren't available there (and
@@ -27,7 +27,7 @@ const stop = () => { for (const p of procs) { try { p.kill(p === app ? "SIGTERM"
 process.on("uncaughtException", e => { console.error(e); stop(); process.exit(1); });     // Chrome and its profile go too
 const check = (name, ok, detail) => { console.log((ok ? "ok   " : "FAIL ") + name + (!ok && detail !== undefined ? " - " + JSON.stringify(detail).slice(0, 400) : "")); if (!ok) { stop(); process.exit(1); } };
 
-const app = spawn("python3", [join(here, "lns_ui_app.py"), String(PORT)], { stdio: ["ignore", "pipe", "inherit"] });
+const app = spawn("python3", [join(here, "ui_app.py"), String(PORT)], { stdio: ["ignore", "pipe", "inherit"] });
 procs.push(app);
 const NET = await new Promise((ok) => app.stdout.on("data", (d) => { const m = /net04 (\d+)/.exec(String(d)); if (m) ok(Number(m[1])); }));
 const net04 = (mode) => fetch(`http://127.0.0.1:${NET}/ctl/net04/${mode}`, { method: "POST", body: "{}", headers: { "Content-Type": "application/json" } });
@@ -72,8 +72,6 @@ await cdp("Page.addScriptToEvaluateOnNewDocument", { source: "window.LogosAndroi
 await cdp("Page.addScriptToEvaluateOnNewDocument", { source: "window.__req = []; const __f = window.fetch; window.fetch = (u, o) => { window.__req.push(((o && o.method) || 'GET') + ' ' + String(u)); return __f(u, o); };" });
 
 // ---- the name account exists (made through the app, with the stand-in signer) ----
-await post("/api/wallet/lns/account", {}, session);
-for (let i = 0; i < 100; i++) { const b = await (await fetch(BASE + "/api/wallet/lns/balance", { headers: { "X-Session": session } })).json(); if (b.account) break; await sleep(200); }
 
 await cdp("Page.navigate", { url: BASE + "/" });
 await waitFor("the page loads, locked", `document.readyState === "complete" && !document.getElementById("v-locked").hidden`);

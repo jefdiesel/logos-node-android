@@ -13,8 +13,9 @@
 //   signer on standard input and keeps only the keys made from it (the same accounts, names and NFTs as the
 //   desktop). The phrase is in this page only while it is typed: the box is emptied when the request goes out, and
 //   by a lock (index.html's wipePage).
-// - Send (to an account, a public key or an LNS name) and Receive (the account, its QR code, and its public key for
-//   a first payment), a "Get free test LEZ" button (the faucet, once per wallet). Every press says at once what it is
+// - Send (to an account, a public key, an account and its key as one item, or an LNS name) and Receive (the account and
+//   its public key as one item to copy or scan: a first payment to an account the network hasn't seen needs the key),
+//   a "Get free test LEZ" button (the faucet, once per wallet). Every press says at once what it is
 //   doing ("Restoring…", "Sending…", "Asking the faucet…"), then how it ended.
 // - window.SIGN04 lets Collectibles (nft.js) run its jobs the same way: claiming an LNS name's NFT, receiving and
 //   sending an NFT. One job at a time, followed until it ends.
@@ -88,7 +89,7 @@
     <div class="card" id="s4-send" hidden>
       <h3>Send LEZ</h3>
       <label for="s4-to">To</label>
-      <input id="s4-to" type="text" placeholder="Public/…, a public key, or an LNS name" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="90">
+      <input id="s4-to" type="text" placeholder="Public/… with its key, a public key, or an LNS name" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="160">
       <label for="s4-amt" style="margin-top:10px;display:block">Amount</label>
       <input id="s4-amt" type="text" inputmode="numeric" placeholder="1000" autocomplete="off" maxlength="45">
       <p class="note">Public: the network shows this account, the amount and who gets it. A first payment to an account the network hasn't seen needs its public key.</p>
@@ -97,18 +98,18 @@
     </div>
     <div class="card" id="s4-recv" hidden>
       <h3>Receive LEZ</h3>
-      <p class="note" style="margin-top:0">This phone's LEZ 0.4 account (the first of its recovery phrase):</p>
-      <div class="s4-f"><span class="hash" id="s4-acct"></span></div>
+      <p class="note" style="margin-top:0">This phone's LEZ 0.4 account (the first of its recovery phrase), and its public key, which a first payment to it needs. Give both: they copy as one.</p>
+      <p class="hash" id="s4-acct" style="margin:6px 0 0"></p>
+      <p class="hash" id="s4-pk" style="margin:4px 0 0"></p>
+      <div class="s4-f" id="s4-copy"></div>
       <div id="s4-qr"></div>
-      <p class="note">Someone paying this account for the first time needs its public key:</p>
-      <div class="s4-f"><span class="hash" id="s4-pk"></span></div>
     </div>
     <p class="note" id="s4-private">Private sends and balances: not on this phone yet.</p>
     <div id="s4-rm" hidden>
       <button type="button" class="small" id="s4-rm-open" aria-expanded="false" aria-controls="s4-rm-f">Remove the LEZ 0.4 accounts from this phone</button>
       <div class="card" id="s4-rm-f" hidden>
         <p class="msg warn" id="s4-rm-why" style="margin-top:0" hidden></p>
-        <p class="note" style="margin-top:0">This deletes this wallet's keys from this phone. Your accounts, names and NFTs stay on the network, but only the recovery phrase (or an app backup that holds this wallet) brings them back: without either they are lost for good. The rest of this wallet (Logos, LEZ 0.3, your name account) isn't touched.</p>
+        <p class="note" style="margin-top:0">This deletes this wallet's keys from this phone. Your accounts, names and NFTs stay on the network, but only the recovery phrase (or an app backup that holds this wallet) brings them back: without either they are lost for good. The rest of this app (the Logos coins, Messages) isn't touched.</p>
         <label for="s4-rm-pin">Your PIN</label>
         <input id="s4-rm-pin" class="pin" type="text" inputmode="numeric" maxlength="12" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
         <button type="button" id="s4-rm-go" style="margin-top:10px">Remove from this phone</button>
@@ -125,6 +126,9 @@
     try { if (window.LogosAndroid && window.LogosAndroid.secureScreen) window.LogosAndroid.secureScreen(on); } catch (e) {}
   };
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  // what Receive gives: the account and its public key as one item ("Public/<id> <key>"; the key alone if the account
+  // can't be shown), which this app's Send takes as it is (the server checks the key is that account's)
+  const receiveItem = v => v.public_key ? "Public/" + v.account + " " + v.public_key : "Public/" + v.account;
   let gen = 0, last = null, follow = null, saidEnd = null;   // saidEnd: the end of the job a press here already showed
   const on04 = () => window.NET04.net() === "04" && !$("v-open").hidden;
   const box = $("s4-box");
@@ -155,11 +159,9 @@
     last = v;
     box.hidden = !v || !v.available || window.NET04.net() !== "04";
     const about = $("n4-about");
-    if (about) about.textContent = !v || !v.available ? "Bridge test network (LEZ 0.4): read-only here. Balances are read from the network, which is reset now and then."
-      : v.ready ? "Bridge test network (LEZ 0.4). Sends from this phone are public. Balances are read from the network, which is reset now and then."
-      : "Bridge test network (LEZ 0.4): read-only until you set up your LEZ 0.4 wallet below. Balances are read from the network, which is reset now and then.";
-    const sub = document.querySelector("#n4-open-col small");      // (Collectibles' row, from nft.js)
-    if (sub) sub.textContent = v && v.ready ? "NFTs and your LNS name cards" : "NFTs and your LNS name cards, view-only";
+    if (about) about.textContent = !v || !v.available ? "Read-only here. Balances are read from the network, which is reset now and then."
+      : v.ready ? "Sends from this phone are public. Balances are read from the network, which is reset now and then."
+      : "Read-only until you set up your LEZ 0.4 wallet below. Balances are read from the network, which is reset now and then.";
     setupShow();
     if (!v) { $("s4-rm").hidden = true; return; }
     // the keys are here (restored, or a restore that stopped part way): they can be removed, with the PIN
@@ -174,7 +176,8 @@
     const unsaid = j.unsure && j.state === "failed" && !active && j.finished !== saidEnd;
     $("s4-unsure").hidden = !unsaid;
     $("s4-unsure").textContent = !unsaid ? "" : (j.kind === "send" ? "Send of " + (j.amount || "?") + " to " + (j.to || "?")
-      : j.kind === "claim" ? "Claim of " + (j.name || "a name") + "'s NFT" : j.kind === "nft_send" ? "NFT send to " + (j.to || "?") : "NFT receive") + ": " + j.error;
+      : j.kind === "claim" ? "Claim of " + (j.name || "a name") + "'s NFT" : j.kind === "nft_send" ? "NFT send to " + (j.to || "?")
+      : j.kind === "register" || j.kind === "entries" ? "Registering " + (j.name || "your name") : "NFT receive") + ": " + j.error;
     // the faucet: offered until used; its last answer stays in view after that
     $("s4-fund").hidden = !v.ready || (v.faucet.used && !$("s4-faucet-m").textContent);
     $("s4-faucet").hidden = $("s4-faucet-n").hidden = v.faucet.used;
@@ -185,9 +188,11 @@
       const fi = v.faucet_info || {};
       $("s4-faucet-n").textContent = fi.available === false ? "The faucet has nothing to give right now; try again later."
         : "Once per wallet" + (fi.amount ? ": " + Number(fi.amount).toLocaleString("en-US") + " test LEZ" : "") + ", to this phone's account. Test LEZ have no value.";
-      if ($("s4-acct").textContent !== "Public/" + v.account) {
-        $("s4-acct").replaceChildren("Public/" + v.account); $("s4-acct").after(copyBtn("Public/" + v.account, "Copy"));
-        $("s4-pk").replaceChildren(v.public_key || "can't be read right now"); if (v.public_key) $("s4-pk").after(copyBtn(v.public_key, "Copy the key"));
+      if ($("s4-acct").textContent !== "Public/" + v.account || $("s4-pk").textContent !== (v.public_key || "")) {
+        $("s4-acct").textContent = "Public/" + v.account;
+        $("s4-pk").textContent = v.public_key || "";
+        $("s4-copy").replaceChildren(v.public_key ? copyBtn(receiveItem(v), "Copy the address and key")
+          : Object.assign(document.createElement("span"), { className: "note", textContent: "The public key can't be read right now: give the address only to someone whose wallet has paid it before." }));
       }
     } else { $("s4-send").hidden = true; $("s4-recv").hidden = true; }
   }
@@ -348,8 +353,7 @@
     $("s4-rm-f").hidden = true; $("s4-rm-open").setAttribute("aria-expanded", "false");
     $("s4-restore-m").className = "msg ok";
     $("s4-restore-m").textContent = "Removed. This phone has no LEZ 0.4 accounts now. Set up your LEZ 0.4 wallet again to bring them back.";
-    for (const id of ["s4-acct", "s4-pk", "s4-qr", "s4-send-m", "s4-faucet-m"]) $(id).replaceChildren();
-    for (const x of box.querySelectorAll(".s4-f button")) x.remove();
+    for (const id of ["s4-acct", "s4-pk", "s4-qr", "s4-send-m", "s4-faucet-m", "s4-copy"]) $(id).replaceChildren();
     render(r.data);
     window.NET04.reload();
   });
@@ -371,19 +375,26 @@
     if (!last || !last.ready) return false;
     const s = which === "send", show = s ? $("s4-send") : $("s4-recv"), other = s ? $("s4-recv") : $("s4-send");
     other.hidden = true; show.hidden = !show.hidden;
-    if (!s && !show.hidden && last.account) qrSvg("Public/" + last.account).then(q => { if (!show.hidden) $("s4-qr").replaceChildren(q); }).catch(() => {});
+    if (!s && !show.hidden && last.account) qrSvg(receiveItem(last)).then(q => { if (!show.hidden) $("s4-qr").replaceChildren(q); }).catch(() => {});
     if (!show.hidden) show.scrollIntoView({ block: "nearest" });
+    return true;
+  }
+
+  // A LEZ account scanned elsewhere (the Logos Send's Scan): LEZ 0.4's Send, with it filled in
+  function sendTo(text) {
+    if (!last || !last.ready) return false;
+    $("s4-recv").hidden = true; $("s4-send").hidden = false; $("s4-to").value = text;
+    $("s4-send").scrollIntoView({ block: "nearest" }); $("s4-amt").focus();
     return true;
   }
 
   function lock() {
     gen++; clearTimeout(follow); last = null; active = false; setupMode = null; bkPrompt = false; forgetNew();
-    for (const id of ["s4-restore-m", "s4-faucet-m", "s4-send-m", "s4-acct", "s4-pk", "s4-qr", "s4-rm-m", "s4-unsure"]) $(id).replaceChildren();
-    for (const b of box.querySelectorAll(".s4-f button")) b.remove();
+    for (const id of ["s4-restore-m", "s4-faucet-m", "s4-send-m", "s4-acct", "s4-pk", "s4-qr", "s4-rm-m", "s4-unsure", "s4-copy"]) $(id).replaceChildren();
     for (const id of ["s4-phrase", "s4-to", "s4-amt", "s4-rm-pin"]) $(id).value = "";
     $("s4-send").hidden = $("s4-recv").hidden = true; $("s4-rm").hidden = $("s4-rm-f").hidden = $("s4-unsure").hidden = true; box.hidden = true;
     $("s4-setup").hidden = $("s4-restore").hidden = $("s4-create").hidden = $("s4-c-bk").hidden = $("s4-bk-needed").hidden = true;
     secure(false);
   }
-  window.SIGN04 = { load, run, lock, panel, setup: setupOpenNow, running: () => active, ready: () => !!(last && last.ready), available: () => !!(last && last.available), view: () => last, render };
+  window.SIGN04 = { load, run, lock, panel, sendTo, setup: setupOpenNow, running: () => active, ready: () => !!(last && last.ready), available: () => !!(last && last.available), view: () => last, render };
 })();

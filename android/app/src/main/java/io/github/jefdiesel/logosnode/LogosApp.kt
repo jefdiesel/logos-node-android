@@ -88,10 +88,8 @@ object WalletServer {
                         // the web app's Android mode (0.7.6): no self-update or restart, the app's
                         // fingerprint check instead of passkeys, and the page's texts for the app
                         "APP_EMBEDDED" to "android",
-                        // the LNS signer (android/NAMES.md); server.py offers "Your name" only if it exists
-                        "NAMES_BIN" to File(app.applicationInfo.nativeLibraryDir, "libnames.so").path,
-                        // the LEZ 0.4 signer (android/NAMES04.md), beside the LEZ 0.3 one; server.py offers LEZ 0.4
-                        // sends only if it exists. No RISC0_* variable is ever set for it.
+                        // the LEZ 0.4 signer (android/NAMES04.md); server.py offers LEZ 0.4 sends and Your name only
+                        // if it exists. No RISC0_* variable is ever set for it.
                         "NAMES04_BIN" to File(app.applicationInfo.nativeLibraryDir, "libnames04.so").path,
                     )
                 ).toString()

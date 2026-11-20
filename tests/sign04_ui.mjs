@@ -1,5 +1,5 @@
 // Sending on LEZ 0.4 (app/net04/sign04.js, and Collectibles' Claim / Send / Receive in app/net04/nft.js) in a real
-// browser (headless Chrome over the DevTools protocol) at 360 px, with the stand-ins of tests/lns_ui_app.py run with
+// browser (headless Chrome over the DevTools protocol) at 360 px, with the stand-ins of tests/ui_app.py run with
 // WITH_SIGNER04=1 (the stand-in LEZ 0.4 tool and network): the recovery-phrase card, Send before it ("restore first"),
 // "Set up your LEZ 0.4 wallet" (a small row; the phrase box only after a tap, Cancel closes it emptied),
 // the restore ("Restoring…" at once, the box emptied as the request goes, the phrase in no request but that one and
@@ -30,7 +30,7 @@ const stop = () => { for (const p of procs) { try { p.kill(p === app ? "SIGTERM"
 process.on("uncaughtException", e => { console.error(e); stop(); process.exit(1); });
 const check = (name, ok, detail) => { console.log((ok ? "ok   " : "FAIL ") + name + (!ok && detail !== undefined ? " - " + JSON.stringify(detail).slice(0, 2500) : "")); if (!ok) { stop(); process.exit(1); } };
 
-const app = spawn("python3", [join(here, "lns_ui_app.py"), String(PORT)], { stdio: ["ignore", "pipe", "inherit"], env: { ...process.env, WITH_SIGNER04: "1" } });
+const app = spawn("python3", [join(here, "ui_app.py"), String(PORT)], { stdio: ["ignore", "pipe", "inherit"], env: { ...process.env, WITH_SIGNER04: "1" } });
 procs.push(app);
 const NET = await new Promise((ok) => app.stdout.on("data", (d) => { const m = /net04 (\d+)/.exec(String(d)); if (m) ok(Number(m[1])); }));
 const ctl = (what, body) => fetch(`http://127.0.0.1:${NET}/ctl/chain04/${what}`, { method: "POST", body: JSON.stringify(body), headers: { "Content-Type": "application/json" } });

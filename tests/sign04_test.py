@@ -468,12 +468,12 @@ adata = mkdtemp()
 with open(os.path.join(adata, "wallet-net04-config.json"), "w") as f:
     json.dump({"rpc_url": "http://127.0.0.1:%d/" % rpc.server_address[1]}, f)
 abins = mkdtemp()
-for src, dst in (("fake_names04_bin.py", "libnames04.so"), ("fake_names_bin.py", "libnames.so")):
+for src, dst in (("fake_names04_bin.py", "libnames04.so"),):
     shutil.copy(os.path.join(HERE, src), os.path.join(abins, dst))
     os.chmod(os.path.join(abins, dst), 0o755)
 PORT = 8131 + int(os.environ.get("PORT_SHIFT", "0"))
 os.environ.update(APP_EMBEDDED="android", APP_PORT=str(PORT), APP_DATA=adata, NODE_BIN="/nonexistent", UPDATE_URL="", NET04_POLL_SECONDS="0.2",
-                  NAMES04_BIN=os.path.join(abins, "libnames04.so"), NAMES_BIN=os.path.join(abins, "libnames.so"), LEZ04_PACE_SECONDS="0.01")
+                  NAMES04_BIN=os.path.join(abins, "libnames04.so"), LEZ04_PACE_SECONDS="0.01")
 lez04.POLL, lez04.NFT_GAP = 0.2, 0.0
 signer04.PACE = 0.01
 import server  # noqa: E402
@@ -490,7 +490,7 @@ for _ in range(80):
 sess = W.call("/api/wallet/setup", {"pin": "246828"})[1]["session"]
 html = urllib.request.urlopen(W.BASE + "/").read().decode()
 check("the page loads the signer's script between the 0.4 view and Collectibles", html.index('<script src="/net04/net04.js">') < html.index('<script src="/net04/sign04.js">') < html.index('<script src="/net04/nft.js">'))
-check("every signer route needs the session", W.call("/api/wallet/lez04")[0] == 401 and all(W.call("/api/wallet/lez04/" + w, {})[0] == 401 for w in ("restore", "new-phrase", "send", "faucet", "claim", "nft/init", "nft/send", "remove")))
+check("every signer route needs the session", W.call("/api/wallet/lez04")[0] == 401 and all(W.call("/api/wallet/lez04/" + w, {})[0] == 401 for w in ("restore", "new-phrase", "send", "faucet", "claim", "nft/init", "nft/send", "remove", "register", "point")))
 code, v = W.call("/api/wallet/lez04", session=sess)
 check("the app has the signer, not ready yet", code == 200 and v["available"] and not v["ready"], v)
 check("the forwarder: a wrong secret is a plain 404", W.call("/lez04-rpc/nope", {"method": "getChannelId"})[0] == 404)
@@ -584,6 +584,80 @@ for _ in range(60):
     if grp:
         break
 check("an NFT on that account shows in Collectibles as the wallet's (so it can be sent)", grp and grp["mine"] and not grp["own"], grp)
+# The phone's own LNS name (register, then point it here)
+def calls_of(d):
+    return [json.loads(l) for l in open(os.path.join(d, "fake-names04-calls.jsonl"))]
+
+
+def job_end():
+    for _ in range(200):
+        time.sleep(0.1)
+        v = W.call("/api/wallet/lez04", session=sess)[1]
+        if v["job"]["state"] != "running":
+            return v
+    return v
+
+
+check("the name's entries: none known here (no node keys, no messaging key yet)", isinstance(server.name04_entries(), dict))
+ENTRIES = {"blockchain": "b1" * 32, "msg": "c2" * 32}
+server.name04_entries = lambda: dict(ENTRIES)
+for bad in ("abcd", "Not A Name", "-xx-x", "a" * 33):
+    code, r = W.call("/api/wallet/lez04/register", {"name": bad}, session=sess)
+    check("register refuses %r before anything is sent" % bad, code == 400 and "5 to 32" in r["error"], (code, r))
+sent0 = len(chain2.sent)
+code, r = W.call("/api/wallet/lez04/register", {"name": "taken"}, session=sess)
+v = job_end()
+check("a taken name: said plainly, the commitment not even made", code == 200 and v["job"]["state"] == "failed" and "taken is taken" in v["job"]["error"]
+      and len(chain2.sent) == sent0, v["job"])
+code, r = W.call("/api/wallet/lez04/register", {"name": "once-phone"}, session=sess)
+check("register starts one job", code == 200 and r["job"]["kind"] == "register" and r["registering"]["name"] == "once-phone", r)
+check("while it runs, a send waits", W.call("/api/wallet/lez04/send", {"to": "aa" * 32, "amount": "5"}, session=sess)[0] == 409)
+v = job_end()
+check("a reveal that didn't land: the job says so, and the registration is kept to go on with", v["job"]["state"] == "failed"
+      and "once-phone was not registered" in v["job"]["error"] and v["registering"]["name"] == "once-phone" and not v["name"], v)
+regs = [c for c in calls_of(adata) if c["args"][:1] == ["register"]]
+check("the tool was asked: register <name> --owner Public/<first> --wait, with the locked-name list", regs and regs[-1]["args"] ==
+      ["register", "once-phone", "--owner", "Public/" + AMAIN, "--wait"] and regs[-1]["shortlist"] and os.path.isfile(regs[-1]["shortlist"]), regs[-1:])
+commits = [c for c in chain2.sent if "commit" in c]
+code, r = W.call("/api/wallet/lez04/register", {"name": "once-phone"}, session=sess)
+v = job_end()
+check("Continue: the same commitment goes on (no second commit), the name is registered", code == 200 and v["job"]["state"] == "done"
+      and v["name"] == "once-phone" and v["registering"] is None and len([c for c in chain2.sent if "commit" in c]) == len(commits), v)
+nm = chain2.names.get("once-phone", {})
+check("then pointed at this phone: its public account and the blockchain + msg entries, in one profile change",
+      nm.get("owner") == AMAIN and nm.get("account") == AMAIN and nm.get("texts") == ENTRIES, nm)
+check("a second name isn't registered over it", W.call("/api/wallet/lez04/register", {"name": "other-name"}, session=sess)[1].get("error") == signer04.TEXT["have_name"])
+check("the NFTs screen knows the phone's own name now", server.net04_name() == "once-phone")
+s4 = server.signer04()
+chain2.register("someone-else", "1" * 32)
+check("held here: the phone's own name yes, someone else's no, an unregistered one unknown",
+      s4.held_here("once-phone") is True and s4.held_here("someone-else") is False and s4.held_here("nobody-here") is None)
+ENTRIES["msg"] = "d3" * 32
+code, r = W.call("/api/wallet/lez04/point", {}, session=sess)
+v = job_end()
+check("Point it at this phone again: a new messaging address goes in", code == 200 and v["job"]["state"] == "done"
+      and chain2.names["once-phone"]["texts"]["msg"] == "d3" * 32, (code, v["job"]))
+code, bk, _ = server.backup_export("a long backup password")
+doc = bk.get("backup", {})
+plain = json.loads(server.aead_decrypt(server.backup_key("a long backup password", __import__("base64").b64decode(doc["kdf"]["salt"]), doc["kdf"]),
+                                       __import__("base64").b64decode(doc["cipher"]["nonce"]), __import__("base64").b64decode(doc["ciphertext"]),
+                                       server.BACKUP_AADS[doc["version"]]))
+check("the backup carries the name with the wallet", plain["lez04_wallet"].get("name") == "once-phone")
+
+# An account and its public key as one item (this app's Receive copies them so): a first payment needs the key
+pk1 = hashlib.sha256(b"a key").hexdigest()
+id1 = signer04.public_id(pk1)
+check("pair_of: an account and its own key", signer04.pair_of("Public/%s %s" % (id1, pk1)) == (id1, pk1) and signer04.pair_of("%s  %s" % (id1, pk1.upper())) == (id1, pk1))
+check("pair_of: a key that isn't that account's is refused; anything else isn't a pair",
+      signer04.pair_of("Public/%s %s" % (AMAIN, pk1)) is False and signer04.pair_of("Public/" + id1) is None and signer04.pair_of(pk1) is None)
+code, r = W.call("/api/wallet/lez04/send", {"to": "Public/%s %s" % (AMAIN, pk1), "amount": "5"}, session=sess)
+check("a send to a pair that doesn't match: refused, nothing sent", code == 400 and "don't belong together" in r["error"], (code, r))
+code, r = W.call("/api/wallet/lez04/send", {"to": "Public/%s %s" % (id1, pk1), "amount": "5"}, session=sess)
+v = job_end()
+last = [c for c in calls_of(adata) if c["args"][:3] == ["wallet", "auth-transfer", "send"]][-1]
+check("a send to a pair: paid by its key (the account needs no earlier use), shown as the account", code == 200 and v["job"]["state"] == "done"
+      and last["args"][-4:] == ["--to-pk", pk1, "--amount", "5"] and v["job"]["to"] == "Public/" + id1, (r, last["args"], v["job"]))
+
 # Remove through the app: the PIN typed again (review S2)
 ASTORE = os.path.join(adata, ".lez04-wallet", "storage.json")
 code, r = W.call("/api/wallet/lez04/remove", {}, session=sess)

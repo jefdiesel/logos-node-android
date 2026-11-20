@@ -46,8 +46,8 @@ class BatteryTest {
         assertNotNull(RestartNow.refusal(running = false, otherJob = false, pending = true, busy = null, onlineForMs = ok))
         assertNotNull(RestartNow.refusal(running = true, otherJob = true, pending = true, busy = null, onlineForMs = ok))
         assertNotNull(RestartNow.refusal(running = true, otherJob = false, pending = false, busy = null, onlineForMs = ok))
-        val busy = RestartNow.refusal(running = true, otherJob = false, pending = true, busy = "a bridge is in progress", onlineForMs = ok)
-        assertTrue(busy!!, busy.contains("a bridge is in progress"))
+        val busy = RestartNow.refusal(running = true, otherJob = false, pending = true, busy = "a name change is running", onlineForMs = ok)
+        assertTrue(busy!!, busy.contains("a name change is running"))
         // Online only just now, or not Online: a restart would start the bootstrap wait again
         assertNotNull(RestartNow.refusal(running = true, otherJob = false, pending = true, busy = null, onlineForMs = ok - 1))
         assertNotNull(RestartNow.refusal(running = true, otherJob = false, pending = true, busy = null, onlineForMs = -1))
@@ -94,20 +94,15 @@ class BatteryTest {
     private val now = WalletBusy.parseTime("2026-11-13T01:00:00Z")!!
 
     @Test fun walletBusyFromItsFiles() {
-        assertNull(WalletBusy.reason(null, null, false, now))
-        assertEquals("a name change is running", WalletBusy.reason(null, null, true, now))
-        val bridge = """{"id":"b1","state":"depositing","from":"aa","updated":${(now - 5 * 60_000) / 1000.0}}"""
-        assertEquals("a bridge is in progress", WalletBusy.reason(bridge, null, false, now))
-        val oldBridge = """{"id":"b1","state":"sent","updated":${(now - 3 * 60 * 60_000) / 1000.0}}"""
-        assertNull(WalletBusy.reason(oldBridge, null, false, now))
-        assertNull(WalletBusy.reason("""{"id":"b1","state":"done","updated":${now / 1000.0}}""", null, false, now))
+        assertNull(WalletBusy.reason(null, false, now))
+        assertEquals("a name change is running", WalletBusy.reason(null, true, now))
         val hist = """{"version":1,"entries":[{"id":1,"time":"2026-11-13T00:50:00Z","kind":"sent","status":"pending"}],"snapshot":{}}"""
-        assertEquals("a send is waiting for its block", WalletBusy.reason(null, hist, false, now))
+        assertEquals("a send is waiting for its block", WalletBusy.reason(hist, false, now))
         val oldHist = """{"version":1,"entries":[{"id":1,"time":"2026-11-12T20:00:00Z","kind":"sent","status":"pending"},
             {"id":2,"time":"2026-11-13T00:59:00Z","kind":"sent","status":"in block"},
             {"id":3,"time":"2026-11-13T00:59:30Z","kind":"received","status":"pending"}],"snapshot":{}}"""
-        assertNull(WalletBusy.reason(null, oldHist, false, now))
-        assertNull(WalletBusy.reason("not json", "{broken", false, now))
+        assertNull(WalletBusy.reason(oldHist, false, now))
+        assertNull(WalletBusy.reason("{broken", false, now))
     }
 
     // ---- the counters ----

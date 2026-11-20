@@ -1,4 +1,4 @@
-// The lock, in a real browser (headless Chrome over the DevTools protocol), with the stand-ins of tests/lns_ui_app.py
+// The lock, in a real browser (headless Chrome over the DevTools protocol), with the stand-ins of tests/ui_app.py
 // (a wallet holding 30,400,000 Logos, a stand-in node that takes sends, the LEZ name account, the bridge test
 // network). Every way a lock comes (the Lock button, the auto-lock as a 401 to a poll, to a POST or to the
 // visibility report) goes through one lock that reloads the page into the lock screen. After each, a scan of the
@@ -20,7 +20,7 @@ const CHROME = process.env.CHROME || "/Applications/Google Chrome.app/Contents/M
 const PS = Number(process.env.PORT_SHIFT || 0);
 const PORT = 8161 + PS, BASE = `http://127.0.0.1:${PORT}`, PIN = "246813";
 const OWN = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";        // the stand-in signer's LEZ account
-const KEY = "a1".repeat(32);                                         // the wallet's account (tests/lns_ui_app.py)
+const KEY = "a1".repeat(32);                                         // the wallet's account (tests/ui_app.py)
 const TO = "cd".repeat(32), AMOUNT = "4321";                         // what is typed into Send
 // none of this may be anywhere in a locked page
 const SECRETS = [KEY, KEY.slice(0, 10), TO, TO.slice(0, 10), "30,400,000", "30400000", "30,000,000", "400,000", "4,321", AMOUNT, OWN, OWN.slice(0, 6),
@@ -32,13 +32,11 @@ const stop = () => { for (const p of procs) { try { p.kill(p === app ? "SIGTERM"
 process.on("uncaughtException", e => { console.error(e); stop(); process.exit(1); });
 const check = (name, ok, detail) => { console.log((ok ? "ok   " : "FAIL ") + name + (!ok && detail !== undefined ? " - " + JSON.stringify(detail).slice(0, 500) : "")); if (!ok) { stop(); process.exit(1); } };
 
-const app = spawn("python3", [join(here, "lns_ui_app.py"), String(PORT)], { stdio: ["ignore", "pipe", "inherit"] });
+const app = spawn("python3", [join(here, "ui_app.py"), String(PORT)], { stdio: ["ignore", "pipe", "inherit"] });
 procs.push(app);
 await new Promise((ok) => app.stdout.on("data", (d) => { if (/ready/.test(String(d))) ok(); }));
 const post = async (path, body, session) => (await fetch(BASE + path, { method: "POST", headers: { "Content-Type": "application/json", Origin: BASE, ...(session ? { "X-Session": session } : {}) }, body: JSON.stringify(body) })).json();
 let session = (await post("/api/wallet/setup", { pin: PIN })).session;
-await post("/api/wallet/lns/account", {}, session);
-for (let i = 0; i < 100; i++) { const b = await (await fetch(BASE + "/api/wallet/lns/balance", { headers: { "X-Session": session } })).json(); if (b.account) break; await sleep(200); }
 
 const cport = 9373 + PS; prof = mkdtempSync(join(tmpdir(), "chrome-"));
 // never drive a browser this test didn't start: a DevTools port that already answers may be an adb forward to a phone

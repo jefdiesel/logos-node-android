@@ -129,11 +129,6 @@ while read -r sum name; do
   if [ "$name" = waku-runner ]; then cp "$W/waku-runner" "$J/libwakurunner.so"; else cp "$W/$name" "$J/"; fi
 done < android/messaging.sha256
 
-NAMES_RUN=$(prop android/names.properties run); NAMES_SHA=$(prop android/names.properties sha256)
-gh run download "$NAMES_RUN" -R "$REPO_GH" -n names-cli-android-arm64 -D "$WORK/ndl"
-[ "$(sha256 "$WORK/ndl/names")" = "$NAMES_SHA" ] || fail "names from run $NAMES_RUN doesn't match the pinned sha256"
-cp "$WORK/ndl/names" "$J/libnames.so"
-
 N04_RUN=$(prop android/names04.properties run); N04_SHA=$(prop android/names04.properties sha256)
 gh run download "$N04_RUN" -R "$REPO_GH" -n names04-cli-android-arm64 -D "$WORK/n04dl"
 [ "$(sha256 "$WORK/n04dl/names")" = "$N04_SHA" ] || fail "names (LEZ 0.4) from run $N04_RUN doesn't match the pinned sha256"
@@ -182,10 +177,10 @@ while read -r sum name; do
   [ "$name" = waku-runner ] && f=libwakurunner.so || f=$name
   in_apk "lib/arm64-v8a/$f" "$sum" "the pinned $name"
 done < android/messaging.sha256
-in_apk lib/arm64-v8a/libnames.so "$NAMES_SHA" "the pinned names build"
+! unzip -l "$A" | grep -q ' lib/arm64-v8a/libnames\.so$' || fail "the LEZ 0.3 signer (libnames.so) is still in the APK"
 in_apk lib/arm64-v8a/libnames04.so "$N04_SHA" "the pinned names04 build"
-for f in server.py index.html release.json names/names.js names/lookup.js messages/messages.js qr/qrcode.js lns/lns.js \
-         lez04.py lez04.json signer04.py net04/net04.js net04/sign04.js net04/nft.js net04/fonts/Gloock-Regular.ttf net04/fonts/FiraCode-VF.ttf; do
+for f in server.py index.html release.json names/names.js names/lookup.js messages/messages.js qr/qrcode.js \
+         lez04.py lez04.json signer04.py net04/net04.js net04/sign04.js net04/name04.js net04/nft.js net04/fonts/Gloock-Regular.ttf net04/fonts/FiraCode-VF.ttf; do
   in_apk "assets/webapp/$f" "$(sha256 "app/$f")" "app/$f"
 done
 VERSION_NAME=$(sed -n "s/.*versionName='\([^']*\)'.*/\1/p" "$WORK/badging.txt" | awk 'NR==1')

@@ -426,10 +426,10 @@ const INVENTORY = {
         show: ["h-s-bk", "bk-state", "bk-what", "bk-pw1", "bk-show", "bk-pw2", "bk-hist", "bk-pin", "b-bk", "h-s-rs", "rs-file"] },
   about: { all: ["s-about", "h-s-about", "about-version", "about-upd", "about-talk"], show: ["about-version", "about-talk"] },
   look: { all: ["s-look", "h-s-look", "th-system", "th-light", "th-dark"], show: ["th-system", "th-light", "th-dark"] },
-  name: { all: ["s-lns", "h-s-lns", "lns-none", "lns-in", "b-lns-get", "lns-cost", "b-lns-link", "lns-flow", "lns-flow-name", "lns-steps", "lns-need",
-                "b-lns-addlez", "lns-keep", "lns-flow-err", "lns-flow-acts", "b-lns-stop", "b-lns-retry", "lns-has", "lns-name", "lns-ent-bc", "lns-ent-msg",
-                "lns-bk", "b-lns-bk", "lns-notes", "b-lns-putback", "m-lns", "lns-more", "lns-manual", "b-lns-bc", "b-lns-msg"],
-          show: ["lns-in", "b-lns-get", "lns-more"] },
+  // Your name on LEZ 0.4 (/net04/name04.js, 0.9.33): the LEZ 0.3 one's ids went with it
+  name: { all: ["s-lns", "h-s-lns", "n4n-wait", "n4n-nowallet", "n4n-none", "n4n-acct", "lns-in", "n4n-what", "n4n-list", "n4n-go", "n4n-m",
+                "n4n-going", "n4n-going-name", "n4n-going-m", "n4n-cont", "n4n-has", "n4n-name", "n4n-msg", "n4n-pay", "n4n-point", "n4n-pm"],
+          show: ["lns-in", "n4n-go"] },
 };
 // and the words, as they were (a few from each)
 const WORDS = {
@@ -440,7 +440,7 @@ const WORDS = {
   bk: ["Back up", "Saves this wallet", "Backup password (at least 8 characters)", "Include message history", "Save backup file", "Restore from a backup", "Restoring replaces this wallet's accounts"],
   about: ["Version", "This page is served by the app on this device", "Testnet."],
   look: ["System", "Light", "Dark"],
-  name: ["LNS name", "Get this name", "I already hold it", "More"],
+  name: ["LNS name", "Register this name", "About 20 minutes", "A deposit of 1,000,000 test LEZ"],
 };
 await click("#nav-wallet");
 await click("#b-gear");
@@ -1022,11 +1022,16 @@ await shot("messages-home");
 }
 
 // ---- the lock screen inside the Android app, with fingerprint on (a stand-in bridge counts the prompts) ----
-// erin's app is the Android app's, with the LNS signer (a stand-in), so Settings has Your name too
+// erin's app is the Android app's, with the LEZ 0.4 signer (a stand-in) and its wallet set up, so Settings has Your name too
 const signerDir = mkdtempSync(join(tmpdir(), "signer-"));
 process.on("exit", () => { try { rmSync(signerDir, { recursive: true, force: true }); } catch {} });
-copyFileSync(join(here, "fake_names_bin.py"), join(signerDir, "libnames.so")); chmodSync(join(signerDir, "libnames.so"), 0o755);
-const E = await app(w, 8115 + PS, w.NODES[4], { APP_EMBEDDED: "android", NAMES_BIN: join(signerDir, "libnames.so") });
+copyFileSync(join(here, "fake_names04_bin.py"), join(signerDir, "libnames04.so")); chmodSync(join(signerDir, "libnames04.so"), 0o755);
+const E = await app(w, 8115 + PS, w.NODES[4], { APP_EMBEDDED: "android", NAMES04_BIN: join(signerDir, "libnames04.so") });
+const ERIN04 = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";
+mkdirSync(join(E.data, ".lez04-wallet"), { recursive: true, mode: 0o700 });
+writeFileSync(join(E.data, ".lez04-wallet", "storage.json"), "{}");
+const erinName = (name) => writeFileSync(join(E.data, "wallet-lez04.json"), JSON.stringify({ accounts: [ERIN04], main: ERIN04, public_key: "ab".repeat(32), name }));
+erinName(null);
 await person(w, E, "erin", "565656");
 let r0 = await E.call("/api/wallet/native-fingerprint", { on: true, pin: E.pin });
 check("fingerprint unlock is on for the Android app", r0.code === 200, r0);
@@ -1070,6 +1075,16 @@ await waitFor("the Your name row says where it stands", `document.querySelector(
 await groupPage("name", "Your name");
 check("Your name's ids are all on its page", [...seenIds].filter(x => INVENTORY.name.all.includes(x)).length === INVENTORY.name.all.length);
 await click("#b-settings-back"); await stWait("out of Settings", "closed");
+// the bar in the Android app: Wallet | NFTs | Messages, three line-style icons of one size and stroke
+check("the bar in the Android app: Wallet, NFTs, Messages, in that order", await js(`JSON.stringify([...document.querySelectorAll("#nav button")].map(b => b.id))`) === JSON.stringify(["nav-wallet", "nav-nft", "nav-msg"]));
+check("its icons: line-style, the same size and stroke", await js(`(() => {
+  const sw = e => (e.querySelector("[stroke-width]") || {}).getAttribute ? e.querySelector("[stroke-width]").getAttribute("stroke-width") : null;
+  const [w, n, m] = ["nav-wallet", "nav-nft", "nav-msg"].map(id => document.querySelector("#" + id + " svg"));
+  return !!(w && n && m) && [w, n].every(x => x.getAttribute("width") === m.getAttribute("width") && sw(x) === sw(m)) && sw(m) === "1.9"; })()`));
+await click("#nav-nft");
+await waitFor("NFTs: their own screen, the Wallet hidden, the header kept", `!document.getElementById("page-nft").hidden && document.getElementById("page-main").hidden && !document.getElementById("hdr").hidden && document.getElementById("nav-nft").getAttribute("aria-current") === "page"`);
+await click("#nav-wallet");
+await waitFor("back on the Wallet, NFTs hidden", `!document.getElementById("page-main").hidden && document.getElementById("page-nft").hidden`);
 await click("#nav-msg");
 // (0.9.14) bob wrote first: his message is a request until erin accepts it, here in the Android app's page
 await waitFor("bob's request on erin's phone: one line", `!document.getElementById("mg-req-line").hidden && !/bob|hi erin/.test(document.getElementById("page-msg").innerText)`, 15000);
@@ -1087,32 +1102,31 @@ const openOwn = async (what) => {
   await js(`closeSettings(); true`); await js(`openSettings("s-msg"); true`);
   await click("#mgs-go-name"); await mgsWait(`Messages > Name (${what})`, "name");
 };
-await E.call("/api/wallet/lns/account", {});
 await openOwn("no name yet");
 await waitFor("a name account and no name: one line, and Get a name", `document.getElementById("mg-own-m").textContent === "No LNS name yet." && document.getElementById("mg-own-go").textContent === "Get a name" && !document.getElementById("mg-own-go").hidden`);
 check("the manual way is folded: Use a name held elsewhere", await js(`!document.getElementById("mg-else").open && document.getElementById("mg-else-s").textContent === "Use a name held elsewhere" && !document.getElementById("mg-name").checkVisibility()`),
   await js(`[document.getElementById("mg-else").open, document.getElementById("mg-else-s").textContent, document.getElementById("mg-else-s").hidden].join()`));
 await shot("messages-name-none");
-await E.call("/api/wallet/lns/name", { name: "erin" });
+erinName("erin");
 await openOwn("erin, pointed here");
 await waitFor("the phone holds erin, pointed here on chain: it says so, nothing to do", `document.getElementById("mg-own-m").textContent === "erin · messages come to this phone" && document.getElementById("mg-own-go").hidden`);
 await shot("messages-name-own");
 await w.register("zed", {});
-await E.call("/api/wallet/lns/name", { name: "zed" });
+erinName("zed");
 await openOwn("zed, not pointed");
 await waitFor("zed isn't pointed here: one button", `document.getElementById("mg-own-m").textContent === "zed isn't used for messages yet." && document.getElementById("mg-own-go").textContent === "Use zed for messages"`);
 check("no field, no Save, no command in sight", await js(`!document.getElementById("mg-name").checkVisibility() && !document.getElementById("mg-name-save").checkVisibility() && !document.getElementById("mg-cmd").checkVisibility()`));
 await shot("messages-name-use");
 await click("#mg-own-go");
-await until("it runs Your name's own set-text job for msg", async () => {
-  try { return readFileSync(join(E.data, "fake-names-calls.jsonl"), "utf8").trim().split("\n").map(l => JSON.parse(l)).some(c => JSON.stringify(c.args) === JSON.stringify(["set-text", "zed", "msg", E.id ? hex(E.id.publicKey) : ""])); } catch { return false; } }, 20000);
+await until("it runs Your name's own job: the account, then one profile change with msg", async () => {
+  try { return readFileSync(join(E.data, "fake-names04-calls.jsonl"), "utf8").trim().split("\n").map(l => JSON.parse(l)).some(c => c.args[0] === "profile" && c.args[1] === "zed" && c.args.includes("msg=" + (E.id ? hex(E.id.publicKey) : ""))); } catch { return false; } }, 20000);
 await w.register("zed", { msg: hex(E.id.publicKey) });                // the name service has it now
-await until("the change has finished", async () => (await E.call("/api/wallet/lns")).d.job.state !== "running", 20000);
+await until("the change has finished", async () => (await E.call("/api/wallet/lez04")).d.job.state !== "running", 20000);
 await openOwn("zed, pointed now");
 await waitFor("now: zed · messages come to this phone", `document.getElementById("mg-own-m").textContent === "zed · messages come to this phone"`, 20000);
 await until("and messages go out under zed", async () => (await E.call("/api/messages/key")).d.name === "zed", 10000);
 await js(`closeSettings(); true`); await js(`openSettings("s-lns"); true`);
-await waitFor("Your name shows the same state, as done, and doesn't offer it again", `document.getElementById("lns-ent-msg").textContent === "Messages come to this phone ✓" && document.getElementById("b-lns-msg").hidden`, 15000);
+await waitFor("Your name shows the same state", `document.getElementById("n4n-msg").textContent === "Messages to zed come to this phone."`, 15000);
 await js(`closeSettings(); true`); await click("#nav-msg");
 await waitFor("back on Messages with erin's chats", `[...document.querySelectorAll("#mg-rows .crow")].some(r => r.innerText.includes("bob"))`, 15000);
 await js(`[...document.querySelectorAll("#mg-rows .crow")].find(r => r.innerText.includes("bob")).click(); true`);
