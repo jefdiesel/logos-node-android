@@ -154,10 +154,10 @@ await post("/api/wallet/net04/nft", { add_name: "slowclaim" }, session);
 await post("/api/wallet/net04/nft", { add_name: "abcd" }, session);
 await post("/api/wallet/net04/nft", { add_program: PROGRAM, label: "Test chain NFTs" }, session);
 await click("#n4-open-col");
-await waitFor("Collectibles says what it can do here now", `/Receiving and sending NFTs here are public/.test(document.getElementById("n4-col-mode").textContent)`, 20000);
+await waitFor("Collectibles says what it can do here now", `/Receiving and sending NFTs here are public/.test(document.getElementById("n4-col-mode").textContent)`, 45000);
 await waitFor("a name the wallet holds with no NFT: Claim NFT (free), and who pays the fee", `(() => { const b = document.querySelector('#n4-names [data-name="slowclaim"]');
   return !!b && /No NFT claimed for this name yet\\./.test(b.innerText) && /Held by your account Public .{6}….{4}, which pays the network fee\\. The NFT itself is free\\./.test(b.innerText)
-    && [...b.querySelectorAll("button")].some(x => x.textContent === "Claim NFT (free)"); })()`, 20000);
+    && [...b.querySelectorAll("button")].some(x => x.textContent === "Claim NFT (free)"); })()`, 45000);   // (the page reads Collectibles every 30 s)
 await waitFor("a four-character name: locked, no Claim", `(() => { const b = document.querySelector('#n4-names [data-name="abcd"]'); return !!b && /Locked \\(one to four characters\\)/.test(b.innerText) && !b.querySelector("[data-claim]"); })()`, 40000);   // (the page reads Collectibles every 30 s)
 check("the Claim button is 44 px, nothing past the screen", (await tall("#n4-names button")) && (await fits()));
 await shot("claim-button", '#n4-names [data-name="slowclaim"]');
@@ -165,12 +165,12 @@ const p4 = await pressNow('#n4-names [data-claim="slowclaim"]');
 check("Claim: 'Claiming…' at once, can't be pressed twice", p4 === "Claiming…|true", p4);
 await waitFor("then the job's progress, in fixed words", `/^(Claiming slowclaim's NFT|Reading the|Sending it with its fixed fee cap|Starting|Sent|Getting the list)/.test(document.querySelector('#n4-names [data-name="slowclaim"] .msg').textContent)`, 10000);
 await shot("claiming", '#n4-names [data-name="slowclaim"]');
-await waitFor("then: claimed, and the card is drawn", `(() => { const b = document.querySelector('#n4-names [data-name="slowclaim"]'); return !!b && !!b.querySelector("canvas[data-drawn]") && /Its NFT, held for it by the LNS registry/.test(b.innerText); })()`, 30000);
+await waitFor("then: claimed, and the card is drawn", `(() => { const b = document.querySelector('#n4-names [data-name="slowclaim"]'); return !!b && !!b.querySelector("canvas[data-drawn]") && /Its NFT, held for it by the LNS registry/.test(b.innerText); })()`, 45000);
 check("the card is labelled with the name", (await js(`document.querySelector('#n4-names [data-name="slowclaim"] canvas').getAttribute("aria-label")`)) === "LNS name card: slowclaim");
 await shot("claimed-card", '#n4-names [data-name="slowclaim"] canvas');
 
 // ---- an NFT the phone holds: Send; Receive ----
-await waitFor("the phone's NFT, with Send", `(() => { const t = document.getElementById("n4-groups"); return /this phone/.test(t.innerText) && [...t.querySelectorAll("button")].some(b => b.textContent === "Send"); })()`, 20000);
+await waitFor("the phone's NFT, with Send", `(() => { const t = document.getElementById("n4-groups"); return /this phone/.test(t.innerText) && [...t.querySelectorAll("button")].some(b => b.textContent === "Send"); })()`, 45000);
 await js(`[...document.querySelectorAll("#n4-groups button")].find(b => b.textContent === "Send").click(); true`);
 await waitFor("the send sheet: To and Send NFT", `[...document.querySelectorAll("#n4-groups button")].some(b => b.textContent === "Send NFT" && b.offsetParent !== null)`);
 await js(`(() => { const i = [...document.querySelectorAll("#n4-groups input")].find(x => x.offsetParent !== null); i.value = "Public/Fx1yhUrJ2aZ1jW4b6nqJ3H8tpsHrwrz3yuPEqsfGr1QB"; return true; })()`);
