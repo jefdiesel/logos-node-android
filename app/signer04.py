@@ -950,9 +950,10 @@ class Signer04:
         if st.get("name"):
             return 409, {"error": TEXT["have_name"]}
         main = st["main"]
+        if self.change.locked():
+            return 409, {"error": TEXT["busy"]}
         reg = (st.get("registering") or {})
         reg = reg if reg.get("name") == name else {"name": name, "at": int(self.clock())}
-        self.save(registering=reg)
 
         def registered(ok):
             if ok:
@@ -960,9 +961,12 @@ class Signer04:
         # a registration whose reveal landed before the app stopped: the name is ours already, only the entries are left
         held = self.held_here(name) if st.get("registering") else None
         step = (None if held else ["register", name, "--owner", "Public/" + main, "--wait"], {"NAMES_SHORTLIST": self.shortlist}, registered)
-        if held:
-            self.save(name=name, registering=None)
-        return self.start("register", [step] + self.entry_steps(name, entries), before=self.fetch_shortlist, name=name, account=main)
+        # kept from the press on (before the job's first send), so a registration the app's end cuts short is offered again
+        self.save(registering=None if held else reg, **({"name": name} if held else {}))
+        code, out = self.start("register", [step] + self.entry_steps(name, entries), before=self.fetch_shortlist, name=name, account=main)
+        if code != 200 and not held and not st.get("registering"):
+            self.save(registering=None)                     # (refused: nothing was started)
+        return code, (dict(out, **{k: v for k, v in self.view().items() if k in ("name", "registering")}) if code == 200 else out)
 
     def point(self, entries):
         """(http status, reply). Points the phone's own name at this phone again (its account, the node's address and the
