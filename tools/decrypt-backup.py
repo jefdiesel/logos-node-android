@@ -17,7 +17,7 @@ import argparse, base64, getpass, hashlib, json, os, sys
 
 FORMAT = "logos-node-wallet-backup"
 # version 1: the node's key file; version 2: also this device's messaging key (when it had one)
-AADS = {1: b"logos-node-wallet-backup v1", 2: b"logos-node-wallet-backup v2"}
+AADS = {1: b"logos-node-wallet-backup v1", 2: b"logos-node-wallet-backup v2", 3: b"logos-node-wallet-backup v3"}
 
 
 def fail(msg):

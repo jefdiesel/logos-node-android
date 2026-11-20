@@ -4167,7 +4167,12 @@ BACKUP_FORMAT, BACKUP_VERSION = "logos-node-wallet-backup", 1
 BACKUP_AAD = b"logos-node-wallet-backup v1"
 # Version 2 also carries the messaging key (see "messages" below). It is written only when this app has
 # one, so a wallet without messaging still gets exactly a version 1 file. Restore reads both.
-BACKUP_AADS = {1: b"logos-node-wallet-backup v1", 2: b"logos-node-wallet-backup v2"}
+BACKUP_AADS = {1: b"logos-node-wallet-backup v1", 2: b"logos-node-wallet-backup v2", 3: b"logos-node-wallet-backup v3"}
+# Version 3: the Android app's format from app 0.5.32 on (LEZ 0.4 only: the LEZ 0.4 wallet, no LEZ 0.3 name account).
+# Inside the app only version 3 is restored: an older file (with its LEZ 0.3 parts) is refused with BACKUP_OLD
+# (Jef, 2026-11-20: "Don't migrate old data"). Elsewhere (Linux, Termux) versions 1 and 2 are made and restored as before.
+BACKUP_APP_VERSION = 3
+BACKUP_OLD = "This backup is from an older version and can't be restored here."
 BACKUP_SCRYPT = {"n": 2 ** 16, "r": 8, "p": 1, "dklen": 32}
 MIN_BACKUP_PASSWORD = 8      # the page advises 12 or more, or four random words
 _M32 = 0xffffffff
@@ -5429,6 +5434,10 @@ def lez04_backed_up():
         return None
 
 
+class OldBackup(Exception):
+    """A backup with an old app's LEZ 0.3 parts, inside the app: refused with BACKUP_OLD."""
+
+
 def node_never_ran():
     """Whether the node has not made its keys yet: no config file at all, or, inside the Android app, no keystore.yaml
     (the app's node service makes both with init-config at the node's first start, and a fresh install hasn't started
@@ -5442,6 +5451,8 @@ def restore_backup(doc, password, replace_lns=False):
     if not isinstance(doc, dict) or doc.get("format") != BACKUP_FORMAT or doc.get("version") not in BACKUP_AADS \
             or isinstance(doc.get("version"), bool):
         return 400, {"error": "This isn't a wallet backup from this app, or it's a version this app can't read."}, "format"
+    if EMBEDDED and doc["version"] != BACKUP_APP_VERSION:
+        return 400, {"error": BACKUP_OLD, "old_backup": True}, "old version"
     try:
         kdf, cipher = doc["kdf"], doc["cipher"]
         if kdf.get("name") != "scrypt" or cipher.get("name") != "chacha20-poly1305":
@@ -5463,6 +5474,8 @@ def restore_backup(doc, password, replace_lns=False):
         content = json.loads(plain)
         new_text = content["keystore.yaml"]
         new_bytes = new_text.encode("utf-8")
+        if EMBEDDED and "lns_wallet" in content:          # a LEZ 0.3 part: an old app's data, not migrated
+            raise OldBackup
         msg_key = content.get("messaging_key") if doc["version"] >= 2 else None
         if msg_key is not None and not msg_key_valid(msg_key):
             raise ValueError
@@ -5475,6 +5488,8 @@ def restore_backup(doc, password, replace_lns=False):
             import signer04 as _s4
             if not _s4.backup_part_ok(lz):
                 raise ValueError
+    except OldBackup:
+        return 400, {"error": BACKUP_OLD, "old_backup": True}, "old version"
     except Exception:
         return 400, {"error": "This backup file is damaged. Nothing was changed."}, "format"
     live, _ = keystore_location()
@@ -5737,6 +5752,8 @@ def backup_export(password, history=True):
         return 409, {"error": LEZ04_BACKUP_BUSY, "lez04_busy": True}, source
     if lz:                                    # the phone's LEZ 0.4 wallet (its keys): goes along
         content["lez04_wallet"] = lz
+    if EMBEDDED:
+        version = BACKUP_APP_VERSION          # the app's own format (see BACKUP_APP_VERSION)
     sealed = aead_encrypt(backup_key(password, salt), nonce, json.dumps(content).encode(), BACKUP_AADS[version])
     b64 = lambda b: base64.b64encode(b).decode()
     created = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())

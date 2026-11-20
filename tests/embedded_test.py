@@ -198,13 +198,13 @@ call("/api/wallet/native-fingerprint", {"on": True, "pin": PIN}, session=W.unloc
 # restore on a fresh install, before the node has ever run: no keystore.yaml and no config yet. The reply says to
 # start the node first, not that this node keeps its keys in its config (android/NAMES04.md, step 8)
 import base64, json as _json, secrets as _secrets  # noqa: E402
-def backup_doc(password):
+def backup_doc(password, version=3, extra=None):
     salt, nonce = _secrets.token_bytes(16), _secrets.token_bytes(12)
     kdf = {"n": 2 ** 10, "r": 8, "p": 1, "dklen": 32}
     sealed = server.aead_encrypt(server.backup_key(password, salt, kdf), nonce,
-                                 _json.dumps({"keystore.yaml": "keys: {}\n"}).encode(), server.BACKUP_AADS[1])
+                                 _json.dumps(dict({"keystore.yaml": "keys: {}\n"}, **(extra or {}))).encode(), server.BACKUP_AADS[version])
     b64 = lambda b: base64.b64encode(b).decode()
-    return {"format": server.BACKUP_FORMAT, "version": 1, "addresses": [],
+    return {"format": server.BACKUP_FORMAT, "version": version, "addresses": [],
             "kdf": dict(kdf, name="scrypt", salt=b64(salt)),
             "cipher": {"name": "chacha20-poly1305", "nonce": b64(nonce)}, "ciphertext": b64(sealed)}
 node_home = tempfile.mkdtemp()
@@ -220,7 +220,20 @@ code, d, why = server.restore_backup(doc, "a long backup password")
 check("in the app a missing keystore.yaml always means the node hasn't made its keys", code == 409 and d.get("node_never_ran") is True, (code, d))
 code, d = call("/api/wallet/restore", {"backup": doc, "password": "a long backup password", "pin": PIN}, session=W.unlock(PIN))
 check("the page gets that line through the restore route", code == 409 and "Start the node first" in d.get("error", ""), (code, d))
+# old backups (Jef, 2026-11-20: "Don't migrate old data"): inside the app only the app's own version 3 is restored
+for v in (1, 2):
+    code, d, why = server.restore_backup(backup_doc("a long backup password", v), "a long backup password")
+    check("inside the app a version %d backup is refused, in one plain line" % v, code == 400 and d.get("old_backup") is True
+          and d["error"] == "This backup is from an older version and can't be restored here.", (code, d))
+lns_part = {"storage": "{}", "names": None, "account": "11111111111111111111111111111111", "name": ""}
+code, d, why = server.restore_backup(backup_doc("a long backup password", 3, {"lns_wallet": lns_part}), "a long backup password")
+check("…and so is one with a LEZ 0.3 name account part", code == 400 and d.get("old_backup") is True, (code, d))
 server.EMBEDDED = False
+os.remove(server.NODE_CFG)
+code, d, why = server.restore_backup(backup_doc("a long backup password", 1), "a long backup password")
+check("outside the app a version 1 backup is read as before (here: no node yet)", code == 409 and d.get("node_never_ran") is True, (code, d))
+with open(server.NODE_CFG, "w") as f:
+    f.write("# the node's config, but no keystore.yaml yet\n")
 code, d, why = server.restore_backup(doc, "a long backup password")
 check("outside the app, a config without a key file is still 'keys in its config'",
       code == 409 and "keeps its keys in its config file" in d["error"] and not d.get("node_never_ran"), (code, d))

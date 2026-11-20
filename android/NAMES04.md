@@ -219,6 +219,12 @@ BuildConfig.DEBUG)` before the first WebView; none of the debug builds' adb extr
 
 ## Moving to the release build
 
+**From app 0.5.32 (web app 0.9.33) on, the app is LEZ 0.4 only and makes backups in its own format, version 3.** It
+restores only version 3 files: a backup made by an earlier version (version 1 or 2, or any with a LEZ 0.3 name account
+in it) is refused with "This backup is from an older version and can't be restored here." (Jef, 2026-11-20: "Don't
+migrate old data"). `tools/decrypt-backup.py` still opens every version, so an old file's keys can be read by hand.
+The steps below are the move to 0.5.30 and are kept for the record.
+
 A release-signed APK can't install over the debug-signed one (Android refuses a different signature), so the phone
 uninstalls the debug build first, and **an uninstall deletes all of the app's data**. The app's encrypted backup file
 carries the keys that can't be made again; everything else is set up again or read again from the network.

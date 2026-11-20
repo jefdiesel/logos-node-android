@@ -1410,7 +1410,8 @@ $("rs-file").addEventListener("change", async () => {
   const f = $("rs-file").files[0]; if (!f) return;
   if (f.size > 4000000) return void (m.textContent = "That file is too big to be a wallet backup.");   // with message history it can be about 1.5 MB
   let doc; try { doc = JSON.parse(await f.text()); } catch (e) { return void (m.textContent = "That file isn't a wallet backup (it isn't JSON)."); }
-  if (!doc || doc.format !== "logos-node-wallet-backup" || (doc.version !== 1 && doc.version !== 2)) return void (m.textContent = "That file isn't a wallet backup from this app, or it's a version this app can't read.");
+  if (!doc || doc.format !== "logos-node-wallet-backup" || ![1, 2, 3].includes(doc.version)) return void (m.textContent = "That file isn't a wallet backup from this app, or it's a version this app can't read.");
+  if (EMBEDDED && doc.version !== 3) return void (m.textContent = "This backup is from an older version and can't be restored here.");
   rsDoc = doc;
   const file = (doc.addresses || []).map(a => ({ label: a.label, key: String(a.key).toLowerCase() }));
   const now = accts.map(a => ({ label: a.label, key: a.key }));
