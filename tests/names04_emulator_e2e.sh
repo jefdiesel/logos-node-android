@@ -245,8 +245,8 @@ DEV_WALLET=$DEV/w04 D "./names module restore < $DEV/phrase.txt; echo exit=\$?; 
 grep -q '^exit=0' "$WORK/restore.out" || { grep -vF "$PHRASE" "$WORK/restore.out" | tail -5; fail "names module restore on the device"; }
 ! grep -qF "$PHRASE" "$WORK/restore.out" || fail "the restore printed the phrase back"
 first=$(python3 -c 'import json,sys
-t = open(sys.argv[1]).read()
-d = json.loads(t[t.rindex("{\"public\""):].splitlines()[0])      # (it may follow the prompt on the prompt'"'"'s line)
+line = [l for l in open(sys.argv[1]).read().splitlines() if "{" in l and "\"public\"" in l][-1]
+d = json.loads(line[line.index("{"):])      # (it may follow the prompt on its line; keys sorted: moved, private, public)
 print(d["public"][0], len(d["public"]))' "$WORK/restore.out")
 echo "restored on the device: $first"
 [ "${first%% *}" = "$DPUB" ] || fail "the device's first public account ${first%% *} isn't the desktop's $DPUB"

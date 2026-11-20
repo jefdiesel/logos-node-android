@@ -342,10 +342,10 @@ class Signer04:
             except Exception:
                 code, out, err = -1, b"", b""
             words = None
-            last = ""                                       # the JSON line (it may follow the prompt on its line)
+            last = ""          # the JSON line (it may follow the prompt on its line; its keys come sorted: moved, private, public)
             for line in reversed(out.decode("utf-8", "replace").splitlines()):
-                at = line.find('{"public"')
-                if at >= 0:
+                at = line.find("{")
+                if at >= 0 and '"public"' in line:
                     last = line[at:].strip()
                     break
             del out, err                                    # the prompt and whatever the wallet printed: dropped

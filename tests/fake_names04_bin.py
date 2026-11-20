@@ -92,7 +92,8 @@ def main():
         if "legal" not in phrase.split():                 # (some runs: the JSON right after the prompt, on its line)
             print()
             print("Stored persistent accounts at " + home)
-        print(json.dumps({"public": [account(seed, i) for i in range(16)], "private": account(seed, 99), "moved": []}))
+        print(json.dumps({"public": [account(seed, i) for i in range(16)], "private": account(seed, 99), "moved": []}, sort_keys=True,
+                         separators=(",", ":")))       # (as serde_json prints it: keys sorted, compact)
         return
     record()
     if args[:3] == ["wallet", "account", "get"]:

@@ -55,7 +55,7 @@
   "qr/VENDORED.txt": "1d4fc608d725afe81619262b9fb4323fe2d77318579396d9429f3a6f04b873ad",
   "qr/qrcode.js": "ea91d7118a5395289170da848b7c6758b996163bfbccf312591ab65a4911b7c0",
   "server.py": "ea755b6befa1d77c1b3232df07d345f676d1cfcb2255d5d8acd0b8a5dad454a9",
-  "signer04.py": "c690f8a2c29dd3c997bfc6f2fa3a5486ccd7c697384458eb184bff1bf15099f3"
+  "signer04.py": "f3b6404f0bdfbba3436f3102eca7ee24add7445d42fc5aa229729208ba10e83f"
  },
  "version": "0.9.31"
 }
