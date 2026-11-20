@@ -1,6 +1,5 @@
 // The lock, in a real browser (headless Chrome over the DevTools protocol), with the stand-ins of tests/ui_app.py
-// (a wallet holding 30,400,000 Logos, a stand-in node that takes sends, the LEZ name account, the bridge test
-// network). Every way a lock comes (the Lock button, the auto-lock as a 401 to a poll, to a POST or to the
+// (a wallet holding 30,400,000 Logos, a stand-in node that takes sends, the phone's LEZ 0.4 wallet, LEZ 0.4). Every way a lock comes (the Lock button, the auto-lock as a 401 to a poll, to a POST or to the
 // visibility report) goes through one lock that reloads the page into the lock screen. After each, a scan of the
 // whole page (every element, hidden ones too, every attribute and title, every field's value) finds no amount,
 // address, account id or typed text; a Send review up at the lock can't be sent after the unlock (it starts again at
@@ -19,7 +18,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const CHROME = process.env.CHROME || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const PS = Number(process.env.PORT_SHIFT || 0);
 const PORT = 8161 + PS, BASE = `http://127.0.0.1:${PORT}`, PIN = "246813";
-const OWN = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";        // the stand-in signer's LEZ account
+const OWN = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";        // the phone's LEZ 0.4 account (tests/ui_app.py)
 const KEY = "a1".repeat(32);                                         // the wallet's account (tests/ui_app.py)
 const TO = "cd".repeat(32), AMOUNT = "4321";                         // what is typed into Send
 // none of this may be anywhere in a locked page
@@ -127,7 +126,7 @@ const PATHS = [
   ["the visibility report's 401", async () => { await serverLock(); await js(`document.dispatchEvent(new Event("visibilitychange")); true`); }],
   ["a POST's 401 (the activity report)", async () => { await serverLock(); await js(`lastActivity = 0; dispatchEvent(new Event("pointerdown")); true`); }],
   ["the poll's 401 with LEZ 0.4 showing", async () => {
-    await js(`document.getElementById("nw-04").click(); true`);
+    await js(`window.NET04.reload(); true`);
     await waitFor("LEZ 0.4 shows the phone's account", `document.getElementById("n4-accts").textContent.includes(${JSON.stringify(OWN)})`, 20000);
     await serverLock(); await js(`loadHistory(); true`); }],
 ];

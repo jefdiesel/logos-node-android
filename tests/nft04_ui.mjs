@@ -1,6 +1,6 @@
-// Collectibles (app/net04/nft.js) in a real browser (headless Chrome over the DevTools protocol) at the narrowest phone
-// width the app supports (360 px), with the stand-ins of tests/ui_app.py: LEZ 0.4 on by default, the Collectibles
-// row, the empty page with the desktop wallet's words, an NFT program added by its ID ("Checking…" at once, then a
+// The NFTs screen (app/net04/nft.js) in a real browser (headless Chrome over the DevTools protocol) at the narrowest
+// phone width the app supports (360 px), with the stand-ins of tests/ui_app.py (the phone's LEZ 0.4 wallet set up): the
+// bar's NFTs tab, the empty page with the desktop wallet's words, an NFT program added by its ID ("Checking…" at once, then a
 // plain result), the NFTs of the phone's account and of a watched one grouped by account and counted per collection,
 // an LNS name's card drawn on the phone with the bundled fonts (forest green, yellow rule, the size rule), 44 px tap
 // targets, nothing wider than the screen, no green or blue outside the card, the network entered by RPC URL and chain
@@ -18,7 +18,7 @@ import { noGreenOrBlue } from "./hue_check.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const CHROME = process.env.CHROME || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const PORT = 8151 + Number(process.env.PORT_SHIFT || 0), BASE = `http://127.0.0.1:${PORT}`, PIN = "246813";
-const OWN = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";        // the stand-in signer's account (tests/fake_names_bin.py)
+const OWN = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";        // the phone's LEZ 0.4 account (tests/ui_app.py)
 const BASECAMP = "CCVd76Tk3WvFb63Wbuu4exMeLRTbSuMWHqxuvysapKnk";   // the account recorded in tests/fixtures/net04
 const LATE = "US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx";       // an id watched while the page locks
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
@@ -81,22 +81,21 @@ await js(`sessionStorage.setItem("session", ${JSON.stringify(session)}); true`);
 await cdp("Page.navigate", { url: BASE + "/" });
 await waitFor("unlocked", `!document.getElementById("v-open").hidden`);
 const tall = (sel) => js(`[...document.querySelectorAll(${JSON.stringify(sel)})].filter(e => e.offsetParent !== null).every(e => e.getBoundingClientRect().height >= 44)`);
-const fits = () => js(`document.documentElement.scrollWidth <= innerWidth && [...document.querySelectorAll("#net04 *")].every(e => !e.offsetParent || e.getBoundingClientRect().right <= innerWidth + 1)`);
+const fits = () => js(`document.documentElement.scrollWidth <= innerWidth && [...document.querySelectorAll("#page-nft *")].every(e => !e.offsetParent || e.getBoundingClientRect().right <= innerWidth + 1)`);
 
-// ---- LEZ 0.4 by default, with a Collectibles row ----
-await waitFor("LEZ 0.4 by default", `document.getElementById("net-line").textContent === "LEZ 0.4 · bridge test network" && document.getElementById("net04").offsetParent !== null`);
-await waitFor("the Collectibles row, a 44 px target", `document.getElementById("n4-open-col").offsetParent !== null && document.getElementById("n4-open-col").getBoundingClientRect().height >= 44`);
-check("the row says what it is", /Collectibles/.test(await text("#n4-open-col")) && /view-only/.test(await text("#n4-open-col")));
-await click("#n4-open-col");
-await waitFor("Collectibles opens, the balances go", `document.getElementById("n4-col").offsetParent !== null && document.getElementById("n4-home").offsetParent === null`);
-check("its title and network line", (await text("#h-col")) === "Collectibles" && (await text("#n4-col-runs")) === "Runs on LEZ 0.4 · bridge test network");
+// ---- the bar's NFTs tab: its own screen ----
+await waitFor("the bar has NFTs, a 44 px target", `!!document.getElementById("nav-nft") && document.getElementById("nav-nft").offsetParent !== null && document.getElementById("nav-nft").getBoundingClientRect().height >= 44`);
+check("the Wallet has no Collectibles row any more", !(await js(`!!document.getElementById("n4-open-col")`)));
+await click("#nav-nft");
+await waitFor("NFTs open, the Wallet goes", `document.getElementById("page-nft").offsetParent !== null && document.getElementById("page-main").hidden`);
+check("its title and network line", (await text("#h-col")) === "NFTs" && (await text("#n4-col-runs")) === "On LEZ 0.4");
 const colWords = await text("#n4-col");
 check("the desktop's words: one NFT per account per program", colWords.includes("NFTs of the NFT programs listed below. Under each program an account holds one NFT, and takes NFTs of one collection only; a second NFT needs another account."));
-check("it says it is view-only on the phone and loads no image", /View-only on this phone/.test(colWords) && /Images are never loaded\./.test(colWords));
+check("it says what it does here (public) and that it loads no image", /Receiving and sending NFTs here are public/.test(colWords) && /Images are never loaded\./.test(colWords));
 await waitFor("no program yet: the desktop's line", `document.getElementById("n4-progs").innerText.includes("None yet. Every deployment of the NFT program is a different program: add the one your collections live under, by its program ID.")`);
 await waitFor("no NFT under no program", `document.getElementById("n4-colls").innerText.includes("Your accounts hold no NFT under the listed programs.")`);
 await waitFor("no LNS name on this phone yet: says how to get one", `/No LNS name to look for yet\\./.test(document.getElementById("n4-names").innerText)`);
-check("Add, Show, the fields and Back are 44 px", await tall("#n4-col button, #n4-col input"));
+check("Add, Show and the fields are 44 px", await tall("#n4-col button, #n4-col input"));
 check("nothing goes past the 360 px screen", await fits());
 await shot("collectibles-empty");
 
@@ -113,7 +112,8 @@ await waitFor("Collections: Harbour at dawn, held by 2 of your accounts", `docum
 await waitFor("by account: this phone's master, then the watched account's copy", `(() => { const t = document.getElementById("n4-groups").innerText;
   return /Public 9xQeWv…VFin · this phone/.test(t) && /Master · can print 1 more copy/.test(t) && /Public CCVd76…pKnk · watched, view-only/.test(t) && /\\bCopy\\b/.test(t)
     && t.includes("https://img.example.com/harbour.png") && /Creators\\s*ada/.test(t) && /Supply\\s*3/.test(t) && /Program\\s*Test chain NFTs/.test(t); })()`, 20000);
-check("no Send, Burn, Print or Receive shown (a build without the LEZ 0.4 signer)", !/\b(Send|Burn|Print|Receive)…/.test(await text("#n4-col")) && !(await js(`[...document.querySelectorAll("#n4-col button")].some(b => b.offsetParent !== null && /^(Send|Burn|Print|Receive)/.test(b.textContent))`)));
+check("Send under this phone's NFT only (not the watched account's); no Burn or Print", (await js(`(() => { const g = [...document.querySelectorAll("#n4-groups .n4-nft")]; return g.length === 2 && g.filter(c => [...c.querySelectorAll("button")].some(b => b.textContent === "Send")).length === 1; })()`))
+  && !(await js(`[...document.querySelectorAll("#n4-col button")].some(b => b.offsetParent !== null && /^(Burn|Print)/.test(b.textContent))`)));
 check("every button 44 px, nothing past the screen", (await tall("#n4-col button, #n4-col input")) && (await fits()));
 await js(`document.getElementById("n4-groups").scrollIntoView(); true`);
 await shot("collectibles-nfts");
@@ -164,9 +164,9 @@ await waitFor("a name not registered on this network: said, no card", `(() => { 
 await js(`[...document.querySelectorAll('#n4-names [data-name="nobody"] button')].find(b => b.textContent === "Stop showing").click(); true`);
 await waitFor("Stop showing takes it off", `!document.querySelector('#n4-names [data-name="nobody"]')`);
 
-// ---- Back, and the network: entered by RPC URL and chain id ----
-await click("#n4-col-back");
-await waitFor("Back: the balances again", `document.getElementById("n4-home").offsetParent !== null && document.getElementById("n4-col").offsetParent === null`);
+// ---- the Wallet again, and the network: entered by RPC URL and chain id ----
+await click("#nav-wallet");
+await waitFor("the Wallet again, NFTs gone", `!document.getElementById("page-main").hidden && document.getElementById("page-nft").hidden`);
 await js(`openSettings("s-net"); true`);
 await waitFor("Settings > Network", `!document.getElementById("page-settings").hidden && document.getElementById("s-net").offsetParent !== null`);
 await waitFor("it names the LEZ 0.4 in use", `/^In use: our LEZ 0\\.4 \\(127\\.0\\.0\\.1:\\d+\\)\\.$/.test(document.getElementById("n4-net-now").textContent)`);
@@ -186,18 +186,18 @@ await shot("settings-network-entered");
 await js(`closeSettings(); true`);
 
 // ---- a lock: no card, name, NFT or typed text stays; after the unlock LEZ 0.4 and nothing drawn until asked ----
-await click("#n4-open-col");
+await click("#nav-nft");
 await waitFor("the card again", `(() => { const c = document.querySelector("#n4-names canvas"); return !!c && !!c.dataset.drawn; })()`, 20000);
 await val("#n4-prog", "typed, not sent");
 await js(`lockedNow(); true`);
 await waitFor("locked: the page loaded again, into the lock screen", `!document.getElementById("v-locked").hidden && !document.documentElement.classList.contains("relock")`);
-const left = await js(`(() => { const h = document.documentElement.outerHTML; return { canvas: document.querySelectorAll("canvas").length, alice: /\\balice\\b/.test(document.getElementById("net04").textContent),
+const left = await js(`(() => { const h = document.documentElement.outerHTML; return { canvas: document.querySelectorAll("canvas").length, alice: /\\balice\\b/.test(document.getElementById("page-nft").textContent),
   art: h.includes(${JSON.stringify(ART)}) || /Harbour/.test(h), typed: (document.getElementById("n4-prog") || {}).value || "" }; })()`);
 check("locked: no card, no name, no NFT, no typed text left", left.canvas === 0 && !left.alice && !left.art && !left.typed, left);
 await js(`sessionStorage.setItem("session", ${JSON.stringify(session)}); true`); await cdp("Page.navigate", { url: BASE + "/" });
-await waitFor("unlocked again: LEZ 0.4, the balances (not Collectibles) first", `!document.getElementById("v-open").hidden && document.getElementById("nw-04").getAttribute("aria-checked") === "true" && document.getElementById("n4-home").offsetParent !== null && document.getElementById("n4-col").offsetParent === null`);
+await waitFor("a new page with the session: the Wallet first, NFTs not drawn until asked", `!document.getElementById("v-open").hidden && !document.getElementById("page-main").hidden && document.getElementById("page-nft").hidden && !document.querySelector("#page-nft canvas")`);
 // ---- the lock's own wipe, before its reload (held back here so the page that is locking can be looked at) ----
-await click("#n4-open-col");
+await click("#nav-nft");
 await waitFor("the card again", `(() => { const c = document.querySelector("#n4-names canvas"); return !!c && !!c.dataset.drawn; })()`, 20000);
 const wiped = await js(`(async () => { relockPage = () => {}; lockedNow(); await new Promise(ok => setTimeout(ok, 300));
   const cs = [...document.querySelectorAll("canvas")];

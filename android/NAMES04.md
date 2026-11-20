@@ -1,7 +1,12 @@
 # Sending on LEZ 0.4 from the phone (the LEZ 0.4 signer)
 
-The app carries a second LNS command line, `names` from the logos-names 0.4 line, next to the LEZ 0.3 one
-(android/NAMES.md), and sends PUBLIC transactions on our LEZ 0.4 (https://lez.nameswallet.app) with it. Private
+The app carries the LNS command line `names` from the logos-names 0.4 line and sends PUBLIC transactions on our LEZ 0.4
+(https://lez.nameswallet.app) with it. Since app 0.5.32 (web app 0.9.33) the app is LEZ 0.4 only: the LEZ 0.3 signer,
+its name account, its bridge from the node wallet, the network switch and android/NAMES.md are gone. Name lookups
+(Messages, sending Logos or LEZ to a name) read the LNS registry on LEZ 0.4 (`lns_registry` in `app/lez04.json`,
+`6Yxj5k8A…N3gA`) with `getAccountView`; 0.4 records carry `msg` and `blockchain` as v5 did. A phone still holding
+LEZ 0.3 files (`.lns-wallet`, `wallet-lns.json`, `wallet-bridge.json`, `wallet-net04-choice.json`) keeps them, unused
+and never deleted by the app. Private
 actions stay off on the phone: they need a RISC Zero proof, and a phone has no prover ("not on this phone yet").
 
 ## The binary
@@ -97,9 +102,12 @@ One job at a time, `names` started with fixed arguments, its output shown only t
 | Send to `Public/<id>` | `wallet auth-transfer send --from Public/<first> --to Public/<id> --amount N` (refused first if the network hasn't seen that account: such a transfer reverts and still pays its fee) |
 | Send to a public key | `wallet auth-transfer send --from Public/<first> --to-pk <hex> --amount N` |
 | Send to an LNS name | `pay --public --from=Public/<first> -- <name> N` |
-| Collectibles: Receive an NFT | `--nft-program P nft init --definition D --account <first>`, or `--new public --fee-payer <first>` when the first account already has a holding under P |
-| Collectibles: Send | `--nft-program P nft send --from A --to Public/<id>\|<name>` (`--fee-payer <first>` when A isn't the first account) |
-| Your LNS names: Claim NFT (free) | `deed claim <name>`: offered on a name held by one of the wallet's accounts (matched by its owner tag), 5-32 characters, with no NFT yet. The holder pays the fee. |
+| NFTs: Receive an NFT | `--nft-program P nft init --definition D --account <first>`, or `--new public --fee-payer <first>` when the first account already has a holding under P |
+| NFTs: Send | `--nft-program P nft send --from A --to Public/<id>\|<name>` (`--fee-payer <first>` when A isn't the first account) |
+| Send to `Public/<id> <public key>` (what Receive copies) | `wallet auth-transfer send --from Public/<first> --to-pk <key> --amount N`, after checking the key is that account's (its id is sha256 of `/LEE/v0.3/AccountId/Public/` padded to 32 bytes and the key); refused if not |
+| NFTs: Claim NFT (free) | `deed claim <name>`: offered on a name held by one of the wallet's accounts (matched by its owner tag), 5-32 characters, with no NFT yet. The holder pays the fee. |
+| Settings → Your name: Register this name | `register <name> --owner Public/<first> --wait`, then `set-account <name> Public/<first>`, then `profile <name> --set blockchain=<node wallet key> --set msg=<messaging address>`: one job (below) |
+| Your name: Point it at this phone (also Messages' "Use <name> for messages") | `set-account`, then `profile --set blockchain=… --set msg=…` |
 
 A claim needs the locked-name list (61 MB) for its length proof. The tool can't download it itself (its HTTPS client
 can't check certificates outside an app's Java runtime), so the server downloads it once from logos-names' release
@@ -114,11 +122,11 @@ a claim after spending more than about 1.4M of it is refused for its reserve. A 
 proxy's rate limit: nothing passed on) or a 200 whose answer to every `sendTransaction` is a JSON-RPC error counts as
 refused. An error page (a 502 from the proxy), no answer (the 60 s timeout) or an answer that doesn't read leaves it
 "may have been sent". A job that then fails, or is stopped by its time limit, ends with "It may have been sent. Check
-this account's balance before you try again." (a send), or "… Check Collectibles before you try again." (an NFT or a
+this account's balance before you try again." (a send), or "… Check NFTs before you try again." (an NFT or a
 claim), whatever `names` printed; only "It was included in block N but didn't take effect" is kept, as it is certain.
-LEZ 0.4 has no Activity list on the phone, so the line points at the balance or Collectibles. The page then empties
+LEZ 0.4 has no Activity list on the phone, so the line points at the balance or NFTs. The page then empties
 what was typed (To and Amount, an NFT's To, the collection ID), so a second send has to be typed again: it would be a
-new transaction and could pay twice. A claim's button stays off until Collectibles is read again (a second claim of a
+new transaction and could pay twice. A claim's button stays off until NFTs is read again (a second claim of a
 name whose NFT landed fails on chain and costs only its fee).
 
 A job that ends that way while no press on the page follows it (the page was reloaded or locked meanwhile) is said at
@@ -127,6 +135,50 @@ next job. While a transaction is out, `<data>/wallet-lez04-unsure.json` (0600: t
 shown, the time; no key) is on disk. It goes when the job ends. If the app stops first, the next start shows "… The
 app stopped while this was being sent. It may have been sent. …" there, for a day or until the next job.
 There is no hold that refuses the same send again, as on LEZ 0.3: the line is the fix.
+
+## Your name: an LNS name for the phone's own account
+
+Settings → Your name (`app/net04/name04.js`) asks for the name only: the account is the phone's own first LEZ 0.4
+account, whose key is here, so no address or public key is ever asked. 5 to 32 characters (1-4 are locked; a name on
+the reserved list is refused by `names` with "is locked"). Before anything is sent the page looks the name up itself
+(names.js through `/api/names/rpc`): a taken name is said at once and nothing goes out.
+
+The job (`signer04.register`, `POST /api/wallet/lez04/register {name}`), one at a time like every other:
+1. The locked-name list, once (`fetch_shortlist`, as for a claim): **61 MB** from logos-names' GitHub release, over the
+   phone's connection, checked against its sha256, kept in `.lez04-wallet/cache/`. Your name says so before the button
+   while the list isn't on the phone. Its download time and `names`' memory for the length proof on the Pixel are not
+   measured yet (the claim, which needs the same list, has never run on the phone either).
+2. `names register <name> --owner Public/<first> --wait` with `NAMES_SHORTLIST`: the commitment (`step 1 of 2`), then
+   at least **15 minutes** (`MIN_COMMIT_AGE_MS`) so nobody who sees the reveal can take the name first, then the reveal
+   (`step 2 of 2`) with the **deposit** (1,000,000 test LEZ on our registry today, deposit mode: held while the name is
+   kept, refunded on release). Both are sent unchecked by the bare build, like a claim. `names` keeps the commitment in
+   `.lez04-wallet/names.json` (in the app's backup) for up to 24 hours.
+3. `set-account <name> Public/<first>`: the name shows the phone's account, so it can be paid on LEZ 0.4 by name.
+4. `profile <name> --set blockchain=<the node wallet's Main key> --set msg=<the messaging address>`: one change; either
+   is left out while unknown (no node key yet, Messages off).
+The page says it all before the button: about 20 minutes, keep the app open, other LEZ 0.4 sends and backups wait
+until it ends (the job holds the signer's one lock: two `names` on one wallet could race on names.json), the deposit
+and the fees, and that anyone who looks the name up sees the phone's LEZ 0.4 account, its Logos address and its
+messaging address.
+
+**Stopped part way.** `wallet-lez04.json` keeps `registering: {name, at}` from the press until step 2 lands. If the app
+is killed (or a step fails), Your name says so and offers **Continue**, which runs the same job again: `names` resumes
+the saved commitment ("going on with the commitment … made earlier": no second commit) within its 24 hours; a reveal
+that landed before the app stopped is found on the network first (`held_here`: the record's owner tag is the first
+account's), and only steps 3 and 4 run. When steps 3 or 4 fail, the name is the phone's already (`name` in
+`wallet-lez04.json`, and in the backup's LEZ 0.4 part) and Your name offers **Point it at this phone**.
+
+**Fees** (the bare build's caps, `unchecked_limit` = 3 × the measured cycles, and today's base fee of 8; not measured on
+the phone): the commit holds about 0.63M and pays about 0.2M; the reveal holds about 4.5M and pays about 1.3M, plus the
+1,000,000 deposit; each of steps 3 and 4 holds about 1.8M and pays about 0.5M. About 3.6M in all out of the faucet's
+10,000,000. **After it, a Claim NFT (free) of the new name does not fit the rest of one faucet grant**: a claim holds
+about 8.6M while it runs (above) and about 6.4M is left. The phone then needs more test LEZ (a send from the desktop
+wallet) before it can claim.
+
+**Checked:** `tests/sign04_test.py` (the stand-in tool: a taken name, a reveal that fails then Continue on the same
+commitment, the entries, Point again, the backup carrying the name, `held_here`) and `tests/sign04_ui.mjs` (the page).
+Not yet run against the live LEZ 0.4: on 2026-11-20 the faucet refused a throwaway wallet ("Too many test LEZ grants
+from this address today"), so the laptop run of this route with the host `names` stopped before registering.
 
 ## The faucet
 
@@ -238,7 +290,7 @@ What the backup file holds (Settings → Backup & restore → Back up; `backup_e
 What it does not hold, and is lost or made again:
 - the LEZ 0.4 accounts (type the desktop's recovery phrase again, on the release build);
 - the node's chain data (it syncs again, or starts from a snapshot: docs/start-from-a-synced-database.md);
-- the PIN, fingerprint unlock, Settings (theme, network choice, Mobile mode, the Messaging node switch), Collectibles'
+- the PIN, fingerprint unlock, Settings (theme, network choice, Mobile mode, the Messaging node switch), NFTs'
   lists (NFT programs, names) and watched addresses, the Wallet's Activity history, the event log;
 - message requests and dropped messages; history beyond 1 MB;
 - anything in flight: a bridge deposit, a name registration, a LEZ 0.3 "may have been sent" hold. Finish them first.
@@ -268,7 +320,7 @@ Steps (the Mini drives the phone over adb):
    node's keys, the messaging key and chats, and the LEZ 0.3 name account come back; the node restarts. Check Your
    name shows the same account as before.
 10. Turn on again what was on: the Messaging node switch, Mobile mode, fingerprint unlock, the network choice;
-    add Collectibles' programs and names again.
+    add NFTs' programs and names again.
 11. Check the release build on the phone before the phrase: with the phrase box focused, `adb shell screencap` gives
     a black picture, and `chrome://inspect` on the computer lists no WebView of the app.
 12. Only now: Wallet on LEZ 0.4 → Set up your LEZ 0.4 wallet → **Create a new wallet** (the phone's own accounts;
@@ -277,8 +329,17 @@ Steps (the Mini drives the phone over adb):
 From then on install only release builds signed with the same key. A CI debug APK won't install over the release
 build (that is the point); installing one means another uninstall.
 
+## Receive: the account and its key as one item
+
+LEZ 0.4 credits a public account the network has never seen only when the sender gives its public key. So Receive
+shows the phone's account and its public key together and copies them as one item, `Public/<id> <key>` (one Copy, and
+the QR code holds the same text). This app's Send takes that item (and the Logos Send's Scan hands it to LEZ 0.4's
+Send); it checks the key is that account's and pays by the key. Other wallets (the desktop Names Wallet,
+nameswallet.app) don't read the pair yet: there, paste the key part.
+
 ## Not on the phone yet
 
-Private accounts, sends and claims; printing and burning NFTs; registering on LEZ 0.4; bridged tokens' sends; a name's
-records. Names the desktop holds are found by adding them under Collectibles → Your LNS names (a restored wallet has
-no list of them).
+Private accounts, sends and claims; printing and burning NFTs; bridged tokens' sends; a name's other records (only
+`blockchain` and `msg` and the public account are set from the phone). A second name for the phone (Your name holds
+one). Names the desktop holds are found by adding them under NFTs → Your LNS names (a restored wallet has no list of
+them).

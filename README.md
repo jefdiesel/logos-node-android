@@ -111,7 +111,7 @@ Amounts are shown with "Logos" after them; they are the node's own whole numbers
 
 ### LNS names
 
-An LNS name is a short name like `alice`, registered with Logos Names on the Logos testnet. Its holder can attach a Logos Blockchain address to it, so you can pay the name instead of typing a 64-character address. The app looks the name up on the phone with the names project's reference resolver. The name itself never leaves the phone: only an identifier derived from it is sent to the name service. The wallet trusts the answer, so the review screen shows the address it found; for a large amount, check it with the person you're paying.
+An LNS name is a short name like `alice`, registered with Logos Names on LEZ 0.4 (lez.nameswallet.app); the Android app can register one for the phone's own LEZ 0.4 account (Settings → Your name). Its holder can attach a Logos Blockchain address to it, so you can pay the name instead of typing a 64-character address. The app looks the name up on the phone with the names project's reference resolver. The name itself never leaves the phone: only an identifier derived from it is sent to the name service. The wallet trusts the answer, so the review screen shows the address it found; for a large amount, check it with the person you're paying.
 
 ### Backup, restore and updates
 

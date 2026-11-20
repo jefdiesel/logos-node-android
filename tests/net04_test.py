@@ -102,7 +102,7 @@ check("watching an address", n.watch(OWNER)[0] == 200 and n.watched() == [OWNER]
 n.refresh(None)
 v = n.view(None)
 a = v["accounts"][0]
-check("the network is named 'bridge test network'", v["network"] == "bridge test network" and "official" not in json.dumps(v).lower())
+check("the network is named LEZ 0.4", v["network"] == "LEZ 0.4" and "official" not in json.dumps(v).lower())
 check("recorded: the native balance is 23,786,858", a["status"] == "ok" and a["native"] == "23,786,858", a)
 toks = {t["symbol"]: t for t in a.get("tokens", [])}
 check("recorded: 0.1 wETH, named by its definition", toks.get("wETH", {}).get("amount") == "0.1" and toks["wETH"]["name"] == "Wrapped Sepolia ETH (demo)", toks)
@@ -133,7 +133,7 @@ ch.down = True
 n.refresh(None)
 v = n.view(None)
 a = v["accounts"][0]
-check("unreachable: says so", v["unreachable"] == "Can't reach the bridge test network now.", v["unreachable"])
+check("unreachable: says so", v["unreachable"] == "Can't reach LEZ 0.4 now.", v["unreachable"])
 check("  and keeps the last numbers with their time (never 0 for something not read)", a["native"] == "23,786,858" and a["at"] == read_at, a)
 ch.down = False
 
@@ -281,7 +281,7 @@ n.reading, n.last_try = True, now[0] - 20
 check("a read 20 s in, still within its refresh's 60 s: not 'can't reach' yet", not n.view(None)["unreachable"])
 n.reading, n.last_try = True, now[0] - lez04.REFRESH_DEADLINE - 6
 v = n.view(None)
-check("a read running past its deadline: 'Can't reach the bridge test network now.', the last numbers kept with their time",
+check("a read running past its deadline: 'Can't reach LEZ 0.4 now.', the last numbers kept with their time",
       v["unreachable"] == lez04.UNREACHABLE_TEXT and v["read_at"] and v["accounts"] and v["accounts"][0].get("native") == "23,786,858", v)
 n.reading = False
 

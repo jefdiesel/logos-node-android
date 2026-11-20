@@ -4,7 +4,9 @@
 // "Set up your LEZ 0.4 wallet" (a small row; the phrase box only after a tap, Cancel closes it emptied),
 // the restore ("Restoring…" at once, the box emptied as the request goes, the phrase in no request but that one and
 // nowhere in the page after), "Get free test LEZ" ("Asking the faucet…", then the amount, then gone), Send ("Sending…",
-// then in a block), Receive (the account, its QR code and its public key), Collectibles: "Claim NFT (free)" on a name
+// then in a block), Receive (the account and its public key as one item: one Copy, one QR code), Your name (a name
+// registered for the phone's own account, the name only: checked first, then the job's own lines), NFTs: "Claim NFT
+// (free)" on a name
 // the wallet holds with no NFT, "Claiming…" with the job's progress, then the card; an NFT's Send sheet and the
 // Receive sheet; a send whose answer is lost ("It may have been sent", the fields emptied); the phrase box asking the
 // Android app to secure the screen and empty the clipboard after a paste; Remove with the PIN; 44 px targets, nothing
@@ -216,21 +218,46 @@ await shot("send-unsure", "#s4-send");
 
 // ---- Receive ----
 await click("#n4-recv");
-await waitFor("Receive: the account, its QR code, its public key", `document.getElementById("s4-recv").offsetParent !== null && document.getElementById("s4-acct").textContent === "Public/" + ${JSON.stringify(MAIN)}
+await waitFor("Receive: the account and its public key, its QR code", `document.getElementById("s4-recv").offsetParent !== null && document.getElementById("s4-acct").textContent === "Public/" + ${JSON.stringify(MAIN)}
   && document.querySelector("#s4-qr .qr svg") && /^[0-9a-f]{64}$/.test(document.getElementById("s4-pk").textContent)`);
-check("the QR code is of the account", (await js(`document.querySelector("#s4-qr .qr").dataset.text`)) === "Public/" + MAIN);
-check("Copy buttons, 44 px, fits", (await tall("#s4-recv button")) && (await fits()));
+const PK = await text("#s4-pk");
+check("the QR code is of the account and its key, as one item", (await js(`document.querySelector("#s4-qr .qr").dataset.text`)) === "Public/" + MAIN + " " + PK);
+check("one Copy for both", (await js(`[...document.querySelectorAll("#s4-recv button")].map(b => b.textContent).join("|")`)) === "Copy the address and key");
+check("Copy, 44 px, fits", (await tall("#s4-recv button")) && (await fits()));
 await shot("receive", "#s4-recv");
 
-// ---- Collectibles: Claim NFT (free) ----
+// ---- Your name: a name for this phone's own account, the name only ----
+await js(`openSettings("s-lns"); true`);
+await waitFor("Settings > Your name: the phone's account, the name box, what it takes", `document.getElementById("n4n-none").offsetParent !== null
+  && document.getElementById("n4n-acct").textContent === "Public/" + ${JSON.stringify(MAIN)} && /About 20 minutes/.test(document.getElementById("n4n-what").innerText)
+  && /deposit of 1,000,000 test LEZ/.test(document.getElementById("n4n-what").innerText)`, 15000);
+check("no public key asked: one box, the name", (await js(`[...document.querySelectorAll("#s-lns input")].map(i => i.id).join()`)) === "lns-in");
+check("the 61 MB list's line is left out once the list is on the phone (the stand-in's is)", await js(`document.getElementById("n4n-list").hidden`));
+check("Your name: 44 px, fits", (await tall("#s-lns button:not([hidden]), #s-lns input")) && (await js(`document.documentElement.scrollWidth <= innerWidth`)));
+await shot("your-name", "#s-lns");
+await val("#lns-in", "abcd");
+await click("#n4n-go");
+await waitFor("a four-character name: refused before anything is sent", `/5 to 32 characters/.test(document.getElementById("n4n-m").textContent)`);
+await val("#lns-in", "phone-name");
+const pn = await pressNow("#n4n-go");
+check("Register: 'Checking phone-name…' at once", pn === "Checking phone-name…|true", pn);
+await waitFor("then registered, and pointed at this phone", `document.getElementById("n4n-has").offsetParent !== null && document.getElementById("n4n-name").textContent === "phone-name"`, 30000);
+check("the server has it as the phone's name", (await get("/api/wallet/lez04", session)).name === "phone-name");
+await shot("your-name-done", "#s-lns");
+await js(`closeSettings(); true`);
+await js(`openSettings(); true`);
+await waitFor("Settings' list says the name", `document.querySelector("#go-name small").textContent === "phone-name"`);
+await js(`closeSettings(); true`);
+
+// ---- NFTs: Claim NFT (free) ----
 await ctl("register", { name: "slowclaim", owner: MAIN });
 await ctl("register", { name: "abcd", owner: MAIN });
 await ctl("nft", { account: MAIN, program: PROGRAM, hex: "01" + "f00cbb50684466efb7410aa2097f6bcc3a07d0d2ad8acbe8d655373f619219c2" + "02" + "00".repeat(15) });
 await post("/api/wallet/net04/nft", { add_name: "slowclaim" }, session);
 await post("/api/wallet/net04/nft", { add_name: "abcd" }, session);
 await post("/api/wallet/net04/nft", { add_program: PROGRAM, label: "Test chain NFTs" }, session);
-await click("#n4-open-col");
-await waitFor("Collectibles says what it can do here now", `/Receiving and sending NFTs here are public/.test(document.getElementById("n4-col-mode").textContent)`, 45000);
+await click("#nav-nft");
+await waitFor("NFTs say what they can do here now", `/Receiving and sending NFTs here are public/.test(document.getElementById("n4-col-mode").textContent)`, 45000);
 await waitFor("a name the wallet holds with no NFT: Claim NFT (free), and who pays the fee", `(() => { const b = document.querySelector('#n4-names [data-name="slowclaim"]');
   return !!b && /No NFT claimed for this name yet\\./.test(b.innerText) && /Held by your account Public .{6}….{4}, which pays the network fee\\. The NFT itself is free\\./.test(b.innerText)
     && [...b.querySelectorAll("button")].some(x => x.textContent === "Claim NFT (free)"); })()`, 45000);   // (the page reads Collectibles every 30 s)
@@ -267,7 +294,7 @@ check("the Receive sheet: 44 px, fits", (await tall("#n4-recv button, #n4-recv i
 await shot("nft-receive", "#n4-recv");
 
 // ---- Remove the LEZ 0.4 accounts from this phone: the PIN typed again ----
-await click("#n4-col-back");
+await click("#nav-wallet");
 await waitFor("Remove is offered once the accounts are here", `document.getElementById("s4-rm-open").offsetParent !== null && document.getElementById("s4-rm-f").offsetParent === null`);
 await click("#s4-rm-open");
 await val("#s4-rm-pin", "135799");

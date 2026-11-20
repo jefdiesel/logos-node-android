@@ -159,7 +159,7 @@ check("collections now: Art held by 1", v["collections"][0]["count"] == 1)
 ch.down = True
 n.nft_refresh(OWN, "", nod)
 v = n.nft_view(OWN, "")
-check("unreachable: says so, keeps the last read", v["unreachable"] == "Can't reach the bridge test network now." and v["groups"], v)
+check("unreachable: says so, keeps the last read", v["unreachable"] == "Can't reach LEZ 0.4 now." and v["groups"], v)
 ch.down = False
 check("removing the program", n.nft_change({"remove_program": PROGRAM}, "", nod)[0] == 200 and n.nft_programs(CHANNEL) == [])
 for i in range(16):

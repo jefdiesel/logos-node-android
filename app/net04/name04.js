@@ -93,6 +93,8 @@ function render(v) {
   if (v.name && !(running(v) && j.kind === "register")) {
     box("n4n-has").hidden = false; $("n4n-name").textContent = v.name;
     if (running(v)) { $("n4n-pm").className = "msg"; $("n4n-pm").textContent = cap(j.progress || "starting") + "…"; $("n4n-point").hidden = true; }
+    else if (j.kind === "entries" && j.state === "failed") { $("n4n-pm").className = "msg bad"; $("n4n-pm").textContent = j.error || "It stopped. Try again."; }
+    else if (j.kind === "entries" && j.state === "done" && /…$/.test($("n4n-pm").textContent)) { $("n4n-pm").className = "msg ok"; $("n4n-pm").textContent = "Done: it points at this phone."; }
     return;
   }
   const reg = v.registering || (running(v) ? { name: j.name } : null);
@@ -142,10 +144,13 @@ async function load() {
 async function start(name) {
   const m = $("n4n-m"), b = $("n4n-go"), g = gen;
   m.className = "msg"; m.textContent = "";
+  b.disabled = true; b.textContent = "Checking " + String(name || "").trim().toLowerCase().replace(/^@/, "") + "…";   // at once
   const lib = await namesLib();
   const n = lib.normalizeName(name || "");
-  if (!n || !lib.isValidName(n) || n.length < 5) { m.className = "msg bad"; m.textContent = "An LNS name here is 5 to 32 characters: lowercase letters a-z, digits and inner hyphens."; return; }
-  b.disabled = true; b.textContent = "Checking " + n + "…";
+  if (!n || !lib.isValidName(n) || n.length < 5) {
+    b.disabled = false; b.textContent = "Register this name";
+    m.className = "msg bad"; m.textContent = "An LNS name here is 5 to 32 characters: lowercase letters a-z, digits and inner hyphens."; return;
+  }
   let rec;
   try { rec = await lookup(n); } catch (e) { rec = undefined; }
   if (g !== gen) return;
@@ -165,11 +170,19 @@ function go(name, b, m) {
 $("n4n-go").addEventListener("click", () => start($("lns-in").value));
 $("lns-in").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); start($("lns-in").value); } });
 $("n4n-cont").addEventListener("click", () => { const n = last && last.registering && last.registering.name; if (n) go(n, $("n4n-cont"), $("n4n-going-m")); });
+// Point it at this phone (also Messages' "Use <name> for messages"): true once the job is running, which Your name then
+// follows; Messages follows it through own()
 const pointMsg = async () => {
-  const m = $("n4n-pm");
-  window.SIGN04.run("/api/wallet/lez04/point", {}, $("n4n-point"), m, "Pointing…", () => "Done: it points at this phone.", () => load(), () => load());
-  setTimeout(load, 1200);
-  return true;
+  const m = $("n4n-pm"), b = $("n4n-point"), g = gen;
+  b.disabled = true; b.textContent = "Pointing…"; m.className = "msg"; m.textContent = "";
+  const r = await api("/api/wallet/lez04/point", {});
+  if (g !== gen || r.stale || $("v-open").hidden) return false;
+  b.disabled = false; b.textContent = "Point it at this phone";
+  if (r.status === 401) { lockedNow(); return false; }
+  if (!r.ok) { m.className = "msg bad"; m.textContent = r.data.error || "That didn't work. Nothing was sent."; return false; }
+  last = r.data; render(r.data);
+  if (running(r.data)) { followJob(); return true; }
+  return false;
 };
 $("n4n-point").addEventListener("click", pointMsg);
 

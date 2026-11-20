@@ -29,7 +29,7 @@ import os
 import threading
 import time
 
-NETWORK = "bridge test network"
+NETWORK = "LEZ 0.4"
 B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 REPLY_CAP = 256 * 1024           # bytes of one answer
 STATE_CAP = 64 * 1024            # bytes of one program's state in one account
@@ -42,10 +42,10 @@ POLL = float(os.environ.get("NET04_POLL_SECONDS", "30"))          # never more o
 TOKENS_EVERY = 3600              # the token list is read again once an hour (and on a channel change)
 DEADLINE = 15                    # seconds for one request, all of it (a slow answer is cut off)
 REFRESH_DEADLINE = 60            # seconds for one whole refresh
-RESET_TEXT = "The bridge test network was reset. Balances there start again."
-UNREACHABLE_TEXT = "Can't reach the bridge test network now."
+RESET_TEXT = "LEZ 0.4 was reset. Balances there start again."
+UNREACHABLE_TEXT = "Can't reach LEZ 0.4 now."
 TOKENS_ERROR_TEXT = "Bridged tokens can't be listed right now."
-PRIVATE_TEXT = "Private balances on the bridge test network are not shown yet."
+PRIVATE_TEXT = "Private balances on LEZ 0.4 are not shown yet."
 
 
 # ---- base58 and ids --------------------------------------------------------------------------------------------------

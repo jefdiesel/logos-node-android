@@ -6,7 +6,7 @@ The app runs three local HTTP servers:
 |---|---|---|
 | **Unix socket `files/node/api/api.sock`** (a 0700 folder in the app's files; app 0.5.16 and later) — before: `127.0.0.1:18180` | the blockchain node's own API (node 0.3.4 with patch 0002) | `server.py`; the app's Kotlin status calls (NodeService, Battery's open timer, NodeActivity) |
 | **Unix socket `files/waku/api/api.sock`** (0700 folder; 0.5.16) — before: `127.0.0.1:18645` | the messaging (Waku) node: the runner's own API (before: the library's REST API) | `server.py` only |
-| `127.0.0.1:18190` | the wallet server, `app/server.py` in the app's `:wallet` process | the app's WebView; the app's `names` children (`/lez-rpc/<secret>` and `/lez04-rpc/<secret>` only) |
+| `127.0.0.1:18190` | the wallet server, `app/server.py` in the app's `:wallet` process | the app's WebView; the app's `names` child (`/lez04-rpc/<secret>` only; the LEZ 0.3 one, `/lez-rpc/`, went in web app 0.9.33) |
 
 ## The node the app ships
 
@@ -62,7 +62,7 @@ prompt to pages that call `127.0.0.1` was not verified here; this document does 
 | 18180 from a website | The node answered CORS with `Access-Control-Allow-Origin: *` (no `cors_origins` configured: `backend.rs` uses `allow_origin(Any)`), so a page in the phone's browser could send the same JSON POSTs. Since 0.5.15 the config lists only the wallet page's origin, which stops cross-origin pages, **but not DNS rebinding**: node 0.3.4 has no `Host` check, so a website that points its own name at 127.0.0.1 is same-origin with the port, CORS never applies, and it can call every route. Only the browser's own local-network rules stand in the way (not verified on Android). **The socket (0.5.16) closes this: there is no TCP port to reach.** | Source (`backend.rs`, `serve`; no `Host` check anywhere in the node's API at 0.3.4). The CI probe shows the CORS answer: `Access-Control-Allow-Origin: http://127.0.0.1:8090` for another origin. |
 | 18645 messaging REST | **Take incoming messages away**: `GET /messaging/v1/events/received` returns the buffered messages *and clears them* ("evict-after-poll", `rest/messaging_api/event_cache.nim` at logos-delivery `57e04dc`), so an app polling it gets the sealed messages and the wallet never sees them. The same for `/messaging/v1/events/send` (send status). Publish on any topic, unsubscribe the wallet's inbox topic (`server.py` subscribes again on its next round), read the subscribed topics. The payloads are sealed by the page, so it reads ciphertext, not chats. | Source (upstream REST handlers and event cache at the pinned commit; `Messaging.kt` writes `"rest": true`, `127.0.0.1:18645`). Not run on a phone. |
 | 18645 from a website | The drain above is a plain GET, which a page can send without CORS (it never sees the answer, but the buffer is cleared all the same), subject to the browser's local-network rules (not verified). | Source; not run. |
-| 18190 wallet server | Before a PIN exists: **set the PIN** and get a session, then do anything a session allows (send, export the messaging key). Any time: guess PINs (5 tries, then 5 minutes), lock the wallet, read `/api/status`, `/api/wallet`, `/cryptarchia/info`, `/network/info`. Not: read the WebView's session token; call `/lez-rpc/` without its secret. | **Reproduced** from a second process on a computer, against `server.py` 0.9.13 in Android mode: `POST /api/wallet/setup` with forged `Host`/`Origin` returned a session; `POST /api/wallet/lock` and `GET /api/status` answered. |
+| 18190 wallet server | Before a PIN exists: **set the PIN** and get a session, then do anything a session allows (send, export the messaging key). Any time: guess PINs (5 tries, then 5 minutes), lock the wallet, read `/api/status`, `/api/wallet`, `/cryptarchia/info`, `/network/info`. Not: read the WebView's session token; call `/lez04-rpc/` without its secret. | **Reproduced** from a second process on a computer, against `server.py` 0.9.13 in Android mode: `POST /api/wallet/setup` with forged `Host`/`Origin` returned a session; `POST /api/wallet/lock` and `GET /api/status` answered. |
 
 ## The wallet server (18190): closed since 0.5.15
 
@@ -90,10 +90,9 @@ prompt to pages that call `127.0.0.1` was not verified here; this document does 
 **What `server.py` does with `APP_KEY` set** (only the Android app sets it):
 
 - every request needs the cookie, compared in constant time, **except** the page's public files
-  (`/`, the page's scripts under `/messages/`, `/noble-curves/`, `/names/`, `/lns/lns.js`,
-  `/qr/qrcode.js`, the manifest and icons: the same for everyone, from this repository) and the
-  names forwarders `/lez-rpc/<secret>` and `/lez04-rpc/<secret>` (each has its own secret path, and the `names`
-  children send no cookie). A request without it gets `403 {"error": "this app only answers its own page", "app_key": false}`;
+  (`/`, the page's scripts under `/messages/`, `/noble-curves/`, `/names/`, `/net04/*.js`
+  and its fonts, `/qr/qrcode.js`, the manifest and icons: the same for everyone, from this repository) and the
+  names forwarder `/lez04-rpc/<secret>` (it has its own secret path, and the `names` child sends no cookie). A request without it gets `403 {"error": "this app only answers its own page", "app_key": false}`;
 - so `/api/wallet/setup`, unlock, lock, status, every `/api/messages/*` route including
   `GET /api/messages/key`, `/cryptarchia/info` and `/network/info` answer only the app's own page;
 - the existing `Host`, `Origin`, `Content-Type` and session checks stay as they were;

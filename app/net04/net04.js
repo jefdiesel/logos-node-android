@@ -213,8 +213,11 @@
     watchedList(r.data.watched || []);
     load(true);
   });
-  document.addEventListener("visibilitychange", tick);
-  const seen = new MutationObserver(tick);              // after an unlock, and back from Settings or another screen
+  // back on the Wallet (after an unlock, from Settings or another screen, or the app shown again): read now, and once more
+  // a moment later, when the background read the first one started has its answer
+  const back = () => { tick(); setTimeout(() => { if (started && onScreen() && document.visibilityState === "visible") load(); }, 3000); };
+  document.addEventListener("visibilitychange", back);
+  const seen = new MutationObserver(back);
   seen.observe($("v-open"), { attributes: true, attributeFilter: ["hidden"] });
   seen.observe($("page-main"), { attributes: true, attributeFilter: ["hidden"] });
   // net() stays for the files that ask it (LEZ 0.4 is the only network now)

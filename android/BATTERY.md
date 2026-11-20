@@ -106,7 +106,7 @@ says why, when:
     `updated` under 2 h old;
   - a send waiting for its block: `wallet-history.json` has a `kind: sent`, `status: pending` entry under
     1 h old;
-  - a name change running: a `libnames.so` process;
+  - a name change running: a `libnames04.so` process;
 - the node has not been Online on readings at least 90 s apart. The node saves its state once a minute,
   and a restart before a saved Online state would start the one-hour bootstrap wait again.
 
