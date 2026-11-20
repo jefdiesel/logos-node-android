@@ -161,7 +161,7 @@ await val("#s4-phrase", PHRASE.toUpperCase().replace(/ /g, "  "));
 const p1 = await pressNow("#s4-restore-go");
 check("Restore: 'Restoring…' at once, can't be pressed twice", p1 === "Restoring…|true", p1);
 check("the box is emptied as the request goes", (await js(`document.getElementById("s4-phrase").value`)) === "");
-await waitFor("Restored: this phone sends from the desktop's first account", `/^Restored\\. This phone sends from Public\\/[1-9A-HJ-NP-Za-km-z]{32,44}, your desktop's first account\\.$/.test(document.getElementById("s4-restore-m").textContent)`, 20000);
+await waitFor("Restored: this phone sends from the desktop's first account", `/^Restored\\. This phone sends from Public\\/[1-9A-HJ-NP-Za-km-z]{32,44}, the phrase's first account\\.$/.test(document.getElementById("s4-restore-m").textContent)`, 20000);
 const v = await get("/api/wallet/lez04", session);
 const MAIN = v.account;
 check("the phrase went out once, to the restore route, lowercase, single-spaced", bodies.filter(b => b.body.includes("sausage")).length === 1

@@ -97,7 +97,7 @@
     </div>
     <div class="card" id="s4-recv" hidden>
       <h3>Receive LEZ</h3>
-      <p class="note" style="margin-top:0">This phone's LEZ 0.4 account (the first of your recovery phrase, as on your desktop):</p>
+      <p class="note" style="margin-top:0">This phone's LEZ 0.4 account (the first of its recovery phrase):</p>
       <div class="s4-f"><span class="hash" id="s4-acct"></span></div>
       <div id="s4-qr"></div>
       <p class="note">Someone paying this account for the first time needs its public key:</p>
@@ -108,7 +108,7 @@
       <button type="button" class="small" id="s4-rm-open" aria-expanded="false" aria-controls="s4-rm-f">Remove the LEZ 0.4 accounts from this phone</button>
       <div class="card" id="s4-rm-f" hidden>
         <p class="msg warn" id="s4-rm-why" style="margin-top:0" hidden></p>
-        <p class="note" style="margin-top:0">This deletes the keys made from your recovery phrase from this phone. Your accounts, names and NFTs stay on the network and in your desktop Names Wallet; type the phrase here again to bring them back. The rest of this wallet (Logos, LEZ 0.3, your name account) isn't touched.</p>
+        <p class="note" style="margin-top:0">This deletes this wallet's keys from this phone. Your accounts, names and NFTs stay on the network, but only the recovery phrase (or an app backup that holds this wallet) brings them back: without either they are lost for good. The rest of this wallet (Logos, LEZ 0.3, your name account) isn't touched.</p>
         <label for="s4-rm-pin">Your PIN</label>
         <input id="s4-rm-pin" class="pin" type="text" inputmode="numeric" maxlength="12" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
         <button type="button" id="s4-rm-go" style="margin-top:10px">Remove from this phone</button>
@@ -251,7 +251,7 @@
     b.disabled = false; b.textContent = "Restore my accounts";
     if (r.status === 401) return lockedNow();
     if (!r.ok) { m.className = "msg bad"; m.textContent = r.data.error || "The accounts couldn't be restored. Nothing was kept."; return; }
-    m.className = "msg ok"; m.textContent = "Restored. This phone sends from Public/" + r.data.account + ", your desktop's first account.";
+    m.className = "msg ok"; m.textContent = "Restored. This phone sends from Public/" + r.data.account + ", the phrase's first account.";
     setupMode = null;
     render(r.data);
     window.NET04.reload();
