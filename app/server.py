@@ -4215,8 +4215,8 @@ def main():
         event("app start", port=PORT, version=APP_VERSION, embedded="android")
     if pin_is_set():
         event("wallet locked", reason="the app started (every start begins locked)")
-    else:
-        event("app start", port=PORT, version=APP_VERSION)
+    if not EMBEDDED:
+        event("app start", port=PORT, version=APP_VERSION)          # (after the lock line, as before)
     threading.Thread(target=wallet_keys, daemon=True).start()
     threading.Thread(target=history_loop, daemon=True).start()
     if not EMBEDDED:
