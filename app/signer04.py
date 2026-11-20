@@ -111,13 +111,15 @@ PROGRESS = [
 ]
 ERRORS = [
     (re.compile(r"\b" + _NAME + r" already has a deed"), "{0} already has its NFT."),
+    (re.compile(r"\b" + _NAME + r"\S{0,8} is locked \(one to four characters, or on the reserved list\): only the registry's admin"),
+     "{0} is locked (one to four characters, or on the reserved list): only the registry's admin can register it. Pick another name."),
     (re.compile(r"\b" + _NAME + r" is locked"), "{0} is locked (one to four characters, or reserved), so it has no NFT."),
     (re.compile(r"this wallet does not hold " + _NAME), "None of this wallet's accounts holds {0}."),
     (re.compile(r"\b" + _NAME + r" is not registered"), "{0} isn't registered on this network."),
     (re.compile(r"\b" + _NAME + r"\S{0,8} is already registered"), "{0} is taken: someone holds it already. Pick another name."),
     (re.compile(r"\b" + _NAME + r"\S{0,8} was not registered"), "{0} was not registered. Try again: the deposit is taken only when it is."),
-    (re.compile(r"Public/" + _ID + r" holds " + _N + r", less than the " + _N + r" that registering"),
-     "Public/{0} holds {1}, less than the {2} deposit the name takes. Add test LEZ first."),
+    (re.compile(r"(?:Public/)?" + _ID + r" holds " + _N + r", less than the " + _N + r" that registering"),     # (the tool prints the bare id)
+     "Public/{0} holds {1}, less than the {2} deposit the name takes. Add test LEZ first: nothing was sent."),
     (re.compile(r"Public/" + _ID + r" holds " + _N + r"; this takes " + _N + r", and about " + _N + r" more is held"),
      "Public/{0} holds {1}; this takes {2}, and about {3} more is held for the fee while it runs. Add test LEZ first."),
     (re.compile(r"Public/" + _ID + r" holds " + _N + r"; about " + _N + r" is held for the fee"),
@@ -927,6 +929,14 @@ class Signer04:
         except Exception:
             return None
 
+    def committed(self, name):
+        """Whether `names` keeps a commitment to `name` (in names.json, until its reveal lands or 24 hours pass)."""
+        try:
+            with open(os.path.join(self.home, "names.json")) as f:
+                return name in ((json.load(f) or {}).get("pending") or {})
+        except Exception:
+            return False
+
     def entry_steps(self, name, entries):
         """The steps that point `name` at this phone: its public account, then its `blockchain` and `msg` entries (the
         node wallet's address and the messaging address, as known), in one profile change."""
@@ -958,6 +968,8 @@ class Signer04:
         def registered(ok):
             if ok:
                 self.save(name=name, registering=None)
+            elif not self.committed(name):              # stopped before its commitment (taken, locked, short): nothing to go on with
+                self.save(registering=None)
         # a registration whose reveal landed before the app stopped: the name is ours already, only the entries are left
         held = self.held_here(name) if st.get("registering") else None
         step = (None if held else ["register", name, "--owner", "Public/" + main, "--wait"], {"NAMES_SHORTLIST": self.shortlist}, registered)

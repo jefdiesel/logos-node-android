@@ -27,7 +27,7 @@ slot.innerHTML = `
         <input id="lns-in" type="text" maxlength="32" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="alice">
         <ul class="note" id="n4n-what" style="padding-left:20px">
           <li>About 20 minutes: a first step, then the registration at least 15 minutes later, so nobody who sees it can take the name first. Keep the app open meanwhile. Other LEZ 0.4 sends and backups wait until it ends.</li>
-          <li>A deposit of 1,000,000 test LEZ, held while you keep the name, and fees of about 2,600,000, from this account. The free test LEZ (Wallet) covers it.</li>
+          <li>A deposit of 1,000,000 test LEZ, held while you keep the name, and fees of about 2,600,000 (worked out from the network's fee caps, not measured), from this account. The free test LEZ (Wallet) covers it. Claiming the name's NFT afterwards needs more test LEZ than is left of it.</li>
           <li id="n4n-list">Once, a 61 MB download: the list of locked names, from GitHub.</li>
           <li>Anyone who looks the name up then sees this phone's LEZ 0.4 account, its Logos address and its messaging address.</li>
         </ul>

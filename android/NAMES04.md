@@ -177,8 +177,12 @@ wallet) before it can claim.
 
 **Checked:** `tests/sign04_test.py` (the stand-in tool: a taken name, a reveal that fails then Continue on the same
 commitment, the entries, Point again, the backup carrying the name, `held_here`) and `tests/sign04_ui.mjs` (the page).
-Not yet run against the live LEZ 0.4: on 2026-11-20 the faucet refused a throwaway wallet ("Too many test LEZ grants
-from this address today"), so the laptop run of this route with the host `names` stopped before registering.
+Against the live LEZ 0.4, from the laptop (the app's own route, the host `names` of the deeds line, not the phone's bare
+build), 2026-11-20: the list downloaded from GitHub and matched its pin (61 MB in about 6 s on a home connection), the
+real tool's lines and its refusal for an account holding nothing went through the allowlists (no transaction sent).
+A full registration has not run live yet: the faucet refused a throwaway wallet ("Too many test LEZ grants from this
+address today"). A registration that stops before its commitment (a taken, locked or unfunded name) leaves nothing to
+Continue; one that stops after it keeps `registering`.
 
 ## The faucet
 

@@ -609,6 +609,7 @@ code, r = W.call("/api/wallet/lez04/register", {"name": "taken"}, session=sess)
 v = job_end()
 check("a taken name: said plainly, the commitment not even made", code == 200 and v["job"]["state"] == "failed" and "taken is taken" in v["job"]["error"]
       and len(chain2.sent) == sent0, v["job"])
+check("…and nothing is left to Continue", v["registering"] is None and not v["name"], v)
 code, r = W.call("/api/wallet/lez04/register", {"name": "once-phone"}, session=sess)
 check("register starts one job", code == 200 and r["job"]["kind"] == "register" and r["registering"]["name"] == "once-phone", r)
 check("while it runs, a send waits", W.call("/api/wallet/lez04/send", {"to": "aa" * 32, "amount": "5"}, session=sess)[0] == 409)
@@ -643,6 +644,17 @@ plain = json.loads(server.aead_decrypt(server.backup_key("a long backup password
                                        __import__("base64").b64decode(doc["cipher"]["nonce"]), __import__("base64").b64decode(doc["ciphertext"]),
                                        server.BACKUP_AADS[doc["version"]]))
 check("the backup carries the name with the wallet", plain["lez04_wallet"].get("name") == "once-phone")
+
+# what the real tool prints when a registration can't start (logos-names 0.4, seen 2026-11-20 against our LEZ 0.4)
+check("a short balance: said plainly, with the deposit", signer04.error_text([
+    b"phonetest takes a deposit of 1000000, held for as long as you keep the name and refunded when you release it",
+    b"Error: 4pKiTFrc1ZqFLzsk6shkSAkxEWKhGMM1Pp287pRHZGuH holds 0, less than the 1000000 that registering phonetest takes; add funds to it first"])
+      == "Public/4pKiTFrc1ZqFLzsk6shkSAkxEWKhGMM1Pp287pRHZGuH holds 0, less than the 1000000 deposit the name takes. Add test LEZ first: nothing was sent.")
+check("a locked name: said as a registration's refusal, not a claim's", signer04.error_text([
+    b"Error: abcd is locked (one to four characters, or on the reserved list): only the registry's admin registers it, then transfers it to whoever it is for"])
+      == "abcd is locked (one to four characters, or on the reserved list): only the registry's admin can register it. Pick another name.")
+check("the deposit line as the tool prints it", signer04.clean_line(b"phonetest takes a deposit of 1000000, held for as long as you keep the name and refunded when you release it")
+      == "phonetest takes a deposit of 1000000, given back if you release it")
 
 # An account and its public key as one item (this app's Receive copies them so): a first payment needs the key
 pk1 = hashlib.sha256(b"a key").hexdigest()
