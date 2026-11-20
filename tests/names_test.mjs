@@ -3,9 +3,10 @@
 //   node tests/names_test.mjs
 //       the SPEC section 10 test vectors, run against the vendored copy
 //   APP_BASE=http://127.0.0.1:8090 APP_PIN=... NAMES_FROM=<funded key> NAMES_TO=<a key> node tests/names_test.mjs
-//       also end to end: lookups go through the app's /api/names/rpc to a fake sequencer started here
-//       on NAMES_FAKE_PORT (default 18545), which the app must have as NAMES_RPC_URL, with
-//       NAMES_PROGRAM=US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx (32 bytes of 0x07, the SPEC's test program)
+//       also end to end: lookups go through the app's /api/names/rpc to a fake LEZ 0.4 network started here
+//       on NAMES_FAKE_PORT (default 18545), which the app must have as its LEZ 0.4 network, with the SPEC's test
+//       program (US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx, 32 bytes of 0x07) as the LNS registry: in the app's
+//       data folder, wallet-net04-config.json = {"rpc_url": "http://127.0.0.1:18545/", "lns_registry": "US517G…"}
 import { cpSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -88,21 +89,22 @@ const realFetch = globalThis.fetch;
 globalThis.fetch = (url, opt = {}) => String(url) === RPC  // what the page does: the forwarder needs the wallet session
   ? realFetch(url, { ...opt, headers: { ...(opt.headers || {}), "X-Session": session, Origin: ORIGIN } }) : realFetch(url, opt);
 
-const shards = new Map();                    // account id -> record bytes, what the fake sequencer holds
+const shards = new Map();                    // account id -> record bytes, what the fake network holds under the registry
 async function register(name, texts, expires = Date.UTC(2100, 0, 1)) {
   const d = await N.deriveName(name);
   const body = await N.seal(d.key, N.encodeProfile({ name, texts }), "record");
-  const rec = new Uint8Array(1 + 32 + 8 + 4 + body.length);
+  const rec = new Uint8Array(1 + 32 + 8 + 4 + body.length + 2);   // a LEZ 0.4 record, version 7: ends "not claimed, no deed"
   const v = new DataView(rec.buffer);
-  rec[0] = 3; rec.fill(9, 1, 33); v.setBigUint64(33, BigInt(expires), true); v.setUint32(41, body.length, true); rec.set(body, 45);
+  rec[0] = 7; rec.fill(9, 1, 33); v.setBigUint64(33, BigInt(expires), true); v.setUint32(41, body.length, true); rec.set(body, 45);
   shards.set(await N.recordAddress(PROGRAM, d.id), Array.from(rec));
 }
 const asked = [];
 const fake = createServer((req, res) => {
   let raw = ""; req.on("data", (c) => (raw += c)); req.on("end", () => {
     const { id, method, params } = JSON.parse(raw); asked.push({ method, params });
-    const data = shards.has(params[0]) ? { shards: { [PROGRAM]: shards.get(params[0]) } } : { shards: {} };
-    res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ jsonrpc: "2.0", id, result: { data } }));
+    const q = method === "getAccountView" && Array.isArray(params) && params[0] && params[0].program_account_id === PROGRAM ? params[0].account_id : null;
+    const result = shards.has(q) ? { nonce: 0, data: { actor_states: { [PROGRAM]: shards.get(q) } } } : null;   // LEZ 0.4: null for no account
+    res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ jsonrpc: "2.0", id, result }));
   });
 });
 await new Promise((ok) => fake.listen(Number(process.env.NAMES_FAKE_PORT || 18545), "127.0.0.1", ok));
@@ -113,17 +115,30 @@ await register("no-address", { chat: "hi" });
 await register("bad-address", { blockchain: "not-an-address" });
 await register("lapsed", { blockchain: TO }, Date.now() - 86_400_000);
 
-let r = await realFetch(RPC, { method: "POST", headers: { "Content-Type": "application/json", Origin: ORIGIN }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getAccount", params: [PROGRAM] }) });
+const view = (account_id, program_account_id = PROGRAM, extra = {}) =>
+  JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getAccountView", params: [{ account_id, program_account_id, ...extra }] });
+const post = (body, f = fetch) => f(RPC, { method: "POST", headers: { "Content-Type": "application/json", Origin: ORIGIN }, body });
+let r = await post(view(PROGRAM), realFetch);
 check("the name forwarder needs an unlocked wallet", r.status === 401, r.status);
-r = await fetch(RPC, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "sendTransaction", params: [PROGRAM] }) });
-check("the name forwarder passes nothing but getAccount", r.status === 400, r.status);
-r = await fetch(RPC, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getAccount", params: ["../../etc"] }) });
+const wallet = await (await fetch(BASE + "/api/wallet")).json();
+check("the page is given the LNS registry of the LEZ 0.4 network as the names program", wallet.names_program === PROGRAM, wallet);
+const before = asked.length;
+r = await post(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "sendTransaction", params: [PROGRAM] }));
+check("the name forwarder passes nothing but getAccountView", r.status === 400, r.status);
+r = await post(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getAccount", params: [PROGRAM] }));
+check("not even LEZ 0.3's getAccount", r.status === 400, r.status);
+r = await post(view("../../etc"));
 check("the name forwarder passes only an account id", r.status === 400, r.status);
+r = await post(view(PROGRAM, N.base58Encode(new Uint8Array(32).fill(8))));
+check("and only under the LNS registry", r.status === 400, r.status);
+r = await post(view(PROGRAM, PROGRAM, { extra: 1 }));
+check("and nothing else beside the two", r.status === 400, r.status);
+check("nothing refused reached the network", asked.length === before, asked.slice(before));
 
 r = await L.lookupName("pay-me", RPC, PROGRAM);
 check("a name resolves to its blockchain address", r.address === TO && r.name === "pay-me", r);
 check("only the derived account went to the sequencer, never the name",
-  asked.length > 0 && asked.every((a) => a.method === "getAccount" && !JSON.stringify(a).includes("pay-me")), asked);
+  asked.length > 0 && asked.every((a) => a.method === "getAccountView" && a.params[0].program_account_id === PROGRAM && !JSON.stringify(a).includes("pay-me")), asked);
 r = await L.lookupName("nobody-here", RPC, PROGRAM);
 check("an unregistered name is refused, and says so", r.code === "unregistered", r);
 r = await L.lookupName("no-address", RPC, PROGRAM);

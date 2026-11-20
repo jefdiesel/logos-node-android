@@ -434,6 +434,18 @@ def lns_name(text):
     return t
 
 
+def config(data_dir, app_dir):
+    """The LEZ 0.4 network the wallet uses: app/lez04.json, with what the person set in Settings → Network over it
+    (<data>/wallet-net04-config.json). The reader, the signer and the LNS name lookups all read it from here."""
+    c = Net04._load(os.path.join(app_dir, "lez04.json"), {})
+    over = Net04._load(os.path.join(data_dir, "wallet-net04-config.json"), {})
+    if isinstance(c, dict) and isinstance(over, dict):
+        c = dict(c, **over)
+    if not isinstance(c, dict):
+        c = {}
+    return c
+
+
 # ---- the reader --------------------------------------------------------------------------------------------------------
 
 class Net04:
@@ -482,13 +494,7 @@ class Net04:
             pass
 
     def config(self):
-        c = self._load(os.path.join(self.app_dir, "lez04.json"), {})
-        over = self._load(os.path.join(self.data_dir, "wallet-net04-config.json"), {})
-        if isinstance(c, dict) and isinstance(over, dict):
-            c = dict(c, **over)
-        if not isinstance(c, dict):
-            c = {}
-        return c
+        return config(self.data_dir, self.app_dir)
 
     # -- watched accounts (view-only) --
     def watched(self):

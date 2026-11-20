@@ -384,9 +384,10 @@ def fetch_outside(url, body=None, cap=65536, timeout=8, total=None):
 
 # ---- LNS names: the page resolves names itself; this only forwards the one read it needs -----
 # The page runs the names project's reference resolver (names/names.js). The name never leaves
-# the device: the page derives the name's record account and asks the sequencer for that account,
-# through here so the page can keep talking to this app only. Only getAccount of one account id
-# is forwarded. Defaults are the names project's own public testnet ones (mcp/server.js).
+# the device: the page derives the name's record account and asks the network for that account,
+# through here so the page can keep talking to this app only. Only getAccountView of one account
+# under the LNS registry is forwarded, to the LEZ 0.4 network the wallet uses (names04_net below).
+# NAMES_RPC_URL and NAMES_PROGRAM are LEZ 0.3's, for the phone's 0.3 name account only.
 
 NAMES_RPC_URL = os.environ.get("NAMES_RPC_URL", "https://testnet.lez.logos.co")
 NAMES_PROGRAM = os.environ.get("NAMES_PROGRAM", "38jEfVV1RCyMzu1FGbYcCn5FqxCxKyY58VgzjruAh2gq")
@@ -399,15 +400,37 @@ QR_FILE = "/qr/qrcode.js"                 # the QR code drawer (vendored, see ap
 NET04_FONTS = {"/net04/fonts/Gloock-Regular.ttf": "Gloock-Regular.ttf", "/net04/fonts/FiraCode-VF.ttf": "FiraCode-VF.ttf"}   # the name card's (OFL)
 
 
-def names_rpc(body):
-    """(http status, reply bytes or object) for one getAccount read, forwarded to the sequencer."""
-    params = body.get("params")
-    if body.get("method") != "getAccount" or not isinstance(params, list) or len(params) != 1 \
-            or not ACCOUNT_ID_RE.match(str(params[0])):
-        return 400, {"error": "Only getAccount of one account id is forwarded."}
+def names04_net():
+    """(RPC URL, LNS registry) of the LEZ 0.4 network the name lookups read: the one the wallet's 0.4 reader and signer
+    use (app/lez04.json, or the network set in Settings → Network), in the Linux app too. ("", "") if unset."""
     try:
-        code, data = fetch_outside(NAMES_RPC_URL, {"jsonrpc": "2.0", "id": body.get("id", 1) if isinstance(body.get("id"), int) else 1,
-                                                   "method": "getAccount", "params": [str(params[0])]}, cap=262144, timeout=8)
+        import lez04
+        c = lez04.config(DATA_DIR, APP_DIR)
+    except Exception:
+        return "", ""
+    url, reg = c.get("rpc_url"), c.get("lns_registry")
+    return (url if isinstance(url, str) else "",
+            reg if isinstance(reg, str) and ACCOUNT_ID_RE.match(reg) else "")
+
+
+def names_rpc(body):
+    """(http status, reply bytes or object) for one getAccountView of one account under the LNS registry, forwarded to the
+    LEZ 0.4 network through the app's one pacer (lez04_pacer)."""
+    url, registry = names04_net()
+    params = body.get("params")
+    q = params[0] if isinstance(params, list) and len(params) == 1 else None
+    if body.get("method") != "getAccountView" or not isinstance(q, dict) or set(q) != {"account_id", "program_account_id"} \
+            or not isinstance(q["account_id"], str) or not ACCOUNT_ID_RE.match(q["account_id"]) \
+            or not registry or q["program_account_id"] != registry:
+        return 400, {"error": "Only getAccountView of one account under the LNS registry is forwarded."}
+    try:
+        if not outside_url_ok(url):
+            raise ValueError("no network")
+        lez04_pacer().wait()
+        code, data = fetch_outside(url, {"jsonrpc": "2.0", "id": body.get("id", 1) if isinstance(body.get("id"), int) else 1,
+                                         "method": "getAccountView",
+                                         "params": [{"account_id": q["account_id"], "program_account_id": registry}]},
+                                   cap=262144, timeout=8)
         reply = json.loads(data)
     except Exception:
         return 502, {"error": "The name service isn't answering."}
@@ -6110,38 +6133,34 @@ def signer04_extra():
 
 def net04_own():
     """The phone's own LEZ account id (base58) on LEZ 0.4: the first account of its LEZ 0.4 wallet once restored from
-    the recovery phrase (the desktop's first account); before that the LEZ 0.3 name account, view-only. None without
-    either."""
+    the recovery phrase (the desktop's first account) or made on the phone; None before that."""
     try:
         s = signer04()
-        if s and s.ready():
-            return s.state()["main"]
-        import lez04
-        a = lns_state()["account"] if lns_available() else None
-        return lez04.account_id(a) if a else None
+        return s.state()["main"] if s and s.ready() else None
     except Exception:
         return None
 
 
 def net04_name():
-    """The phone's own LNS name ("" without one): Collectibles looks for its NFT first."""
-    try:
-        return lns_state()["name"] if lns_available() else ""
-    except Exception:
-        return ""
+    """The phone's own LNS name on LEZ 0.4: none known yet (""), so Collectibles shows the names the person added. (It
+    was the LEZ 0.3 name account's name; that one isn't the 0.4 wallet's.)"""
+    return ""
 
 
 LNS_ID_RE = re.compile(r"^id\s+([0-9a-f]{64})\s*$", re.M)
 
 
 def lns_name_id(name):
-    """The 32-byte id the chain knows the LNS name by (Argon2id, slow on purpose), worked out by the bundled `names`
-    (`names address <name>`: offline, no wallet, no network); None if it can't say. Only the id line is read."""
-    if not lns_available() or not lns_name_ok(name):
+    """The 32-byte id the chain knows the LNS name by (Argon2id, slow on purpose), worked out by the bundled LEZ 0.4
+    `names` (NAMES04_BIN: `names address <name>`: offline, no wallet, no network); None if it can't say. Only the id
+    line is read."""
+    if not NAMES04_BIN or not os.path.isfile(NAMES04_BIN) or not os.access(NAMES04_BIN, os.X_OK) or not lns_name_ok(name):
         return None
     try:
-        r = subprocess.run([NAMES_BIN, "address", name], env=lns_env(), cwd=LNS_HOME if os.path.isdir(LNS_HOME) else DATA_DIR,
-                           capture_output=True, timeout=60, stdin=subprocess.DEVNULL, umask=0o077)
+        with tempfile.TemporaryDirectory(dir=DATA_DIR) as tmp:
+            r = subprocess.run([NAMES04_BIN, "address", name], cwd=tmp, capture_output=True, timeout=60, stdin=subprocess.DEVNULL,
+                               env={"PATH": "/system/bin:/usr/bin:/bin", "HOME": tmp, "TMPDIR": tmp, "NO_COLOR": "1", "RUST_BACKTRACE": "0"},
+                               umask=0o077)
     except Exception:
         return None
     m = LNS_ID_RE.search(ANSI_RE.sub(b"", r.stdout).decode("utf-8", "replace")) if r.returncode == 0 else None
@@ -6342,7 +6361,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with lock:
                 wait = max(0, int(fails["until"] - time.time()))
             out = {"pin_set": pin_is_set(), "unlocked": self.authed(), "wait": wait,
-                   "passkeys": len(passkeys_load()["keys"]), "names_program": NAMES_PROGRAM,
+                   "passkeys": len(passkeys_load()["keys"]), "names_program": names04_net()[1] or None,
                    "autolock_minutes": wallet_settings["autolock_minutes"], "leave_grace": LEAVE_GRACE}
             if EMBEDDED:
                 out.update(embedded="android", native_fingerprint=bool(wallet_settings.get("native_fingerprint")))

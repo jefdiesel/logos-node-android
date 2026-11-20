@@ -1482,7 +1482,7 @@ $("f-bk").addEventListener("submit", async e => {
 // ---- send ----
 function resetSend() { clearInterval(txTimer); pending = null; $("f-send").hidden = false; $("v-review").hidden = true; $("v-sent").hidden = true; $("m-send").textContent = ""; $("m-review").textContent = ""; }
 // LNS names are resolved here in the page by the names project's reference resolver (names/names.js);
-// its one network read goes to this app's /api/names/rpc, which forwards it to the sequencer.
+// its one network read goes to this app's /api/names/rpc, which forwards it to the LEZ 0.4 network (the LNS registry there).
 const NAMES_RPC = "/api/names/rpc";
 let namesProgram = null, namesMod = null;
 const namesLib = async () => namesMod || (namesMod = await import("/names/lookup.js"));

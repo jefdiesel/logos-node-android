@@ -75,15 +75,16 @@ const shards = new Map();
 async function register(name, texts) {
   const d = await N.deriveName(name);
   const body = await N.seal(d.key, N.encodeProfile({ name, texts }), "record");
-  const rec = new Uint8Array(45 + body.length), v = new DataView(rec.buffer);
-  rec[0] = 3; rec.fill(9, 1, 33); v.setBigUint64(33, BigInt(Date.UTC(2100, 0, 1)), true); v.setUint32(41, body.length, true); rec.set(body, 45);
+  const rec = new Uint8Array(47 + body.length), v = new DataView(rec.buffer);   // a LEZ 0.4 record: version 7, no claim, no deed
+  rec[0] = 7; rec.fill(9, 1, 33); v.setBigUint64(33, BigInt(Date.UTC(2100, 0, 1)), true); v.setUint32(41, body.length, true); rec.set(body, 45);
   shards.set(await N.recordAddress(PROGRAM, d.id), Array.from(rec));
 }
 const sequencer = createServer((req, res) => {
   let raw = ""; req.on("data", (c) => (raw += c)); req.on("end", () => {
-    const { id, params } = JSON.parse(raw);
-    const data = shards.has(params[0]) ? { shards: { [PROGRAM]: shards.get(params[0]) } } : { shards: {} };
-    res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ jsonrpc: "2.0", id, result: { data } }));
+    const { id, method, params } = JSON.parse(raw);   // LEZ 0.4: getAccountView of one account under the registry
+    const q = method === "getAccountView" && Array.isArray(params) && params[0] && params[0].program_account_id === PROGRAM ? params[0].account_id : null;
+    const result = shards.has(q) ? { nonce: 0, data: { actor_states: { [PROGRAM]: shards.get(q) } } } : null;
+    res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ jsonrpc: "2.0", id, result }));
   });
 });
 await new Promise((ok) => sequencer.listen(SEQ_PORT, "127.0.0.1", ok));
@@ -102,6 +103,8 @@ function keystore() {
 async function app(port, extra) {
   const data = mkdtempSync(join(tmpdir(), "app-"));
   writeFileSync(join(data, "keystore.yaml"), keystore()); writeFileSync(join(data, "user_config.yaml"), "x: 1\n");
+  // name lookups read the LEZ 0.4 network: here the fake one, with the SPEC's test program as the LNS registry
+  writeFileSync(join(data, "wallet-net04-config.json"), JSON.stringify({ rpc_url: `http://127.0.0.1:${SEQ_PORT}/`, lns_registry: PROGRAM }));
   const env = { ...process.env, APP_PORT: String(port), APP_DATA: data, NODE_BIN: join(here, "fake_node_bin.py"),
                 NODE_CFG: join(data, "user_config.yaml"), NODE_API: "http://127.0.0.1:9", UPDATE_URL: "http://127.0.0.1:9/",
                 NAMES_RPC_URL: `http://127.0.0.1:${SEQ_PORT}`, NAMES_PROGRAM: PROGRAM,

@@ -5,6 +5,8 @@
 #   accounts derived from the phrase (a stand-in derivation: the same phrase, the same accounts), and makes storage.json.
 #   A phrase with the word "zoo" in it fails as a broken restore does.
 # - `wallet account get --keys`: prints `pk <hex>` (a stand-in key of the account).
+# - `address <name>`: prints `id     <hex>`, the stand-in id of fake_names_bin.py (sha256 of "fake-id/<name>"); offline,
+#   nothing recorded.
 # - sends (`wallet auth-transfer send`, `pay --public`, `nft init|send`, `deed claim`): progress lines as the real tool
 #   prints them, with some noise, and a `sendTransaction` to LOGOS_NAMES_RPC (the app's forwarder) carrying what the
 #   stand-in chain should change. `deed claim` needs NAMES_SHORTLIST to be a file.
@@ -77,6 +79,10 @@ def opt(name):
 
 
 def main():
+    if args[:1] == ["address"] and len(args) == 2:   # offline, no wallet: the name's id, as the LEZ 0.3 stand-in derives it
+        print("id     " + hashlib.sha256(b"fake-id/" + args[1].encode()).hexdigest())
+        print("record (the stand-in prints no address)")
+        return
     if args[:2] == ["module", "restore"]:
         if os.path.exists(os.path.join(home, "storage.json")):
             fail("this wallet opens, so there is nothing to restore")

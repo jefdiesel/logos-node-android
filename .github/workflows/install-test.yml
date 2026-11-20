@@ -208,9 +208,10 @@ jobs:
           sed -i 's|^    cors_origins: \[ \]$|    cors_origins:\n    - http://127.0.0.1:8090|' standalone-node-config.yaml
           ./logos-blockchain-node --deployment standalone-deployment-config.yaml standalone-node-config.yaml --check-config
           nohup ./logos-blockchain-node --deployment standalone-deployment-config.yaml standalone-node-config.yaml > node.log 2>&1 &
+          # LNS name lookups read the LEZ 0.4 network: here tests/names_test.mjs's fake, with the SPEC's test program as registry
+          echo '{"rpc_url": "http://127.0.0.1:18545/", "lns_registry": "US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx"}' > wallet-net04-config.json
           NODE_BIN="$PWD/logos-blockchain-node" NODE_CFG="$PWD/standalone-node-config.yaml" \
           NODE_DEPLOYMENT="$PWD/standalone-deployment-config.yaml" APP_DATA="$PWD" \
-          NAMES_RPC_URL=http://127.0.0.1:18545 NAMES_PROGRAM=US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx \
             nohup python3 ../app/server.py > app.log 2>&1 &
           sleep 5
       - name: Send coins through the web app and check both balances
@@ -286,7 +287,6 @@ jobs:
           grep -h "listens on this Unix socket only" node.log logs/* 2>/dev/null | tail -1 || true
           NODE_API="unix:$PWD/api/api.sock" NODE_BIN="$PWD/logos-blockchain-node" NODE_CFG="$PWD/standalone-node-config.yaml" \
           NODE_DEPLOYMENT="$PWD/standalone-deployment-config.yaml" APP_DATA="$PWD" \
-          NAMES_RPC_URL=http://127.0.0.1:18545 NAMES_PROGRAM=US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx \
             nohup python3 ../app/server.py > app.log 2>&1 &
           sleep 5
       - name: A real transfer through the web app, over the node's socket

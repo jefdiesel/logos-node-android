@@ -535,7 +535,8 @@ chain2.register("alice-long", AMAIN)
 code, r = W.call("/api/wallet/lez04/claim", {"name": "alice-long"}, session=sess)
 check("claim before Collectibles read the name: refused, says what to do", code == 409 and "Read the name first" in r["error"], r)
 W.call("/api/wallet/net04/nft", {"add_name": "alice-long"}, session=sess)
-server.lns_name_id = lambda name: name_id(name)
+check("a name's id comes from the LEZ 0.4 tool (`names address`, offline)", server.lns_name_id("alice-long") == name_id("alice-long"))
+check("and nothing else is taken for a name", server.lns_name_id("Not A Name") is None and server.lns_name_id("-x") is None)
 row = None
 for _ in range(60):
     time.sleep(0.2)

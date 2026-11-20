@@ -1,5 +1,5 @@
 // Vendored for the Logos node web app. Source: https://github.com/jefdiesel/logos-names
-// path resolver/names.js at commit 27029987a81e703c88876d967c04a25f4c841681 (main), unchanged except the
+// path resolver/names.js at commit 78b5896697ffacd5802b1c1e4701e4c9b129ac38 (the LEZ 0.4 line), unchanged except the
 // import path of @noble/hashes below, which points at the copy beside this file
 // (noble-hashes/, @noble/hashes 2.4.0 from npm, MIT, see noble-hashes/LICENSE).
 // Licence: MIT or Apache-2.0, see LICENSE-MIT and LICENSE-APACHE here.
@@ -127,8 +127,9 @@ export function isValidName(name) {
 /**
  * The identifier and key of `name`. The chain knows the name only by `id`;
  * `key` opens and seals what the name resolves to and is never sent anywhere.
- * The derivation is slow and memory-hard on purpose, to make scanning for names
- * expensive: about half a second and 64 MiB in pure JavaScript.
+ * The derivation is slow and memory-hard on purpose, to slow down guessing (short
+ * and common names stay cheap to guess): about half a second and 64 MiB in pure
+ * JavaScript.
  */
 export async function deriveName(name) {
   if (!isValidName(name)) throw new Error(`invalid name: ${name}`);
@@ -214,6 +215,14 @@ class Reader {
     const high = this.u32();
     return high * 2 ** 32 + low;
   }
+  u128() {
+    return Array.from(this.take(16)).reduceRight((value, byte) => (value << 8n) | BigInt(byte), 0n);
+  }
+  bool() {
+    const value = this.u8();
+    if (value > 1) throw new Error("not a boolean");
+    return value === 1;
+  }
   byteVec() {
     return this.take(this.u32());
   }
@@ -246,14 +255,42 @@ export async function ownerTag(id, accountId) {
   return toHex(await sha256(concat(utf8.encode("logos-names/v5/owner"), id, base58Decode(accountId))));
 }
 
+/**
+ * Decodes a record. Version 6 (LEZ 0.4) adds `claimed`: the name was carried over
+ * from an earlier chain. Older records end at `sealed`, and were never claimed.
+ */
 export function decodeNameRecord(bytes) {
   const reader = new Reader(bytes);
+  const version = reader.u8();
   return {
-    version: reader.u8(),
+    version,
     ownerTag: toHex(reader.take(32)),
     expires: reader.u64(),
     sealed: reader.byteVec(),
+    claimed: version >= 6 ? reader.bool() : false,
   };
+}
+
+/** Decodes the registry's settings. Before version 6 they end at `deposits`, with no claims. */
+export function decodeSettings(bytes) {
+  const reader = new Reader(bytes);
+  const version = reader.u8();
+  const settings = {
+    version,
+    admin: base58Encode(reader.take(32)),
+    treasury: base58Encode(reader.take(32)),
+    prices: [reader.u128(), reader.u128(), reader.u128()],
+    mode: reader.u8(),
+    deposits: [reader.u128(), reader.u128()],
+  };
+  return version < 6
+    ? { ...settings, claimsRoot: null, claimsUntil: 0, claimsProgram: null }
+    : {
+        ...settings,
+        claimsRoot: toHex(reader.take(32)),
+        claimsUntil: reader.u64(),
+        claimsProgram: base58Encode(reader.take(32)),
+      };
 }
 
 export function decodePage(bytes) {
@@ -309,18 +346,32 @@ export function encodePageContent({ contentType, body }) {
   return concat(writeString(contentType), writeByteVec(body));
 }
 
-/** Reads the registry's shard on `accountId`; empty when the account holds none. */
-export async function readShard(rpcUrl, program, accountId) {
+/**
+ * Reads what `program` keeps on the account `accountId`: its actor state, empty when
+ * there is none. `getAccountView` returns null for an account that isn't on the chain,
+ * and otherwise that one actor's state, as a list of bytes keyed by the program. A LEZ
+ * 0.3 sequencer answers the same call with the state under `shards`.
+ */
+export async function readActorState(rpcUrl, program, accountId) {
   const response = await fetch(rpcUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getAccount", params: [accountId] }),
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "getAccountView",
+      params: [{ account_id: accountId, program_account_id: program }],
+    }),
   });
   if (!response.ok) throw new Error(`sequencer returned HTTP ${response.status}`);
   const { result, error } = await response.json();
   if (error) throw new Error(`sequencer error: ${error.message}`);
-  return Uint8Array.from(result?.data?.shards?.[program] ?? []);
+  const data = result?.data;
+  return Uint8Array.from(data?.actor_states?.[program] ?? data?.shards?.[program] ?? []);
 }
+
+/** The old name of `readActorState`, kept for existing callers. */
+export const readShard = readActorState;
 
 /** Opens and decodes `sealed`, or null when it is empty, does not open or does not decode. */
 async function openAs(key, sealed, kind, decode) {
@@ -336,7 +387,7 @@ async function openAs(key, sealed, kind, decode) {
 
 /** The record of the name `id`, or null when it is not registered or is past grace at `now`. */
 async function readRecord(rpcUrl, program, id, now) {
-  const bytes = await readShard(rpcUrl, program, await recordAddress(program, id));
+  const bytes = await readActorState(rpcUrl, program, await recordAddress(program, id));
   if (bytes.length === 0) return null;
   const record = decodeNameRecord(bytes);
   return now >= record.expires + GRACE_MS ? null : record;
@@ -366,6 +417,36 @@ export async function resolveName(rpcUrl, program, name, now = Date.now()) {
   return { ...held, account, npk, vpk, texts };
 }
 
+/** The text entry that points a name to another (SPEC.md §7, Forwarding). */
+export const FORWARD_KEY = "forward";
+
+/**
+ * Where a resolved record forwards to: its `forward` entry, normalised, if that
+ * is a valid name other than the record's own; otherwise null.
+ */
+export function forwardOf(record) {
+  const value = record && record.texts ? record.texts[FORWARD_KEY] : undefined;
+  if (typeof value !== "string") return null;
+  const target = normalizeName(value);
+  return isValidName(target) && target !== record.name ? target : null;
+}
+
+/**
+ * Resolves `name` for using it (paying, messaging, showing it): when it forwards,
+ * the record of the name it points to, one hop, with `forwardedFrom` set to the
+ * name asked for, which a payer must be shown. Null when `name` isn't
+ * registered; throws when it points to a name that isn't. Changing a name never
+ * follows a forward: use `resolveName` for that.
+ */
+export async function resolveUsing(rpcUrl, program, name, now = Date.now()) {
+  const record = await resolveName(rpcUrl, program, name, now);
+  const target = forwardOf(record);
+  if (target === null) return record;
+  const forwarded = await resolveName(rpcUrl, program, target, now);
+  if (forwarded === null) throw new Error(`${name} points to ${target}, which isn't registered`);
+  return { ...forwarded, forwardedFrom: name };
+}
+
 /**
  * What a name shows people: whether it can be paid privately, and the public
  * account only if its holder published one. The private receiving keys are
@@ -392,7 +473,7 @@ export function publicView(record) {
 export async function resolvePage(rpcUrl, program, name, now = Date.now()) {
   const { id, key } = await deriveName(name);
   if ((await readRecord(rpcUrl, program, id, now)) === null) return null;
-  const bytes = await readShard(rpcUrl, program, await pageAddress(program, id));
+  const bytes = await readActorState(rpcUrl, program, await pageAddress(program, id));
   if (bytes.length === 0) return null;
   return openAs(key, decodePage(bytes).sealed, "page", decodePageContent);
 }
@@ -403,7 +484,7 @@ export async function resolvePage(rpcUrl, program, name, now = Date.now()) {
  * same account.
  */
 export async function reverseLookup(rpcUrl, program, accountId, now = Date.now()) {
-  const bytes = await readShard(rpcUrl, program, accountId);
+  const bytes = await readActorState(rpcUrl, program, accountId);
   if (bytes.length === 0) return null;
   const { name } = decodePrimaryName(bytes);
   if (!isValidName(name)) return null;
