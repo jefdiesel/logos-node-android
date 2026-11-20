@@ -68,6 +68,7 @@ check("progress: a send's lines become fixed texts",
 check("progress: a claim's lines", [signer04.clean_line(l) for l in (b"claiming the deed of alice-long (free): definition 9fPK", b"reading the registry's bytecode from the chain",
                                                                     b"This computer can't check the call first. If the network refuses it, the fee (about 1) is still paid.")]
       == ["claiming alice-long's NFT", "reading the LNS registry from the network", "sending it with its fixed fee cap"])
+check("progress: a public pay's own line", signer04.clean_line(b"paid in block 81") == "in block 81")
 check("progress: anything else is dropped (paths, keys, the details line)", all(signer04.clean_line(l) is None for l in (
     b"Stored persistent accounts at /data/x", b"pk " + b"ab" * 32, b"  details: at most 8,600,000", b"Input recovery phrase: legal winner", b"sk deadbeef")))
 check("errors: a fixed text, never what the tool printed", signer04.error_text([b"Error: Public/9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin holds 5; about 900 is held for the fee while this runs"])

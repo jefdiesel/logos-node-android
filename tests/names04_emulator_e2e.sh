@@ -283,7 +283,10 @@ if [ -n "${NFT_ELF:-}" ] && [ -f "$NFT_ELF" ]; then
   DEV_WALLET=$DEV/w04 D ./names --nft-program $NFTP nft send --from $DPUB --to Public/$X | quiet | tee "$WORK/nft-send.log"
   grep -q '^applied in block' "$WORK/nft-send.log" || fail "the device's NFT send did not apply"
   H nft list --json > "$WORK/nft-host.json"
-  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); r=[h for h in d["holdings"] if h["account"].endswith(sys.argv[2])]; assert r and r[0].get("holds") and r[0]["state"]=="master", d; print("the host account holds the master the device sent")' "$WORK/nft-host.json" "$X"
+  python3 -c 'import json,sys
+line = [l for l in open(sys.argv[1]).read().splitlines() if l.startswith("{")][-1]      # (the JSON is the last such line)
+d = json.loads(line); r = [h for h in d["holdings"] if h["account"].endswith(sys.argv[2])]
+assert r and r[0].get("holds") and r[0]["state"] == "master", d; print("the host account holds the master the device sent")' "$WORK/nft-host.json" "$X"
 else
   say "7. NFTs: skipped (the NFT program's guest wasn't built)"
 fi

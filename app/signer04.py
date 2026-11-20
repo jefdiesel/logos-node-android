@@ -78,6 +78,7 @@ PROGRESS = [
     (re.compile(r"\ATransaction is included in block " + _N + r"\Z"), "in block {0}"),
     (re.compile(r"\Asubmitted [0-9a-f]{64}\Z"), "sent; waiting for a block"),
     (re.compile(r"\Aapplied in block " + _N + r"\Z"), "in block {0}"),
+    (re.compile(r"\Apaid in block " + _N + r"\Z"), "in block {0}"),                       # `pay --public`
     (re.compile(r"\Apaying " + _N + r" to " + _NAME + r"\b.{0,80}\Z"), "paying {1}"),
     (re.compile(r"\Aclaiming the deed of " + _NAME + r" \(free\).{0,120}\Z"), "claiming {0}'s NFT"),
     (re.compile(r"\Areading the registry's bytecode from the chain\Z"), "reading the LNS registry from the network"),
