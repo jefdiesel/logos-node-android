@@ -24,11 +24,29 @@ actions stay off on the phone: they need a RISC Zero proof, and a phone has no p
   claim from a bare build has not been run on any chain. It uses the same unchecked path as a bare register. Its cap:
   `unchecked_limit(165,000 + 150,000)` = gas limit 945,000; a claim measured on our LEZ 0.4 used 164,922.
 
-## The accounts: the desktop's recovery phrase
+## The accounts: the phone's own wallet, or a recovery phrase
 
-The phone uses the SAME recovery phrase as the desktop Names Wallet for LEZ 0.4 (Jef, 2026-11-19): the same accounts,
-names and NFTs. The phone's LEZ 0.3 name account has no phrase (NAMES.md "Where the key lives"), so the person types
-the desktop's phrase once, on the Wallet on LEZ 0.4 ("Use your recovery phrase").
+The Wallet on LEZ 0.4, with no accounts yet, shows one small card, **Set up your LEZ 0.4 wallet**, with two choices
+(Jef, 2026-11-20: "i want the phone sep account"; the big phrase box on the front page read as alarming):
+
+1. **Create a new wallet** (first): the phone's own wallet, its own accounts.
+   - `POST /api/wallet/lez04/new-phrase` (unlocked session): `signer04.new_phrase()` makes 32 bytes with `secrets`
+     (the OS's randomness) into a 24-word BIP-39 English phrase, as the desktop makes its own (LEZ
+     `SeedHolder::new_mnemonic`: 32 bytes, `Mnemonic::from_entropy`), so the phrase restores on the desktop too. The
+     word list is `app/bip39/english.txt`, checked against its published SHA-256 (`2f5eed53…dbda`) before use;
+     `tests/sign04_test.py` checks the encoder against the published BIP-39 vectors. Nothing is made or kept on the
+     server: no file, log, event or later reply has the phrase.
+   - The page shows the 24 words once, with the screen secured first (`FLAG_SECURE` and autofill off, as for the phrase
+     box) and no way to copy them: not selectable (`user-select: none`, no long-press menu) and no copy button (so no
+     clipboard at all). "I've written it down" takes the words off the screen and asks for two of them back (random
+     positions); right, it restores from the phrase through the same `POST /api/wallet/lez04/restore` as a typed one
+     (the same derivation, `names module restore`), then empties it from the page and turns the screen protection
+     off. Wrong: said, nothing made; "Show the words again" or Cancel (the phrase is dropped, nothing was made).
+   - Then a prompt to make an app backup ("Back up now" opens Settings → Back up; "Later"). Until a backup holds this
+     wallet, a "Back up needed" line stays under it (`backup_needed` in `GET /api/wallet/lez04`, from the last
+     backup's record).
+2. **Use a recovery phrase** (second): the phrase box below, for the desktop's phrase (the same accounts, names and
+   NFTs as the desktop) or a phrase this phone made before.
 
 - `POST /api/wallet/lez04/restore {phrase}` (unlocked session). The server checks its form (12 to 24 lowercase
   words), then runs `names module restore` (the desktop's own restore: `cli_restore_wallet` → `run_restore_wallet`)
@@ -44,7 +62,10 @@ the desktop's phrase once, on the Wallet on LEZ 0.4 ("Use your recovery phrase")
   included), so every account the desktop has or will derive, its names, NFTs and its private balance, can be rebuilt
   from it. Whoever can read the app's files can take the desktop wallet. A debuggable build lets any computer with USB
   debugging read them (`run-as`), so a real phrase goes only on a phone running **the release build** (below).
-- Not in the app's backup file: the phrase is the way back for LEZ 0.4.
+- **In the app's backup file** (since 0.9.32): `lez04_wallet` holds `storage.json` (the keys), `names.json` and the
+  account list. A restore puts it back only on a phone with no LEZ 0.4 wallet (never over other accounts: "kept", with
+  a line saying to remove them first); the same wallet is left as it is. `tools/decrypt-backup.py --check` lists it
+  ("the LEZ 0.4 wallet: Public/…"). So the backup file and its password are worth as much as the phrase.
 - The restore needs an unlocked session, not the PIN typed again (the backup restore asks for both; this one only
   adds keys, and only where there are none).
 - The phrase box asks the keyboard not to correct or capitalise, but a phone keyboard may still learn the words.
@@ -64,7 +85,7 @@ the desktop's phrase once, on the Wallet on LEZ 0.4 ("Use your recovery phrase")
   out one field of a WebView, so it is the whole page, only while the box is in use). The rest of the time the screen
   is normal, so `adb shell screencap` of the wallet still works. A paste into the box empties the phone's clipboard
   (`LogosAndroid.clearClipboard`); a keyboard's own clipboard history is the keyboard's.
-- A phone with no desktop wallet has no LEZ 0.4 accounts: the phone only restores, it doesn't make a new phrase.
+- A phone with no desktop wallet makes its own: **Create a new wallet** (above).
 
 ## What it sends
 
@@ -122,6 +143,27 @@ entered in Settings → Network). Only the methods in `signer04.RPC_METHODS` pas
 Every call this app makes to LEZ 0.4 (the reader, the forwarder, the faucet) goes through one pacer: at most one every
 0.25 s, 40 in 10 s, under the proxy's 50 per 10 s per address. A read refused with 429 is tried again twice after a
 pause; `sendTransaction` is never sent twice.
+
+## The Node screen and the wallet's lock (fixed 2026-11-20)
+
+The Node screen (Start/Stop, start from a snapshot, go back to the previous state, the messaging switches, the log)
+opens only while the wallet is unlocked. Before, the cream "Starting the wallet…" cover had a native Node button that
+opened it with no lock check (the cover shows before the page's PIN/fingerprint lock), as did the old top-right Node
+button, and the Node screen checked nothing: anyone holding the phone with the wallet locked could stop the node or
+replace its database with any snapshot file (and the wallet would then read a false chain state).
+
+- The source of truth is the wallet server's own session: `server.native_unlocked()` (no HTTP route; true only while
+  server.py holds an open session, made by a PIN or fingerprint unlock and ended by its rules: Lock now, idle,
+  leaving, fingerprints changed). The page can't set it.
+- `WalletLock` asks it: in the wallet's process directly, and from the Node screen (the main process) through a
+  non-exported content provider that runs in the wallet's process. Any failure answers "locked".
+- Both native Node buttons are gone; the only way in is the page's Settings → Node → Open node, which is behind the
+  page's lock and also checked natively.
+- The Node screen shows nothing until the answer is "unlocked"; entered while locked (onCreate, onResume) it closes;
+  if the wallet locks while it shows, it drops to a read-only status (process, height, peers) with its controls and
+  log hidden and any open confirmation closed; every action asks again right before it runs.
+- Leaving the wallet's screen for the Node screen counts as leaving: the wallet locks after a minute there (or
+  sooner with the idle auto-lock), and the Node screen then goes read-only.
 
 ## Known limits
 
@@ -206,7 +248,10 @@ Steps (the Mini drives the phone over adb):
 6. Uninstall the debug build: `ssh minim4 'adb uninstall io.github.jefdiesel.logosnode'`.
 7. Install the release APK: `ssh minim4 'adb install <the release APK>'` (copied to the Mini from where
    `build-release.sh` put it; check it against its `.sha256`).
-8. Open the app, set a new PIN, let the node start (it makes new keys at first start; the restore replaces them).
+8. Open the app, set a new PIN, then start the node: Settings → Node → Open node → **Start**, and wait until the Node
+   screen shows the node process running. A fresh install doesn't start the node by itself, and the node makes its
+   key file (`keystore.yaml`) only at its first start; until then a restore answers "The node hasn't run on this
+   phone yet … Start the node first …, then restore" and changes nothing. The restore replaces those new keys.
 9. Settings → Backup & restore → Restore from a backup: the file, the backup password, the PIN, tick, Restore. The
    node's keys, the messaging key and chats, and the LEZ 0.3 name account come back; the node restarts. Check Your
    name shows the same account as before.
@@ -214,7 +259,8 @@ Steps (the Mini drives the phone over adb):
     add Collectibles' programs and names again.
 11. Check the release build on the phone before the phrase: with the phrase box focused, `adb shell screencap` gives
     a black picture, and `chrome://inspect` on the computer lists no WebView of the app.
-12. Only now: Wallet on LEZ 0.4 → Use your recovery phrase, with the desktop's phrase.
+12. Only now: Wallet on LEZ 0.4 → Set up your LEZ 0.4 wallet → **Create a new wallet** (the phone's own accounts;
+    write the 24 words on paper), then make an app backup. ("Use a recovery phrase" takes a phrase you already have.)
 
 From then on install only release builds signed with the same key. A CI debug APK won't install over the release
 build (that is the point); installing one means another uninstall.

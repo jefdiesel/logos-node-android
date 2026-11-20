@@ -8,7 +8,7 @@ Python standard library only. Wallet calls need a PIN that is set on first use.
 import base64, calendar, hashlib, hmac, http.server, json, os, re, secrets, shlex, shutil, struct, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-APP_VERSION = "0.9.31"
+APP_VERSION = "0.9.32"
 # APP_EMBEDDED=android: this app runs inside the Android app (embedded Python, page in a WebView).
 # Then it never updates or restarts itself (the Android app brings new versions), and fingerprint
 # unlock goes through the phone's own fingerprint check instead of a passkey. Unset: nothing changes.
@@ -5416,6 +5416,19 @@ NODE_NEVER_RAN = {True: "The node hasn't run on this phone yet, so it has no key
                   False: "The node hasn't made its key file yet. Start the node once, then restore."}
 
 
+LEZ04_BACKUP_BUSY = "A change to your LEZ 0.4 wallet is running. Back up when it has finished."
+
+
+def lez04_backed_up():
+    """The LEZ 0.4 account the last backup holds (BACKUP_STATE_FILE), or None."""
+    try:
+        with open(BACKUP_STATE_FILE) as f:
+            v = json.load(f).get("lez04")
+        return v if isinstance(v, str) else None
+    except Exception:
+        return None
+
+
 def node_never_ran():
     """Whether the node has not made its keys yet: no config file at all, or, inside the Android app, no keystore.yaml
     (the app's node service makes both with init-config at the node's first start, and a fresh install hasn't started
@@ -5457,6 +5470,11 @@ def restore_backup(doc, password, replace_lns=False):
         lns_w = content.get("lns_wallet")
         if lns_w is not None and not lns_backup_valid(lns_w):
             raise ValueError
+        lz = content.get("lez04_wallet")
+        if lz is not None:
+            import signer04 as _s4
+            if not _s4.backup_part_ok(lz):
+                raise ValueError
     except Exception:
         return 400, {"error": "This backup file is damaged. Nothing was changed."}, "format"
     live, _ = keystore_location()
@@ -5500,6 +5518,12 @@ def restore_backup(doc, password, replace_lns=False):
     lns_done = lns_out in ("added", "replaced")
     lns_reply = {"lns_restored": lns_done, "lns": lns_out, "lns_message": lns_msg} if lns_out else {}
     lns_why = ", lns " + lns_out if lns_out else ""
+    # the phone's LEZ 0.4 wallet, if the backup has one: only where there is none (never over other accounts)
+    s4 = signer04() if lz is not None else None
+    if lz is not None:
+        lz_out, lz_msg = s4.restore_part(lz) if s4 else ("unchecked", "This app can't use LEZ 0.4 wallets, so the backup's wasn't restored.")
+        lns_reply = dict(lns_reply, lez04=lz_out, lez04_message=lz_msg)
+        lns_why += ", lez04 " + lz_out
     if reported == current:
         try:
             before, changed = msg_key_restore_with_store(msg_key, chat) if msg_key else ((msg_key_load() or {}).get("secret"), False)
@@ -5707,6 +5731,12 @@ def backup_export(password, history=True):
     fingerprint = lw.pop("fingerprint", None) if isinstance(lw, dict) else None
     if lw:                                    # the phone's LNS name account (Android app): its wallet file goes along
         content["lns_wallet"] = lw
+    s4 = signer04() if EMBEDDED else None
+    lz = s4.backup_part() if s4 else None
+    if lz == "busy":                          # a send or a restore may be rewriting the LEZ 0.4 wallet right now
+        return 409, {"error": LEZ04_BACKUP_BUSY, "lez04_busy": True}, source
+    if lz:                                    # the phone's LEZ 0.4 wallet (its keys): goes along
+        content["lez04_wallet"] = lz
     sealed = aead_encrypt(backup_key(password, salt), nonce, json.dumps(content).encode(), BACKUP_AADS[version])
     b64 = lambda b: base64.b64encode(b).decode()
     created = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -5714,12 +5744,14 @@ def backup_export(password, history=True):
         fd = os.open(BACKUP_STATE_FILE + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
             json.dump({"last": created, "messaging": bool(mk),                # whether it holds the messaging key
+                       "lez04": lz["main"] if lz else None,                    # the LEZ 0.4 wallet it holds
                        # and which state of the name account (not one the signer couldn't confirm: asked again)
                        "lns": fingerprint if lw and not lw.get("unconfirmed") else None}, f)
         os.replace(BACKUP_STATE_FILE + ".tmp", BACKUP_STATE_FILE)
     except Exception:
         pass
     return 200, {"lns": ("unconfirmed" if lw.get("unconfirmed") else "included") if lw else None,
+                 "lez04": "included" if lz else None,
                  "chats_missing": bool(mk) and chats_missing, "backup": {
         "format": BACKUP_FORMAT, "version": version,
         "created": created,
@@ -6333,6 +6365,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             n = net04()
             v = s4.view(n.state.get("channel") if n else None)
             v["faucet_info"] = s4.faucet_info() if v["ready"] and not v["faucet"]["used"] else None
+            v["backup_needed"] = bool(v["ready"]) and lez04_backed_up() != s4.state()["main"]
             return self.reply(200, v)
         if path == "/api/wallet/lns/balance":          # the Wallet's LEZ row: the name account and its balance only
             if not lns_available():
@@ -6627,6 +6660,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if what == "restore":
                 code, obj = s4.restore(body.pop("phrase", None))    # the phrase: never logged, never kept
                 body.clear()
+            elif what == "new-phrase":                  # this phone's own wallet: a new phrase, shown once, kept nowhere
+                code, obj = s4.new_phrase()
             elif what == "send":
                 code, obj = s4.send(body)
             elif what == "faucet":
@@ -6652,7 +6687,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     code, obj = s4.claim(name, row["holder"])
             else:
                 return self.reply(404, {"error": "not found"})
-            if code == 200 and what != "restore":
+            if code == 200 and what == "new-phrase":
+                event("lez04 new recovery phrase made", self)     # never the phrase
+            elif code == 200 and what != "restore":
                 event("lez04 " + what, self)
             return self.reply(code, obj)
         if path == "/api/wallet/net04/watch":          # view-only addresses on the bridge test network

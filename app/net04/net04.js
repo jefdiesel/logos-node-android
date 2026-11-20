@@ -79,7 +79,7 @@
     $("n4-private").textContent = d.private || "";
     const box = $("n4-accts"); box.replaceChildren();
     if (!d.accounts.length) box.append(el("p", "note", window.SIGN04 && window.SIGN04.available()
-      ? "No account to show yet. Restore your accounts from your recovery phrase (above), or watch an address in Settings → Network."
+      ? "No account to show yet. Set up your LEZ 0.4 wallet (above), or watch an address in Settings → Network."
       : "No account to show yet. Watch an address in Settings → Network, or make a name account (Settings → Your name)."));
     for (const a of d.accounts) {
       const c = el("div", "card n4-acct");
@@ -229,14 +229,14 @@
   // Send / Receive: the signer's panels once the accounts are restored; until then, what stands in the way
   const na = which => {
     if (window.SIGN04 && window.SIGN04.panel(which)) { $("n4-na").hidden = true; return; }
-    $("n4-na").textContent = window.SIGN04 && window.SIGN04.available() ? "Restore your LEZ 0.4 accounts from your recovery phrase first (above)."
+    $("n4-na").textContent = window.SIGN04 && window.SIGN04.available() ? "Set up your LEZ 0.4 wallet first (above)."
       : "Not available on the bridge test network yet. To send or receive, switch to LEZ 0.3 in Settings → Network.";
     $("n4-na").hidden = false;
   };
   $("n4-send").addEventListener("click", () => na("send"));
   $("n4-recv").addEventListener("click", () => na("recv"));
   $("n4-na").addEventListener("click", () => {        // the line says where to go: a tap goes there
-    if (window.SIGN04 && window.SIGN04.available()) { const t = $("s4-phrase"); if (t) { t.scrollIntoView({ block: "center" }); t.focus(); } }
+    if (window.SIGN04 && window.SIGN04.available()) { if (window.SIGN04.setup) window.SIGN04.setup(); }
     else openSettings("s-net");
   });
   $("n4-add").addEventListener("click", async () => {

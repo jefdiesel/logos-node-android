@@ -1,6 +1,7 @@
 // Sending on LEZ 0.4 (app/net04/sign04.js, and Collectibles' Claim / Send / Receive in app/net04/nft.js) in a real
 // browser (headless Chrome over the DevTools protocol) at 360 px, with the stand-ins of tests/lns_ui_app.py run with
 // WITH_SIGNER04=1 (the stand-in LEZ 0.4 tool and network): the recovery-phrase card, Send before it ("restore first"),
+// "Set up your LEZ 0.4 wallet" (a small row; the phrase box only after a tap, Cancel closes it emptied),
 // the restore ("Restoring…" at once, the box emptied as the request goes, the phrase in no request but that one and
 // nowhere in the page after), "Get free test LEZ" ("Asking the faucet…", then the amount, then gone), Send ("Sending…",
 // then in a block), Receive (the account, its QR code and its public key), Collectibles: "Claim NFT (free)" on a name
@@ -85,10 +86,60 @@ await js(`sessionStorage.setItem("session", ${JSON.stringify(session)}); true`);
 await cdp("Page.navigate", { url: BASE + "/" });
 await waitFor("unlocked", `!document.getElementById("v-open").hidden`);
 
-// ---- LEZ 0.4, not restored yet: the phrase card; Send says to restore first ----
-await waitFor("LEZ 0.4: the recovery-phrase card", `document.getElementById("s4-restore").offsetParent !== null`);
+// ---- LEZ 0.4, not set up yet: one small card with two choices; no phrase until one is tapped ----
+await waitFor("LEZ 0.4: the 'Set up your LEZ 0.4 wallet' card", `document.getElementById("s4-setup").offsetParent !== null`);
+check("no phrase box or phrase until a choice is tapped, and nothing asked of the app's screen protection yet",
+  !(await shown("#s4-restore")) && !(await shown("#s4-create")) && !(await js(`(window.__secure || []).length > 0`)));
+check("the card: its title, then 'Create a new wallet' first and 'Use a recovery phrase' second",
+  await js(`(() => { const c = document.getElementById("s4-setup"), b = [...c.querySelectorAll("button")].map(x => x.textContent);
+    return c.querySelector("h3").textContent === "Set up your LEZ 0.4 wallet" && b.join("|") === "Create a new wallet|Use a recovery phrase"; })()`));
+check("a small card: no taller than 220 px", await js(`document.getElementById("s4-setup").getBoundingClientRect().height <= 220`));
+check("44 px, nothing past the screen", (await tall("#net04 button")) && (await fits()));
+await shot("setup-card", "#s4-setup");
+await click("#n4-send");
+await waitFor("Send before the setup: set up first, not 'switch to 0.3'", `document.getElementById("n4-na").offsetParent !== null && document.getElementById("n4-na").textContent === "Set up your LEZ 0.4 wallet first (above)."`);
+await click("#n4-na");
+check("a tap on that line goes to the card (no phrase box opened)", (await shown("#s4-setup")) && !(await shown("#s4-restore")) && (await js(`document.activeElement && document.activeElement.id === "s4-new"`)));
+
+// ---- Create a new wallet, then Cancel: shown once, secured, not copyable; gone after Cancel ----
+const before = bodies.length;
+await click("#s4-new");
+await waitFor("Create a new wallet: the 24 words, in place of the card", `document.getElementById("s4-create").offsetParent !== null && document.querySelectorAll("#s4-words li").length === 24
+  && document.getElementById("s4-setup").offsetParent === null`);
+check("the screen is secured before the words show (no screenshots, recents picture or autofill)", await secureNow());
+check("the words can't be selected or copied: user-select none, no copy button", await js(`(() => { const s = getComputedStyle(document.getElementById("s4-words"));
+  return (s.userSelect === "none" || s.webkitUserSelect === "none") && ![...document.querySelectorAll("#s4-create button")].some(b => /copy/i.test(b.textContent)); })()`));
+check("only the new-phrase request went out (nothing made yet)", bodies.slice(before).every(b => !/\/lez04\/(restore|remove)/.test(b.url)) && !(await get("/api/wallet/lez04", session)).stored);
+check("the words fit: 44 px buttons, nothing past the screen", (await tall("#s4-create button")) && (await fits()));
+await shot("create-words", "#s4-create");
+await click("#s4-c-done");
+await waitFor("'I've written it down': two of the words asked back, the words off the screen", `document.getElementById("s4-c-check").offsetParent !== null && document.querySelectorAll("#s4-words li").length === 0
+  && /^Word \\d+$/.test(document.getElementById("s4-c-l1").textContent) && /^Word \\d+$/.test(document.getElementById("s4-c-l2").textContent)`);
+await val("#s4-c-w1", "wrong"); await val("#s4-c-w2", "words");
+await click("#s4-c-go");
+await waitFor("wrong words: said, nothing made", `/^That doesn't match the phrase\\./.test(document.getElementById("s4-c-m").textContent)`);
+check("…nothing went to the restore route", !bodies.slice(before).some(b => b.url.includes("/lez04/restore")));
+await shot("create-check", "#s4-create");
+await click("#s4-c-again");
+check("'Show the words again': the same 24 words", (await js(`document.querySelectorAll("#s4-words li").length`)) === 24);
+await click("#s4-c-cancel");
+await waitFor("Cancel: the words are gone from the page, the card is back", `document.querySelectorAll("#s4-words li").length === 0 && document.getElementById("s4-create").offsetParent === null
+  && document.getElementById("s4-setup").offsetParent !== null`);
+check("…the screen back to normal, and the server made nothing", !(await secureNow()) && !(await get("/api/wallet/lez04", session)).stored);
+
+// ---- Use a recovery phrase: the phrase box ----
+await click("#s4-use");
+await waitFor("'Use a recovery phrase' opens the phrase box", `document.getElementById("s4-restore").offsetParent !== null && document.getElementById("s4-setup").offsetParent === null`);
+await val("#s4-phrase", "typed then cancelled");
+check("typing in it: the app is asked to keep the screen out of screenshots and recents", await secureNow());
+await click("#s4-restore-cancel");
+await waitFor("Cancel: the box closes, emptied, the card is back", `document.getElementById("s4-restore").offsetParent === null && document.getElementById("s4-setup").offsetParent !== null
+  && document.getElementById("s4-phrase").value === ""`);
+check("…and the screen back to normal", !(await secureNow()));
+await click("#s4-use");
+await waitFor("the phrase box again", `document.getElementById("s4-restore").offsetParent !== null`);
 const card = await text("#s4-restore");
-check("it says what the phrase is for and what is kept", /the ones your desktop Names Wallet makes from its recovery phrase/.test(card) && /The phrase itself isn't kept or sent anywhere/.test(card)
+check("it says what the phrase is for and what is kept", /Type a recovery phrase you already have \(your desktop Names Wallet's/.test(card) && /The phrase itself isn't kept or sent anywhere/.test(card)
   && /Anyone who has the phrase controls these accounts/.test(card));
 check("the phrase box doesn't autocomplete, capitalise, correct or spellcheck", await js(`(() => { const t = document.getElementById("s4-phrase");
   return t.getAttribute("autocomplete") === "off" && t.getAttribute("autocapitalize") === "off" && t.getAttribute("autocorrect") === "off" && t.spellcheck === false; })()`));
@@ -98,8 +149,6 @@ await js(`document.getElementById("s4-phrase").dispatchEvent(new Event("paste"))
 await waitFor("a paste into it: the app is asked to empty the clipboard", `window.__cleared === 1`);
 await js(`document.getElementById("s4-phrase").dispatchEvent(new FocusEvent("blur")); true`);
 check("left empty: the screen goes back to normal", !(await secureNow()));
-await click("#n4-send");
-await waitFor("Send before the restore: restore first, not 'switch to 0.3'", `document.getElementById("n4-na").offsetParent !== null && document.getElementById("n4-na").textContent === "Restore your LEZ 0.4 accounts from your recovery phrase first (above)."`);
 check("buttons 44 px, nothing past the screen", (await tall("#net04 button, #net04 textarea")) && (await fits()));
 await shot("restore-card", "#s4-restore");
 
@@ -119,7 +168,7 @@ check("the phrase went out once, to the restore route, lowercase, single-spaced"
   && bodies.find(b => b.body.includes("sausage")).url.endsWith("/api/wallet/lez04/restore") && bodies.find(b => b.body.includes("sausage")).body === JSON.stringify({ phrase: PHRASE }));
 check("the box emptied as the restore went: the screen back to normal", !(await secureNow()) && (await js(`(window.__secure || []).includes(true)`)));
 check("the phrase is nowhere in the page now", !(await js(`document.documentElement.outerHTML.includes("sausage") || [...document.querySelectorAll("textarea,input")].some(i => /sausage/i.test(i.value))`)));
-await waitFor("the card goes; Get free test LEZ shows, once per wallet", `document.getElementById("s4-restore").offsetParent === null && document.getElementById("s4-faucet").offsetParent !== null
+await waitFor("the card and the row go; Get free test LEZ shows, once per wallet", `document.getElementById("s4-restore").offsetParent === null && document.getElementById("s4-setup").offsetParent === null && document.getElementById("s4-faucet").offsetParent !== null
   && /^Once per wallet: 10,000,000 test LEZ, to this phone's account\\./.test(document.getElementById("s4-faucet-n").textContent)`);
 await waitFor("the Wallet shows the restored account as this phone's", `document.getElementById("n4-accts").innerText.includes(${JSON.stringify(MAIN)}) && /This phone's LEZ account/.test(document.getElementById("n4-accts").innerText)`, 20000);
 check("private: not on this phone yet", (await text("#s4-private")) === "Private sends and balances: not on this phone yet.");
@@ -230,10 +279,41 @@ check("the Remove sheet: 44 px, fits", (await tall("#s4-rm button, #s4-rm input"
 await shot("remove", "#s4-rm");
 await val("#s4-rm-pin", PIN);
 await click("#s4-rm-go");
-await waitFor("the right PIN: removed, and the phrase card is back", `/^Removed\. This phone has no LEZ 0\.4 accounts now\./.test(document.getElementById("s4-restore-m").textContent)
-  && document.getElementById("s4-restore").offsetParent !== null && document.getElementById("s4-rm").offsetParent === null`, 15000);
+await waitFor("the right PIN: removed, and the set-up card is back (the phrase box only on a tap)", `/^Removed\. This phone has no LEZ 0\.4 accounts now\./.test(document.getElementById("s4-restore-m").textContent)
+  && document.getElementById("s4-restore-m").offsetParent !== null && document.getElementById("s4-setup").offsetParent !== null
+  && document.getElementById("s4-restore").offsetParent === null && document.getElementById("s4-rm").offsetParent === null`, 15000);
 check("the server has none either", (await get("/api/wallet/lez04", session)).stored === false);
-await shot("removed", "#s4-restore");
+await shot("removed", "#s4-setup");
+
+// ---- the phone's own wallet: Create a new wallet, all the way ----
+let words = [];
+for (let i = 0; i < 5; i++) {                       // (the stand-in tool fails any phrase with "zoo" on purpose: ask again)
+  await click("#s4-new");
+  await waitFor("a new phrase shown", `document.querySelectorAll("#s4-words li").length === 24`);
+  words = await js(`[...document.querySelectorAll("#s4-words li")].map(l => l.textContent)`);
+  if (!words.includes("zoo")) break;
+  await click("#s4-c-cancel");
+}
+check("24 words of the BIP-39 list's form, different from the desktop's", words.length === 24 && words.every(w => /^[a-z]{3,8}$/.test(w)) && words.join(" ") !== PHRASE);
+await click("#s4-c-done");
+await waitFor("asked for two words", `document.getElementById("s4-c-check").offsetParent !== null`);
+const at = await js(`[document.getElementById("s4-c-l1").textContent, document.getElementById("s4-c-l2").textContent].map(t => Number(t.split(" ")[1]) - 1)`);
+await val("#s4-c-w1", " " + words[at[0]].toUpperCase() + " "); await val("#s4-c-w2", words[at[1]]);
+const p9 = await pressNow("#s4-c-go");
+check("the right words: 'Creating…' at once", p9 === "Creating…|true", p9);
+await waitFor("the phone's own wallet is ready; the backup prompt shows", `/^Your LEZ 0\\.4 wallet is ready\\. This phone sends from Public\\//.test(document.getElementById("s4-restore-m").textContent)
+  && document.getElementById("s4-c-bk").offsetParent !== null && document.getElementById("s4-setup").offsetParent === null && document.getElementById("s4-create").offsetParent === null`, 20000);
+const own = await get("/api/wallet/lez04", session);
+check("a wallet of its own: another account than the desktop's", own.ready && own.account !== MAIN, own.account);
+check("the phrase went out once, to the restore route, and is nowhere in the page now", bodies.filter(b => b.body.includes(words.join(" "))).length === 1
+  && bodies.find(b => b.body.includes(words.join(" "))).url.endsWith("/api/wallet/lez04/restore")
+  && !(await js(`document.documentElement.outerHTML.includes(${JSON.stringify(words.slice(0, 3).join(" "))}) || document.querySelectorAll("#s4-words li").length > 0`)));
+check("the screen back to normal", !(await secureNow()));
+check("the backup prompt: 44 px, fits", (await tall("#s4-c-bk button")) && (await fits()));
+await shot("create-backup-prompt", "#s4-c-bk");
+await click("#s4-c-bk-later");
+await waitFor("Later: a 'Back up needed' line stays until a backup holds this wallet", `document.getElementById("s4-bk-needed").offsetParent !== null && document.getElementById("s4-c-bk").offsetParent === null`);
+await shot("backup-needed", "#s4-bk-needed");
 
 // ---- a lock: nothing of it stays ----
 await val("#s4-to", "typed, not sent");

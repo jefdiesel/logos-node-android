@@ -82,7 +82,10 @@ def main():
         print("  the LNS name account (LEZ 0.3): " + ("Public/%s%s%s" % (lw.get("account", "?"), ", name " + lw["name"] if lw.get("name") else "",
                                                                           " (not checked by the signer when made)" if lw.get("unconfirmed") else "")
                                                      if isinstance(lw, dict) and lw.get("storage") else "no"))
-        print("  LEZ 0.4 accounts: never in a backup (the recovery phrase brings them back)")
+        lz = content.get("lez04_wallet")
+        print("  the LEZ 0.4 wallet: " + ("Public/%s (its key file, %d bytes; %d accounts)" % (
+            lz.get("main", "?"), len(lz["storage"].encode("utf-8")), len(lz.get("accounts") or []))
+            if isinstance(lz, dict) and isinstance(lz.get("storage"), str) else "no"))
         for k in doc.get("addresses", []):
             print("  address %-8s %s" % (k.get("label", ""), k.get("key", "")))
         return

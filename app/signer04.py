@@ -2,9 +2,13 @@
 for PUBLIC sends on our LEZ 0.4. Android app only; see android/NAMES04.md.
 
 What it does, and nothing else:
-- Restores the phone's LEZ 0.4 accounts from the recovery phrase the person types: the SAME phrase as their desktop
-  Names Wallet, so the same accounts, names and NFTs (`names module restore`, the desktop's own restore, the phrase on
-  standard input). The phrase is held in memory for that one call: never in argv, the environment, a file, a log, an
+- Makes a new recovery phrase for a phone that wants its own LEZ 0.4 wallet ([new_phrase]): 32 bytes from the OS
+  (`secrets`) as a 24-word BIP-39 English phrase, exactly as the desktop makes its own (LEZ `SeedHolder::new_mnemonic`:
+  32 bytes, `Mnemonic::from_entropy`), so it restores on the desktop too. It is handed to the page once and kept
+  nowhere; the page shows it, has two of its words typed back, then restores from it like a typed phrase.
+- Restores the phone's LEZ 0.4 accounts from a recovery phrase: the phone's own new one, or the one of the person's
+  desktop Names Wallet (the same accounts, names and NFTs) (`names module restore`, the desktop's own restore, the
+  phrase on standard input). The phrase is held in memory for that one call: never in argv, the environment, a file, a log, an
   event or a reply. What `names` prints while restoring is dropped except its last line (the account ids, as JSON).
   Only once, on a phone with no LEZ 0.4 wallet yet; never over one.
 - Sends from those accounts, one job at a time, `names` started with fixed arguments: native LEZ to an account, a
@@ -128,7 +132,7 @@ UNSURE_KEEP = 24 * 3600          # how long, after the app stopped part way, the
 
 TEXT = {
     "busy": "Wait until the send that is running now has finished.",
-    "not_ready": "Restore your LEZ 0.4 accounts from your recovery phrase first (Wallet, on LEZ 0.4).",
+    "not_ready": "Set up your LEZ 0.4 wallet first (Wallet, on LEZ 0.4).",
     "no_tool": "The LEZ 0.4 signer isn't in this build of the app.",
     "phrase": "A recovery phrase is 12 to 24 words, in lowercase letters, with spaces between them.",
     "have_wallet": "This phone already has LEZ 0.4 accounts, so nothing was restored or changed.",
@@ -192,6 +196,59 @@ def phrase_ok(phrase):
     if not PHRASE_WORDS[0] <= len(words) <= PHRASE_WORDS[1] or not all(w.isascii() and w.isalpha() and w.islower() for w in words):
         return None
     return " ".join(words)
+
+
+# The BIP-39 English word list (app/bip39/english.txt, its LICENSE beside it), checked against the list's published
+# SHA-256 before any phrase is made from it.
+BIP39_SHA256 = "2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda"
+BIP39_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bip39", "english.txt")
+_bip39 = []
+
+
+def bip39_words():
+    """The 2048 words, read and checked once; raises if the file isn't the published list."""
+    if not _bip39:
+        with open(BIP39_FILE, "rb") as f:
+            raw = f.read()
+        if hashlib.sha256(raw).hexdigest() != BIP39_SHA256:
+            raise ValueError("the BIP-39 word list isn't the published one")
+        words = raw.decode("ascii").split()
+        if len(words) != 2048:
+            raise ValueError("the BIP-39 word list doesn't have 2048 words")
+        _bip39.extend(words)
+    return _bip39
+
+
+def phrase_from_entropy(entropy):
+    """BIP-39: entropy (16 to 32 bytes, a multiple of 4) and the first len/32 bits of its SHA-256, as words of 11 bits."""
+    if not isinstance(entropy, (bytes, bytearray)) or len(entropy) not in (16, 20, 24, 28, 32):
+        raise ValueError("entropy must be 16 to 32 bytes, a multiple of 4")
+    words = bip39_words()
+    bits = len(entropy) * 8
+    n = (int.from_bytes(entropy, "big") << (bits // 32)) | (hashlib.sha256(entropy).digest()[0] >> (8 - bits // 32))
+    count = (bits + bits // 32) // 11
+    return " ".join(words[(n >> (11 * (count - 1 - i))) & 2047] for i in range(count))
+
+
+def new_phrase():
+    """A new 24-word recovery phrase from 32 bytes of the OS's randomness, as the desktop makes one. Never logged."""
+    return phrase_from_entropy(secrets.token_bytes(32))
+
+
+def backup_part_ok(part):
+    """Whether a backup's LEZ 0.4 part has the expected form: the wallet file and names.json as JSON objects of at most
+    1 MB, account ids, the first of them, and a public key or none."""
+    try:
+        return (isinstance(part, dict) and isinstance(part.get("storage"), str) and 0 < len(part["storage"]) <= Signer04.BACKUP_MAX
+                and isinstance(json.loads(part["storage"]), dict)
+                and (part.get("names") is None or (isinstance(part["names"], str) and len(part["names"]) <= Signer04.BACKUP_MAX
+                                                   and isinstance(json.loads(part["names"]), dict)))
+                and isinstance(part.get("accounts"), list) and 0 < len(part["accounts"]) <= 256
+                and all(isinstance(a, str) and ID_RE.fullmatch(a) for a in part["accounts"])
+                and part.get("main") in part["accounts"]
+                and (part.get("public_key") is None or (isinstance(part["public_key"], str) and HEX64_RE.fullmatch(part["public_key"]))))
+    except Exception:
+        return False
 
 
 def account_of(text):
@@ -433,6 +490,87 @@ class Signer04:
             return 200, self.view()
         finally:
             self.lockdown()
+            self.change.release()
+
+    def new_phrase(self):
+        """(http status, reply). A new recovery phrase for this phone's own LEZ 0.4 wallet, on a phone with none yet.
+        Nothing is kept or made here: the page shows the phrase, has it confirmed, and restores from it
+        ([restore]), so the wallet only exists once the person has seen the phrase. Never logged."""
+        if not self.available():
+            return 404, {"error": TEXT["no_tool"]}
+        if self.ready():
+            return 409, {"error": TEXT["have_wallet"]}
+        if os.path.exists(self.storage()):
+            return 409, {"error": TEXT["stuck"], "stuck": True}
+        try:
+            phrase = new_phrase()
+        except Exception:
+            return 500, {"error": "A new recovery phrase couldn't be made on this phone. Nothing was changed."}
+        return 200, {"phrase": phrase, "words": 24}
+
+    # ---- the app's encrypted backup ----
+    BACKUP_MAX = 1048576
+
+    def backup_part(self):
+        """This phone's LEZ 0.4 wallet for the app's encrypted backup: the wallet file `names` keeps (storage.json, the
+        keys), its names.json, and the public facts (the accounts, the first one). None when there is no wallet here;
+        "busy" while a change runs (the files may be rewritten right then)."""
+        if not self.ready():
+            return None
+        if not self.change.acquire(blocking=False):
+            return "busy"
+        try:
+            st = self.state()
+            with open(self.storage(), "rb") as f:
+                storage = f.read().decode("utf-8")
+            names_file = os.path.join(self.home, "names.json")
+            names = None
+            if os.path.isfile(names_file):
+                with open(names_file, "rb") as f:
+                    names = f.read().decode("utf-8")
+            part = {"storage": storage, "names": names, "accounts": st["accounts"], "main": st["main"],
+                    "public_key": st["public_key"]}
+            return part if backup_part_ok(part) else None
+        except Exception:
+            return None
+        finally:
+            self.change.release()
+
+    def restore_part(self, part):
+        """Puts the LEZ 0.4 wallet from a backup in place. Never over another one. Returns (outcome, message):
+        "added" (none was here: the backup's is in place), "same" (this phone has the same accounts: kept as they are),
+        "kept" (other LEZ 0.4 accounts are here: nothing changed), "busy", or "unchecked" (the part is damaged)."""
+        if not backup_part_ok(part):
+            return "unchecked", "The LEZ 0.4 wallet in this backup couldn't be read, so it wasn't restored."
+        if not self.change.acquire(blocking=False):
+            return "busy", "The LEZ 0.4 wallet wasn't restored: a change to it is running. Restore again when it has finished."
+        try:
+            if self.ready():
+                if self.state()["main"] == part["main"]:
+                    return "same", "This phone already has the backup's LEZ 0.4 wallet."
+                return "kept", ("This phone has other LEZ 0.4 accounts, so the backup's LEZ 0.4 wallet wasn't restored. Remove "
+                                "them (Wallet, on LEZ 0.4), then restore again to bring it in.")
+            if os.path.exists(self.storage()):
+                return "kept", TEXT["stuck"]
+            self.lockdown()
+            for name, text in (("names.json", part.get("names")), ("storage.json", part["storage"])):   # the keys last
+                if text is None:
+                    continue
+                path = os.path.join(self.home, name)
+                fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "wb") as f:
+                    f.write(text.encode("utf-8"))
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(path + ".tmp", path)
+            self.save(accounts=part["accounts"], main=part["main"], public_key=part.get("public_key"), faucet=None)
+            self.lockdown()
+            self.event("lez04 wallet restored from a backup", account=part["main"], accounts=len(part["accounts"]))
+            return "added", "The LEZ 0.4 wallet is back: this phone sends from Public/" + part["main"] + "."
+        except Exception:
+            self.discard()
+            return "unchecked", "The LEZ 0.4 wallet couldn't be written. Nothing of it was kept."
+        finally:
             self.change.release()
 
     def discard(self):

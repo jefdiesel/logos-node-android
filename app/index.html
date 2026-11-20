@@ -1435,7 +1435,8 @@ $("b-rs").addEventListener("click", async () => {
     : "Restored: the wallet now has the " + r.data.addresses + " accounts from the backup. " + (r.data.restarted ? "The node is restarting with them." : r.data.manual))
     + (r.data.messages_restored ? " Messages: " + r.data.messages_restored + " restored." : "")
     + (r.data.messaging_message ? " " + r.data.messaging_message : "")
-    + (r.data.lns_message ? " Name account: " + r.data.lns_message : "");
+    + (r.data.lns_message ? " Name account: " + r.data.lns_message : "")
+    + (r.data.lez04_message ? " LEZ 0.4: " + r.data.lez04_message : "");
   if (r.data.lns === "kept") {           // a different name account is here: keep the file loaded so they can choose
     m.className = "msg warn"; m.textContent = msg; $("rs-lns-row").hidden = false; $("rs-lns").checked = false;
     loadAccounts(); return;

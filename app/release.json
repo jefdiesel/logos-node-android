@@ -1,6 +1,8 @@
 {
  "files": {
-  "index.html": "2024c75ed9774fb6538e8c1051a20a8a37dde273d5db81283f6c711eaf3e4dd6",
+  "bip39/LICENSE": "3e5a99dd01eaf19bdbbc4146245dab4a7791569467adc03a1790d91a7163d04f",
+  "bip39/english.txt": "2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda",
+  "index.html": "9cd8ed7942553a67146dd695545a7a10d44697778bbcae9f2f73dbbb83eafad8",
   "lez04.json": "cb4567db83ce8ea534d18da93731b292435b0c760afe79adee27dcc61b080a89",
   "lez04.py": "c48515eeb0fc604cfe77b50adf9690fd0ef1d778126d07b54d46175a1bd17e73",
   "lns/lns.js": "93686db76760e8b8530153efdaa87a0a427d2643674b25c09937b2320a3942f7",
@@ -38,9 +40,9 @@
   "net04/fonts/OFL-FiraCode.txt": "926041dac670e6922505e35ac1661a4e8d20f1ffeabbbcb5edb5544370702369",
   "net04/fonts/OFL-Gloock.txt": "321e28d45a430e017d9d1d6a47ef1fd261aad354723b014cf1933a765036c311",
   "net04/fonts/VENDORED.txt": "fa96ba64ea739becfb01f3edd79acf20cf0eb77f18c067512d9fc2340e9221a6",
-  "net04/net04.js": "7b56e6d0553d1d62b89c6cb1e9071300f9dd650c4405e7c42cd97a56ce52e6a3",
+  "net04/net04.js": "1a401c56bc1586b2c795dffc7efee46f38785f8a263529f2136c81ca383f4d8c",
   "net04/nft.js": "a5ad4ebdf11cd1932738b5f06f15881f21647ed16f6b116dfb9be9c92cef1201",
-  "net04/sign04.js": "bb1d54582e698ce2c68e8cbef021e9c94be2f488c3d2db8de7a24e0ee2b4e76c",
+  "net04/sign04.js": "586701e179b897b763a07e8b613f5a2fb54ef71f3c644ce3f2cc84d7a610b250",
   "noble-curves/LICENSE": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec",
   "noble-curves/abstract/curve.js": "dbaeee3b41ff47efb76b78e14170fe4dda7c7ecdc387c402f16c5118e0bac356",
   "noble-curves/abstract/edwards.js": "f24a9c221a549a8fff259eb8f245ab0dc17679b13c532c3970d91acc4df9fffd",
@@ -54,8 +56,8 @@
   "noble-curves/utils.js": "ba29ee6d5c0129f0913e0cb11e1c84d09b7e1dd73c55e158cd49b5987bb62a65",
   "qr/VENDORED.txt": "1d4fc608d725afe81619262b9fb4323fe2d77318579396d9429f3a6f04b873ad",
   "qr/qrcode.js": "ea91d7118a5395289170da848b7c6758b996163bfbccf312591ab65a4911b7c0",
-  "server.py": "d45c5e64c4ce825222f86bf5148c546e3ca6ea17ff5353193fad61249915fe80",
-  "signer04.py": "e4e7b38d80f8fe6d4a5ea8e3fa721798ce5ad38c2468f7072a1e3b6168edf91a"
+  "server.py": "cde57e93bceff0c070fa48b9a6fdaaa55195284a920307272cb0b00d5a26c7fd",
+  "signer04.py": "6f73a5b123f589b8eb2a1fbfd017393808eb6511d31d3c915be890cbcc6b5dd3"
  },
- "version": "0.9.31"
+ "version": "0.9.32"
 }

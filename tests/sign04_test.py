@@ -84,6 +84,31 @@ check("the pacer spaces calls (5 calls, 0.05 s apart: at least 0.2 s)", time.mon
 check("the pacer's default keeps under the network's 50 per 10 s", signer04.PACE >= 0.2)
 check("the forwarder passes reads and sendTransaction only", "sendTransaction" in signer04.RPC_METHODS and not any(m.startswith("bridge_") for m in signer04.RPC_METHODS))
 
+# a new phrase for the phone's own wallet: BIP-39 as the desktop makes it (32 bytes -> 24 words), the published vectors
+check("the BIP-39 word list is the published one (2048 words, its SHA-256)", len(signer04.bip39_words()) == 2048 and signer04.bip39_words()[0] == "abandon"
+      and signer04.bip39_words()[-1] == "zoo")
+VECTORS = [("00" * 32, "abandon " * 23 + "art"), ("ff" * 32, "zoo " * 23 + "vote"), ("7f" * 16, PHRASE),
+           ("7f" * 32, "legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth title"),
+           ("68a79eaca2324873eacc50cb9c6eca8cc68ea5d936f98787c60c7ebc74e6ce7c", "hamster diagram private dutch cause delay private meat slide toddler razor book happy fancy gospel tennis maple dilemma loan word shrug inflict delay length")]
+check("BIP-39 encoding matches the published test vectors (so the desktop's bip39 crate reads these phrases)",
+      all(signer04.phrase_from_entropy(bytes.fromhex(e)) == w.strip() for e, w in VECTORS))
+
+
+def bip39_checksum_ok(phrase):
+    idx = [signer04.bip39_words().index(w) for w in phrase.split()]
+    n = 0
+    for i in idx:
+        n = (n << 11) | i
+    cs = len(idx) * 11 // 33
+    ent = (n >> cs).to_bytes(len(idx) * 11 * 32 // 33 // 8, "big")
+    return (n & ((1 << cs) - 1)) == hashlib.sha256(ent).digest()[0] >> (8 - cs)
+
+
+np1, np2 = signer04.new_phrase(), signer04.new_phrase()
+check("a new phrase: 24 words of the list, a valid checksum, ready for a restore", len(np1.split()) == 24 and bip39_checksum_ok(np1)
+      and signer04.phrase_ok(np1) == np1)
+check("two new phrases differ (the OS's randomness each time)", np1 != np2)
+
 # ---- part 2: the signer --------------------------------------------------------------------------------------------
 chain = Chain04()
 data = mkdtemp()
@@ -143,6 +168,42 @@ d2 = mkdtemp()
 s2 = signer04.Signer04(d2, BIN, fetch, lambda: dict(CONF), lambda: "http://127.0.0.1:1/x", signer04.Pacer(0.0))
 code, r2 = s2.restore(" ".join(PHRASE.split()[:11] + ["zoo"]))
 check("a restore the tool refuses: said plainly, no wallet left behind", code == 502 and not os.path.exists(s2.storage()) and not s2.ready(), r2)
+
+# the phone's own wallet: create (a new phrase) -> derive (restore from it, as the page does once it is confirmed) ->
+# restore the same phrase elsewhere (the desktop): the same accounts
+dA, dD = mkdtemp(), mkdtemp()
+sA = signer04.Signer04(dA, BIN, fetch, lambda: dict(CONF), lambda: "http://127.0.0.1:1/x", signer04.Pacer(0.0), event=lambda n, **d: events.append((n, d)))
+sD = signer04.Signer04(dD, BIN, fetch, lambda: dict(CONF), lambda: "http://127.0.0.1:1/x", signer04.Pacer(0.0))
+while True:
+    code, made = sA.new_phrase()
+    if "zoo" not in made.get("phrase", "").split():          # (the stand-in tool fails any phrase with "zoo" on purpose)
+        break
+NEW = made["phrase"]
+check("new phrase: 24 words, and nothing made or kept yet", code == 200 and len(NEW.split()) == 24 and not sA.ready()
+      and not os.path.exists(sA.storage()) and NEW.encode() not in everything_under(dA), made)
+code, rA = sA.restore(NEW)
+code2, rD = sD.restore(NEW)
+check("create -> derive -> restore: the phone's new phrase gives the same accounts restored elsewhere (the desktop)",
+      code == 200 and code2 == 200 and rA["account"] == rD["account"] and rA["accounts"] == rD["accounts"], (rA, rD))
+check("a phone with a wallet gets no new phrase", sA.new_phrase()[0] == 409)
+check("the new phrase is in no file, event or reply", NEW.encode() not in everything_under(dA) + json.dumps(events).encode() + json.dumps(sA.view()).encode())
+
+# the app's encrypted backup carries the LEZ 0.4 wallet, and puts it back only where there is none
+part = sA.backup_part()
+check("backup part: the wallet file and the accounts, the first one", isinstance(part, dict) and part["main"] == rA["account"]
+      and json.loads(part["storage"]) and part["accounts"] == rA["accounts"] and signer04.backup_part_ok(part), part)
+check("no part from a phone without a wallet", s2.backup_part() is None)
+dB = mkdtemp()
+sB = signer04.Signer04(dB, BIN, fetch, lambda: dict(CONF), lambda: "http://127.0.0.1:1/x", signer04.Pacer(0.0))
+out, msg = sB.restore_part(part)
+check("restored into a phone with none: added, ready, the same first account and key file", out == "added" and sB.ready()
+      and sB.state()["main"] == rA["account"] and open(sB.storage()).read() == part["storage"]
+      and (os.stat(sB.storage()).st_mode & 0o077) == 0, (out, msg))
+check("the restored wallet's key file holds the same accounts for the tool (it lists them)", sB.public_key_of(rA["account"]) == rA["public_key"])
+check("again: the same wallet is kept as it is", sB.restore_part(part)[0] == "same")
+check("never over other LEZ 0.4 accounts", s.restore_part(part)[0] == "kept" and s.state()["main"] == MAIN)
+for bad in (dict(part, main="nope"), dict(part, storage="not json"), dict(part, accounts=[]), "x", None):
+    check("a damaged part is refused, nothing written", signer04.Signer04(mkdtemp(), BIN, fetch, lambda: dict(CONF), lambda: "x", signer04.Pacer(0.0)).restore_part(bad)[0] == "unchecked")
 
 # sends
 chain.balances[MAIN] = 50000000
@@ -429,13 +490,43 @@ for _ in range(80):
 sess = W.call("/api/wallet/setup", {"pin": "246828"})[1]["session"]
 html = urllib.request.urlopen(W.BASE + "/").read().decode()
 check("the page loads the signer's script between the 0.4 view and Collectibles", html.index('<script src="/net04/net04.js">') < html.index('<script src="/net04/sign04.js">') < html.index('<script src="/net04/nft.js">'))
-check("every signer route needs the session", W.call("/api/wallet/lez04")[0] == 401 and all(W.call("/api/wallet/lez04/" + w, {})[0] == 401 for w in ("restore", "send", "faucet", "claim", "nft/init", "nft/send", "remove")))
+check("every signer route needs the session", W.call("/api/wallet/lez04")[0] == 401 and all(W.call("/api/wallet/lez04/" + w, {})[0] == 401 for w in ("restore", "new-phrase", "send", "faucet", "claim", "nft/init", "nft/send", "remove")))
 code, v = W.call("/api/wallet/lez04", session=sess)
 check("the app has the signer, not ready yet", code == 200 and v["available"] and not v["ready"], v)
 check("the forwarder: a wrong secret is a plain 404", W.call("/lez04-rpc/nope", {"method": "getChannelId"})[0] == 404)
+code, np = W.call("/api/wallet/lez04/new-phrase", {}, session=sess)
+check("a new phrase through the app: 24 words, nothing made", code == 200 and len(np["phrase"].split()) == 24
+      and not W.call("/api/wallet/lez04", session=sess)[1]["ready"], (code, np))
+check("the new phrase is in no file of the app's data folder (events log included)", np["phrase"].encode() not in everything_under(adata))
 code, v = W.call("/api/wallet/lez04/restore", {"phrase": PHRASE}, session=sess)
 check("restore through the app", code == 200 and v["ready"] and len(v["accounts"]) == 16, v)
 AMAIN = v["account"]
+check("no new phrase once there is a wallet", W.call("/api/wallet/lez04/new-phrase", {}, session=sess)[0] == 409)
+check("a new wallet: backup needed", W.call("/api/wallet/lez04", session=sess)[1].get("backup_needed") is True)
+# the app's backup holds it (the node's key file stand-in beside a config path of this test)
+nhome = mkdtemp()
+server.NODE_CFG = os.path.join(nhome, "user_config.yaml")
+with open(os.path.join(nhome, "keystore.yaml"), "w") as f:
+    f.write("keys: {}\n")
+code, bk, _ = server.backup_export("a long backup password")
+doc = bk.get("backup", {})
+plain = json.loads(server.aead_decrypt(server.backup_key("a long backup password", __import__("base64").b64decode(doc["kdf"]["salt"]), doc["kdf"]),
+                                       __import__("base64").b64decode(doc["cipher"]["nonce"]), __import__("base64").b64decode(doc["ciphertext"]),
+                                       server.BACKUP_AADS[doc["version"]]))
+check("the app's encrypted backup holds the LEZ 0.4 wallet (key file and accounts)", code == 200 and bk.get("lez04") == "included"
+      and plain["lez04_wallet"]["main"] == AMAIN and plain["lez04_wallet"]["storage"] == open(os.path.join(adata, ".lez04-wallet", "storage.json")).read(), bk)
+check("after that backup: no longer needed", W.call("/api/wallet/lez04", session=sess)[1].get("backup_needed") is False)
+py = os.environ.get("DECRYPT_PYTHON", sys.executable)
+import subprocess  # noqa: E402
+if subprocess.run([py, "-c", "import cryptography"], capture_output=True).returncode == 0:
+    bf = os.path.join(mkdtemp(), "b.json")
+    with open(bf, "w") as f:
+        json.dump(doc, f)
+    out = subprocess.run([py, os.path.join(HERE, "..", "tools", "decrypt-backup.py"), "--check", bf, "--password-stdin"],
+                         input="a long backup password\n", capture_output=True, text=True)
+    check("decrypt-backup.py --check lists the LEZ 0.4 wallet", out.returncode == 0 and ("the LEZ 0.4 wallet: Public/%s" % AMAIN) in out.stdout, out.stdout + out.stderr)
+else:
+    print("note: decrypt-backup.py --check not run here (no cryptography package for %s; set DECRYPT_PYTHON)" % py)
 blob = everything_under(adata)
 check("the phrase is in no file of the app's data folder (events log included)", PHRASE.encode() not in blob and b"sausage worth useful" not in blob)
 check("the Wallet's 0.4 account is the restored one now", server.net04_own() == AMAIN)
