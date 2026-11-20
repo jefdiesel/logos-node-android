@@ -23,6 +23,7 @@ import android.util.Log
 object WalletLock {
     private const val TAG = "LogosWalletLock"
     private const val METHOD = "unlocked"
+    private const val VISIBILITY = "visibility"
     private const val KEY = "unlocked"
 
     fun authority(context: Context) = "${context.packageName}.walletlock"
@@ -45,13 +46,42 @@ object WalletLock {
         false
     }
 
-    /** Runs in the wallet's process (android:process=":wallet", exported=false in the manifest). Answers only [METHOD]. */
+    /**
+     * From the Node screen: the app's screen is still in front ("visible", while it shows) or went away ("hidden",
+     * Home or the screen off), as WalletActivity reports it for itself (server.native_visibility, LeaveReport). So the
+     * Node screen counts as being in the app: only the idle auto-lock applies while it shows, and leaving the app from
+     * it starts the minute. "visible" never reopens a locked wallet. Blocks; off the main thread. Failures are ignored.
+     */
+    fun report(context: Context, state: String) {
+        if (state != "visible" && state != "hidden") return
+        try {
+            context.contentResolver.call(Uri.parse("content://${authority(context)}"), VISIBILITY, state, null)
+        } catch (e: Exception) {
+            Log.w(TAG, "couldn't tell the wallet $state: ${e.javaClass.simpleName}")
+        }
+    }
+
+    /** In the wallet's process: server.native_visibility(state). */
+    private fun visibilityInProcess(state: String) = try {
+        if (com.chaquo.python.Python.isStarted()) {
+            com.chaquo.python.Python.getInstance().getModule("logos_embed").callAttr("native_visibility", state)
+        }
+        Unit
+    } catch (e: Exception) {
+        Log.w(TAG, "native_visibility failed: ${e.javaClass.simpleName}")
+    }
+
+    /** Runs in the wallet's process (android:process=":wallet", exported=false in the manifest): [METHOD] and [VISIBILITY]. */
     class Provider : ContentProvider() {
         override fun onCreate() = true
 
         override fun call(method: String, arg: String?, extras: Bundle?): Bundle {
             // not exported, so only this app's uid gets here; checked again anyway
             val ours = Binder.getCallingUid() == Process.myUid()
+            if (ours && method == VISIBILITY && (arg == "visible" || arg == "hidden")) {
+                visibilityInProcess(arg)
+                return Bundle()
+            }
             return Bundle().apply { putBoolean(KEY, ours && method == METHOD && inProcess()) }
         }
 

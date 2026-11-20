@@ -125,6 +125,8 @@ class NodeActivity : Activity() {
             if (!visible) return
             io.execute {
                 val screen = gate.refresh()                 // the wallet may have locked meanwhile
+                // still in the app: the wallet's own screen went away (it reported "hidden"), this one is in front
+                if (screen == NodeGate.Screen.FULL) WalletLock.report(this@NodeActivity, "visible")
                 main.post { show(screen) }
                 if (screen != NodeGate.Screen.CLOSE) update()
             }
@@ -170,6 +172,13 @@ class NodeActivity : Activity() {
         visible = false
         main.removeCallbacks(refresh)
         super.onPause()
+    }
+
+    override fun onStop() {
+        // left the app from here (Home, the screen off, another app): the wallet's minute starts. Not when going back
+        // to the wallet's own screen (finishing): that screen reports for itself.
+        if (!isFinishing && gate.screen == NodeGate.Screen.FULL) io.execute { WalletLock.report(this, "hidden") }
+        super.onStop()
     }
 
     private fun layout(): ScrollView {

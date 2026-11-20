@@ -162,8 +162,14 @@ replace its database with any snapshot file (and the wallet would then read a fa
 - The Node screen shows nothing until the answer is "unlocked"; entered while locked (onCreate, onResume) it closes;
   if the wallet locks while it shows, it drops to a read-only status (process, height, peers) with its controls and
   log hidden and any open confirmation closed; every action asks again right before it runs.
-- Leaving the wallet's screen for the Node screen counts as leaving: the wallet locks after a minute there (or
-  sooner with the idle auto-lock), and the Node screen then goes read-only.
+- The Node screen counts as being in the app: while it shows (and is unlocked) it tells the wallet server "visible"
+  every 3 s (`WalletLock.report`, server.native_visibility), so only the idle auto-lock applies there; leaving the app
+  from it (Home, the screen off) reports "hidden" and starts the minute, as on the wallet's own screen. "visible" never
+  reopens a locked wallet.
+- Known limits, left as they are: the node notification's **Stop** action stops the node without the wallet's lock
+  (Android's own notification, on the lock screen too); the node service is exported to holders of DUMP only (the adb
+  shell), which can start and stop it; and with both native Node buttons gone, the Node screen can't be reached while
+  the wallet server won't start (the cover says the node is not affected).
 
 ## Known limits
 
