@@ -69,6 +69,8 @@ open the file. On the phone's Linux Terminal that is `sudo apt install python3-c
    ```
 
    "wrong password, or the file has been changed or damaged" means exactly that. Nothing is written.
+   `--check` only opens it and says what it holds (the node's keys, the messaging key, chats, the LNS name
+   account), writing nothing: a way to prove a backup before relying on it.
    A version 2 backup also writes `messaging-key.json` beside it: this device's messaging key. Keep it
    private; delete it once you no longer need it.
 

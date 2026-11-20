@@ -210,6 +210,8 @@ jobs:
           # packaging then stops with the plain message, never an unsigned or debug-signed APK.
           set -o pipefail
           P="-PnodeVersion=${{ steps.node.outputs.version }} -PnodeSha256=${{ steps.node.outputs.sha }} -PnodeVariant=${{ steps.node.outputs.variant }}"
+          # everything but packaging, without a key: the release code, its lint checks and its unit tests
+          gradle --no-daemon --console=plain compileReleaseKotlin lintVitalRelease testReleaseUnitTest $P
           if env -u LOGOS_RELEASE_STORE_FILE gradle --no-daemon --console=plain assembleRelease $P > "$RUNNER_TEMP/release.log" 2>&1; then
             echo "::error::a release APK was made without the release key"; exit 1
           fi

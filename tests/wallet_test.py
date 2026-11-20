@@ -147,13 +147,13 @@ def secret_values(path):
         return re.findall(r"!(?:Zk|Ed25519)\s+([0-9a-fA-F]{64})", f.read())
 
 
-def decrypt(backup_doc, password, out):
+def decrypt(backup_doc, password, out, *extra):
     """Opens a backup with the independent tool (cryptography package + hashlib.scrypt, not the app's code)."""
     src = os.path.join(tempfile.mkdtemp(), "backup.json")
     with open(src, "w") as f:
         json.dump(backup_doc, f)
     py = os.environ.get("DECRYPT_PYTHON", sys.executable)
-    return subprocess.run([py, os.path.join(ROOT, "tools", "decrypt-backup.py"), src, "-o", out, "--password-stdin"],
+    return subprocess.run([py, os.path.join(ROOT, "tools", "decrypt-backup.py"), src, "-o", out, "--password-stdin", *extra],
                           input=password + "\n", capture_output=True, text=True)
 
 
@@ -168,6 +168,11 @@ def backup_checks(s, pin):
     code, d = call("/api/wallet/backup", {"password": SHORT_PASSWORD, "pin": pin}, session=s)
     check("a backup password of 8 characters is accepted", code == 200 and "backup" in d, (code, d))
     out = os.path.join(tempfile.mkdtemp(), "keystore.yaml")
+    r = decrypt(d["backup"], SHORT_PASSWORD, out, "--check")
+    check("--check: the tool opens it, says what it holds, and writes nothing", r.returncode == 0 and "opens with this password" in r.stdout
+          and "the node's key file:" in r.stdout and not os.listdir(os.path.dirname(out)), (r.stdout, r.stderr))
+    r = decrypt(d["backup"], "wrong password 1", out, "--check")
+    check("--check with a wrong password: says so", r.returncode == 1 and "wrong password" in r.stderr, r.stderr)
     r = decrypt(d["backup"], SHORT_PASSWORD, out)
     check("and that backup opens with the independent tool", r.returncode == 0, r.stderr.strip())
     with open(out, "rb") as f1, open(keystore, "rb") as f2:

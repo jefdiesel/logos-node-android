@@ -100,9 +100,11 @@ what was typed (To and Amount, an NFT's To, the collection ID), so a second send
 new transaction and could pay twice. A claim's button stays off until Collectibles is read again (a second claim of a
 name whose NFT landed fails on chain and costs only its fee).
 
-While a transaction is out, `<data>/wallet-lez04-unsure.json` (0600: the kind, the recipient and amount as shown, the
-time; no key) is on disk. It goes when the job ends. If the app stops first, the next start shows "The app stopped
-while this was being sent. It may have been sent. …" above the Wallet on LEZ 0.4, for a day or until the next job.
+A job that ends that way while no press on the page follows it (the page was reloaded or locked meanwhile) is said at
+the top of the Wallet on LEZ 0.4, with what it was ("Send of 7 to Public/…: It may have been sent. …"), until the
+next job. While a transaction is out, `<data>/wallet-lez04-unsure.json` (0600: the kind, the recipient and amount as
+shown, the time; no key) is on disk. It goes when the job ends. If the app stops first, the next start shows "… The
+app stopped while this was being sent. It may have been sent. …" there, for a day or until the next job.
 There is no hold that refuses the same send again, as on LEZ 0.3: the line is the fix.
 
 ## The faucet
@@ -175,8 +177,8 @@ carries the keys that can't be made again; everything else is set up again or re
 
 What the backup file holds (Settings → Backup & restore → Back up; `backup_export` in `app/server.py`):
 - the node's wallet keys (`keystore.yaml`);
-- with Messages on: the messaging key, profiles, nicknames and notes, and the message history if "Include message
-  history" is ticked (newest first, up to 1 MB; older messages are left out);
+- with Messages on: the messaging key, profiles, nicknames and notes, and the message history (the page always asks
+  for it: newest first, up to 1 MB; older messages are left out);
 - the phone's LEZ 0.3 name account: its wallet file (the key, which has no recovery phrase) and `names.json`.
 
 What it does not hold, and is lost or made again:
@@ -189,21 +191,30 @@ What it does not hold, and is lost or made again:
 
 Steps (the Mini drives the phone over adb):
 1. On the debug build, let every running job finish (no send, claim, bridge or registration in progress).
-2. Settings → Backup & restore → Back up, with "Include message history" ticked: a backup password (12+ characters,
-   written down off the phone) and the PIN. Save the file to Downloads in the picker.
-3. Check it holds the name account: the result has no "The name account is in it, but couldn't be checked" line, and
-   Your name no longer says "back up needed". If either shows, back up again.
+2. Settings → Backup & restore → Back up: a backup password (12+ characters, written down off the phone) and the PIN.
+   Save the file to Downloads in the picker.
+3. On the phone: the result has no "The name account is in it, but couldn't be checked" line, and Your name doesn't
+   say "back up needed" (the server compares the name account's files with what the last backup held, so a backup
+   that left it out keeps saying it). If either shows, back up again.
 4. Copy the file off the phone: `ssh minim4 'adb pull /sdcard/Download/logos-node-wallet-backup-<date>.json ~/'`
    (and keep a second copy). Files in Downloads survive the uninstall, but don't rely on that alone.
-5. Uninstall the debug build: `ssh minim4 'adb uninstall io.github.jefdiesel.logosnode'`.
-6. Install the release APK: `ssh minim4 'adb install <the release APK>'` (copied to the Mini from where
-   `build-release.sh` put it, with its `.sha256`).
-7. Open the app, set a new PIN, let the node start (it makes new keys at first start; the restore replaces them).
-8. Settings → Backup & restore → Restore from a backup: the file, the backup password, the PIN, tick, Restore. The
-   node's keys, the messaging key and chats, and the LEZ 0.3 name account come back; the node restarts.
-9. Turn on again what was on: the Messaging node switch, Mobile mode, fingerprint unlock, the network choice;
-   add Collectibles' programs and names again.
-10. Only now: Wallet on LEZ 0.4 → Use your recovery phrase, with the desktop's phrase.
+5. Prove the copy opens with the password and holds what it should, writing nothing:
+   `python3 tools/decrypt-backup.py --check logos-node-wallet-backup-<date>.json` (needs the `cryptography` package,
+   e.g. in a venv: `python3 -m venv ~/.venv-backup && ~/.venv-backup/bin/pip install cryptography`, then run it with
+   `~/.venv-backup/bin/python`). It must say "opens with this password", the node's key file, the messaging key, and
+   "the LNS name account (LEZ 0.3): Public/<the phone's account>". Don't go on until it does.
+6. Uninstall the debug build: `ssh minim4 'adb uninstall io.github.jefdiesel.logosnode'`.
+7. Install the release APK: `ssh minim4 'adb install <the release APK>'` (copied to the Mini from where
+   `build-release.sh` put it; check it against its `.sha256`).
+8. Open the app, set a new PIN, let the node start (it makes new keys at first start; the restore replaces them).
+9. Settings → Backup & restore → Restore from a backup: the file, the backup password, the PIN, tick, Restore. The
+   node's keys, the messaging key and chats, and the LEZ 0.3 name account come back; the node restarts. Check Your
+   name shows the same account as before.
+10. Turn on again what was on: the Messaging node switch, Mobile mode, fingerprint unlock, the network choice;
+    add Collectibles' programs and names again.
+11. Check the release build on the phone before the phrase: with the phrase box focused, `adb shell screencap` gives
+    a black picture, and `chrome://inspect` on the computer lists no WebView of the app.
+12. Only now: Wallet on LEZ 0.4 → Use your recovery phrase, with the desktop's phrase.
 
 From then on install only release builds signed with the same key. A CI debug APK won't install over the release
 build (that is the point); installing one means another uninstall.

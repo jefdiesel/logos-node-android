@@ -156,6 +156,13 @@ await waitFor("an answer lost after the send went out: 'It may have been sent. C
   `document.getElementById("s4-send-m").textContent === "It may have been sent. Check this account's balance before you try again." && document.getElementById("s4-send-m").className === "msg bad"`, 20000);
 check("…and the same press isn't there to make again: To and Amount are emptied", (await js(`document.getElementById("s4-to").value + "|" + document.getElementById("s4-amt").value`)) === "|");
 await ctl("mode", { mode: "ok" });
+await sleep(1500);
+check("…said once, under the button, not again at the top", !(await shown("#s4-unsure")));
+await cdp("Page.navigate", { url: BASE + "/" });             // a page that didn't follow that send (reloaded, or locked meanwhile)
+await waitFor("unlocked again after a reload", `!document.getElementById("v-open").hidden`);
+await waitFor("…it says at the top what may have been sent", `document.getElementById("s4-unsure").offsetParent !== null && document.getElementById("s4-unsure").textContent
+  === "Send of 7 to Public/Fx1yhUrJ2aZ1jW4b6nqJ3H8tpsHrwrz3yuPEqsfGr1QB: It may have been sent. Check this account's balance before you try again."`, 40000);
+await shot("send-unsure-after-reload", "#s4-unsure");
 await shot("send-unsure", "#s4-send");
 
 // ---- Receive ----

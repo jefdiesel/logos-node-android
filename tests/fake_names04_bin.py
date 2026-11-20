@@ -108,6 +108,9 @@ def main():
         if amount == 13:
             fail("Public/%s holds 0; about 900000 is held for the fee while this runs" % frm)
         send({"transfer": {"from": frm, "to": to, "to_pk": opt("--to-pk"), "amount": amount}}, style="wallet")
+        if amount == 31:                                  # (accepted, then waits for its block longer than a job may run)
+            sys.stdout.flush()
+            time.sleep(30)
         return
     if args[:1] == ["pay"]:
         name, amount = args[-2], int(args[-1])

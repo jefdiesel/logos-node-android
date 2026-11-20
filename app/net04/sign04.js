@@ -83,7 +83,7 @@
     try { if (window.LogosAndroid && window.LogosAndroid.secureScreen) window.LogosAndroid.secureScreen(on); } catch (e) {}
   };
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
-  let gen = 0, last = null, follow = null;
+  let gen = 0, last = null, follow = null, saidEnd = null;   // saidEnd: the end of the job a press here already showed
   const on04 = () => window.NET04.net() === "04" && !$("v-open").hidden;
   const box = $("s4-box");
 
@@ -104,10 +104,13 @@
     $("s4-rm-why").hidden = !stuck;
     $("s4-rm-why").textContent = stuck ? "An earlier restore on this phone didn't finish. Remove what it left here, then restore again." : "";
     if (stuck && $("s4-rm-f").hidden) { $("s4-rm-f").hidden = false; $("s4-rm-open").setAttribute("aria-expanded", "true"); }
-    // the app stopped while a transaction was going out: said at the top, until the next job
+    // a job that may have been sent, and that no press on this page showed (the page was reloaded or locked while it
+    // ran, or the app stopped): said at the top, with what it was, until the next job
     const j = v.job || {};
-    $("s4-unsure").hidden = !(j.unsure && j.restarted);
-    $("s4-unsure").textContent = j.unsure && j.restarted ? j.error : "";
+    const unsaid = j.unsure && j.state === "failed" && !active && j.finished !== saidEnd;
+    $("s4-unsure").hidden = !unsaid;
+    $("s4-unsure").textContent = !unsaid ? "" : (j.kind === "send" ? "Send of " + (j.amount || "?") + " to " + (j.to || "?")
+      : j.kind === "claim" ? "Claim of " + (j.name || "a name") + "'s NFT" : j.kind === "nft_send" ? "NFT send to " + (j.to || "?") : "NFT receive") + ": " + j.error;
     // the faucet: offered until used; its last answer stays in view after that
     $("s4-fund").hidden = !v.ready || (v.faucet.used && !$("s4-faucet-m").textContent);
     $("s4-faucet").hidden = $("s4-faucet-n").hidden = v.faucet.used;
@@ -161,6 +164,7 @@
         const t = j.progress || "starting"; msg.className = "msg"; msg.textContent = t.charAt(0).toUpperCase() + t.slice(1) + "…";
         follow = setTimeout(poll, 1500); return;
       }
+      if (j && j.unsure) saidEnd = j.finished;          // (said under the button: not again at the top)
       if (v.ok) render(v.data);
       if (j && j.state === "done") { end(true, doneText(v.data)); if (done) done(v.data); }
       else if (j && j.unsure) { end(false, j.error); if (unsure) unsure(v.data); else btn.disabled = true; }

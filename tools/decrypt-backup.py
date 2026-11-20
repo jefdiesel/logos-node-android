@@ -4,6 +4,7 @@
   python3 decrypt-backup.py logos-node-wallet-backup-20261111.json            -> ./keystore.yaml
   python3 decrypt-backup.py backup.json -o /path/to/keystore.yaml
   echo "the password" | python3 decrypt-backup.py backup.json --password-stdin
+  python3 decrypt-backup.py --check backup.json      -> opens it and says what it holds; writes nothing
 
 A version 2 backup also holds this device's messaging key (when messages were on); it is written to
 messaging-key.json beside the key file (or --messaging-out).
@@ -30,6 +31,9 @@ def main():
     ap.add_argument("-o", "--output", default="keystore.yaml", help="where to write the key file (default: ./keystore.yaml)")
     ap.add_argument("--force", action="store_true", help="overwrite the output file if it exists")
     ap.add_argument("--password-stdin", action="store_true", help="read the backup password from the first line of stdin")
+    ap.add_argument("--check", action="store_true",
+                    help="only open it with the password and say what it holds (the node's keys, the messaging key, chats, "
+                         "the LNS name account); write nothing")
     ap.add_argument("--messaging-out", default=None,
                     help="where to write the messaging key, if the backup has one (default: messaging-key.json beside the key file)")
     a = ap.parse_args()
@@ -50,7 +54,7 @@ def main():
     except (OSError, ValueError, KeyError, TypeError) as e:
         fail("can't read the backup file: %s" % e)
     msg_out = a.messaging_out or os.path.join(os.path.dirname(os.path.abspath(a.output)), "messaging-key.json")
-    for path in (a.output, msg_out) if doc["version"] >= 2 else (a.output,):
+    for path in () if a.check else (a.output, msg_out) if doc["version"] >= 2 else (a.output,):
         if os.path.exists(path) and not a.force:
             fail("%s already exists; move it away or use --force" % path)
     password = sys.stdin.readline().rstrip("\r\n") if a.password_stdin else getpass.getpass("Backup password: ")
@@ -62,6 +66,26 @@ def main():
         fail("wrong password, or the file has been changed or damaged")
     content = json.loads(plain)
     text = content["keystore.yaml"]
+    if a.check:
+        print("opens with this password. It holds:")
+        print("  the node's key file: %d bytes" % len(text.encode("utf-8")))
+        msg = content.get("messaging_key") if doc["version"] >= 2 else None
+        print("  the messaging key: " + ("public %s%s" % (msg.get("public", ""), ", name " + msg["name"] if msg.get("name") else "") if msg else "no"))
+        chat = content.get("chat") if msg else None
+        if chat:
+            print("  chats: profiles and notes %s; %d received and %d sent messages%s" % (
+                "yes" if chat.get("store") else "no", len(chat.get("inbox") or []), len(chat.get("outbox") or []),
+                " (older ones left out: over 1 MB)" if chat.get("truncated") else ""))
+        else:
+            print("  chats: no")
+        lw = content.get("lns_wallet")
+        print("  the LNS name account (LEZ 0.3): " + ("Public/%s%s%s" % (lw.get("account", "?"), ", name " + lw["name"] if lw.get("name") else "",
+                                                                          " (not checked by the signer when made)" if lw.get("unconfirmed") else "")
+                                                     if isinstance(lw, dict) and lw.get("storage") else "no"))
+        print("  LEZ 0.4 accounts: never in a backup (the recovery phrase brings them back)")
+        for k in doc.get("addresses", []):
+            print("  address %-8s %s" % (k.get("label", ""), k.get("key", "")))
+        return
     fd = os.open(a.output, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "wb") as f:
         f.write(text.encode("utf-8"))

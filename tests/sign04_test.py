@@ -304,6 +304,15 @@ chain.mode = "ok"
 check("a send the network answered with a refusal: 'didn't accept it', not 'may have been sent'", j["state"] == "failed" and not j["unsure"]
       and j["error"] == "The network didn't accept it." and chain.balances[F] == bal_f, j)
 
+# a job stopped by its time limit after the network took its transaction
+bal_f = chain.balances[F]
+limit, signer04.JOB_TIMEOUT["send"] = signer04.JOB_TIMEOUT["send"], 2
+s.send({"to": "Public/" + F, "amount": "31"})
+j = wait_job(s, 25)
+signer04.JOB_TIMEOUT["send"] = limit
+check("a job stopped by its time limit after its transaction went out: 'It may have been sent'", j["state"] == "failed" and j["unsure"]
+      and j["error"] == signer04.UNSURE["send"] and chain.balances[F] == bal_f + 31, j)
+
 # the app stopped while a transaction was out: said after it starts again
 gate = threading.Event()
 

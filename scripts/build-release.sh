@@ -62,13 +62,16 @@ export LOGOS_RELEASE_STORE_FILE="$STORE"
 # ---- tools ---------------------------------------------------------------------------------------------------------
 JAVA=${JAVA_HOME:+$JAVA_HOME/bin/}java
 KEYTOOL=${JAVA_HOME:+$JAVA_HOME/bin/}keytool
-"$JAVA" -version 2>&1 | grep -q 'version "17' || fail "JDK 17 is needed (JAVA_HOME, or java on PATH): $("$JAVA" -version 2>&1 | head -1)"
+JV=$("$JAVA" -version 2>&1 || true)
+case "$JV" in *'version "17'*) ;; *) fail "JDK 17 is needed (JAVA_HOME, or java on PATH): $(printf '%s\n' "$JV" | awk 'NR==1')" ;; esac
 
 # the key opens, with the alias asked for (passwords from the environment, never on a command line)
 "$KEYTOOL" -list -keystore "$STORE" -storepass:env LOGOS_RELEASE_STORE_PASSWORD -alias "$LOGOS_RELEASE_KEY_ALIAS" >/dev/null 2>&1 \
   || fail "the keystore doesn't open with LOGOS_RELEASE_STORE_PASSWORD, or has no key '$LOGOS_RELEASE_KEY_ALIAS'"
 cert_of() {   # the SHA-256 of a keystore entry's certificate, lowercase hex without colons
-  "$KEYTOOL" -list -v -keystore "$1" "${@:3}" -alias "$2" 2>/dev/null | sed -n 's/^[[:space:]]*SHA256: //p' | head -1 | tr -d ':' | tr 'A-F' 'a-f'
+  local out
+  out=$("$KEYTOOL" -list -v -keystore "$1" "${@:3}" -alias "$2" 2>/dev/null) || return 0
+  printf '%s\n' "$out" | sed -n 's/^[[:space:]]*SHA256: //p' | awk 'NR==1' | tr -d ':' | tr 'A-F' 'a-f'
 }
 RELEASE_CERT=$(cert_of "$STORE" "$LOGOS_RELEASE_KEY_ALIAS" -storepass:env LOGOS_RELEASE_STORE_PASSWORD)
 DEBUG_CERT=$(cert_of "$REPO/android/debug.keystore" androiddebugkey -storepass android)
@@ -82,7 +85,11 @@ if [ ! -d "$ANDROID_HOME/platforms/android-36" ] || [ ! -x "$ANDROID_HOME/build-
   SDKM=$(command -v sdkmanager || echo "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager")
   [ -x "$SDKM" ] || fail "ANDROID_HOME lacks platform 36 or build-tools $BUILD_TOOLS, and no sdkmanager to install them"
   say "== installing platform 36 and build-tools $BUILD_TOOLS into $ANDROID_HOME"
-  yes | "$SDKM" --sdk_root="$ANDROID_HOME" --install "platforms;android-36" "build-tools;$BUILD_TOOLS" >/dev/null
+  set +o pipefail                                   # (`yes` ends on SIGPIPE when sdkmanager is done)
+  yes | "$SDKM" --sdk_root="$ANDROID_HOME" --install "platforms;android-36" "build-tools;$BUILD_TOOLS" >/dev/null || true
+  set -o pipefail
+  [ -d "$ANDROID_HOME/platforms/android-36" ] && [ -x "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" ] \
+    || fail "sdkmanager didn't install platform 36 and build-tools $BUILD_TOOLS into $ANDROID_HOME"
 fi
 BT="$ANDROID_HOME/build-tools/$BUILD_TOOLS"
 
@@ -114,7 +121,7 @@ cp "$WORK/dl/logos-blockchain-node" "$J/liblogosnode.so"
 
 MSG_RUN=$(tr -d '[:space:]' < android/messaging-run.txt)
 gh run download "$MSG_RUN" -R "$REPO_GH" -p 'logos-delivery-android-arm64-*' -D "$WORK/wdl"
-W=$(ls -d "$WORK"/wdl/logos-delivery-android-arm64-* 2>/dev/null | head -1)
+W=$(ls -d "$WORK"/wdl/logos-delivery-android-arm64-* 2>/dev/null | awk 'NR==1' || true)
 [ -n "$W" ] || fail "waku-build run $MSG_RUN has no messaging artifact"
 while read -r sum name; do
   [ -n "$name" ] || continue
@@ -137,7 +144,8 @@ cp "$WORK/n04dl/names" "$J/libnames04.so"
 export GRADLE_USER_HOME=${GRADLE_USER_HOME:-${TMPDIR:-/tmp}/logos-release-gradle-home}
 mkdir -p "$GRADLE_USER_HOME"
 GRADLE=$(command -v gradle || true)
-if [ -z "$GRADLE" ] || ! "$GRADLE" --version 2>/dev/null | grep -q "^Gradle $GRADLE_VERSION$"; then
+GV=$([ -n "$GRADLE" ] && "$GRADLE" --version 2>/dev/null || true)
+if ! printf '%s\n' "$GV" | grep -qx "Gradle $GRADLE_VERSION"; then
   G="$GRADLE_USER_HOME/dist/gradle-$GRADLE_VERSION"
   if [ ! -x "$G/bin/gradle" ]; then
     say "== downloading Gradle $GRADLE_VERSION into $GRADLE_USER_HOME/dist"
@@ -159,12 +167,12 @@ A=android/app/build/outputs/apk/release/app-release.apk
 [ -f "$A" ] || fail "no $A"
 SIGN=$("$BT/apksigner" verify --print-certs "$A") || fail "apksigner doesn't accept the APK's signature"
 say "$SIGN"
-GOT_CERT=$(printf '%s\n' "$SIGN" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -1)
+GOT_CERT=$(printf '%s\n' "$SIGN" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | awk 'NR==1')
 [ "$(printf '%s\n' "$SIGN" | grep -c '^Signer #[0-9]* certificate SHA-256 digest')" = 1 ] || fail "the APK has more than one signer"
 [ "$GOT_CERT" = "$RELEASE_CERT" ] || fail "the APK is signed with $GOT_CERT, not the release key ($RELEASE_CERT)"
 [ "$GOT_CERT" != "$DEBUG_CERT" ] || fail "the APK is signed with the public debug key"
-BADGING=$("$BT/aapt2" dump badging "$A")
-! printf '%s\n' "$BADGING" | grep -q 'application-debuggable' || fail "the APK is debuggable"
+"$BT/aapt2" dump badging "$A" > "$WORK/badging.txt"
+! grep -q 'application-debuggable' "$WORK/badging.txt" || fail "the APK is debuggable"
 "$BT/aapt2" dump xmltree --file AndroidManifest.xml "$A" > "$WORK/manifest.txt"
 ! grep -q 'debuggable(0x0101000f)=true' "$WORK/manifest.txt" || fail "the APK's manifest says debuggable"
 in_apk() { [ "$(unzip -p "$A" "$1" | sha256_stdin)" = "$2" ] || fail "$1 is missing from the APK or differs from $3"; }
@@ -180,7 +188,7 @@ for f in server.py index.html release.json names/names.js names/lookup.js messag
          lez04.py lez04.json signer04.py net04/net04.js net04/sign04.js net04/nft.js net04/fonts/Gloock-Regular.ttf net04/fonts/FiraCode-VF.ttf; do
   in_apk "assets/webapp/$f" "$(sha256 "app/$f")" "app/$f"
 done
-VERSION_NAME=$(printf '%s\n' "$BADGING" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p" | head -1)
+VERSION_NAME=$(sed -n "s/.*versionName='\([^']*\)'.*/\1/p" "$WORK/badging.txt" | awk 'NR==1')
 mkdir -p "$OUT"
 NAME_OUT="logos-node-$VERSION_NAME-node$VERSION-$VARIANT-release.apk"
 cp "$A" "$OUT/$NAME_OUT"
