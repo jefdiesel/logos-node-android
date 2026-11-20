@@ -171,6 +171,7 @@ check("a name whose account was never used: the tool's refusal, in fixed words",
 s.send({"to": "Public/" + F, "amount": "13"})
 j = wait_job(s)
 check("not enough for the fee: the fixed sentence with the figures", j["state"] == "failed" and j["error"].endswith("Add test LEZ to it first.") and "holds 0" in j["error"], j)
+check("...a failure before anything went out never says 'may have been sent'", not j["unsure"] and "may have been sent" not in j["error"], j)
 s.send({"to": "Public/" + F, "amount": "1"})
 busy = s.send({"to": "Public/" + F, "amount": "1"})
 wait_job(s)
@@ -264,6 +265,119 @@ signer04.time.sleep = signer04_sleep
 code, out = s.forward(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getChannelId", "params": []}).encode())
 check("forwarder: a read passes", code == 200 and json.loads(out)["result"] == chain.answer({"method": "getChannelId"})["result"])
 
+# a transaction that went out and whose answer was lost: "it may have been sent", never "try again" (review S1)
+bal_f = chain.balances[F]
+chain.mode = "lose_send"                    # the network applies it, then the answer comes back as an error page
+s.send({"to": "Public/" + F, "amount": "21"})
+j = wait_job(s)
+chain.mode = "ok"
+check("an answer lost after the send went out: 'It may have been sent. Check…', not 'try again'", j["state"] == "failed" and j["unsure"]
+      and j["error"] == signer04.UNSURE["send"] and "try again" in j["error"] and "Try again" not in j["error"], j)
+check("...it did land, once", chain.balances[F] == bal_f + 21, chain.balances[F] - bal_f)
+check("...and nothing about it is left on disk once its end is shown", not os.path.exists(s.unsure_file))
+
+
+def raising_fetch(url, body, cap, total):
+    """The network takes the transaction, then no answer comes at all (a timeout)."""
+    if any(c.get("method") == "sendTransaction" for c in (body if isinstance(body, list) else [body])):
+        chain.handle(body)
+        raise TimeoutError("timed out")
+    return chain.handle(body)
+
+
+s.fetch = raising_fetch
+before_pk = chain.balances.get("pk:" + PK, 0)
+s.send({"to": PK, "amount": "3"})
+j = wait_job(s)
+check("no answer at all to a send: the same line", j["state"] == "failed" and j["unsure"] and j["error"] == signer04.UNSURE["send"]
+      and chain.balances.get("pk:" + PK, 0) == before_pk + 3, j)
+ART3 = "4zvwRjXUKGfvwnParsHAS3HuSVzV5cA4McphgmoCtajS"
+s.nft_init({"program": PROG, "definition": ART3})
+j = wait_job(s)
+check("an NFT's answer lost: 'Check Collectibles before you try again'", j["state"] == "failed" and j["unsure"] and j["error"] == signer04.UNSURE["other"], j)
+s.fetch = fetch
+chain.mode = "reject_send"
+bal_f = chain.balances[F]
+s.send({"to": "Public/" + F, "amount": "22"})
+j = wait_job(s)
+chain.mode = "ok"
+check("a send the network answered with a refusal: 'didn't accept it', not 'may have been sent'", j["state"] == "failed" and not j["unsure"]
+      and j["error"] == "The network didn't accept it." and chain.balances[F] == bal_f, j)
+
+# the app stopped while a transaction was out: said after it starts again
+gate = threading.Event()
+
+
+def held_fetch(url, body, cap, total):
+    if any(c.get("method") == "sendTransaction" for c in (body if isinstance(body, list) else [body])):
+        gate.wait(15)
+    return chain.handle(body)
+
+
+s.fetch = held_fetch
+s.send({"to": "Public/" + F, "amount": "23"})
+for _ in range(200):
+    if os.path.exists(s.unsure_file):
+        break
+    time.sleep(0.05)
+marker = open(s.unsure_file).read() if os.path.exists(s.unsure_file) else ""
+check("while a transaction is out, the app keeps a note of it on disk (0600): what and to whom, no key",
+      json.loads(marker or "{}").get("amount") == "23" and (os.stat(s.unsure_file).st_mode & 0o077) == 0 and "pk " not in marker, marker)
+again = signer04.Signer04(data, BIN, fetch, lambda: dict(CONF), lambda: "http://127.0.0.1:1/x", signer04.Pacer(0.0))   # the app, started again
+jv = again.view()["job"]
+check("after a restart part way: 'The app stopped while this was being sent. It may have been sent…'", jv["state"] == "failed" and jv["unsure"]
+      and jv["restarted"] and jv["error"] == signer04.UNSURE_RESTARTED + signer04.UNSURE["send"] and jv["amount"] == "23" and jv["kind"] == "send", jv)
+gate.set()
+j = wait_job(s)
+s.fetch = fetch
+check("(the held send then ends as usual)", j["state"] == "done", j)
+with open(s.unsure_file, "w") as f:
+    json.dump({"kind": "send", "amount": "1", "at": time.time()}, f)
+later = signer04.Signer04(data, BIN, fetch, lambda: dict(CONF), lambda: "http://127.0.0.1:1/x", signer04.Pacer(0.0), clock=lambda: time.time() + 2 * 86400)
+check("a day later it isn't said any more", later.view()["job"]["state"] == "idle" and not os.path.exists(s.unsure_file))
+
+# a restore stopped after the keys were written: not stuck on "already has accounts" for ever (review S2)
+d3 = mkdtemp()
+s3 = signer04.Signer04(d3, BIN, fetch, lambda: dict(CONF), lambda: "http://127.0.0.1:1/x", signer04.Pacer(0.0), event=lambda n, **d: events.append((n, d)))
+
+
+def killed(**k):
+    raise OSError("the app was stopped here")
+
+
+s3.save = killed
+try:
+    s3.restore(PHRASE)
+except OSError:
+    pass
+del s3.save
+check("a restore stopped after the keys were written: keys here, not ready", os.path.exists(s3.storage()) and not s3.ready() and s3.view()["stored"])
+code, r = s3.restore(PHRASE)
+check("restoring again says how to get out", code == 409 and r.get("stuck") is True and "Remove the LEZ 0.4 accounts from this phone" in r["error"], r)
+with open(os.path.join(s3.home, "storage.json.83a1.tmp"), "w") as f:
+    f.write("{}")                                   # a half-written copy of the keys, too
+CACHE = os.path.join(s3.home, "cache", "shortlist-9778bed4.bin")
+os.makedirs(os.path.dirname(CACHE), exist_ok=True)
+with open(CACHE, "wb") as f:
+    f.write(b"list")
+s3.change.acquire()
+busy = s3.remove()
+s3.change.release()
+check("remove is refused while a job or a restore runs", busy == (409, {"error": signer04.TEXT["busy"]}) and os.path.exists(s3.storage()))
+code, r = s3.remove()
+check("remove: the keys and what the app kept go; the public list's cache stays", code == 200 and not r["stored"] and not r["ready"] and not r["accounts"]
+      and not any(f.startswith("storage.json") for f in os.listdir(s3.home)) and not os.path.exists(s3.state_file) and os.path.isfile(CACHE), (r, os.listdir(s3.home)))
+check("...said in the events", any(n == "lez04 accounts removed from this phone" for n, d in events))
+check("remove again: nothing to remove", s3.remove() == (409, {"error": signer04.TEXT["none_here"]}))
+code, r = s3.restore(PHRASE)
+check("then the restore works again: the desktop's first account", code == 200 and r["ready"] and r["account"] == MAIN, r)
+code, r = s3.remove()
+check("a restored wallet can be removed too (the wrong phrase, or keys no longer wanted here)", code == 200 and not r["ready"] and not os.path.exists(s3.storage()))
+with open(os.path.join(s2.home, "storage.json.77.tmp"), "w") as f:
+    f.write("{}")
+s2.discard()
+check("a failed restore leaves no half-written copy of the keys (storage.json.*.tmp)", not any(f.startswith("storage.json") for f in os.listdir(s2.home)))
+
 # ---- part 3: the app -------------------------------------------------------------------------------------------------
 chain2 = Chain04()
 
@@ -306,7 +420,7 @@ for _ in range(80):
 sess = W.call("/api/wallet/setup", {"pin": "246828"})[1]["session"]
 html = urllib.request.urlopen(W.BASE + "/").read().decode()
 check("the page loads the signer's script between the 0.4 view and Collectibles", html.index('<script src="/net04/net04.js">') < html.index('<script src="/net04/sign04.js">') < html.index('<script src="/net04/nft.js">'))
-check("every signer route needs the session", W.call("/api/wallet/lez04")[0] == 401 and all(W.call("/api/wallet/lez04/" + w, {})[0] == 401 for w in ("restore", "send", "faucet", "claim", "nft/init", "nft/send")))
+check("every signer route needs the session", W.call("/api/wallet/lez04")[0] == 401 and all(W.call("/api/wallet/lez04/" + w, {})[0] == 401 for w in ("restore", "send", "faucet", "claim", "nft/init", "nft/send", "remove")))
 code, v = W.call("/api/wallet/lez04", session=sess)
 check("the app has the signer, not ready yet", code == 200 and v["available"] and not v["ready"], v)
 check("the forwarder: a wrong secret is a plain 404", W.call("/lez04-rpc/nope", {"method": "getChannelId"})[0] == 404)
@@ -369,6 +483,16 @@ for _ in range(60):
     if grp:
         break
 check("an NFT on that account shows in Collectibles as the wallet's (so it can be sent)", grp and grp["mine"] and not grp["own"], grp)
+# Remove through the app: the PIN typed again (review S2)
+ASTORE = os.path.join(adata, ".lez04-wallet", "storage.json")
+code, r = W.call("/api/wallet/lez04/remove", {}, session=sess)
+check("remove through the app: the session alone isn't enough, the PIN is asked", code == 400 and r.get("malformed") and os.path.isfile(ASTORE), (code, r))
+code, r = W.call("/api/wallet/lez04/remove", {"pin": "135799"}, session=sess)
+check("a wrong PIN: refused (403, not 'locked'), nothing removed", code == 403 and "Wrong PIN" in r["error"] and os.path.isfile(ASTORE), (code, r))
+code, r = W.call("/api/wallet/lez04/remove", {"pin": "246828"}, session=sess)
+check("the right PIN: removed, the phrase card is back", code == 200 and not r["ready"] and not r["stored"] and not os.path.exists(ASTORE), (code, r))
+code, v = W.call("/api/wallet/lez04/restore", {"phrase": PHRASE}, session=sess)
+check("restore through the app works again: the same account", code == 200 and v["account"] == AMAIN, v)
 seen = set(c for c in chain2.calls if not c.startswith("("))
 check("the app asked the network only for reads, sendTransaction and the faucet", seen <= signer04.RPC_METHODS | {"bridge_faucet", "bridge_faucetInfo"}, seen)
 print("all checks passed" if not FAILS else "%d FAILED" % len(FAILS))

@@ -39,6 +39,42 @@ run {
     }
 }
 
+// The release key, read only from LOGOS_RELEASE_STORE_FILE, _STORE_PASSWORD, _KEY_ALIAS and _KEY_PASSWORD: the
+// environment first, else a Gradle property from ~/.gradle/gradle.properties (not -P on the command line: other
+// programs on the computer can read a command line). `problem` says why there is no usable key, or is null.
+class ReleaseSigning(val storeFile: File?, val storePassword: String?, val keyAlias: String?, val keyPassword: String?, val problem: String?)
+val releaseSigning: ReleaseSigning = run {
+    fun value(name: String): String? =
+        (System.getenv(name) ?: (findProperty(name) as String?))?.takeIf { it.isNotEmpty() }
+    val names = listOf("LOGOS_RELEASE_STORE_FILE", "LOGOS_RELEASE_STORE_PASSWORD", "LOGOS_RELEASE_KEY_ALIAS", "LOGOS_RELEASE_KEY_PASSWORD")
+    val got = names.associateWith { value(it) }
+    val missing = names.filter { got[it] == null }
+    val repo = rootProject.projectDir.parentFile.canonicalFile        // the repository's top folder (android/..)
+    val store = got["LOGOS_RELEASE_STORE_FILE"]?.let { File(it).canonicalFile }
+    val problem = when {
+        missing.isNotEmpty() -> "not set: " + missing.joinToString(", ")
+        store == null || !store.isFile -> "LOGOS_RELEASE_STORE_FILE is not a file: $store"
+        store.name == "debug.keystore" || store == rootProject.file("debug.keystore").canonicalFile ->
+            "LOGOS_RELEASE_STORE_FILE is the public debug key; a release is signed with your own key"
+        store.path == repo.path || store.path.startsWith(repo.path + File.separator) ->
+            "LOGOS_RELEASE_STORE_FILE is inside the repository ($store); keep the release key outside it"
+        else -> null
+    }
+    ReleaseSigning(store, got["LOGOS_RELEASE_STORE_PASSWORD"], got["LOGOS_RELEASE_KEY_ALIAS"], got["LOGOS_RELEASE_KEY_PASSWORD"], problem)
+}
+// A release APK is never made without that key: not unsigned, and never with the debug key. Checked when the APK
+// (or a bundle) is packaged, so the release code still compiles and is checked without a key (CI does).
+tasks.configureEach {
+    if (name == "packageRelease" || name == "signReleaseBundle" || name == "packageReleaseBundle") {
+        doFirst {
+            releaseSigning.problem?.let {
+                throw GradleException("No release key, so no release APK: $it. Set LOGOS_RELEASE_STORE_FILE, " +
+                    "LOGOS_RELEASE_STORE_PASSWORD, LOGOS_RELEASE_KEY_ALIAS and LOGOS_RELEASE_KEY_PASSWORD (see scripts/build-release.sh).")
+            }
+        }
+    }
+}
+
 // The wallet is the repository's own web app (app/: server.py, index.html, names/), taken as it is at
 // build time and shipped as assets. It is never copied by hand into this project.
 val webAppSource = rootProject.file("../app")
@@ -83,9 +119,29 @@ android {
             keyAlias = "androiddebugkey"
             keyPassword = "android"
         }
+        // The release key: never in this repository, never in CI (the repository is public). Only when all four
+        // LOGOS_RELEASE_* values are set (environment, or ~/.gradle/gradle.properties) and the key file is outside
+        // the repository; scripts/build-release.sh builds with it (android/NAMES04.md "The release build").
+        if (releaseSigning.problem == null) {
+            create("release") {
+                storeFile = releaseSigning.storeFile
+                storePassword = releaseSigning.storePassword
+                keyAlias = releaseSigning.keyAlias
+                keyPassword = releaseSigning.keyPassword
+            }
+        }
     }
     buildTypes {
         getByName("debug") { signingConfig = signingConfigs.getByName("debug") }
+        // Not debuggable: no `run-as`, no WebView remote debugging, none of the debug builds' adb extras. Signed
+        // only with the release key above, never the debug one; without that key the APK is not made (the check before `android {`).
+        getByName("release") {
+            isDebuggable = false
+            isJniDebuggable = false
+            isMinifyEnabled = false
+            isShrinkResources = false
+            signingConfig = if (releaseSigning.problem == null) signingConfigs.getByName("release") else null
+        }
     }
 
     buildFeatures { buildConfig = true }

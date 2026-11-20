@@ -117,6 +117,14 @@ ERRORS = [
     (re.compile(r"failed to read|isn't answering|error sending request|connection|timed out", re.I), "The network didn't answer. Try again."),
 ]
 ERROR_OTHER = "It stopped with an error this app doesn't show. Check the account's balance, then try again."
+# When a transaction went out and its answer was lost (the network didn't answer in time, answered with an error page,
+# or the job stopped after sending): it may be on the network. The person checks before pressing again, as a second
+# press makes a new transaction (a send would then pay twice). LEZ 0.4 has no Activity list on the phone: what shows a
+# send is the balance; an NFT or a name's NFT, Collectibles.
+UNSURE = {"send": "It may have been sent. Check this account's balance before you try again.",
+          "other": "It may have been sent. Check Collectibles before you try again."}
+UNSURE_RESTARTED = "The app stopped while this was being sent. "
+UNSURE_KEEP = 24 * 3600          # how long, after the app stopped part way, the page says so
 
 TEXT = {
     "busy": "Wait until the send that is running now has finished.",
@@ -124,6 +132,9 @@ TEXT = {
     "no_tool": "The LEZ 0.4 signer isn't in this build of the app.",
     "phrase": "A recovery phrase is 12 to 24 words, in lowercase letters, with spaces between them.",
     "have_wallet": "This phone already has LEZ 0.4 accounts, so nothing was restored or changed.",
+    "stuck": "An earlier restore on this phone didn't finish, so its keys are still here. Remove the LEZ 0.4 accounts from "
+             "this phone (below), then restore again.",
+    "none_here": "This phone has no LEZ 0.4 accounts to remove.",
     "restore_failed": "The accounts couldn't be restored from that phrase. Nothing was kept. Check the words and try again.",
     "faucet_once": "This wallet already got its free test LEZ: once per wallet.",
     "unused": "That account has never been used on this network, so it can only be paid by its public key. Ask for the key "
@@ -204,12 +215,14 @@ class Signer04:
         self.pacer, self.event, self.clock, self.on_done = pacer, event, clock, on_done
         self.home = os.path.join(data_dir, ".lez04-wallet")
         self.state_file = os.path.join(data_dir, "wallet-lez04.json")
+        self.unsure_file = os.path.join(data_dir, "wallet-lez04-unsure.json")    # a job whose transaction went out, until it ends
         self.shortlist = os.path.join(self.home, "cache", "shortlist-9778bed4.bin")
         self.secret = secrets.token_hex(16)
         self.lock = threading.Lock()                # guards self.job
         self.change = threading.Lock()              # one change at a time: a restore or a job
         self.job = {"kind": None, "state": "idle"}
         self.faucet_info_cache = {"at": 0.0, "value": None}
+        self.job_after_restart()
 
     # ---- files ----
     def available(self):
@@ -292,16 +305,68 @@ class Signer04:
         if not isinstance(url, str) or not url:
             return 502, {"error": "no LEZ 0.4 network set"}
         sends = any(c["method"] == "sendTransaction" for c in calls)
+        if sends:
+            self.sent_out()
         for attempt in range(3):
             self.pacer.wait()
             try:
                 code, data = self.fetch(url, body, RPC_REPLY_MAX, 60)
             except Exception:
-                return 502, {"error": "LEZ 0.4 isn't answering."}
+                return 502, {"error": "LEZ 0.4 isn't answering."}      # (a send stays "may have been sent")
+            if sends and refused(calls, code, data):
+                self.sent_refused()
             if code != 429 or sends or attempt == 2:
                 return code, data
             time.sleep(2.0 * (attempt + 1))
         return code, data
+
+    # ---- a transaction that went out (for "it may have been sent") ----
+    def sent_out(self):
+        """A sendTransaction of the running job is going to the network: until its answer says it was refused, it
+        may be on the network. Kept on disk too, so a job the app's end cut short is still said after a restart."""
+        with self.lock:
+            if self.job.get("state") != "running":
+                return
+            self.job["out"] = self.job.get("out", 0) + 1
+            seen = {k: self.job.get(k) for k in ("kind", "to", "amount", "name", "account")}
+        try:
+            tmp = self.unsure_file + ".tmp"
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump(dict(seen, at=self.clock()), f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self.unsure_file)
+        except Exception:
+            pass                                            # (the hold in memory still says it until the job ends)
+
+    def sent_refused(self):
+        with self.lock:
+            if self.job.get("state") == "running":
+                self.job["refused"] = self.job.get("refused", 0) + 1
+
+    def job_unsure(self):
+        with self.lock:
+            return self.job.get("out", 0) > self.job.get("refused", 0)
+
+    def job_after_restart(self):
+        """At start: a job whose transaction went out when the app stopped is shown as "it may have been sent"
+        (for a day), not as nothing."""
+        try:
+            with open(self.unsure_file) as f:
+                u = json.load(f)
+            if not isinstance(u, dict) or not 0 <= self.clock() - float(u.get("at", 0)) < UNSURE_KEEP:
+                raise ValueError("old")
+        except Exception:
+            try:
+                os.remove(self.unsure_file)
+            except OSError:
+                pass
+            return
+        kind = u.get("kind") if u.get("kind") in JOB_TIMEOUT else "send"
+        shown = {k: u.get(k) if isinstance(u.get(k), str) and len(u.get(k)) <= 100 else "" for k in ("to", "amount", "name", "account")}
+        self.job = dict(shown, kind=kind, state="failed", progress="", unsure=True, restarted=True, started=float(u["at"]),
+                        finished=float(u["at"]), said="", error=UNSURE_RESTARTED + UNSURE["send" if kind == "send" else "other"])
 
     def rpc(self, method, params, total=15):
         """One read of the 0.4 network (paced), its result, or raises."""
@@ -334,8 +399,10 @@ class Signer04:
             words = None
             return 409, {"error": TEXT["busy"]}
         try:
-            if self.ready() or os.path.exists(self.storage()):
+            if self.ready():
                 return 409, {"error": TEXT["have_wallet"]}
+            if os.path.exists(self.storage()):              # a restore stopped after the keys were written: Remove, then again
+                return 409, {"error": TEXT["stuck"], "stuck": True}
             self.lockdown()
             self.write_config()
             try:
@@ -369,12 +436,57 @@ class Signer04:
             self.change.release()
 
     def discard(self):
-        """A restore that failed part way leaves no wallet behind (it held only what the phrase derives)."""
-        for f in ("storage.json", "names.json", "names-wallet.lock"):
+        """A restore that failed part way leaves no wallet behind (it held only what the phrase derives), nor a
+        half-written copy of the keys (`storage.json.*.tmp`, from a write the wallet didn't finish)."""
+        try:
+            left = [f for f in os.listdir(self.home) if f.startswith("storage.json.") and f.endswith(".tmp")]
+        except OSError:
+            left = []
+        for f in ["storage.json", "names.json", "names-wallet.lock"] + left:
             try:
                 os.remove(os.path.join(self.home, f))
             except OSError:
                 pass
+
+    def remove(self):
+        """(http status, reply). Deletes this phone's LEZ 0.4 accounts: the keys made from the recovery phrase (the
+        wallet folder, all but its cache of the public locked-name list) and what this app kept about them. The
+        accounts themselves stay on the network and on the desktop; the phrase brings them back. Also the way out of
+        a restore that stopped after the keys were written. The server asks for the PIN first. Never while a job runs."""
+        if not self.change.acquire(blocking=False):
+            return 409, {"error": TEXT["busy"]}
+        try:
+            if not os.path.exists(self.storage()) and not os.path.exists(self.state_file):
+                return 409, {"error": TEXT["none_here"]}
+            try:
+                names = os.listdir(self.home)
+            except OSError:
+                names = []
+            for f in names:
+                if f == "cache":
+                    continue
+                p = os.path.join(self.home, f)
+                if os.path.isdir(p) and not os.path.islink(p):
+                    shutil.rmtree(p, ignore_errors=True)
+                else:
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+            for p in (self.state_file, self.state_file + ".tmp", self.unsure_file, self.unsure_file + ".tmp"):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+            gone = not os.path.exists(self.storage()) and not os.path.exists(self.state_file)
+            with self.lock:
+                self.job = {"kind": None, "state": "idle"}
+            if not gone:
+                return 500, {"error": "The accounts couldn't all be removed. Try again."}
+            self.event("lez04 accounts removed from this phone")
+            return 200, self.view()
+        finally:
+            self.change.release()
 
     def public_key_of(self, account):
         """The account's public key (64 hex), as `names wallet account get --keys` prints it (pk only, for a public
@@ -394,11 +506,13 @@ class Signer04:
         with self.lock:
             job = {k: self.job.get(k) for k in ("kind", "state", "progress", "error", "started", "finished", "name", "to",
                                                   "amount", "account", "said")}
+            job["unsure"] = bool(self.job.get("unsure"))
+            job["restarted"] = bool(self.job.get("restarted"))
         f = st["faucet"] or {}
         if channel and f.get("channel") and f["channel"] != channel:
             f = {}                                          # the network was reset since: the faucet can be asked again
-        return {"available": self.available(), "ready": self.ready(), "account": st["main"], "public_key": st["public_key"],
-                "accounts": st["accounts"], "job": job,
+        return {"available": self.available(), "ready": self.ready(), "stored": os.path.exists(self.storage()),
+                "account": st["main"], "public_key": st["public_key"], "accounts": st["accounts"], "job": job,
                 "faucet": {"used": bool(f.get("ok")), "amount": f.get("amount"), "at": f.get("at")},
                 "shortlist": os.path.isfile(self.shortlist)}
 
@@ -408,7 +522,11 @@ class Signer04:
         if not self.change.acquire(blocking=False):
             return 409, {"error": TEXT["busy"]}
         job = dict(kind=kind, state="running", progress="starting", error="", started=self.clock(), finished=None,
-                   name="", to="", amount="", account="", said="")
+                   name="", to="", amount="", account="", said="", out=0, refused=0)
+        try:
+            os.remove(self.unsure_file)                     # (an earlier job's "may have been sent": this one replaces it)
+        except OSError:
+            pass
         job.update(shown)
         with self.lock:
             self.job = job
@@ -462,9 +580,17 @@ class Signer04:
             pass
         finally:
             tail = None
+            # a transaction went out and nothing said it was refused: unless the tool saw it in a block (done, or in a
+            # block without effect), it may be on the network
+            if final.get("state") == "failed" and self.job_unsure() and not final.get("error", "").startswith("It was included in block"):
+                final = {"state": "failed", "error": UNSURE["send" if kind == "send" else "other"], "unsure": True}
             try:
                 self.lockdown()
             except Exception:
+                pass
+            try:
+                os.remove(self.unsure_file)                 # (its end is in memory now, shown to the page)
+            except OSError:
                 pass
             with self.lock:                 # the job's end is shown and the next one allowed together
                 self.job.update(final, finished=self.clock())
@@ -639,6 +765,28 @@ class Signer04:
         if c == "already_used":
             self.save(faucet={"ok": True, "amount": None, "at": int(self.clock()), "before": True, "channel": channel})
         return 409, {"error": plain(res.get("reason")) or "The faucet refused.", "code": c, "retry": res.get("retry") is True}
+
+
+def refused(calls, code, data):
+    """Whether the network's answer to a batch with sendTransaction says every transaction in it was refused: a 429
+    (the proxy's rate limit: nothing was passed on) or a 200 whose answer to each sendTransaction is a JSON-RPC error.
+    Anything else (an error page, no answer, an answer that doesn't read) may mean it went through."""
+    if code == 429:
+        return True
+    if code != 200:
+        return False
+    try:
+        reply = json.loads(data)
+        replies = reply if isinstance(reply, list) else [reply]
+        by_id = {json.dumps(r.get("id")): r for r in replies if isinstance(r, dict)}
+        sends = [c for c in calls if c["method"] == "sendTransaction"]
+        if len(calls) == 1 and len(replies) == 1:
+            answers = [replies[0]]
+        else:
+            answers = [by_id.get(json.dumps(c.get("id"))) for c in sends]
+        return bool(answers) and all(isinstance(a, dict) and a.get("error") is not None and a.get("result") is None for a in answers)
+    except Exception:
+        return False
 
 
 def plain(text):

@@ -52,7 +52,11 @@ Everything is built in CI. Nothing needs to be built on a laptop.
 - `.github/workflows/android-app.yml`: the debug APK. It takes the node, the messaging library and the LNS
   signer from earlier CI runs pinned in `android/node.properties`, `android/messaging-run.txt` with
   `android/messaging.sha256`, and `android/names.properties`, checks each against its sha256, runs the
-  unit tests and checks the APK. The APK is a workflow artifact only.
+  unit tests and checks the APK. The APK is a workflow artifact only. It also checks the release variant
+  compiles, isn't debuggable, and is never packaged without the release key.
+- `scripts/build-release.sh`: the release APK (not debuggable, signed with the owner's own key from
+  `LOGOS_RELEASE_*`), built and checked on the owner's computer, never in CI (`android/NAMES04.md`, "The release
+  build"). On the MacBook only through `~/logos/laptop-build.sh`.
 - `.github/workflows/native-build.yml`: the blockchain node for Android arm64 (and Linux arm64).
 - `.github/workflows/waku-build.yml`: the messaging library and its runner.
 - `.github/workflows/names-build.yml`: the LNS command line `names` for Android arm64 (LEZ 0.3).
@@ -109,6 +113,9 @@ CHROME=/path/to/chrome node tests/chat_ui.mjs   # the Messages screen in headles
 - **`android/debug.keystore` is public on purpose.** It is the standard throwaway Android debug key,
   committed so every build has the same signature and installs over the previous one. It protects
   nothing and is not a release key.
+- **The release key is never in the repository or in CI.** Only the four `LOGOS_RELEASE_*` variables point at
+  it, on the owner's computer; the build refuses a key file inside the repository, and `.gitignore` ignores
+  `*.jks`, `*.p12` and `*.keystore` (except the debug key).
 - **Pins.** The APK uses binaries from pinned CI runs, each checked against a sha256:
   `android/node.properties` (the node: variant, version, commit, run and sha256s),
   `android/messaging-run.txt` and `android/messaging.sha256` (the messaging runner and library), and

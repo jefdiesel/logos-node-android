@@ -214,6 +214,8 @@ class Net04(Seq):
                 CHAIN04.balances[body["account"]] = int(body["amount"])
             elif what == "nft":
                 CHAIN04.states[(body["account"], body["program"])] = bytes.fromhex(body["hex"])
+            elif what == "mode":                           # e.g. "lose_send": a send applied, its answer lost
+                CHAIN04.mode = body["mode"]
             return self.out(200, {})
         if SIGNER04 and not self.path.startswith("/ctl/"):
             calls = body if isinstance(body, list) else [body]

@@ -6591,7 +6591,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 n.nft_look(own, name, lns_name_id, mine, extra)
                 obj["view"] = n.nft_view(own, name, mine, extra)
             return self.reply(code, obj)
-        if path.startswith("/api/wallet/lez04/"):      # the LEZ 0.4 signer: restore, send, NFTs, the name's NFT, the faucet
+        if path.startswith("/api/wallet/lez04/"):      # the LEZ 0.4 signer: restore, send, NFTs, the name's NFT, the faucet, remove
             s4 = signer04()
             if not s4:
                 return self.reply(404, {"error": "not found"})
@@ -6605,6 +6605,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 code, obj = s4.send(body)
             elif what == "faucet":
                 code, obj = s4.faucet()
+            elif what == "remove":                      # the keys made from the phrase off this phone: the PIN typed again
+                refused = pin_attempt(self, str(body.get("pin", "")), "lez04 remove refused, wrong PIN")
+                if refused:
+                    code, obj = refused
+                    return self.reply(403 if code == 401 else code, obj)      # 401 means "locked" to the page
+                code, obj = s4.remove()
             elif what == "nft/init":
                 code, obj = s4.nft_init(body)
             elif what == "nft/send":

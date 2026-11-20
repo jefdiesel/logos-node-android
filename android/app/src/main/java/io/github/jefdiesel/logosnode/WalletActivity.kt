@@ -168,6 +168,9 @@ class WalletActivity : Activity() {
         val dp = resources.displayMetrics.density
 
         root = android.widget.FrameLayout(this).apply { setBackgroundColor(cream) }
+        // WebView remote debugging (chrome://inspect over adb) only in debug builds: a release build turns it off
+        // here, explicitly, for every WebView of this process, before the first one exists (android/NAMES04.md)
+        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
         web = newWebView()
         root.addView(web, android.widget.FrameLayout.LayoutParams(MATCH, MATCH))
 
@@ -227,6 +230,23 @@ class WalletActivity : Activity() {
     }
 
     private fun openNodeScreen() = startActivity(Intent(this, NodeActivity::class.java))
+
+    /**
+     * While the recovery phrase box is in use (the page says so through LogosAndroid.secureScreen): no screenshots,
+     * screen recording or recents picture of this screen (FLAG_SECURE), and no autofill service reading the page
+     * (the whole WebView, as Android can't single out one field of a page). Off again when the box is empty, and at
+     * every page load. Only then, so `adb shell screencap` of the rest of the wallet keeps working.
+     */
+    private var secured = false
+    private fun secureScreen(on: Boolean) {
+        if (on == secured) return
+        secured = on
+        Log.i(TAG, "phrase box: screen ${if (on) "secured" else "back to normal"}")
+        if (on) window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+        else window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+        web.importantForAutofill = if (on) View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS else View.IMPORTANT_FOR_AUTOFILL_AUTO
+        if (on) try { getSystemService(android.view.autofill.AutofillManager::class.java)?.cancel() } catch (_: Exception) {}
+    }
 
     private fun showCover(text: String) {
         Log.i(TAG, "cover: ${text.lineSequence().first()}")
@@ -437,6 +457,11 @@ class WalletActivity : Activity() {
         // only the wallet's own page opens here; nothing else is loaded
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest) = !isOwnPage(request.url)
 
+        // a page load starts with an empty phrase box: the screen goes back to normal (secureScreen)
+        override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
+            if (view === web) secureScreen(false)
+        }
+
         override fun onPageFinished(view: WebView, url: String) {
             if (view !== web || !isOwnPage(Uri.parse(url))) return
             view.evaluateJavascript(SAVE_HOOK, null)
@@ -597,6 +622,24 @@ class WalletActivity : Activity() {
                 } catch (e: Exception) {
                     Log.w(TAG, "mobile mode: couldn't reach the node's service: $e")
                 }
+            }
+        }
+
+        /** The recovery phrase box (sign04.js) is in use (true) or empty again (false): see secureScreen. */
+        @JavascriptInterface
+        fun secureScreen(on: Boolean) {
+            main.post { if (!on || FingerprintUnlock.isOwnPage(web.url)) this@WalletActivity.secureScreen(on) }
+        }
+
+        /** A recovery phrase was pasted into the phrase box: the phone's clipboard is emptied (not a keyboard's own history). */
+        @JavascriptInterface
+        fun clearClipboard() {
+            main.post {
+                if (!FingerprintUnlock.isOwnPage(web.url)) return@post
+                try {
+                    getSystemService(android.content.ClipboardManager::class.java)?.clearPrimaryClip()
+                    Log.i(TAG, "phrase box: clipboard cleared after a paste")
+                } catch (_: Exception) {}
             }
         }
 

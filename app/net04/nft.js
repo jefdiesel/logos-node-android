@@ -201,7 +201,8 @@
       const to = i.value.trim();
       if (!to) { m.className = "msg bad"; m.textContent = "Who gets it? Paste their account, or type their LNS name."; return; }
       window.SIGN04.run("/api/wallet/lez04/nft/send", { program: t.program, from, to }, go, m, "Sending…",
-        () => "Sent to " + to + ". It is in a block.", () => { i.value = ""; f.hidden = true; load(true); setTimeout(() => load(true), 4000); });
+        () => "Sent to " + to + ". It is in a block.", () => { i.value = ""; f.hidden = true; load(true); setTimeout(() => load(true), 4000); },
+        () => { i.value = ""; load(true); });       // (it may have been sent: To is typed again, if at all)
     });
     wrap.append(open, f);
     return wrap;
@@ -336,6 +337,7 @@
     if (!CORE.programOk(definition)) { m.className = "msg bad"; m.textContent = "Paste the collection's ID (its account ID, base58)."; return; }
     window.SIGN04.run("/api/wallet/lez04/nft/init", { program, definition }, $("n4-recv-go"), m, "Getting ready…",
       v => "Ready. Give the sender " + ((v.job && v.job.account) ? "Public/" + v.job.account : "your account") + ": it takes this collection now.",
+      () => { $("n4-recv-def").value = ""; load(true); },
       () => { $("n4-recv-def").value = ""; load(true); });
   });
   $("n4-open-col").addEventListener("click", () => show(true));

@@ -265,7 +265,7 @@ pay the phone through the `blockchain` entry.
   - It holds the wallet's seed and the account's signing key as plain JSON. The LEZ wallet doesn't
     encrypt its storage yet.
   - Android's app sandbox keeps other apps out. The debug build can be read over USB debugging with
-    `run-as`, the same as the node's own `keystore.yaml`.
+    `run-as`, the same as the node's own `keystore.yaml`; the release build can't (NAMES04.md, "The release build").
   - The PIN guards the app's API that uses the key, not the file itself.
   - Wrapping the file with the Android Keystore is a follow-up, as it is for the messaging address.
 - **Made on the phone.** `names` makes the key on the phone, inside the app. It prints a recovery

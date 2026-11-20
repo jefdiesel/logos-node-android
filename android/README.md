@@ -376,6 +376,13 @@ supervisor's only while it is being launched, or while the supervisor's handle i
 same signature and a newer build installs over an older one without wiping the app's data. It is
 not a release key and protects nothing.
 
+The **release build** (build type `release`: not debuggable, WebView remote debugging off) is signed only with a
+private key given by `LOGOS_RELEASE_STORE_FILE`, `LOGOS_RELEASE_STORE_PASSWORD`, `LOGOS_RELEASE_KEY_ALIAS` and
+`LOGOS_RELEASE_KEY_PASSWORD`, kept outside the repository; without them no release APK is made, and the debug key is
+never used for it. CI never holds that key: `scripts/build-release.sh` builds and checks the release APK on the
+owner's computer. A phone that holds a real recovery phrase runs the release build. Moving a phone from the debug
+build to it needs an uninstall: see NAMES04.md, "The release build" and "Moving to the release build".
+
 ## Building
 
 The APK is built in CI (`.github/workflows/android-app.yml`). The workflow runs on changes to

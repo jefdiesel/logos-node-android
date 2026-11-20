@@ -202,3 +202,32 @@ jobs:
         with:
           name: logos-node-app-debug-node${{ steps.node.outputs.version }}-${{ steps.node.outputs.variant }}
           path: out/
+      - name: The release build compiles, isn't debuggable, and is never made without the release key
+        working-directory: android
+        run: |
+          # CI never holds the release key (the repository is public): scripts/build-release.sh makes the release APK
+          # on the owner's computer. Here: the release variant compiles and passes its checks up to packaging, and
+          # packaging then stops with the plain message, never an unsigned or debug-signed APK.
+          set -o pipefail
+          P="-PnodeVersion=${{ steps.node.outputs.version }} -PnodeSha256=${{ steps.node.outputs.sha }} -PnodeVariant=${{ steps.node.outputs.variant }}"
+          if env -u LOGOS_RELEASE_STORE_FILE gradle --no-daemon --console=plain assembleRelease $P > "$RUNNER_TEMP/release.log" 2>&1; then
+            echo "::error::a release APK was made without the release key"; exit 1
+          fi
+          grep -q "No release key, so no release APK: not set: LOGOS_RELEASE_STORE_FILE" "$RUNNER_TEMP/release.log" || { tail -100 "$RUNNER_TEMP/release.log"; exit 1; }
+          grep -q "Task :app:compileReleaseKotlin" "$RUNNER_TEMP/release.log" || { echo "::error::the release code wasn't compiled"; tail -100 "$RUNNER_TEMP/release.log"; exit 1; }
+          echo "no key: refused at packaging, after the release code compiled"
+          ! ls app/build/outputs/apk/release/*.apk 2>/dev/null || { echo "::error::an APK is in outputs/apk/release"; exit 1; }
+          M=$(find app/build/intermediates -path '*elease*' -name AndroidManifest.xml -path '*merged_manifest*' | head -1)
+          [ -n "$M" ] || M=$(find app/build/intermediates -path '*elease*' -name AndroidManifest.xml | head -1)
+          [ -n "$M" ] && ! grep -q 'android:debuggable="true"' "$M" || { echo "::error::the release manifest ($M) is debuggable"; exit 1; }
+          grep -rq 'DEBUG = false' app/build/generated/source/buildConfig/release || { echo "::error::BuildConfig.DEBUG isn't false in release"; exit 1; }
+          echo "release: not debuggable, BuildConfig.DEBUG = false"
+          # the public debug key, or any key file inside the repository, is refused as a release key
+          for f in "$PWD/debug.keystore" "$PWD/app/build.gradle.kts"; do
+            if LOGOS_RELEASE_STORE_FILE="$f" LOGOS_RELEASE_STORE_PASSWORD=x LOGOS_RELEASE_KEY_ALIAS=x LOGOS_RELEASE_KEY_PASSWORD=x \
+                gradle --no-daemon --console=plain assembleRelease $P > "$RUNNER_TEMP/release.log" 2>&1; then
+              echo "::error::a release APK was made with $f"; exit 1
+            fi
+            grep -qE "is the public debug key|is inside the repository" "$RUNNER_TEMP/release.log" || { tail -60 "$RUNNER_TEMP/release.log"; exit 1; }
+            echo "$f as the release key: refused, as it should be"
+          done

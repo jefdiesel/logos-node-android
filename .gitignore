@@ -1,2 +1,8 @@
 __pycache__/
 *.pyc
+
+# a release key must never be committed (android/debug.keystore is the public debug key, on purpose)
+*.jks
+*.p12
+*.keystore
+!android/debug.keystore

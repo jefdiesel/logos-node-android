@@ -40,11 +40,30 @@ the desktop's phrase once, on the Wallet on LEZ 0.4 ("Use your recovery phrase")
 - The keys: `names` writes them to `<data>/.lez04-wallet/storage.json` (folder 0700, files 0600), unencrypted inside the
   app's private storage, as the LEZ 0.3 key is. `<data>/wallet-lez04.json` keeps only public facts: the account ids,
   the first account's public key, whether the faucet was used.
+- **That file is worth as much as the phrase.** It holds the roots of both key trees (public and private, chain codes
+  included), so every account the desktop has or will derive, its names, NFTs and its private balance, can be rebuilt
+  from it. Whoever can read the app's files can take the desktop wallet. A debuggable build lets any computer with USB
+  debugging read them (`run-as`), so a real phrase goes only on a phone running **the release build** (below).
 - Not in the app's backup file: the phrase is the way back for LEZ 0.4.
 - The restore needs an unlocked session, not the PIN typed again (the backup restore asks for both; this one only
   adds keys, and only where there are none).
 - The phrase box asks the keyboard not to correct or capitalise, but a phone keyboard may still learn the words.
 - `nft init --new public` (Receive, when the first account is taken) derives the wallet's next account and saves it.
+- **Remove the LEZ 0.4 accounts from this phone** (under the Wallet on LEZ 0.4, once there are keys here):
+  `POST /api/wallet/lez04/remove {pin}`, an unlocked session AND the PIN typed again (the same check, and the same
+  pause after wrong PINs, as a backup). It deletes `.lez04-wallet` (all but `cache/`, the public locked-name list) and
+  `wallet-lez04.json`; the accounts stay on the network and on the desktop, and the phrase brings them back. Refused
+  while a job runs. It is also the way out of a restore that stopped after `storage.json` was written (the app killed
+  between the tool's write and the app's own): a restore then answers "An earlier restore on this phone didn't
+  finish… Remove…, then restore again" (`stuck: true`), and the page opens Remove with that line. And of a wrong
+  phrase restored by mistake. `tests/sign04_test.py` covers the stopped restore, the PIN (none, wrong, right) and a
+  restore after.
+- **The phrase box** asks the Android app, while it is in use (focused, or not empty), to keep the screen out of
+  screenshots, screen recording and the recents picture (`FLAG_SECURE` on the wallet's window, through
+  `LogosAndroid.secureScreen`), and to turn autofill off for the page (`importantForAutofill`: Android can't single
+  out one field of a WebView, so it is the whole page, only while the box is in use). The rest of the time the screen
+  is normal, so `adb shell screencap` of the wallet still works. A paste into the box empties the phone's clipboard
+  (`LogosAndroid.clearClipboard`); a keyboard's own clipboard history is the keyboard's.
 - A phone with no desktop wallet has no LEZ 0.4 accounts: the phone only restores, it doesn't make a new phrase.
 
 ## What it sends
@@ -70,8 +89,21 @@ can't check certificates outside an app's Java runtime), so the server downloads
 fees (gas limit 945,000), of which about 1.34M is paid. One faucet grant (10,000,000) covers one claim, and a second;
 a claim after spending more than about 1.4M of it is refused for its reserve. A tighter cap is a logos-names change.
 
-A job stopped part way (the app killed, the phone off) after its transaction was forwarded says it failed: check the
-balance or the card before trying again (there is no "may have been sent" hold as on LEZ 0.3).
+**"It may have been sent."** The forwarder counts each batch with `sendTransaction` it passes on. Only a 429 (the
+proxy's rate limit: nothing passed on) or a 200 whose answer to every `sendTransaction` is a JSON-RPC error counts as
+refused. An error page (a 502 from the proxy), no answer (the 60 s timeout) or an answer that doesn't read leaves it
+"may have been sent". A job that then fails, or is stopped by its time limit, ends with "It may have been sent. Check
+this account's balance before you try again." (a send), or "… Check Collectibles before you try again." (an NFT or a
+claim), whatever `names` printed; only "It was included in block N but didn't take effect" is kept, as it is certain.
+LEZ 0.4 has no Activity list on the phone, so the line points at the balance or Collectibles. The page then empties
+what was typed (To and Amount, an NFT's To, the collection ID), so a second send has to be typed again: it would be a
+new transaction and could pay twice. A claim's button stays off until Collectibles is read again (a second claim of a
+name whose NFT landed fails on chain and costs only its fee).
+
+While a transaction is out, `<data>/wallet-lez04-unsure.json` (0600: the kind, the recipient and amount as shown, the
+time; no key) is on disk. It goes when the job ends. If the app stops first, the next start shows "The app stopped
+while this was being sent. It may have been sent. …" above the Wallet on LEZ 0.4, for a day or until the next job.
+There is no hold that refuses the same send again, as on LEZ 0.3: the line is the fix.
 
 ## The faucet
 
@@ -88,6 +120,93 @@ entered in Settings → Network). Only the methods in `signer04.RPC_METHODS` pas
 Every call this app makes to LEZ 0.4 (the reader, the forwarder, the faucet) goes through one pacer: at most one every
 0.25 s, 40 in 10 s, under the proxy's 50 per 10 s per address. A read refused with 429 is tried again twice after a
 pause; `sendTransaction` is never sent twice.
+
+## Known limits
+
+- **A custom LEZ 0.4 network decides where signed sends go** (review S4). The signer and the forwarder send to the
+  network in use (`rpc_url`), which Settings → Network can set to any HTTPS address, or `http://127.0.0.1:<port>`.
+  `pay --public <name>` and `nft send … <name>` look the name up through that network. A hostile network (set by
+  someone holding the unlocked phone, or any app on the phone serving 127.0.0.1) could answer a name with its own
+  account and pass the signed transaction on to the real chain: the send lands with it. Not fixed: use the built-in
+  network for sends, and send to `Public/…` accounts rather than names when another network is set.
+- The keyboard may learn the phrase's words; a keyboard's clipboard history may keep a pasted phrase.
+- The phrase stays in the app's memory (Python and the WebView) until that memory is reused; it can't be wiped.
+- Android 12+ device-to-device transfer may copy app data to a new phone even with `allowBackup="false"` (not
+  checked; no `dataExtractionRules` yet).
+- Restoring needs only an unlocked session, not the PIN again. The page shows the first account after a restore;
+  compare it with the desktop's.
+
+## The release build
+
+A real recovery phrase goes only on a phone running the **release build**: not debuggable (no `run-as`, so no computer
+with USB debugging can read `storage.json`; WebView remote debugging off, `WebView.setWebContentsDebuggingEnabled(
+BuildConfig.DEBUG)` before the first WebView; none of the debug builds' adb extras), and signed with a private key
+(the debug key is public in this repository, so anyone could sign an "update" that would keep this app's data).
+
+- `android/app/build.gradle.kts`, build type `release`: `isDebuggable = false`, minify off. Signed only with the key
+  named by `LOGOS_RELEASE_STORE_FILE`, `LOGOS_RELEASE_STORE_PASSWORD`, `LOGOS_RELEASE_KEY_ALIAS` and
+  `LOGOS_RELEASE_KEY_PASSWORD` (environment, or `~/.gradle/gradle.properties`; never `-P` on a command line). Without
+  all four, with the debug key, or with a key file inside the repository, packaging stops with a plain message: no
+  unsigned APK, never the debug key.
+- CI never holds the key (the repository is public). `android-app` checks the release variant compiles, isn't
+  debuggable, and that packaging refuses without the key (and with the debug key, or a file in the repository).
+- `scripts/build-release.sh` builds it locally from the checkout's HEAD commit, exactly as committed, in a folder of
+  its own; downloads the pinned binaries from the same CI runs as the debug APK (each checked against its sha256);
+  runs the release unit tests and `assembleRelease`; then checks the APK: signed by the release key's certificate and
+  not the debug one, not debuggable, every pinned binary and web app file byte for byte. Where it runs:
+  - **The MacBook**, through `~/logos/laptop-build.sh` (its `TMPDIR` is on the external SSD, so the build and Gradle's
+    caches land there). One-time: the Android SDK on the SSD (`ANDROID_HOME=/Volumes/Bitcoin/logos-build/android-sdk`;
+    the script installs platform 36 and build-tools 36.0.0 there with Homebrew's `sdkmanager`); Gradle 8.14.3 is
+    downloaded by the script. JDK 17 and `gh` are already there. The key stays on the MacBook.
+  - The Dell (`ssh dell`, Linux) works the same way, with an SDK there, but the key would then sit on the build box.
+  - Not the Mini: its internal disk is nearly full. It only installs the finished APK (`adb install`).
+- **Keep the keystore and its passwords for good.** Every later release must be signed with the same key; a release
+  signed with another key can only be installed after an uninstall, which wipes the app's data again.
+- What a release build loses: `run-as` (so the `adb shell run-as … cat files/…` reads in BATTERY.md and elsewhere stop
+  working), WebView remote debugging, `.WalletDebug`'s probe and crashrenderer extras, and the node service's debug
+  extras (messaging switches from adb, test import, full replay). `am start-foreground-service` on the node service
+  still works (it needs only the adb shell's DUMP). Screenshots by adb work except while the phrase box is in use.
+
+## Moving to the release build
+
+A release-signed APK can't install over the debug-signed one (Android refuses a different signature), so the phone
+uninstalls the debug build first, and **an uninstall deletes all of the app's data**. The app's encrypted backup file
+carries the keys that can't be made again; everything else is set up again or read again from the network.
+
+What the backup file holds (Settings → Backup & restore → Back up; `backup_export` in `app/server.py`):
+- the node's wallet keys (`keystore.yaml`);
+- with Messages on: the messaging key, profiles, nicknames and notes, and the message history if "Include message
+  history" is ticked (newest first, up to 1 MB; older messages are left out);
+- the phone's LEZ 0.3 name account: its wallet file (the key, which has no recovery phrase) and `names.json`.
+
+What it does not hold, and is lost or made again:
+- the LEZ 0.4 accounts (type the desktop's recovery phrase again, on the release build);
+- the node's chain data (it syncs again, or starts from a snapshot: docs/start-from-a-synced-database.md);
+- the PIN, fingerprint unlock, Settings (theme, network choice, Mobile mode, the Messaging node switch), Collectibles'
+  lists (NFT programs, names) and watched addresses, the Wallet's Activity history, the event log;
+- message requests and dropped messages; history beyond 1 MB;
+- anything in flight: a bridge deposit, a name registration, a LEZ 0.3 "may have been sent" hold. Finish them first.
+
+Steps (the Mini drives the phone over adb):
+1. On the debug build, let every running job finish (no send, claim, bridge or registration in progress).
+2. Settings → Backup & restore → Back up, with "Include message history" ticked: a backup password (12+ characters,
+   written down off the phone) and the PIN. Save the file to Downloads in the picker.
+3. Check it holds the name account: the result has no "The name account is in it, but couldn't be checked" line, and
+   Your name no longer says "back up needed". If either shows, back up again.
+4. Copy the file off the phone: `ssh minim4 'adb pull /sdcard/Download/logos-node-wallet-backup-<date>.json ~/'`
+   (and keep a second copy). Files in Downloads survive the uninstall, but don't rely on that alone.
+5. Uninstall the debug build: `ssh minim4 'adb uninstall io.github.jefdiesel.logosnode'`.
+6. Install the release APK: `ssh minim4 'adb install <the release APK>'` (copied to the Mini from where
+   `build-release.sh` put it, with its `.sha256`).
+7. Open the app, set a new PIN, let the node start (it makes new keys at first start; the restore replaces them).
+8. Settings → Backup & restore → Restore from a backup: the file, the backup password, the PIN, tick, Restore. The
+   node's keys, the messaging key and chats, and the LEZ 0.3 name account come back; the node restarts.
+9. Turn on again what was on: the Messaging node switch, Mobile mode, fingerprint unlock, the network choice;
+   add Collectibles' programs and names again.
+10. Only now: Wallet on LEZ 0.4 → Use your recovery phrase, with the desktop's phrase.
+
+From then on install only release builds signed with the same key. A CI debug APK won't install over the release
+build (that is the point); installing one means another uninstall.
 
 ## Not on the phone yet
 

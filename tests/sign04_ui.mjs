@@ -5,8 +5,9 @@
 // nowhere in the page after), "Get free test LEZ" ("Asking the faucet…", then the amount, then gone), Send ("Sending…",
 // then in a block), Receive (the account, its QR code and its public key), Collectibles: "Claim NFT (free)" on a name
 // the wallet holds with no NFT, "Claiming…" with the job's progress, then the card; an NFT's Send sheet and the
-// Receive sheet; 44 px targets, nothing wider than the screen, no green or blue outside the card; a lock leaving
-// nothing behind.
+// Receive sheet; a send whose answer is lost ("It may have been sent", the fields emptied); the phrase box asking the
+// Android app to secure the screen and empty the clipboard after a paste; Remove with the PIN; 44 px targets, nothing
+// wider than the screen, no green or blue outside the card; a lock leaving nothing behind.
 //
 //   CHROME=<path to chrome> SHOTS=<folder, optional> node tests/sign04_ui.mjs
 import { spawn } from "node:child_process";
@@ -74,7 +75,9 @@ if (SHOTS) mkdirSync(SHOTS, { recursive: true });
 let shotN = 0;
 const shot = async (name, sel) => { await noGreenOrBlue(js, check, name); if (!SHOTS) return; if (sel) await js(`document.querySelector(${JSON.stringify(sel)}).scrollIntoView({ block: "center" }); true`);
   const r = await cdp("Page.captureScreenshot", { format: "png" }); writeFileSync(join(SHOTS, `sign04-${String(++shotN).padStart(2, "0")}-${name}.png`), Buffer.from(r.result.data, "base64")); };
-await cdp("Page.addScriptToEvaluateOnNewDocument", { source: "window.LogosAndroid = { scanQr() {}, openNode() {}, unlockWithFingerprint() {}, setTheme() {} };" });
+await cdp("Page.addScriptToEvaluateOnNewDocument", { source: "window.LogosAndroid = { scanQr() {}, openNode() {}, unlockWithFingerprint() {}, setTheme() {}, "
+  + "secureScreen(on) { (window.__secure = window.__secure || []).push(on); }, clearClipboard() { window.__cleared = (window.__cleared || 0) + 1; } };" });
+const secureNow = () => js(`(window.__secure || []).slice(-1)[0] === true`);
 
 await cdp("Page.navigate", { url: BASE + "/" });
 await waitFor("the page loads, locked", `document.readyState === "complete" && !document.getElementById("v-locked").hidden`);
@@ -89,6 +92,12 @@ check("it says what the phrase is for and what is kept", /the ones your desktop 
   && /Anyone who has the phrase controls these accounts/.test(card));
 check("the phrase box doesn't autocomplete, capitalise, correct or spellcheck", await js(`(() => { const t = document.getElementById("s4-phrase");
   return t.getAttribute("autocomplete") === "off" && t.getAttribute("autocapitalize") === "off" && t.getAttribute("autocorrect") === "off" && t.spellcheck === false; })()`));
+await js(`document.getElementById("s4-phrase").dispatchEvent(new FocusEvent("focus")); true`);
+check("the phrase box in use: the app is asked to keep the screen out of screenshots and recents", await secureNow());
+await js(`document.getElementById("s4-phrase").dispatchEvent(new Event("paste")); true`);
+await waitFor("a paste into it: the app is asked to empty the clipboard", `window.__cleared === 1`);
+await js(`document.getElementById("s4-phrase").dispatchEvent(new FocusEvent("blur")); true`);
+check("left empty: the screen goes back to normal", !(await secureNow()));
 await click("#n4-send");
 await waitFor("Send before the restore: restore first, not 'switch to 0.3'", `document.getElementById("n4-na").offsetParent !== null && document.getElementById("n4-na").textContent === "Restore your LEZ 0.4 accounts from your recovery phrase first (above)."`);
 check("buttons 44 px, nothing past the screen", (await tall("#net04 button, #net04 textarea")) && (await fits()));
@@ -108,6 +117,7 @@ const v = await get("/api/wallet/lez04", session);
 const MAIN = v.account;
 check("the phrase went out once, to the restore route, lowercase, single-spaced", bodies.filter(b => b.body.includes("sausage")).length === 1
   && bodies.find(b => b.body.includes("sausage")).url.endsWith("/api/wallet/lez04/restore") && bodies.find(b => b.body.includes("sausage")).body === JSON.stringify({ phrase: PHRASE }));
+check("the box emptied as the restore went: the screen back to normal", !(await secureNow()) && (await js(`(window.__secure || []).includes(true)`)));
 check("the phrase is nowhere in the page now", !(await js(`document.documentElement.outerHTML.includes("sausage") || [...document.querySelectorAll("textarea,input")].some(i => /sausage/i.test(i.value))`)));
 await waitFor("the card goes; Get free test LEZ shows, once per wallet", `document.getElementById("s4-restore").offsetParent === null && document.getElementById("s4-faucet").offsetParent !== null
   && /^Once per wallet: 10,000,000 test LEZ, to this phone's account\\./.test(document.getElementById("s4-faucet-n").textContent)`);
@@ -139,6 +149,14 @@ await click("#s4-send-go");
 await waitFor("an account the network hasn't seen: refused with what to do instead", `/can only be paid by its public key/.test(document.getElementById("s4-send-m").textContent) && document.getElementById("s4-send-m").className === "msg bad"`);
 check("the send panel: 44 px, fits", (await tall("#s4-send button, #s4-send input")) && (await fits()));
 await shot("send", "#s4-send");
+await ctl("mode", { mode: "lose_send" });           // the network takes it, its answer is lost on the way back
+await val("#s4-to", "Public/Fx1yhUrJ2aZ1jW4b6nqJ3H8tpsHrwrz3yuPEqsfGr1QB"); await val("#s4-amt", "7");
+await click("#s4-send-go");
+await waitFor("an answer lost after the send went out: 'It may have been sent. Check this account's balance before you try again.'",
+  `document.getElementById("s4-send-m").textContent === "It may have been sent. Check this account's balance before you try again." && document.getElementById("s4-send-m").className === "msg bad"`, 20000);
+check("…and the same press isn't there to make again: To and Amount are emptied", (await js(`document.getElementById("s4-to").value + "|" + document.getElementById("s4-amt").value`)) === "|");
+await ctl("mode", { mode: "ok" });
+await shot("send-unsure", "#s4-send");
 
 // ---- Receive ----
 await click("#n4-recv");
@@ -192,8 +210,25 @@ await waitFor("then: which account to give the sender", `/^Ready\\. Give the sen
 check("the Receive sheet: 44 px, fits", (await tall("#n4-recv button, #n4-recv input, #n4-recv select")) && (await fits()));
 await shot("nft-receive", "#n4-recv");
 
-// ---- a lock: nothing of it stays ----
+// ---- Remove the LEZ 0.4 accounts from this phone: the PIN typed again ----
 await click("#n4-col-back");
+await waitFor("Remove is offered once the accounts are here", `document.getElementById("s4-rm-open").offsetParent !== null && document.getElementById("s4-rm-f").offsetParent === null`);
+await click("#s4-rm-open");
+await val("#s4-rm-pin", "135799");
+const p7 = await pressNow("#s4-rm-go");
+check("Remove: 'Removing…' at once", p7 === "Removing…|true", p7);
+await waitFor("a wrong PIN: said, nothing removed", `/^Wrong PIN\./.test(document.getElementById("s4-rm-m").textContent) && document.getElementById("s4-rm-go").textContent === "Remove from this phone"`);
+check("…the PIN box is emptied, the server still has the accounts", (await js(`document.getElementById("s4-rm-pin").value`)) === "" && (await get("/api/wallet/lez04", session)).ready);
+check("the Remove sheet: 44 px, fits", (await tall("#s4-rm button, #s4-rm input")) && (await fits()));
+await shot("remove", "#s4-rm");
+await val("#s4-rm-pin", PIN);
+await click("#s4-rm-go");
+await waitFor("the right PIN: removed, and the phrase card is back", `/^Removed\. This phone has no LEZ 0\.4 accounts now\./.test(document.getElementById("s4-restore-m").textContent)
+  && document.getElementById("s4-restore").offsetParent !== null && document.getElementById("s4-rm").offsetParent === null`, 15000);
+check("the server has none either", (await get("/api/wallet/lez04", session)).stored === false);
+await shot("removed", "#s4-restore");
+
+// ---- a lock: nothing of it stays ----
 await val("#s4-to", "typed, not sent");
 await js(`lockedNow(); true`);
 await waitFor("locked: the page loaded again, into the lock screen", `!document.getElementById("v-locked").hidden && !document.documentElement.classList.contains("relock")`);

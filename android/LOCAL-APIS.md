@@ -128,7 +128,8 @@ Another app starting the launcher entry with those extras gets the ordinary scre
 
 **What it protects against:** every other app on the phone, whatever headers it sends. **What it
 doesn't:** anything running as this app's own user (it can read the keys anyway), root, USB
-debugging on this debug build (`run-as`, WebView remote debugging).
+debugging on the debug build (`run-as`, WebView remote debugging). The release build (NAMES04.md, "The release
+build") is not debuggable and turns WebView remote debugging off.
 
 **What it breaks:** nothing found. If the WebView ever failed to take the cookie, the page would load
 (a public file) and say "this app only answers its own page"; the app logs it.
@@ -282,8 +283,8 @@ job `node-socket`). To check on the phone, in this order:
 - The WebView takes the `app_key` cookie through `CookieManager` (tested in desktop Chrome only), and
   whether it writes it to its cookie database on disk (in the app's private data; an old key is dead,
   so harmless either way). The key is never written to a file or a log by the app's own code.
-- Whether WebView content debugging is on for this debuggable build (no `setWebContentsDebuggingEnabled`
-  call; check `chrome://inspect` over adb). Either way only adb or the app's own user can reach it.
+- WebView content debugging: the app calls `setWebContentsDebuggingEnabled(BuildConfig.DEBUG)` before its first
+  WebView, so it is on in the debug build and off in the release build (check `chrome://inspect` over adb).
 - `.WalletDebug` starts from `adb shell am start` and not from another app.
 - With another app holding 18190 before the wallet starts: the cover's text, and the page opening by
   itself once that app lets the port go.

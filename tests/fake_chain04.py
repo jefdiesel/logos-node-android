@@ -32,7 +32,8 @@ class Chain04:
         self.sent = []                # every change applied
         self.faucet_given = {}        # owner -> params
         self.faucet_params = []
-        self.mode = "ok"              # "down": every call 503; "busy": 429 to reads
+        self.mode = "ok"              # "down": every call 503; "busy": 429 to reads; "lose_send": a send is applied, then
+                                      # answered 502 (its answer lost on the way); "reject_send": a send refused (JSON-RPC error)
 
     # ---- setting up ----
     def register(self, name, owner, deed=False):
@@ -101,6 +102,8 @@ class Chain04:
             r["result"] = None if st is None and p[0].get("account_id") not in self.balances else {"nonce": 0, "data": {"actor_states": {} if st is None else {p[0]["program_account_id"]: list(st)}}}
         elif m == "getAccountBalance":
             r["result"] = max(0, self.balances.get(p[0], 0))
+        elif m == "sendTransaction" and self.mode == "reject_send":
+            r["error"] = {"code": -32000, "message": "transaction rejected: nonce"}
         elif m == "sendTransaction":
             ch = p[0].get("fake") if p and isinstance(p[0], dict) else None
             if ch:
@@ -130,4 +133,6 @@ class Chain04:
                 self.calls.append("(429)")
                 return 429, b'{"error":"slow down"}'
             out = [self.answer(c) for c in body] if isinstance(body, list) else self.answer(body)
+            if self.mode == "lose_send" and any(c.get("method") == "sendTransaction" for c in (body if isinstance(body, list) else [body])):
+                return 502, b"<html>502 Bad Gateway</html>"
         return 200, json.dumps(out).encode()
