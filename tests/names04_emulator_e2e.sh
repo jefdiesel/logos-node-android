@@ -96,11 +96,24 @@ F=$(H wallet account import public --private-key "$LOCAL_TEST_KEY" | id_of Publi
 F_PK=$(H wallet account get --account-id "Public/$F" --keys | sed -n 's/^pk //p')
 echo "F=$F holds $(balance "$F")"
 
+# Deploys an ELF at a new header account: the loader says how many segments it splits into (not always size / 96 KiB:
+# logos-names CI 44617200987), so as many are made as the size asks, plus one, and the count it names is used.
+deploy_elf() {
+  local elf=$1 size count n out; size=$(wc -c < "$elf" | tr -d ' '); count=$(( (size + SEGMENT - 1) / SEGMENT + 1 ))
+  DEPLOYED=$(H wallet account new public | id_of Public); local segs=()
+  for _ in $(seq 1 "$count"); do segs+=("Public/$(H wallet account new public | id_of Public)"); done
+  out=$(H wallet program-loader deploy --elf "$elf" --header "Public/$DEPLOYED" --segments "${segs[@]}" --payer "Public/$F" 2>&1) || true
+  n=$(echo "$out" | grep -oE 'splits into [0-9]+ segment' | grep -oE '[0-9]+' | head -1)
+  if [ -n "$n" ]; then
+    echo "the loader splits $(basename "$elf") into $n segments"
+    H wallet program-loader deploy --elf "$elf" --header "Public/$DEPLOYED" --segments "${segs[@]:0:$n}" --payer "Public/$F" | quiet
+  else
+    echo "$out" | quiet
+  fi
+}
+
 say "deploy and configure the registry (from the host)"
-size=$(wc -c < "$NAMES_ELF" | tr -d ' '); count=$(( (size + SEGMENT - 1) / SEGMENT ))
-REG=$(H wallet account new public | id_of Public); segs=()
-for _ in $(seq 1 "$count"); do segs+=("Public/$(H wallet account new public | id_of Public)"); done
-H wallet program-loader deploy --elf "$NAMES_ELF" --header "Public/$REG" --segments "${segs[@]}" --payer "Public/$F" | quiet
+deploy_elf "$NAMES_ELF"; REG=$DEPLOYED
 export LOGOS_NAMES_PROGRAM=$REG
 for _ in $(seq 1 30); do H settings >/dev/null 2>&1 && break; sleep 5; done
 H wallet auth-transfer send --from "Public/$F" --to "Public/$REG" --amount 10000000 | quiet
@@ -253,10 +266,7 @@ DEV_WALLET=$DEV/w04 D ./names pay --public --from=Public/$DPUB $NAME 777 | quiet
 
 if [ -n "${NFT_ELF:-}" ] && [ -f "$NFT_ELF" ]; then
   say "7. NFTs: the device receives (makes its account ready), takes the master, and sends it on"
-  size=$(wc -c < "$NFT_ELF" | tr -d ' '); count=$(( (size + SEGMENT - 1) / SEGMENT ))
-  NFTP=$(H wallet account new public | id_of Public); segs=()
-  for _ in $(seq 1 "$count"); do segs+=("Public/$(H wallet account new public | id_of Public)"); done
-  H wallet program-loader deploy --elf "$NFT_ELF" --header "Public/$NFTP" --segments "${segs[@]}" --payer "Public/$F" | quiet
+  deploy_elf "$NFT_ELF"; NFTP=$DEPLOYED
   export NAMES_NFT_PROGRAM=$NFTP
   for _ in $(seq 1 30); do H nft list >/dev/null 2>&1 && break; sleep 5; done
   H nft create "CI art" 3 --payer "Public/$F" | quiet | tee "$WORK/nft-create.log"
