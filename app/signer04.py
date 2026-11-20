@@ -419,12 +419,12 @@ class Signer04:
             self.job.update(k)
 
     def _run_job(self, kind, args, extra_env, before):
-        ok, tail = False, []
+        ok, tail, final = False, [], {"state": "failed", "error": "The signer didn't run."}
         try:
             if before is not None:
                 why = before()
                 if why:
-                    self._set(state="failed", error=why, finished=self.clock())
+                    final = {"state": "failed", "error": why}
                     return
             self.lockdown()
             self.write_config()
@@ -450,24 +450,24 @@ class Signer04:
                 if new_account not in st["accounts"]:
                     self.save(accounts=st["accounts"] + [new_account])
                 self._set(account=new_account)
+            final = {"state": "done", "progress": "done"} if ok else {"state": "failed", "error": error_text(tail)}
             if ok:
-                self._set(state="done", finished=self.clock(), progress="done")
                 try:
                     self.on_done(kind)
                 except Exception:
                     pass
-            else:
-                self._set(state="failed", finished=self.clock(), error=error_text(tail))
             self.event("lez04 job ended", kind=kind, ok="yes" if ok else "no")
         except Exception:
-            self._set(state="failed", finished=self.clock(), error="The signer didn't run.")
+            pass
         finally:
             tail = None
             try:
                 self.lockdown()
             except Exception:
                 pass
-            self.change.release()
+            with self.lock:                 # the job's end is shown and the next one allowed together
+                self.job.update(final, finished=self.clock())
+                self.change.release()
 
     def send(self, body):
         """Native LEZ from the main account: to `Public/<id>` (an account the network has seen), a 64-hex public key
