@@ -162,7 +162,7 @@ await js(`document.getElementById("ref-card").remove(); true`);
 
 // ---- a name that isn't registered: its line, no card ----
 await val("#n4-name", "nobody"); await click("#n4-name-add");
-await waitFor("a name not registered on this network: said, no card", `(() => { const b = document.querySelector('#n4-names [data-name="nobody"]'); return !!b && /Not registered on this network\\./.test(b.innerText) && !b.querySelector("canvas"); })()`, 20000);
+await waitFor("a name not registered on this network: said, no card", `(() => { const b = document.querySelector('#n4-names [data-name="nobody"]'); return !!b && /Not registered on this network\\./.test(b.innerText) && !b.querySelector("canvas"); })()`, 45000);   // (the page reads every 30 s)
 await js(`[...document.querySelectorAll('#n4-names [data-name="nobody"] button')].find(b => b.textContent === "Stop showing").click(); true`);
 await waitFor("Stop showing takes it off", `!document.querySelector('#n4-names [data-name="nobody"]')`);
 
