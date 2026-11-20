@@ -83,6 +83,14 @@ def native_visibility(state):
     return bool(_server.native_visibility(str(state)))
 
 
+def native_unlocked():
+    """server.native_unlocked(): whether the wallet holds an open session now. False when the server isn't loaded or
+    its web app is too old to say (the Node screen then stays closed: fail closed)."""
+    if _server is None or not hasattr(_server, "native_unlocked"):
+        return False
+    return bool(_server.native_unlocked())
+
+
 def native_unlock():
     """server.native_unlock(): a session token after the phone's fingerprint check, or None."""
     return _server.native_unlock() if _server is not None else None

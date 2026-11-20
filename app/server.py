@@ -4294,6 +4294,18 @@ def native_visibility(state):
     return True
 
 
+def native_unlocked():
+    """Inside the Android app: whether the wallet is unlocked now, i.e. this server holds an open session (expired
+    sessions are ended first, by the same rules as every request). The app's own screens outside the page (the Node
+    screen) ask this before showing their controls. The page can't set it: a session only exists after a PIN or
+    fingerprint unlock, and there is no HTTP route to this. Not embedded: always False."""
+    if not EMBEDDED:
+        return False
+    session_expire()
+    with lock:
+        return session["token"] is not None
+
+
 def native_unlock():
     """Inside the Android app only: opens the wallet after the phone's own fingerprint check, and returns
     the session token (None if fingerprint unlock isn't on, no PIN is set, or not embedded). There is no
@@ -5399,6 +5411,18 @@ def node_cmd(cfg, flag):
     return subprocess.run(cmd, cwd=os.path.dirname(cfg), capture_output=True, text=True, timeout=60)
 
 
+NODE_NEVER_RAN = {True: "The node hasn't run on this phone yet, so it has no key file to replace. Start the node first "
+                        "(Settings → Node → Open node → Start), wait until it shows as running, then restore.",
+                  False: "The node hasn't made its key file yet. Start the node once, then restore."}
+
+
+def node_never_ran():
+    """Whether the node has not made its keys yet: no config file at all, or, inside the Android app, no keystore.yaml
+    (the app's node service makes both with init-config at the node's first start, and a fresh install hasn't started
+    it). Not the same as a node that keeps its keys inside its config file, which restore can't handle."""
+    return not os.path.isfile(NODE_CFG) or EMBEDDED
+
+
 def restore_backup(doc, password, replace_lns=False):
     """(http status, reply, event detail). Puts the key file from a backup in place of the node's own,
     only after the node itself has checked it, and keeps the old one beside it."""
@@ -5437,6 +5461,8 @@ def restore_backup(doc, password, replace_lns=False):
         return 400, {"error": "This backup file is damaged. Nothing was changed."}, "format"
     live, _ = keystore_location()
     if not os.path.isfile(live):
+        if node_never_ran():
+            return 409, {"error": NODE_NEVER_RAN[EMBEDDED], "node_never_ran": True}, "node never ran"
         return 409, {"error": "This node keeps its keys in its config file, so a backup can't be restored into it here."}, "no keystore"
     try:
         rel = parse_keystore(show_config()) or "keystore.yaml"

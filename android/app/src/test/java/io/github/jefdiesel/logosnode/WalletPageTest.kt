@@ -22,16 +22,6 @@ class WalletPageTest {
         assertNull(WalletPage.parseCheck(null))
     }
 
-    @Test fun nodeRowFromVersion() {
-        assertFalse(WalletPage.hasNodeRow("0.9.0"))
-        assertFalse(WalletPage.hasNodeRow("0.8.1"))
-        assertFalse(WalletPage.hasNodeRow(""))                    // unknown: keep the app's own button
-        assertFalse(WalletPage.hasNodeRow("0.9.x"))
-        assertTrue(WalletPage.hasNodeRow("0.9.1"))
-        assertTrue(WalletPage.hasNodeRow("0.10.0"))
-        assertTrue(WalletPage.hasNodeRow("1.0"))
-    }
-
     @Test fun backgroundColor() {
         assertEquals(0xFF11110F.toInt(), WalletPage.parseCssColor("rgb(17, 17, 15)"))
         assertEquals(0xFFF3EAD7.toInt(), WalletPage.parseCssColor("rgba(243, 234, 215, 1)"))

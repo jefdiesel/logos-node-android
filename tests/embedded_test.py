@@ -164,6 +164,74 @@ with open(os.path.join(data, "wallet-events.log")) as f:
     log = f.read()
 check("each lock is logged with its reason: leaving the app, and a new unlock replacing the open session",
       'wallet locked reason="left the app"' in log and 'wallet locked reason="a new unlock replaced the open session"' in log)
+# native_unlocked(): what the app's Node screen asks (through WalletLock) before it shows its controls. Only the
+# server's own session counts; nothing the page sends opens it.
+call("/api/wallet/lock", {}, session=s)
+check("native_unlocked() is False while locked", server.native_unlocked() is False)
+code, d = call("/api/wallet/visibility", {"state": "visible"})
+check("a page report without a session doesn't open it", code == 401 and server.native_unlocked() is False, (code, d))
+call("/api/wallet/activity", {}, session="0" * 64)
+check("nor does a made-up session token", server.native_unlocked() is False)
+s = W.unlock(PIN)
+check("native_unlocked() is True after a PIN unlock", server.native_unlocked() is True)
+call("/api/wallet/lock", {}, session=s)
+check("and False after Lock now", server.native_unlocked() is False)
+t = server.native_unlock()
+check("True after a fingerprint unlock", t is not None and server.native_unlocked() is True)
+server.LEAVE_GRACE = 1.0
+server.native_visibility("hidden")          # the wallet's screen went away (e.g. the Node screen opened over it)
+time.sleep(1.4)
+check("False once the leave grace ran out, with no request in between", server.native_unlocked() is False)
+server.LEAVE_GRACE = 60.0
+s = W.unlock(PIN)
+server.MINUTE = 0.2                         # auto-lock after 5 "minutes" of 0.2 s
+time.sleep(1.3)
+check("False after the idle auto-lock", server.native_unlocked() is False)
+server.MINUTE = 60.0
+s = W.unlock(PIN)
+server.native_fingerprint_reset()
+check("False after the fingerprints changed", server.native_unlocked() is False)
+code, d = call("/api/wallet/native-unlocked", {}, session=W.unlock(PIN))
+check("there is no HTTP route to it", code == 404, (code, d))
+call("/api/wallet/native-fingerprint", {"on": True, "pin": PIN}, session=W.unlock(PIN))   # back as the checks below expect
+
+# restore on a fresh install, before the node has ever run: no keystore.yaml and no config yet. The reply says to
+# start the node first, not that this node keeps its keys in its config (android/NAMES04.md, step 8)
+import base64, json as _json, secrets as _secrets  # noqa: E402
+def backup_doc(password):
+    salt, nonce = _secrets.token_bytes(16), _secrets.token_bytes(12)
+    kdf = {"n": 2 ** 10, "r": 8, "p": 1, "dklen": 32}
+    sealed = server.aead_encrypt(server.backup_key(password, salt, kdf), nonce,
+                                 _json.dumps({"keystore.yaml": "keys: {}\n"}).encode(), server.BACKUP_AADS[1])
+    b64 = lambda b: base64.b64encode(b).decode()
+    return {"format": server.BACKUP_FORMAT, "version": 1, "addresses": [],
+            "kdf": dict(kdf, name="scrypt", salt=b64(salt)),
+            "cipher": {"name": "chacha20-poly1305", "nonce": b64(nonce)}, "ciphertext": b64(sealed)}
+node_home = tempfile.mkdtemp()
+real_cfg, server.NODE_CFG = server.NODE_CFG, os.path.join(node_home, "user_config.yaml")
+doc = backup_doc("a long backup password")
+code, d, why = server.restore_backup(doc, "a long backup password")
+check("fresh install, the node never ran: restore says to start the node first", code == 409 and d.get("node_never_ran") is True
+      and "Start the node first" in d["error"] and "Open node" in d["error"] and "config file" not in d["error"]
+      and why == "node never ran", (code, d, why))
+with open(server.NODE_CFG, "w") as f:
+    f.write("# the node's config, but no keystore.yaml yet\n")
+code, d, why = server.restore_backup(doc, "a long backup password")
+check("in the app a missing keystore.yaml always means the node hasn't made its keys", code == 409 and d.get("node_never_ran") is True, (code, d))
+code, d = call("/api/wallet/restore", {"backup": doc, "password": "a long backup password", "pin": PIN}, session=W.unlock(PIN))
+check("the page gets that line through the restore route", code == 409 and "Start the node first" in d.get("error", ""), (code, d))
+server.EMBEDDED = False
+code, d, why = server.restore_backup(doc, "a long backup password")
+check("outside the app, a config without a key file is still 'keys in its config'",
+      code == 409 and "keeps its keys in its config file" in d["error"] and not d.get("node_never_ran"), (code, d))
+os.remove(server.NODE_CFG)
+code, d, why = server.restore_backup(doc, "a long backup password")
+check("outside the app, no config at all: start the node once", code == 409 and d.get("node_never_ran") is True
+      and "Start the node once" in d["error"], (code, d))
+check("outside the app native_unlocked() is always False", server.native_unlocked() is False)
+server.EMBEDDED = True
+server.NODE_CFG = real_cfg
+
 server.EMBEDDED = False                     # outside the Android app the function does nothing
 check("outside embedded mode native_fingerprint_reset() is a no-op returning False", server.native_fingerprint_reset() is False)
 check("and leaves the setting as it was", server.wallet_settings.get("native_fingerprint") is True)

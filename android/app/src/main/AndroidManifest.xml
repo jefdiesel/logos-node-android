@@ -65,11 +65,20 @@
             android:name="com.journeyapps.barcodescanner.CaptureActivity"
             tools:node="remove" />
 
-        <!-- the Node screen: start, stop, process state, log -->
+        <!-- the Node screen: start, stop, process state, log. Only while the wallet is unlocked (NodeGate), which
+             it asks the wallet server through WalletLock's provider below -->
         <activity
             android:name=".NodeActivity"
             android:exported="false"
             android:launchMode="singleTop" />
+
+        <!-- whether the wallet is unlocked (server.native_unlocked), for the Node screen in the main process: in the
+             wallet's process, not exported, so only this app's own processes can ask -->
+        <provider
+            android:name=".WalletLock$Provider"
+            android:authorities="${applicationId}.walletlock"
+            android:process=":wallet"
+            android:exported="false" />
 
         <!-- specialUse: a peer-to-peer node has to keep running with no time limit, which none of the
              other foreground service types allow (dataSync, for one, is capped at 6 hours a day).

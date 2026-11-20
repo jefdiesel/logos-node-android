@@ -26,7 +26,6 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -35,8 +34,8 @@ import kotlin.concurrent.thread
 /**
  * The app's main screen: the web app's own page (the wallet and the node's status), served by its
  * server.py inside this app on 127.0.0.1, in a WebView, with a cream cover while it starts or recovers. The
- * Node screen opens from the page's Settings (web app 0.9.1+, through LogosAndroid.openNode) or, for older
- * web apps and whenever the page is covered, from a Node button.
+ * Node screen opens only from the page's Settings (LogosAndroid.openNode), which is behind the wallet's lock, and
+ * only while the wallet server says it is unlocked (WalletLock); the Node screen checks that again itself (NodeGate).
  */
 class WalletActivity : Activity() {
 
@@ -151,12 +150,11 @@ class WalletActivity : Activity() {
         }
     }
 
-    // ---- the screen: the page, a cream loading cover over it, and the Node button (only when needed) ----
+    // ---- the screen: the page and a cream loading cover over it ----
 
     private lateinit var root: android.widget.FrameLayout
     private lateinit var cover: LinearLayout
     private lateinit var coverText: TextView
-    private lateinit var nodeButton: Button
     private val cream by lazy { getColor(R.color.icon_cream) }
     private val ink = Color.rgb(0x14, 0x13, 0x11)
     private var retryMs = WalletPage.FIRST_RETRY_MS
@@ -188,20 +186,10 @@ class WalletActivity : Activity() {
                 setImageResource(R.drawable.ic_names_tile)              // the mark on its orange tile
             }, LinearLayout.LayoutParams((160 * dp).toInt(), (160 * dp).toInt()))
             addView(coverText)
-            addView(Button(this@WalletActivity).apply {
-                text = "Node"
-                setOnClickListener { openNodeScreen() }
-            }, LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = (24 * dp).toInt() })
+            // no Node button here: the cover shows before the page's lock, so it would open the Node screen
+            // (Start/Stop, snapshot import, go back) to anyone holding the phone with the wallet locked
         }
         root.addView(cover, android.widget.FrameLayout.LayoutParams(MATCH, MATCH))
-
-        // the old way to the Node screen, kept for web apps without a Node row in their Settings (before 0.9.1)
-        nodeButton = Button(this).apply {
-            text = "Node"
-            visibility = View.GONE
-            setOnClickListener { openNodeScreen() }
-        }
-        root.addView(nodeButton, android.widget.FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.END))
 
         Insets.pad(root)                                         // the page starts below the status bar
         setContentView(root)
@@ -229,7 +217,14 @@ class WalletActivity : Activity() {
         webChromeClient = Chrome()
     }
 
-    private fun openNodeScreen() = startActivity(Intent(this, NodeActivity::class.java))
+    /** The Node screen, only while the wallet server says the wallet is unlocked (asked off the main thread). */
+    private fun openNodeScreen() = io.execute {
+        val unlocked = WalletLock.inProcess()
+        main.post {
+            if (unlocked) startActivity(Intent(this, NodeActivity::class.java))
+            else Log.i(TAG, "Node screen not opened: the wallet is locked")
+        }
+    }
 
     /**
      * While the recovery phrase box is in use (the page says so through LogosAndroid.secureScreen): no screenshots,
@@ -466,8 +461,8 @@ class WalletActivity : Activity() {
             if (view !== web || !isOwnPage(Uri.parse(url))) return
             view.evaluateJavascript(SAVE_HOOK, null)
             syncFingerprintKey()
-            // the page is only taken as shown once it has content: then the cover goes, the window takes the
-            // page's background, and the old Node button shows only for web apps without a Node row in Settings
+            // the page is only taken as shown once it has content: then the cover goes and the window takes the
+            // page's background
             view.evaluateJavascript(PAGE_CHECK) { raw ->
                 if (view !== web) return@evaluateJavascript
                 val check = WalletPage.parseCheck(raw)
@@ -478,9 +473,7 @@ class WalletActivity : Activity() {
                 retryMs = WalletPage.FIRST_RETRY_MS
                 hideCover()
                 WalletPage.parseCssColor(check.background)?.let { setBars(it) }
-                nodeButton.visibility = if (WalletPage.hasNodeRow(check.version)) View.GONE else View.VISIBLE
-                Log.i(TAG, "page shown: web app ${check.version}, ${check.children} elements; " +
-                    "Node button ${if (nodeButton.visibility == View.VISIBLE) "shown (no Node row in this web app)" else "hidden (the page's Settings has it)"}")
+                Log.i(TAG, "page shown: web app ${check.version}, ${check.children} elements")
                 if (debugAllowed(intent) && intent.getBooleanExtra("probe", false)) {
                     // debug builds started with --ez probe true: the page's structure, in logcat. Never the
                     // page's text (it may show balances, chats or keys): only yes/no facts and element states.
@@ -700,7 +693,6 @@ class WalletActivity : Activity() {
     companion object {
         private const val TAG = "LogosWallet"
         private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
-        private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
         /** Whether the page has content, its web app version and its background: no page text. */
         private const val PAGE_CHECK = "(function () { var m = document.querySelector('meta[name=\"app-version\"]');" +

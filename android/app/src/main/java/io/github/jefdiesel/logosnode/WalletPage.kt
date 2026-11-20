@@ -23,17 +23,6 @@ object WalletPage {
         null
     }
 
-    /** Whether the web app shows a Node row in its Settings (0.9.1 and later), so the app's own button can go. */
-    fun hasNodeRow(version: String): Boolean {
-        val v = version.split('.').map { it.toIntOrNull() ?: return false }
-        val want = listOf(0, 9, 1)
-        for (i in 0 until maxOf(v.size, want.size)) {
-            val a = v.getOrElse(i) { 0 }; val b = want.getOrElse(i) { 0 }
-            if (a != b) return a > b
-        }
-        return true
-    }
-
     /** A CSS color as the page reports it ("rgb(17, 17, 15)" or "rgba(…, a)"), as an opaque ARGB int; null if see-through or unknown. */
     fun parseCssColor(css: String): Int? {
         val inside = css.trim().substringAfter('(', "").substringBefore(')', "")

@@ -3,6 +3,7 @@ package io.github.jefdiesel.logosnode
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Typeface
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -15,7 +16,11 @@ import android.widget.TextView
 import org.json.JSONObject
 import java.util.concurrent.Executors
 
-/** The Node screen: Start and Stop, the node's status from its own API, and the end of its log. */
+/**
+ * The Node screen: Start and Stop, the node's status from its own API, and the end of its log. Only while the wallet is
+ * unlocked (NodeGate, asking the wallet server through WalletLock): it closes when entered locked, drops to a read-only
+ * status view when the wallet locks while it shows, and asks again before every action.
+ */
 class NodeActivity : Activity() {
 
     private val main = Handler(Looper.getMainLooper())
@@ -28,9 +33,56 @@ class NodeActivity : Activity() {
     private lateinit var snapshotView: TextView
     private lateinit var revertButton: Button
     private lateinit var messagingSwitch: android.widget.Switch
+    private lateinit var mobileSwitch: android.widget.Switch
+    private var syncing = false
     private lateinit var messagingView: TextView
+    private lateinit var content: ScrollView
+    private lateinit var lockedNote: TextView
+    /** Everything but the read-only status: hidden while locked (NodeGate.Screen.READ_ONLY). */
+    private val controls = mutableListOf<android.view.View>()
+    private var dialog: android.app.AlertDialog? = null
+    private val gate = NodeGate { WalletLock.ask(this) }
 
-    private fun setMessaging(key: String, on: Boolean) {
+    /** Shows the screen as the gate says: everything, the read-only status, or nothing (closes). On the main thread. */
+    private fun show(screen: NodeGate.Screen) {
+        if (isFinishing || isDestroyed) return
+        when (screen) {
+            NodeGate.Screen.CLOSE -> {
+                dialog?.dismiss(); dialog = null
+                content.visibility = android.view.View.INVISIBLE
+                finish()
+            }
+            NodeGate.Screen.READ_ONLY -> {
+                dialog?.dismiss(); dialog = null
+                controls.forEach { it.visibility = android.view.View.GONE }
+                revertButton.visibility = android.view.View.GONE
+                logView.text = ""
+                lockedNote.visibility = android.view.View.VISIBLE
+                content.visibility = android.view.View.VISIBLE
+            }
+            NodeGate.Screen.FULL -> {
+                // the switches as stored (a press refused while locked left them as pressed)
+                val prefs = NodeService.messagingPrefs(this)
+                syncing = true
+                messagingSwitch.isChecked = prefs.getBoolean("enabled", false)
+                mobileSwitch.isChecked = prefs.getBoolean("mobile", false)
+                syncing = false
+                controls.forEach { it.visibility = android.view.View.VISIBLE }
+                lockedNote.visibility = android.view.View.GONE
+                content.visibility = android.view.View.VISIBLE
+            }
+        }
+    }
+
+    /** Runs [action] on the main thread only if the wallet is unlocked right now (asked off the main thread). */
+    private fun guarded(action: () -> Unit) {
+        io.execute {
+            val ok = gate.allowed()
+            main.post { if (ok && !isFinishing) action() else show(gate.screen) }
+        }
+    }
+
+    private fun setMessaging(key: String, on: Boolean) = guarded {
         NodeService.messagingPrefs(this).edit().putBoolean(key, on).apply()
         // the service re-checks the switches; it starts itself if needed (it stops again when nothing runs)
         if (NodeService.messagingPrefs(this).getBoolean("enabled", false) || NodeService.messaging?.running == true) {
@@ -71,7 +123,11 @@ class NodeActivity : Activity() {
     private val refresh = object : Runnable {
         override fun run() {
             if (!visible) return
-            io.execute { update() }
+            io.execute {
+                val screen = gate.refresh()                 // the wallet may have locked meanwhile
+                main.post { show(screen) }
+                if (screen != NodeGate.Screen.CLOSE) update()
+            }
             main.postDelayed(this, 3000)
         }
     }
@@ -80,7 +136,10 @@ class NodeActivity : Activity() {
         super.onCreate(savedInstanceState)
         files = NodeFiles(this)
         log = NodeLog(files.output)
-        setContentView(layout().also { Insets.pad(it) })
+        content = layout().also { Insets.pad(it) }
+        content.visibility = android.view.View.INVISIBLE    // nothing shows until the wallet says it is unlocked
+        setContentView(content)
+        io.execute { val screen = gate.enter(); main.post { show(screen) } }
         // an import cut short by the app being killed, while the node service isn't running: tidy it now
         if (!NodeService.active && !NodeService.importRunning) {
             io.execute {
@@ -94,7 +153,17 @@ class NodeActivity : Activity() {
     override fun onResume() {
         super.onResume()
         visible = true
-        main.post(refresh)
+        // entered again (back from another app, the screen on, the file picker): locked means closed
+        io.execute {
+            val screen = gate.enter()
+            main.post {
+                show(screen)
+                if (screen == NodeGate.Screen.FULL && visible) {
+                    main.removeCallbacks(refresh)
+                    main.post(refresh)
+                }
+            }
+        }
     }
 
     override fun onPause() {
@@ -132,48 +201,60 @@ class NodeActivity : Activity() {
                     "database, made as the project's docs/start-from-a-synced-database.md describes."
             )
         )
+        fun control(v: android.view.View) = v.also { controls += it; column.addView(it) }
+        lockedNote = text(
+            14f,
+            "The wallet is locked, so the node's controls and its log are hidden. Go back and unlock the wallet to use them."
+        ).apply { visibility = android.view.View.GONE }.also { column.addView(it) }
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         buttons.addView(Button(this).apply {
             text = "Start"
             setOnClickListener {
-                startForegroundService(Intent(this@NodeActivity, NodeService::class.java).setAction(NodeService.ACTION_START))
-                io.execute { update() }
+                guarded {
+                    startForegroundService(Intent(this@NodeActivity, NodeService::class.java).setAction(NodeService.ACTION_START))
+                    io.execute { update() }
+                }
             }
         })
         buttons.addView(Button(this).apply {
             text = "Stop"
             setOnClickListener {
-                if (NodeService.active) {
-                    startService(Intent(this@NodeActivity, NodeService::class.java).setAction(NodeService.ACTION_STOP))
+                guarded {
+                    if (NodeService.active) {
+                        startService(Intent(this@NodeActivity, NodeService::class.java).setAction(NodeService.ACTION_STOP))
+                    }
+                    io.execute { update() }
                 }
-                io.execute { update() }
             }
         })
-        column.addView(buttons)
+        control(buttons)
         processView = text(16f).also { column.addView(it) }
         statusView = text(16f).also { column.addView(it) }
 
-        column.addView(text(18f, "Snapshot"))
-        snapshotView = text(14f).also { column.addView(it) }
-        column.addView(Button(this).apply {
+        control(text(18f, "Snapshot"))
+        snapshotView = text(14f).also { control(it) }
+        control(Button(this).apply {
             text = "Start from a snapshot"
             setOnClickListener {
                 if (NodeService.importRunning) return@setOnClickListener
-                val pick = Intent(Intent.ACTION_OPEN_DOCUMENT)
-                    .addCategory(Intent.CATEGORY_OPENABLE)
-                    .setType("*/*")                                   // Downloads often types a tar as octet-stream
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-                @Suppress("DEPRECATION") startActivityForResult(pick, PICK_SNAPSHOT)
+                guarded {
+                    val pick = Intent(Intent.ACTION_OPEN_DOCUMENT)
+                        .addCategory(Intent.CATEGORY_OPENABLE)
+                        .setType("*/*")                                   // Downloads often types a tar as octet-stream
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                    @Suppress("DEPRECATION") startActivityForResult(pick, PICK_SNAPSHOT)
+                }
             }
         })
+        // not in [controls]: update() shows it only when there is a previous state, and READ_ONLY hides it there
         revertButton = Button(this).apply {
             text = "Go back to the previous state"
             visibility = android.view.View.GONE
-            setOnClickListener { confirmRevert() }
+            setOnClickListener { guarded { confirmRevert() } }
         }.also { column.addView(it) }
 
-        column.addView(text(18f, "Messaging node"))
-        column.addView(
+        control(text(18f, "Messaging node"))
+        control(
             text(
                 13f,
                 "The Logos Messaging (Waku) node relays other people's messages on the network, so it uses a lot " +
@@ -185,16 +266,16 @@ class NodeActivity : Activity() {
         messagingSwitch = android.widget.Switch(this).apply {
             text = "Messaging node"
             isChecked = prefs.getBoolean("enabled", false)
-            setOnCheckedChangeListener { _, on -> setMessaging("enabled", on) }
-        }.also { column.addView(it) }
-        android.widget.Switch(this).apply {
+            setOnCheckedChangeListener { _, on -> if (!syncing) setMessaging("enabled", on) }
+        }.also { control(it) }
+        mobileSwitch = android.widget.Switch(this).apply {
             text = "Also use mobile data"
             isChecked = prefs.getBoolean("mobile", false)
-            setOnCheckedChangeListener { _, on -> setMessaging("mobile", on) }
-        }.also { column.addView(it) }
-        messagingView = text(14f).also { column.addView(it) }
-        column.addView(text(14f, "Log (full log: files/node/output.log)"))
-        logView = text(11f).apply { typeface = Typeface.MONOSPACE }.also { column.addView(it) }
+            setOnCheckedChangeListener { _, on -> if (!syncing) setMessaging("mobile", on) }
+        }.also { control(it) }
+        messagingView = text(14f).also { control(it) }
+        control(text(14f, "Log (full log: files/node/output.log)"))
+        logView = text(11f).apply { typeface = Typeface.MONOSPACE }.also { control(it) }
         column.addView(
             text(
                 11f,
@@ -223,7 +304,8 @@ class NodeActivity : Activity() {
         val statusText = (if (pids.isEmpty()) "" else nodeStatus()) +
             (if (replay.isEmpty()) "" else "\n\nLast start:\n" + replay.joinToString("\n"))
         val walletText = WalletServer.describe(this)
-        val logText = log.tail(40)
+        val full = gate.screen == NodeGate.Screen.FULL
+        val logText = if (full) log.tail(40) else ""             // never the log while locked
         val snapshotText = snapshotText()
         val messagingText = messagingText()
         val previous = files.previousState
@@ -234,10 +316,11 @@ class NodeActivity : Activity() {
         main.post {
             processView.text = processText + (if (NodeService.mobileSummary.isEmpty()) "" else "\n" + NodeService.mobileSummary) + "\n" + walletText
             statusView.text = statusText
-            logView.text = logText
+            val fullNow = gate.screen == NodeGate.Screen.FULL
+            logView.text = if (fullNow) logText else ""
             snapshotView.text = snapshotText
             messagingView.text = messagingText
-            revertButton.visibility = if (previousLabel != null) android.view.View.VISIBLE else android.view.View.GONE
+            revertButton.visibility = if (previousLabel != null && fullNow) android.view.View.VISIBLE else android.view.View.GONE
             if (previousLabel != null) revertButton.text = previousLabel
         }
     }
@@ -266,10 +349,16 @@ class NodeActivity : Activity() {
         @Suppress("DEPRECATION") super.onActivityResult(requestCode, resultCode, data)
         val uri = data?.data
         if (requestCode != PICK_SNAPSHOT || resultCode != RESULT_OK || uri == null) return
+        // the picker may have stayed open past a lock: ask again before offering the import
+        guarded { confirmImport(uri) }
+    }
+
+    private fun confirmImport(uri: Uri) {
         val name = contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
             if (it.moveToFirst()) it.getString(0) else null
         } ?: uri.lastPathSegment
-        android.app.AlertDialog.Builder(this)
+        dialog?.dismiss()
+        dialog = android.app.AlertDialog.Builder(this)
             .setTitle("Start from this snapshot?")
             .setMessage(
                 "$name\n\nThe node's database is replaced by the one in this file. The node is stopped for the swap " +
@@ -278,21 +367,24 @@ class NodeActivity : Activity() {
             )
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Import") { _, _ ->
-                try {
-                    contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                } catch (_: Exception) {
+                guarded {
+                    try {
+                        contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    } catch (_: Exception) {
+                    }
+                    startForegroundService(
+                        Intent(this, NodeService::class.java).setAction(NodeService.ACTION_IMPORT).setData(uri)
+                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    )
+                    io.execute { update() }
                 }
-                startForegroundService(
-                    Intent(this, NodeService::class.java).setAction(NodeService.ACTION_IMPORT).setData(uri)
-                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                )
-                io.execute { update() }
             }
             .show()
     }
 
     private fun confirmRevert() {
-        android.app.AlertDialog.Builder(this)
+        dialog?.dismiss()
+        dialog = android.app.AlertDialog.Builder(this)
             .setTitle("Go back to the previous state?")
             .setMessage(
                 "The node is stopped, its current database and the previous one swap places, and it starts again. " +
@@ -300,8 +392,10 @@ class NodeActivity : Activity() {
             )
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Go back") { _, _ ->
-                startForegroundService(Intent(this, NodeService::class.java).setAction(NodeService.ACTION_REVERT))
-                io.execute { update() }
+                guarded {
+                    startForegroundService(Intent(this, NodeService::class.java).setAction(NodeService.ACTION_REVERT))
+                    io.execute { update() }
+                }
             }
             .show()
     }
