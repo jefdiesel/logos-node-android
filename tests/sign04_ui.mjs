@@ -26,7 +26,7 @@ const procs = [];
 let prof = "";
 const stop = () => { for (const p of procs) { try { p.kill(p === app ? "SIGTERM" : "SIGKILL"); } catch {} } if (prof) { try { rmSync(prof, { recursive: true, force: true }); } catch {} } };
 process.on("uncaughtException", e => { console.error(e); stop(); process.exit(1); });
-const check = (name, ok, detail) => { console.log((ok ? "ok   " : "FAIL ") + name + (!ok && detail !== undefined ? " - " + JSON.stringify(detail).slice(0, 400) : "")); if (!ok) { stop(); process.exit(1); } };
+const check = (name, ok, detail) => { console.log((ok ? "ok   " : "FAIL ") + name + (!ok && detail !== undefined ? " - " + JSON.stringify(detail).slice(0, 2500) : "")); if (!ok) { stop(); process.exit(1); } };
 
 const app = spawn("python3", [join(here, "lns_ui_app.py"), String(PORT)], { stdio: ["ignore", "pipe", "inherit"], env: { ...process.env, WITH_SIGNER04: "1" } });
 procs.push(app);
@@ -61,7 +61,9 @@ const js = async (expr) => { const r = await cdp("Runtime.evaluate", { expressio
 const click = (sel) => js(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) throw new Error("no ${sel}"); e.click(); return true; })()`);
 const text = (sel) => js(`(document.querySelector(${JSON.stringify(sel)}) || {}).innerText || ""`);
 const shown = (sel) => js(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); return !!e && e.offsetParent !== null; })()`);
-const waitFor = async (name, expr, ms = 15000) => { const end = Date.now() + ms; let v; while (Date.now() < end) { try { v = await js(expr); } catch { v = false; } if (v) return check(name, true); await sleep(120); } check(name, false, { errors, page: (await text("#v-open")).slice(0, 600) }); };
+const waitFor = async (name, expr, ms = 15000) => { const end = Date.now() + ms; let v; while (Date.now() < end) { try { v = await js(expr); } catch { v = false; } if (v) return check(name, true); await sleep(120); } check(name, false, { errors, names: (await text("#n4-names")).slice(0, 600), state: (await text("#n4-col-state")),
+  server: await fetch(BASE + "/api/wallet/net04/nft", { headers: { "X-Session": session } }).then(r => r.json()).then(v => ({ names: v.names, read_at: v.read_at, unreachable: v.unreachable })).catch(e => String(e)),
+  page: (await text("#v-open")).slice(0, 300) }); };
 const val = (sel, v) => js(`(() => { const i = document.querySelector(${JSON.stringify(sel)}); i.value = ${JSON.stringify(v)}; i.dispatchEvent(new Event("input")); return true; })()`);
 const pressNow = (sel) => js(`(() => { const b = document.querySelector(${JSON.stringify(sel)}); b.click(); return b.textContent + "|" + b.disabled; })()`);
 const tall = (sel) => js(`[...document.querySelectorAll(${JSON.stringify(sel)})].filter(e => e.offsetParent !== null).every(e => e.getBoundingClientRect().height >= 44)`);

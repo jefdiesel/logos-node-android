@@ -21,9 +21,12 @@ def record(**extra):
         gas = json.load(open(config)).get("gas_limit")
     except Exception:
         pass
-    with open(os.path.join(home, "..", "fake-names-calls.jsonl"), "a") as f:
-        f.write(json.dumps(dict(args=args, gas=gas, at=time.time(), rpc=os.environ.get("LOGOS_NAMES_RPC"),
-                                program=os.environ.get("LOGOS_NAMES_PROGRAM"), env=sorted(os.environ), **extra)) + "\n")
+    try:                                  # (`address` runs before the wallet folder exists: nothing to record beside it)
+        with open(os.path.join(home, "..", "fake-names-calls.jsonl"), "a") as f:
+            f.write(json.dumps(dict(args=args, gas=gas, at=time.time(), rpc=os.environ.get("LOGOS_NAMES_RPC"),
+                                    program=os.environ.get("LOGOS_NAMES_PROGRAM"), env=sorted(os.environ), **extra)) + "\n")
+    except FileNotFoundError:
+        pass
 
 
 def rpc(method, params):
